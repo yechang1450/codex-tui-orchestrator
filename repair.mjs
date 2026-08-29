@@ -36,7 +36,6 @@ const DEBRIS_DIRS = new Set([
   '__pycache__',
   'state',
   'temp',
-  'assets',
   '.pytest_cache',
   '.cache',
 ]);
@@ -141,6 +140,9 @@ function clean() {
 }
 
 function publish(targetRoot) {
+  // 修象: publish 前必须验证必需文件
+  const missing = REQUIRED_FILES.filter((nf) => !fs.existsSync(path.join(__dirname, nf)));
+  if (missing.length) { console.error("[" + SKILL + "] publish aborted: missing " + missing.join(", ")); process.exit(2); }
   const dest = path.join(path.resolve(targetRoot), SKILL);
   if (!path.isAbsolute(targetRoot)) {
     console.error(`[${SKILL}] --target expects an absolute root, got: ${targetRoot}`);

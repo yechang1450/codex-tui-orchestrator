@@ -372,6 +372,7 @@ async function runThreadPrompt(prompt, opts = {}) {
         else if (normType === "error" || ptype === "error") errored = ev.message || p.message || "error";
         turnDone = true;
         ac.abort(); // close the generator now — do not wait for it to finish on its own
+        clearTimeout(abortTimer); // 修象: 不在正常终止路径泄漏
         break;
       }
       if (ptype === "item_completed" || normType === "item.completed") {
@@ -527,7 +528,8 @@ function spawnVisibleWindow(lp, title) {
     return;
   }
   // conhost fallback: cmd /c start "" powershell -File <launcher>  ->  NEW visible console.
-  const p = spawn("cmd.exe", ["/c", "start", `"${title}"`, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], {
+  const safeTitle = String(title || "codex-task").replace(/[^A-Za-z0-9_\-:. ]/g, "").replace(/"/g, ""); // 防控制字符/cmd 注入
+  const p = spawn("cmd.exe", ["/c", "start", `"${safeTitle}"`, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], {
     detached: true,
     stdio: "ignore",
     windowsHide: false,
@@ -838,7 +840,7 @@ function windowAlive(win) {
     try { const t = readFileSync(resolved, "utf8"); if (t.includes("__EXIT__=")) return false; } catch { /* ignore */ }
   }
   if (process.platform === "win32") {
-    try { const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" }); return /,/ .test(r.stdout || "") ? true : false; } catch { return false; }
+    try { const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" }); return /"\S+","\d+"/.test(r.stdout || "") || /.*,.*/ .test(r.stdout || "") ? true : false; } catch { return false; }
   }
   try { process.kill(pid, 0); return true; } catch { return false; }
 }

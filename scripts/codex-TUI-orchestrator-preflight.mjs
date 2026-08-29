@@ -39,5 +39,6 @@ if (realKinds.has(kind)) {
   process.exit(1);
 }
 
+if (kind && !realKinds.has(kind)) { console.error("[preflight] unknown kind: " + kind); process.exit(1); }
 console.log("ok: read-only kind (" + (kind || "none") + ").");
 process.exit(0);

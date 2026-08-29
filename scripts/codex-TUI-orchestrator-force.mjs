@@ -76,7 +76,7 @@ function pidOf(w) {
 // process.kill(pid, 0) inside try/catch: true only if the process is actually alive (ESRCH/throw = dead).
 function pidAlive(pid) {
   if (!pid || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; } catch (e) { return e && e.code === "EPERM" ? true : false; } // EPERM/EACCES = 存在但无权限, 不视为 dead
 }
 // Only windows whose process is really alive are returned. A record whose pidFile exists but whose
 // process has already exited is treated as NOT alive and dropped from the result.
