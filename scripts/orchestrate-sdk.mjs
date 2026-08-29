@@ -25,7 +25,7 @@
  *   WORKSPACE_DIR  (default: process.cwd())  — auto-detected workspace root for the user.
  *   CODEX_EXE      (default: auto-detect from PATH or a common user install).
  *   PYTHON         (default: `python`; prepended to the spawned window PATH).
- *   ORCH_MODEL     (default: deepseek-v4-flash-vision-exp)
+ *   ORCH_MODEL     (default: empty -> Codex uses its configured default model)
  *   ORCH_EFFORT    (default: high)
  *
  * Encoding: every text read/write is explicit UTF-8. The window launcher sets
@@ -77,7 +77,7 @@ function resolveWorkspace() {
 const WORKSPACE = resolveWorkspace();
 const CODEX = process.env.CODEX_EXE || defaultCodexPath();
 const PY = process.env.PYTHON || "python";
-const MODEL = process.env.ORCH_MODEL || "deepseek-v4-flash-vision-exp";
+const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
 const EFFORT = process.env.ORCH_EFFORT || "high";
 const TMP = path.join(WORKSPACE, "temp");
 const ATTEMPT_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 20000000); // 7 min

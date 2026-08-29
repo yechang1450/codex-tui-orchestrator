@@ -40,8 +40,8 @@ Identical requests are cached for **1 year** and **auto-refresh every Jan 1** (`
 | `WORKSPACE_DIR` | `process.cwd()` | Working dir threads/windows operate in (auto-detected; never hardcoded). |
 | `CODEX_EXE` | auto-detect | Path to the `codex` CLI. |
 | `PYTHON` | `python` | Python to prepend to the spawned window's PATH. |
-| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | Model the threads use. |
-| `ORCH_EFFORT` | `high` | Reasoning effort. |
+| `ORCH_MODEL` | `Codex 默认模型（不指定时用 Codex 自身默认）` | Model the threads use. |
+| `ORCH_EFFORT` | `high` | Reasoning effort (low/high/max, portable). |
 | `ORCH_TIMEOUT_MS` | `20000000` | Total wait for ALL windows to finish before the aggregator stops. |
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `6000000` | Timeout for the read-only LLM decompose/classification. |
 | `ORCH_RETRIES` | `2` | Retries before giving up on a block. |

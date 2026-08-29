@@ -39,8 +39,8 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `WORKSPACE_DIR` | `process.cwd()` | 工作目录（自动探测，从不硬编码）。 |
 | `CODEX_EXE` | 自动检测 | `codex` CLI 路径。 |
 | `PYTHON` | `python` | 预制到弹窗 PATH 的 Python。 |
-| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | 线程用模型。 |
-| `ORCH_EFFORT` | `high` | 推理档位。 |
+| `ORCH_MODEL` | `Codex 默认模型（不指定时用 Codex 自身默认）` | 线程用模型。 |
+| `ORCH_EFFORT` | `high` | 推理档位（low/high/max，通用）。 |
 | `ORCH_TIMEOUT_MS` | `20000000` | 等全部窗完成的总时长上限。 |
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `6000000` | 只读 LLM 拆块超时。 |
 | `ORCH_RETRIES` | `2` | 块重试次数。 |

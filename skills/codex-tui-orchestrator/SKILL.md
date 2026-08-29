@@ -68,9 +68,9 @@ The sanctioned engine for REAL execution is `--run-windows` — a real, visible,
 | `WORKSPACE_DIR` | `process.cwd()` | Working directory threads/windows operate in (your repo, e.g. `$WORKSPACE_DIR`). |
 | `CODEX_EXE` | auto-detect | Path to the `codex` CLI binary. |
 | `PYTHON` | `python` | Python to prepend to the spawned window's `PATH`. |
-| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | Model the threads/windows use. |
-| `ORCH_EFFORT` | `high` | Reasoning effort. |
-| `ORCH_TIMEOUT_MS` | `420000` | Treat a block attempt as failed after this long. |
+| `ORCH_MODEL` | `Codex 默认模型（不指定时用 Codex 自身默认）` | Model the threads/windows use. |
+| `ORCH_EFFORT` | `high` | Reasoning effort (low/high/max, portable). |
+| `ORCH_TIMEOUT_MS` | `20000000` | Treat a block attempt as failed after this long. |
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `300000` | Timeout for the read-only LLM decompose/classification call before falling back to a serialized window. |
 | `ORCH_RETRIES` | `2` | Retry count. |
 | `ORCH_WAIT_MS` | `120000` | Max time to WAIT for a conflicting running window to close before executing. |
