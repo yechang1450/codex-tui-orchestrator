@@ -53,24 +53,9 @@ import path from "node:path";
 // ---------------------------------------------------------------------------
 // Config (env-first, portable)
 // ---------------------------------------------------------------------------
-// 工作区动态探测（不写死工作区绝对路径）：env WORKSPACE_DIR → openclaw agents.defaults.workspace → process.cwd()
-function readOpenclawWorkspace() {
-  const configPath = process.env.OPENCLAW_CONFIG || path.join(os.homedir(), ".openclaw", "openclaw.json");
-  try {
-    if (!existsSync(configPath)) return null;
-    const raw = readFileSync(configPath, "utf8").replace(/^\uFEFF/, "");
-    const cfg = JSON.parse(raw);
-    const ws = cfg?.agents?.defaults?.workspace;
-    return typeof ws === "string" && ws.trim() ? ws : null;
-  } catch {
-    return null;
-  }
-}
-
+// 通用工作区解析：env WORKSPACE_DIR 优先，否则当前目录。不依赖任何平台特定配置（可移植）。
 function resolveWorkspace() {
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
-  const cfgWs = readOpenclawWorkspace();
-  if (cfgWs) return cfgWs;
   return process.cwd();
 }
 
@@ -109,20 +94,19 @@ function wtAvailable() {
 process.env.ORCH_TUI = process.env.ORCH_TUI || "wt";
 const TUI_MODE = String(process.env.ORCH_TUI).toLowerCase();
 
+let _codexPathCache;   // memoize: codex 路径检测只做一次
 function defaultCodexPath() {
-  if (process.platform !== "win32") return "codex";
+  if (_codexPathCache !== undefined) return _codexPathCache;
+  if (process.platform !== "win32") { _codexPathCache = "codex"; return "codex"; }
   // A handful of common install locations; scan a couple of npm prefixes too.
-  const cands = [
-    "C:\\Users\\fixture-user\\.tools\\node22-fresh\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
-    "codex",
-  ];
+  const cands = ["codex"];
   for (const c of cands) {
     try {
       const r = spawnSync(c, ["--version"], { shell: false, encoding: "utf8", timeout: 8000 });
-      if (!r.error && r.status === 0) return c;
+      if (!r.error && r.status === 0) { _codexPathCache = c; return c; }
     } catch { /* keep trying */ }
   }
-  return "codex";
+  _codexPathCache = "codex"; return "codex";
 }
 
 const codex = new Codex({ codexPathOverride: CODEX });
