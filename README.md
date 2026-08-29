@@ -46,7 +46,7 @@ Identical requests are cached for **1 year** and **auto-refresh every Jan 1** (`
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `6000000` | Timeout for the read-only LLM decompose/classification. |
 | `ORCH_RETRIES` | `2` | Retries before giving up on a block. |
 | `ORCH_WAIT_MS` | `120000` | Max wait for a conflicting window to close. |
-| `ORCH_CLOSE_DELAY_MS` | `6000` | Read-buffer before a finished window auto-closes. |
+| `ORCH_CLOSE_DELAY_MS` | `1000` | Read-buffer before a finished window auto-closes. |
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |
 
 ## Encoding & IME

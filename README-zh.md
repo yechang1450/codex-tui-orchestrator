@@ -45,7 +45,7 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `6000000` | 只读 LLM 拆块超时。 |
 | `ORCH_RETRIES` | `2` | 块重试次数。 |
 | `ORCH_WAIT_MS` | `120000` | 等待冲突窗关闭的最长时间。 |
-| `ORCH_CLOSE_DELAY_MS` | `6000` | 窗完成后自动关窗的读缓冲。 |
+| `ORCH_CLOSE_DELAY_MS` | `1000` | 窗完成后自动关窗的读缓冲。 |
 | `ORCH_TUI` | `wt` | `wt`=Windows Terminal（最佳 CJK 输入法），`conhost`=经典控制台。 |
 
 ## 编码与输入法
