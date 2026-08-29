@@ -1,0 +1,6 @@
+﻿node_modules/
+scripts/node_modules/
+temp/
+*.log
+*.pid
+.git/
