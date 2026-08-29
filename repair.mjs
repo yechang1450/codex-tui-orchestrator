@@ -9,7 +9,7 @@
  *   - all free of runtime debris.
  *
  * Runtime debris (use-and-discard, never bundled, safe to remove):
- *   node_modules/  __pycache__/  __pycache__/  state/  temp/  assets/
+ *   node_modules/  __pycache__/  state/  temp/
  *   .pytest_cache/  .cache/
  *   *.part  *.tmp  *.pyc  *.pyo  *.crdownload  *.partial  *.swp
  *   .enforce-state.json  .DS_Store  Thumbs.db
@@ -45,6 +45,7 @@ const DEBRIS_RE = /\.(part|tmp|pyc|pyo|crdownload|partial|swp)$/i;
 
 function listFiles(dir, base = '', out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (e.isSymbolicLink()) continue; // 跳过符号链接：不跟随内容复制/删除（防越权/防逃逸）
     const abs = path.join(dir, e.name);
     const rel = path.join(base, e.name);
     if (e.isDirectory()) listFiles(abs, rel, out);
@@ -111,57 +112,68 @@ function check() {
 }
 
 function clean() {
-  console.log(`[${SKILL}] --clean: removing runtime debris (use-and-discard only; source is untouched)`);
-  const removed = [];
-  for (const rel of listFiles(__dirname)) {
-    if (!isDebrisRel(rel)) continue;
-    const abs = path.join(__dirname, rel);
-    // Never follow out of the skill root.
-    const stab = path.resolve(abs);
-    if (!stab.startsWith(path.resolve(__dirname) + path.sep)) continue;
-    fs.rmSync(abs, { force: true });
-    removed.push(rel);
-    console.log(`  removed ${rel}`);
-  }
-  // Also drop now-empty debris dirs (e.g. empty state/, temp/, __pycache__/).
-  for (const dir of DEBRIS_DIRS) {
-    const full = path.join(__dirname, dir);
-    if (fs.existsSync(full)) {
-      const empty = fs.readdirSync(full).length === 0;
-      if (empty) {
-        fs.rmdirSync(full);
-        removed.push(dir + '/');
-        console.log(`  removed empty dir ${dir}/`);
+  try {
+    console.log(`[${SKILL}] --clean: removing runtime debris (use-and-discard only; source is untouched)`);
+    const removed = [];
+    for (const rel of listFiles(__dirname)) {
+      if (!isDebrisRel(rel)) continue;
+      const abs = path.join(__dirname, rel);
+      // Never follow out of the skill root（realpath 兜底，防符号链接逃逸）。
+      let real = abs;
+      try { real = fs.realpathSync(abs); } catch { /* path may be gone */ }
+      const rootReal = fs.realpathSync(__dirname);
+      if (real !== rootReal && !real.startsWith(rootReal + path.sep)) continue;
+      fs.rmSync(abs, { force: true });
+      removed.push(rel);
+      console.log(`  removed ${rel}`);
+    }
+    // Also drop now-empty debris dirs (e.g. empty state/, temp/, __pycache__/).
+    for (const dir of DEBRIS_DIRS) {
+      const full = path.join(__dirname, dir);
+      if (fs.existsSync(full)) {
+        const empty = fs.readdirSync(full).length === 0;
+        if (empty) {
+          fs.rmdirSync(full);
+          removed.push(dir + '/');
+          console.log(`  removed empty dir ${dir}/`);
+        }
       }
     }
+    console.log(`[${SKILL}] removed ${removed.length} debris item(s).`);
+    process.exit(0);
+  } catch (e) {
+    console.error(`[${SKILL}] clean failed: ${e.message}`);
+    process.exit(2);
   }
-  console.log(`[${SKILL}] removed ${removed.length} debris item(s).`);
-  process.exit(0);
 }
 
 function publish(targetRoot) {
-  // 修象: publish 前必须验证必需文件
-  const missing = REQUIRED_FILES.filter((nf) => !fs.existsSync(path.join(__dirname, nf)));
-  if (missing.length) { console.error("[" + SKILL + "] publish aborted: missing " + missing.join(", ")); process.exit(2); }
-  const dest = path.join(path.resolve(targetRoot), SKILL);
-  if (!path.isAbsolute(targetRoot)) {
-    console.error(`[${SKILL}] --target expects an absolute root, got: ${targetRoot}`);
+  try {
+    if (!path.isAbsolute(targetRoot)) {
+      console.error(`[${SKILL}] --target expects an absolute root, got: ${targetRoot}`);
+      process.exit(2);
+    }
+    // publish 前必须验证必需文件
+    const missing = REQUIRED_FILES.filter((nf) => !fs.existsSync(path.join(__dirname, nf)));
+    if (missing.length) { console.error("[" + SKILL + "] publish aborted: missing " + missing.join(", ")); process.exit(2); }
+    const dest = path.join(path.resolve(targetRoot), SKILL);
+    console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
+    let copied = 0;
+    for (const rel of listFiles(__dirname)) {
+      if (isDebrisRel(rel)) continue;
+      const srcAbs = path.join(__dirname, rel);
+      const dstAbs = path.join(dest, rel);
+      fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
+      // Byte-copy: preserves UTF-8 no-BOM text and any binary data byte-exact.
+      fs.copyFileSync(srcAbs, dstAbs);
+      copied++;
+    }
+    console.log(`[${SKILL}] published ${copied} file(s) to ${dest}.`);
+    process.exit(0);
+  } catch (e) {
+    console.error(`[${SKILL}] publish failed: ${e.message}`);
     process.exit(2);
   }
-  console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
-  let copied = 0;
-  for (const rel of listFiles(__dirname)) {
-    if (isDebrisRel(rel)) continue;
-    const srcAbs = path.join(__dirname, rel);
-    const dstAbs = path.join(dest, rel);
-    fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
-    // Byte-copy: preserves UTF-8 no-BOM text and any binary data byte-exact.
-    fs.copyFileSync(srcAbs, dstAbs);
-    copied++;
-  }
-  // Copy the core files at the top level too (already included by listFiles).
-  console.log(`[${SKILL}] published ${copied} file(s) to ${dest}.`);
-  process.exit(0);
 }
 
 function main() {

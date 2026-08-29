@@ -10,13 +10,15 @@
 
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 // 用脚本自身目录定位 SDK，避免写死本技能安装绝对路径（工作区迁移/复制到 kit 后依然成立）。
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
 const SDK = path.join(ROOT, "orchestrate-sdk.mjs");
+const execFileP = promisify(execFile);
 // 工作区动态探测（不写死工作区绝对路径）：env WORKSPACE_DIR → process.cwd()
 const WORKSPACE = process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim() ? process.env.WORKSPACE_DIR.trim() : process.cwd();
 const TMP = path.join(WORKSPACE, "temp");
@@ -29,17 +31,23 @@ function arg(name, dflt) {
   return Number.isFinite(v) ? v : dflt;
 }
 const timeoutMs = arg("--timeoutMs", 30 * 60 * 1000);
-const intervalMs = arg("--intervalMs", 5000);
-const deadline = Date.now() + timeoutMs;
+const intervalMs = Math.max(500, arg("--intervalMs", 5000));
+const start = Date.now();
+const deadline = start + timeoutMs;
+// 全关+summary 完整需连续 2 个 cycle 稳定才退出，避免“窗刚关但 summary 未刷新”竞态。
+const STABLE_CYCLES = 2;
+// 终态集合：只有这些 status 才算“已定案”，错误/未知状态不得当作 complete 提前退出。
+const TERMINAL = new Set(["done", "ok", "completed", "unfinished", "uncaptured", "preflight-failed", "locked", "done-and-close"]);
 
 function loadSummary() {
   try { return JSON.parse(readFileSync(SUMMARY, "utf8")); } catch { return null; }
 }
-function aliveCount() {
+// 异步（不阻塞 event loop）：查询 SDK --status 统计存活窗。失败返回 -1（表示“未知”，不得当作全关）。
+async function aliveCount() {
   try {
-    const out = execFileSync(process.execPath, [SDK, "--status"], { encoding: "utf8", timeout: 20000 });
+    const { stdout } = await execFileP(process.execPath, [SDK, "--status"], { encoding: "utf8", timeout: 15000 });
     // count lines like "  [B1:..." under the "alive codex TUI windows" section
-    const lines = out.split(/\r?\n/);
+    const lines = String(stdout || "").split(/\r?\n/);
     let inAlive = false, n = 0;
     for (const l of lines) {
       if (/=== alive codex TUI windows ===/.test(l)) { inAlive = true; continue; }
@@ -51,33 +59,44 @@ function aliveCount() {
 }
 
 function summaryComplete(sum) {
-  if (!sum || !sum.results) return false;
-  const statuses = Object.values(sum.results).map((r) => String(r.status || ""));
-  return statuses.length > 0 && statuses.every((s) => s !== "pending" && s !== "timeout");
+  if (!sum || !sum.results || typeof sum.results !== "object") return false;
+  const entries = Object.entries(sum.results);
+  if (entries.length === 0) return false;
+  return entries.every(([k, r]) => {
+    if (!k) return false;
+    if (!r || typeof r !== "object") return false;
+    return TERMINAL.has(String(r.status || ""));
+  });
 }
 
 let lastBeat = 0;
+let stable = 0;
 console.log("[poll-windows] started (timeout " + Math.round(timeoutMs / 1000) + "s, interval " + Math.round(intervalMs / 1000) + "s)");
 while (Date.now() < deadline) {
-  const alive = aliveCount();
+  const alive = await aliveCount();
   const sum = loadSummary();
   const complete = summaryComplete(sum);
   const allClosed = alive === 0;
-  if ((allClosed && complete) || (complete && alive === 0)) {
-    console.log("[poll-windows] ALL WINDOWS DONE + SUMMARY COMPLETE -> stopping poll.");
-    if (sum) {
-      console.log("[poll-windows] win-summary.json:");
-      process.stdout.write(JSON.stringify(sum.results, null, 2) + "\n");
+  if (allClosed && complete) {
+    stable++;
+    if (stable >= STABLE_CYCLES) {
+      console.log("[poll-windows] ALL WINDOWS DONE + SUMMARY COMPLETE (stable) -> stopping poll.");
+      if (sum) {
+        console.log("[poll-windows] win-summary.json:");
+        process.stdout.write(JSON.stringify(sum.results, null, 2) + "\n");
+      }
+      process.exit(0);
     }
-    process.exit(0);
+    console.log("[poll-windows] ready-to-exit cycle observed, confirming stability...");
+  } else {
+    stable = 0;
   }
   const now = Date.now();
   if (now - lastBeat >= 5000) {
     lastBeat = now;
-    console.log("[poll-windows] heartbeat: aliveWindows=" + (alive < 0 ? "?" : alive) + " summary=" + (sum ? "present(" + Object.keys(sum.results || {}).length + ")" : "absent") + "  elapsed=" + Math.round((now - (Date.now() - timeoutMs)) / 1000) + "s");
+    console.log("[poll-windows] heartbeat: aliveWindows=" + (alive < 0 ? "?" : alive) + " summary=" + (sum ? "present(" + Object.keys(sum.results || {}).length + ")" : "absent") + "  elapsed=" + Math.round((now - start) / 1000) + "s");
   }
-  const wait = new Promise((r) => setTimeout(r, intervalMs));
-  await wait;
+  await new Promise((r) => setTimeout(r, intervalMs));
 }
 
 console.log("[poll-windows] TIMED OUT after " + Math.round(timeoutMs / 1000) + "s; some windows may still be running. Partial summary follows:");

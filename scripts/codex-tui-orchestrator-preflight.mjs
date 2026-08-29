@@ -19,15 +19,27 @@ import { armed, liveWindows } from "./codex-tui-orchestrator-force.mjs";
 
 const kind = String(process.argv[2] || "").toLowerCase();
 const realKinds = new Set(["exec", "write", "build", "install", "test", "restart", "start", "stop", "real", "all", "run"]);
+const readKinds = new Set(["read", "analyze", "plan", "view", "query", "search", "status", "list", "preview", "ls", "show", "check", "validate", "dry-run", "help"]);
+
+// 统一校验：空/未知 kind 一律报错退出 1（不因窗口状态放宽），决策输出统一走 stdout 供下游捕获。
+if (!kind) {
+  console.log("[preflight] error: missing kind argument (real: " + [...realKinds].join("/") + " | read-only: " + [...readKinds].join("/") + ").");
+  process.exit(1);
+}
+if (!realKinds.has(kind) && !readKinds.has(kind)) {
+  console.log("[preflight] invalid/unknown kind: '" + kind + "' (allowed real: " + [...realKinds].join("/") + " | read-only: " + [...readKinds].join("/") + ").");
+  process.exit(1);
+}
 
 if (!armed()) {
   console.log("preflight: 未启用 (orchestrator not armed; enforcement disabled).");
   process.exit(0);
 }
 
+// liveWindows() 为跨进程快照（存在竞态），此处是 before-you-run 的近似判定；如需严格应在执行前紧邻复验。
 const inWindow = process.env.CODEX_ORCH_WINDOW === "1" && liveWindows().length > 0;
 if (inWindow) {
-  console.log("ok: sanctioned orchestration window; '" + (kind || "?") + "' may proceed.");
+  console.log("ok: sanctioned orchestration window; '" + kind + "' may proceed.");
   process.exit(0);
 }
 
@@ -39,6 +51,5 @@ if (realKinds.has(kind)) {
   process.exit(1);
 }
 
-if (kind && !realKinds.has(kind)) { console.error("[preflight] unknown kind: " + kind); process.exit(1); }
-console.log("ok: read-only kind (" + (kind || "none") + ").");
+console.log("ok: read-only kind (" + kind + ").");
 process.exit(0);

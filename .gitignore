@@ -2,5 +2,15 @@
 scripts/node_modules/
 temp/
 *.log
-*.pid
-.git/
+temp/*.pid
+*.tmp
+*.part
+*.partial
+__pycache__/
+.pytest_cache/
+.env
+.env.*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

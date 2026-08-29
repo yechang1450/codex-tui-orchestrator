@@ -29,7 +29,7 @@
  *
  * Usage (from scripts dir):  node codex-tui-orchestrator-force.mjs --status | --assert <kind> | --verify <file> | --enable | --disable
  */
-import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, lstatSync, renameSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,7 +44,8 @@ function readOpenclawWorkspace() {
     const cfg = JSON.parse(raw);
     const ws = cfg?.agents?.defaults?.workspace;
     return typeof ws === "string" && ws.trim() ? ws : null;
-  } catch {
+  } catch (e) {
+    console.error("[force] openclaw config read failed: " + configPath + " :: " + e.message);
     return null;
   }
 }
@@ -61,22 +62,37 @@ const TMP = path.join(WORKSPACE, "temp");
 const FLAG = path.join(TMP, ".orchestrator-enabled");
 const WINDOWS_REG = path.join(TMP, "orchestrator-windows.json");
 
-function armed() { return existsSync(FLAG); }
-function loadJson(f, d) { try { return JSON.parse(readFileSync(f, "utf8")); } catch { return d; } }
+// 拒绝符号链接/非常规文件，防止伪造/篡改 registry 或 marker（安全网）。
+function isRegularFile(p) { try { return lstatSync(p).isFile(); } catch { return false; } }
+function armed() {
+  if (!existsSync(FLAG) || !isRegularFile(FLAG)) return false;
+  try { return /^\d+$/.test(readFileSync(FLAG, "utf8").trim()); } catch { return false; }
+}
+function loadJson(f, d) {
+  try {
+    if (!existsSync(f)) return d;
+    if (!isRegularFile(f)) { console.error("[force] refusing non-regular/symlinked registry: " + f); return d; }
+    return JSON.parse(readFileSync(f, "utf8"));
+  } catch (e) {
+    console.error("[force] registry read/parse failed: " + f + " :: " + e.message);
+    return d;
+  }
+}
 
 // Read the PID stored in a window's pid file. Returns 0 if the record has no pidFile, the pidFile
 // is unreadable, or the stored value is not a positive integer.
 function pidOf(w) {
   try {
     if (!w || !w.pidFile) return 0;
+    if (!isRegularFile(w.pidFile)) return 0; // 拒绝符号链接 pidFile
     const p = Number(String(readFileSync(w.pidFile, "utf8")).trim());
-    return Number.isFinite(p) && p > 0 ? p : 0;
+    return Number.isFinite(p) && p >= 1 && p <= 4194304 ? p : 0; // 合理 PID 范围
   } catch { return 0; }
 }
 // process.kill(pid, 0) inside try/catch: true only if the process is actually alive (ESRCH/throw = dead).
 function pidAlive(pid) {
   if (!pid || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return e && e.code === "EPERM" ? true : false; } // EPERM/EACCES = 存在但无权限, 不视为 dead
+  try { process.kill(pid, 0); return true; } catch (e) { return e && (e.code === "EPERM" || e.code === "EACCES") ? true : false; } // EPERM/EACCES = 存在但无权限, 不视为 dead
 }
 // Only windows whose process is really alive are returned. A record whose pidFile exists but whose
 // process has already exited is treated as NOT alive and dropped from the result.
@@ -92,7 +108,9 @@ const mode = process.argv[2];
 function runCli() {
   if (mode === "--enable") {
     mkdirSync(TMP, { recursive: true });
-    writeFileSync(FLAG, String(Date.now()), "utf8");
+    const tmpFlag = FLAG + ".tmp-" + process.pid;
+    writeFileSync(tmpFlag, String(Date.now()), "utf8");
+    try { renameSync(tmpFlag, FLAG); } catch (e) { rmSync(tmpFlag, { force: true }); throw e; }
     console.log("enforcement ARMED: real executions must go through --run-windows (visible interactive TUI).");
   } else if (mode === "--disable") {
     try { rmSync(FLAG, { force: true }); } catch { /* ignore */ }
@@ -134,7 +152,16 @@ function runCli() {
     const wins = liveWindows();
     const inWindow = process.env.CODEX_ORCH_WINDOW === "1" && wins.length > 0;
     if (inWindow) {
-      console.log("PASS: current context is a sanctioned orchestration window with " + wins.length + " live registered window(s); the change is consistent with an in-window write.");
+      // 关联：被改文件若在工作区外，不能确认是窗内写的（更严格署名）。
+      try {
+        const realFile = realpathSync(file);
+        const ws = realpathSync(WORKSPACE);
+        if (realFile !== ws && !realFile.startsWith(ws + path.sep)) {
+          console.log("VIOLATION: file is outside the orchestration workspace (" + WORKSPACE + "); cannot attribute to a sanctioned in-window write.");
+          process.exit(1);
+        }
+      } catch { /* best-effort: 路径解析失败则不据此拒绝 */ }
+      console.log("PASS: current context is a sanctioned orchestration window with " + wins.length + " live registered window(s) [" + wins.map((w) => w.title).join(", ") + "]; the change is consistent with an in-window write.");
       process.exit(0);
     }
     if (wins.length === 0) {

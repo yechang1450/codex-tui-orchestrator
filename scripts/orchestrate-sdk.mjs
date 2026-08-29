@@ -60,6 +60,7 @@ function resolveWorkspace() {
 }
 
 const WORKSPACE = resolveWorkspace();
+let _codexPathCache;   // memoize: codex 路径检测只做一次（须在 CODEX 初始化前声明，避免 TDZ）
 const CODEX = process.env.CODEX_EXE || defaultCodexPath();
 // PowerShell 单引号字符串内嵌路径：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
 const WORKSPACE_Q = WORKSPACE.replace(/'/g, "''");
@@ -68,8 +69,6 @@ const PY = process.env.PYTHON || "python";
 const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
 const EFFORT = process.env.ORCH_EFFORT || "high";
 const TMP = path.join(WORKSPACE, "temp");
-const ATTEMPT_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || 20000000); // 7 min
-const MAX_RETRIES = Number(process.env.ORCH_RETRIES || 2);
 
 // Terminal hosting the visible Codex TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
@@ -97,7 +96,6 @@ function wtAvailable() {
 process.env.ORCH_TUI = process.env.ORCH_TUI || "wt";
 const TUI_MODE = String(process.env.ORCH_TUI).toLowerCase();
 
-let _codexPathCache;   // memoize: codex 路径检测只做一次
 function defaultCodexPath() {
   if (_codexPathCache !== undefined) return _codexPathCache;
   if (process.platform !== "win32") { _codexPathCache = "codex"; return "codex"; }
@@ -843,7 +841,7 @@ function windowAlive(win) {
     try { const t = readFileSync(resolved, "utf8"); if (t.includes("__EXIT__=")) return false; } catch { /* ignore */ }
   }
   if (process.platform === "win32") {
-    try { const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" }); return /"\S+","\d+"/.test(r.stdout || "") || /.*,.*/ .test(r.stdout || "") ? true : false; } catch { return false; }
+    try { const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8" }); return /"\S+","\d+"/.test(r.stdout || ""); } catch { return false; }
   }
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
@@ -1163,6 +1161,14 @@ async function main() {
           console.log("  SKIPPED " + r.key + " -- preflight prototype-validation failed; not spawning.");
           continue;
         }
+        // 并发兜底：冲突检查后、真正 spawn 前紧邻复检一次（另一进程可能在等待期抢占/写入 registry）。
+        const recheck = conflictByKeys(nkeys);
+        if (recheck) {
+          locks.push({ block: r.key, title: r.title, blockedBy: recheck, keys: nkeys });
+          console.log("  LOCKED " + r.key + " -- conflicted during gate ([" + recheck + "]); not spawning.");
+          lockedBacklog.push({ r, nkeys });
+          continue;
+        }
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
         const body = blockBody(r.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
@@ -1338,7 +1344,7 @@ async function main() {
         for (const k of unresolvedNow) {
           summary[k] = aliveNow.length
             ? { title: k, status: "unfinished", exitCode: null, result: "(未在窗口保持期结束前完成)" }
-            : { title: k, status: "done", exitCode: null, result: "(执行窗已关闭但结果未捕获；请主对话外部复核实际落盘产物)" };
+            : { title: k, status: "uncaptured", exitCode: null, result: "(执行窗已关闭但结果未捕获；请主对话外部复核实际落盘产物)" };
         }
       }
     }
