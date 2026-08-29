@@ -4,7 +4,7 @@
 
 Split a multi-part request into **safe parallel blocks** and execute them through **real, visible Codex TUI windows** — independent work runs concurrently, anything that would break if run simultaneously stays serialized.
 
-> Plugin name note: the plugin id is `codex-tui-orchestrator` (lowercase hyphen-case, as required by the Codex plugin manifest spec). The `TUI` in the *display name* is uppercase, but the plugin `name` field / directory / GitHub repo are all lowercase `codex-tui-orchestrator`.
+> Plugin name note: the plugin id, `name` field, directory, GitHub repo, and display name are all lowercase hyphen-case `codex-tui-orchestrator`, as required by the Codex plugin manifest spec.
 
 ## Orchestration design (dependency graph, bounded parallelism)
 

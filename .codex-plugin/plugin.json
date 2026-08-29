@@ -17,7 +17,7 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Codex TUI Orchestrator",
+    "displayName": "codex-tui-orchestrator",
     "shortDescription": "真实执行并发编排",
     "longDescription": "按并发冲突拆块，可见 TUI 窗并发/串行执行；确定性用规则、动态交给窗内 Agent；路径取自 WORKSPACE_DIR，面向任意用户。",
     "developerName": "Yang Wenchàng",
