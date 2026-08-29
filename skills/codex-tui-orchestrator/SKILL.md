@@ -55,9 +55,9 @@ The interactive TUI (`codex "prompt"`) does **not** exit on its own when a task 
 The sanctioned engine for REAL execution is `--run-windows` — a real, visible, **interactive** Codex TUI window (never headless). This is enforced at the tool level, not only by prompt discipline:
 
 - **Headless is hard-off.** `--run` / `--exec` (the windowless SDK thread path) refuse to run unless `ORCH_ALLOW_HEADLESS=1`. That flag is for pure windowless automation only and is **never** the sanctioned path for real changes (build/install/test/restart/write).
-- **`scripts/codex-TUI-orchestrator-force.mjs`** is the checkable gate. Run it **before** any real execution:
-  - `node codex-TUI-orchestrator-force.mjs --status` → enforcement armed? + which windows are alive.
-  - `node codex-TUI-orchestrator-force.mjs --assert <write|build|install|test|restart|run|all>` → exits `0` only for a **sanctioned window**; otherwise it **refuses** and tells you to route via `--run-windows`.
+- **`scripts/codex-tui-orchestrator-force.mjs`** is the checkable gate. Run it **before** any real execution:
+  - `node codex-tui-orchestrator-force.mjs --status` → enforcement armed? + which windows are alive.
+  - `node codex-tui-orchestrator-force.mjs --assert <write|build|install|test|restart|run|all>` → exits `0` only for a **sanctioned window**; otherwise it **refuses** and tells you to route via `--run-windows`.
 - **`$env:CODEX_ORCH_WINDOW=1`** is set inside every window launcher. That is the "I am a sanctioned execution window" signal that makes `--assert` pass. Real writes/builds/restarts happen **only** from inside such a window.
 - A once-engaged orchestrator writes `temp\.orchestrator-enabled`, so enforcement stays armed across sessions until `force-guard --disable` is run.
 
@@ -113,10 +113,10 @@ The sanctioned engine for REAL execution is `--run-windows` — a real, visible,
 ## Skill documentation（文档字段）
 
 - **Prerequisites / 前置条件：** Node 22 + Codex CLI（`codex` 可执行，路径见 `CODEX_EXE`）；Windows 10/11（TUI 依赖 `wt.exe` 或 `conhost`）；`WORKSPACE_DIR` 指向工作区（如 `$WORKSPACE_DIR`）；只读分析无需弹窗。
-- **Installation / 安装：** 无需单独安装；来自 `~/.codex/skills/codex-TUI-orchestrator/`，脚本在 `scripts/`。启用后先运行 `node scripts/codex-TUI-orchestrator-force.mjs --assert <type>` 确认为合规执行窗；一次性产物自动清理（`ORCH_KEEP_TEMP=1` 可保留）。
+- **Installation / 安装：** 无需单独安装；来自 `~/.codex/skills/codex-tui-orchestrator/`，脚本在 `scripts/`。启用后先运行 `node scripts/codex-tui-orchestrator-force.mjs --assert <type>` 确认为合规执行窗；一次性产物自动清理（`ORCH_KEEP_TEMP=1` 可保留）。
 - **Parameters / 参数表：** 见上文「Config (env, portable)」表（`WORKSPACE_DIR`/`CODEX_EXE`/`ORCH_MODEL`/`ORCH_EFFORT`/`ORCH_TIMEOUT_MS`/`ORCH_RETRIES`/`ORCH_WAIT_MS`/`ORCH_CLOSE_DELAY_MS`/`ORCH_ALLOW_HEADLESS`/`ORCH_TUI`/`ORCH_KEEP_TEMP`）。
-- **Examples / 示例：** 见上文「Usage」：`node orchestrate-sdk.mjs --run-windows "<request>"`、`--spawn`、`--plan`、`--status`，及 `codex-TUI-orchestrator-force.mjs --status/--assert`。
+- **Examples / 示例：** 见上文「Usage」：`node orchestrate-sdk.mjs --run-windows "<request>"`、`--spawn`、`--plan`、`--status`，及 `codex-tui-orchestrator-force.mjs --status/--assert`。
 - **Validation / 验证步骤：** 见上文「执行后验证（必做）」：读回改动文件、产物落位正确、UTF-8 无 BOM、配置/功能改动跑通并可回归。
 - **License & disclaimer / 免责许可证：** 见上文「免责声明 / 风险提示」：仅限本人已授权环境、先备份、生产禁用、合法合规、敏感信息保护。
-- **Dependencies / 依赖：** Node 22、Codex CLI、Windows Terminal/console、`scripts/orchestrate-sdk.mjs`、`scripts/codex-TUI-orchestrator-force.mjs`、`scripts/codex-TUI-orchestrator-preflight.mjs`；执行后须调用 auto-memory/memory-boost 留痕。
+- **Dependencies / 依赖：** Node 22、Codex CLI、Windows Terminal/console、`scripts/orchestrate-sdk.mjs`、`scripts/codex-tui-orchestrator-force.mjs`、`scripts/codex-tui-orchestrator-preflight.mjs`；执行后须调用 auto-memory/memory-boost 留痕。
 

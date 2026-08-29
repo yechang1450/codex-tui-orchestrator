@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * codex-TUI-orchestrator-preflight — read-only gate that decides whether a requested kind may be executed now.
+ * codex-tui-orchestrator-preflight — read-only gate that decides whether a requested kind may be executed now.
  *
- *   node codex-TUI-orchestrator-preflight.mjs <write|build|install|test|restart|run|all>
+ *   node codex-tui-orchestrator-preflight.mjs <write|build|install|test|restart|run|all>
  *
- * Reuses codex-TUI-orchestrator-force.mjs's armed()/liveWindows() (the same enforcement state the guard uses):
+ * Reuses codex-tui-orchestrator-force.mjs's armed()/liveWindows() (the same enforcement state the guard uses):
  *   - orchestrator not armed        -> prints 未启用 and exits 0.
  *   - current context IS a sanctioned
  *     execution window              -> prints ok, exits 0.
@@ -15,7 +15,7 @@
  * This only makes a before-you-run decision; it does NOT touch the orchestrator's
  * block/dependency/result-recycling logic.
  */
-import { armed, liveWindows } from "./codex-TUI-orchestrator-force.mjs";
+import { armed, liveWindows } from "./codex-tui-orchestrator-force.mjs";
 
 const kind = String(process.argv[2] || "").toLowerCase();
 const realKinds = new Set(["exec", "write", "build", "install", "test", "restart", "start", "stop", "real", "all", "run"]);

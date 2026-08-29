@@ -1,3 +1,3 @@
 interface:
-  display_name: "codex-TUI-orchestrator"
+  display_name: "codex-tui-orchestrator"
   short_description: "Decompose a multi-part request into linked/independent blocks, then run real executions via visible, auto-closing Codex TUI windows."
