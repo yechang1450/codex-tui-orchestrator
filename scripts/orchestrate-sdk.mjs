@@ -809,7 +809,7 @@ async function closeWindow(pidf) {
   }
   // Last resort: launcher is stuck (unusual). Force it so we never leak a window; log the fallback.
   console.log("  !! launcher " + pid + " did not exit after killing its codex child; force-killing (fallback).");
-  try { spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { shell: true, windowsHide: true, stdio: "ignore" }); } catch { /* ignore */ }
+  try { const spid2 = Number(pid); spawnSync("taskkill", ["/PID", (Number.isFinite(spid2) ? String(spid2) : "-1"), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" }); } catch { /* ignore */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,7 +1088,7 @@ async function main() {
     await new Promise((r) => setTimeout(r, 1500));
     let orphanCodex = false;
     try {
-      const kids = spawnSync("powershell.exe", ["-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + pid + "\" | Measure-Object | Select-Object -ExpandProperty Count"], { windowsHide: true, encoding: "utf8" });
+      const spid = Number(pid); const kids = spawnSync("powershell.exe", ["-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + (Number.isFinite(spid) ? spid : -1) + "\" | Measure-Object | Select-Object -ExpandProperty Count"], { windowsHide: true, encoding: "utf8" });
       orphanCodex = Number(String(kids.stdout || "0").trim()) > 0;
     } catch { /* ignore */ }
     console.log("launcherPid=" + pid + " launcherStillAlive=" + launcherAlive + " (expect false => pane auto-closed)");
