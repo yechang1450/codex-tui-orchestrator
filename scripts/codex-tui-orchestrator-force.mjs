@@ -32,6 +32,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, lstatSync, renameSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ---------- 工作区动态探测（不写死工作区绝对路径）----------
@@ -92,6 +93,16 @@ function pidOf(w) {
 // process.kill(pid, 0) inside try/catch: true only if the process is actually alive (ESRCH/throw = dead).
 function pidAlive(pid) {
   if (!pid || pid <= 0) return false;
+  if (process.platform === "win32") {
+    // 校验镜像名确为 codex 相关进程——防伪造 registry 指向任一存活进程（如 shell）即可过门禁。
+    try {
+      const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
+      const out = String(r.stdout || "");
+      if (!/"\S+","\d+"/.test(out)) return false; // 该 PID 无对应行
+      const img = String(out.split(/\r?\n/)[0] || "").split(",")[0].replace(/"/g, "");
+      return /codex/i.test(img);
+    } catch { return false; }
+  }
   try { process.kill(pid, 0); return true; } catch (e) { return e && (e.code === "EPERM" || e.code === "EACCES") ? true : false; } // EPERM/EACCES = 存在但无权限, 不视为 dead
 }
 // Only windows whose process is really alive are returned. A record whose pidFile exists but whose

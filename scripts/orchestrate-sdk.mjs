@@ -564,11 +564,16 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   const tokenMatch = String(prompt || "").match(/【本块唯一标识】\s*([^\s\r\n】]+)/);
   const token = tokenMatch ? String(tokenMatch[1]).replace(/[^A-Za-z0-9_\-]/g, "") : "";
   const BOM = "\uFEFF";
+  // PowerShell 单引号字符串内嵌路径/变量：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
+  const pidfQ = String(pidf || "").replace(/'/g, "''");
+  const pfQ = String(pf || "").replace(/'/g, "''");
+  const rfQ = String(rf || "").replace(/'/g, "''");
+  const PY_Q = String(PY || "").replace(/'/g, "''");
   const body = [
     "$ErrorActionPreference = 'Continue'",
-    `$PID | Set-Content -Path '${pidf}' -Encoding UTF8`,
+    `$PID | Set-Content -Path '${pidfQ}' -Encoding UTF8`,
     "$env:TERM = 'xterm-256color'",
-    "$env:Path = '" + PY + ";' + $env:Path",
+    "$env:Path = '" + PY_Q + ";' + $env:Path",
     "$env:CODEX_ORCH_WINDOW = '1'",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
     "$OutputEncoding = [System.Text.Encoding]::UTF8",
@@ -580,12 +585,12 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "Write-Host '============================================='",
     "Write-Host '  TASK RUNNING - closes automatically on completion'",
     "Write-Host '============================================='",
-    "$resultFile = '" + rf + "'",
+    "$resultFile = '" + rfQ + "'",
     "function Write-Result {",
     "  param([int]$code)",
     "  try { $line = '__EXIT__=' + $code; $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"ts\":\"' + (Get-Date -Format o) + '\"}'; Set-Content -Path $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8 } catch { }",
     "}",
-    "$p = (Get-Content -Raw -Encoding UTF8 '" + pf + "').Trim()",
+    "$p = (Get-Content -Raw -Encoding UTF8 '" + pfQ + "').Trim()",
     "if ([string]::IsNullOrWhiteSpace($p)) { Write-Result 2; exit 0 }",
     "$token = '" + token + "'",
     // Self-close watchdog (background job): when this window's own rollout reaches task_complete, kill
