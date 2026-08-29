@@ -61,6 +61,9 @@ function resolveWorkspace() {
 
 const WORKSPACE = resolveWorkspace();
 const CODEX = process.env.CODEX_EXE || defaultCodexPath();
+// PowerShell 单引号字符串内嵌路径：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
+const WORKSPACE_Q = WORKSPACE.replace(/'/g, "''");
+const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
 const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
 const EFFORT = process.env.ORCH_EFFORT || "high";
@@ -506,7 +509,7 @@ function writeLauncher(title, prompt) {
     "chcp 65001 | Out-Null",
     "[Console]::InputEncoding = [System.Text.Encoding]::UTF8",
     "$p = (Get-Content -Raw -Encoding UTF8 '" + pf + "').Trim()",
-    "& '" + CODEX + "' --cd '" + WORKSPACE + "' -a never --sandbox danger-full-access $p",
+    "& '" + CODEX_Q + "' --cd '" + WORKSPACE_Q + "' -a never --sandbox danger-full-access $p",
   ].join("\r\n");
   writeFileSync(lp, BOM + body, "utf8");
   return { pf, lp, pidf };
@@ -635,7 +638,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "} -ArgumentList $token, $PID, $resultFile",
     "$code = 1",
     "try {",
-    "  & '" + CODEX + "' --cd '" + WORKSPACE + "' -a never --sandbox danger-full-access $p",
+    "  & '" + CODEX_Q + "' --cd '" + WORKSPACE_Q + "' -a never --sandbox danger-full-access $p",
     "  $code = $LASTEXITCODE",
     "} catch {",
     "  $code = 1",
@@ -1282,8 +1285,7 @@ async function main() {
         try {
           const allWins = loadWindows();
           for (const w of allWins) {
-            const token = String(w.token || (w.title && w.title.split("-").pop()) || "");
-            const rf = path.join(TMP, "win-" + token + ".result.json");
+            const rf = resultFileOf(w.pidFile || "");
             if (!existsSync(rf)) continue;
             const txt = readFileSync(rf, "utf8").replace(/^\uFEFF/, "");
             if (txt.indexOf("__DONE__") === -1) continue;
@@ -1293,8 +1295,7 @@ async function main() {
             }
           }
           saveWindows(loadWindows().filter((x) => {
-            const token = String(x.token || (x.title && x.title.split("-").pop()) || "");
-            const rf = path.join(TMP, "win-" + token + ".result.json");
+            const rf = resultFileOf(x.pidFile || "");
             return !existsSync(rf) || readFileSync(rf, "utf8").indexOf("__DONE__") === -1;
           }));
         } catch { /* ignore */ }
