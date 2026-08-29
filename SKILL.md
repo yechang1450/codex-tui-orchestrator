@@ -1,6 +1,6 @@
 ---
 name: codex-tui-orchestrator
-description: Decompose a multi-part request into linked vs independent blocks by concurrency-conflict, then run REAL executions via visible, auto-closing Codex windows (independent blocks run in parallel, linked blocks run serialized). Use for write/build/install/test/restart; read-only analysis stays inline without a window.
+description: Decompose a multi-part request into linked vs independent blocks by concurrency-conflict, then run REAL executions via visible, auto-closing Codex windows (independent in parallel, linked serialized). Use when a request contains several real, executable steps that should run concurrently without conflict; read-only analysis stays inline without a window.
 ---
 
 # Codex Orchestrator
