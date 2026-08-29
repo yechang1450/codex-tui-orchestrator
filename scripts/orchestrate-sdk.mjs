@@ -45,7 +45,7 @@
  */
 import { Codex } from "@openai/codex-sdk";
 import { spawn, spawnSync } from "node:child_process";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, openSync, readSync, closeSync, renameSync } from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -357,7 +357,7 @@ async function runThreadPrompt(prompt, opts = {}) {
   try {
     for await (const ev of events) {
       // Absolute safety cap (never hang forever), used only if no terminal event arrives.
-      if (Date.now() - startedAt > 10 * 60 * 1000) { errored = errored || "thread absolute timeout"; ac.abort(); break; }
+      if (Date.now() - startedAt > (Number(process.env.ORCH_STREAM_CAP_MS) || 600000)) { errored = errored || "thread absolute timeout"; ac.abort(); break; }
       const p = ev.payload || {};
       const ptype = p.type;
       const normType = ev.type;
@@ -456,25 +456,26 @@ function armEnforcement() {
 // 检测 codex 可执行；找不到则用 node22 的 npm 全局安装 @openai/codex；仍不行则报错中止。
 function ensureCodexCli() {
   const cands = [
-    "C:\\Users\\fixture-user\\.tools\\node22-fresh\\codex",
-    "C:\\Users\\fixture-user\\.tools\\node22-fresh\\codex.cmd",
     process.env.CODEX_EXE,
   ].filter(Boolean);
   for (const c of cands) { try { if (existsSync(c)) return c; } catch { /* ignore */ } }
+  // 从 PATH 解析（跨机器/用户，不写死本机安装路径）
+  const firstOnPath = (cmd) => {
+    try {
+      const w = spawnSync("where.exe", [cmd], { encoding: "utf8", shell: false });
+      if (w.status === 0 && String(w.stdout || "").trim()) return String(w.stdout).split(/\r?\n/)[0].trim();
+    } catch { /* ignore */ }
+    return null;
+  };
+  const pathCodex = firstOnPath("codex");
+  if (pathCodex) return pathCodex;
+  const npm = firstOnPath("npm") || "npm";
   try {
-    const w = spawnSync("where.exe", ["codex"], { encoding: "utf8", shell: false });
-    if (w.status === 0 && String(w.stdout || "").trim()) {
-      const p = String(w.stdout).split(/\r?\n/)[0].trim();
-      if (p) return p;
-    }
-  } catch { /* ignore */ }
-  try {
-    const npx = "C:\\Users\\fixture-user\\.tools\\node22-fresh\\npm.cmd";
-    if (existsSync(npx)) {
-      console.log("[orchestrator] codex CLI not found -> installing @openai/codex via npm (may take a bit)...");
-      const inst = spawnSync(npx, ["install", "-g", "@openai/codex"], { encoding: "utf8", shell: false, timeout: 180000 });
-      console.log("[orchestrator] npm install exit=" + inst.status + " " + String(inst.stderr || inst.stdout || "").slice(0, 200));
-    }
+    console.log("[orchestrator] codex CLI not found -> installing @openai/codex via npm (may take a bit)...");
+    const inst = spawnSync(npm, ["install", "-g", "@openai/codex"], { encoding: "utf8", shell: false, timeout: 180000 });
+    console.log("[orchestrator] npm install exit=" + inst.status + " " + String(inst.stderr || inst.stdout || "").slice(0, 200));
+    const after = firstOnPath("codex");
+    if (after) return after;
   } catch { /* ignore */ }
   console.error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
   process.exitCode = 1;
@@ -561,7 +562,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   // to find THIS window's own session rollout (same token the orchestrator matches, ASCII-only so the
   // PowerShell match never has to deal with JSON-escaped CJK).
   const tokenMatch = String(prompt || "").match(/【本块唯一标识】\s*([^\s\r\n】]+)/);
-  const token = tokenMatch ? tokenMatch[1] : "";
+  const token = tokenMatch ? String(tokenMatch[1]).replace(/[^A-Za-z0-9_\-]/g, "") : "";
   const BOM = "\uFEFF";
   const body = [
     "$ErrorActionPreference = 'Continue'",
@@ -810,7 +811,17 @@ function loadJson(file, fallback) {
 }
 function saveJson(file, data) {
   mkdirSync(TMP, { recursive: true });
-  writeFileSync(file, JSON.stringify(data, null, 2), "utf8");
+  const tmp = file + ".tmp-" + process.pid;
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
+    try { renameSync(tmp, file); } catch (e) {
+      // Windows renameSync 不覆盖已存在目标；先移除再重命名，避免留下半写 registry。
+      if (e && (e.code === "EEXIST" || e.code === "EPERM" || e.code === "EACCES")) {
+        try { rmSync(file, { force: true }); } catch {}
+        try { renameSync(tmp, file); } catch (e2) { rmSync(tmp, { force: true }); throw e2; }
+      } else { rmSync(tmp, { force: true }); throw e; }
+    }
+  } catch (e) { try { rmSync(tmp, { force: true }); } catch {} throw e; }
 }
 function loadWindows() { return loadJson(WIN_REG, []); }
 function saveWindows(w) { saveJson(WIN_REG, w); }
@@ -953,19 +964,20 @@ function cleanStaleTransients() {
 }
 
 // --status: print alive windows, pending locks, auto-release locks whose window closed.
-function showStatus() {
+// readonly=true 仅用于外部只读查询（如 poll-windows），不释放/改写锁，避免与运行中的编排器竞争。
+function showStatus(readonly) {
   const wins = loadWindows();
   const alive = wins.filter((w) => windowAlive(w));
   const closed = wins.filter((w) => !windowAlive(w));
   let locks = loadLocks();
   const before = locks.length;
   locks = locks.filter((l) => { const bw = alive.find((w) => w.title === l.blockedBy); return !!bw; });
-  if (locks.length !== before) { saveLocks(locks); console.log("released " + (before - locks.length) + " lock(s) whose window closed"); }
+  if (!readonly && locks.length !== before) { saveLocks(locks); console.log("released " + (before - locks.length) + " lock(s) whose window closed"); }
   console.log("=== alive codex TUI windows ===");
   for (const w of alive) console.log("  [" + w.title + "] keys=" + (w.keys || []).join(","));
   if (!alive.length) console.log("  (none)");
   console.log("=== pending locks (waiting for a window to close) ===");
-  for (const l of locks) console.log("  [blocked]\"" + l.blockedBy + "\" waits for window \"" + l.blockedBy + "\"");
+  for (const l of locks) console.log("  [blocked] \"" + (l.title || l.block) + "\" waits for window \"" + l.blockedBy + "\"");
   if (!locks.length) console.log("  (none)");
 }
 
@@ -1286,25 +1298,6 @@ async function main() {
             return txt.indexOf("__DONE__") === -1;
           }));
         } catch { /* ignore */ }
-        // 【兜底自动关窗】凡某个快照窗的 win-<s>.result.json 已写出且含 __DONE__:true（窗内任务完成），
-        // 即便其 session rollout 匹配失败，也立即 closeWindow 关掉它（用 window-<s>.pid），并移除 windows 记录。
-        try {
-          const allWins = loadWindows();
-          for (const w of allWins) {
-            const rf = resultFileOf(w.pidFile || "");
-            if (!existsSync(rf)) continue;
-            const txt = readFileSync(rf, "utf8").replace(/^\uFEFF/, "");
-            if (txt.indexOf("__DONE__") === -1) continue;
-            if (w.pidFile && existsSync(w.pidFile)) {
-              console.log("[orchestrator] done-and-close fallback: closing " + w.title);
-              await closeWindow(w.pidFile);
-            }
-          }
-          saveWindows(loadWindows().filter((x) => {
-            const rf = resultFileOf(x.pidFile || "");
-            return !existsSync(rf) || readFileSync(rf, "utf8").indexOf("__DONE__") === -1;
-          }));
-        } catch { /* ignore */ }
         // 未完成判定（用户方案：用“全部结果是否都成功返回”而非“窗是否都关”）：
         // 某块视为已解决=它在 summary 中，且 结果非占位（真实汇报） 或 状态为 preflight-failed/locked（被正确拦截）。
         const locksNow = loadLocks();
@@ -1371,7 +1364,7 @@ async function main() {
   }
 
   if (mode === "--status") {
-    showStatus();
+    showStatus(process.argv.includes("--readonly"));
     return;
   }
 

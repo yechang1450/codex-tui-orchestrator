@@ -37,7 +37,7 @@ const deadline = start + timeoutMs;
 // 全关+summary 完整需连续 2 个 cycle 稳定才退出，避免“窗刚关但 summary 未刷新”竞态。
 const STABLE_CYCLES = 2;
 // 终态集合：只有这些 status 才算“已定案”，错误/未知状态不得当作 complete 提前退出。
-const TERMINAL = new Set(["done", "ok", "completed", "unfinished", "uncaptured", "preflight-failed", "locked", "done-and-close"]);
+const TERMINAL = new Set(["done", "ok", "completed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "done-and-close"]);
 
 function loadSummary() {
   try { return JSON.parse(readFileSync(SUMMARY, "utf8")); } catch { return null; }
@@ -45,14 +45,15 @@ function loadSummary() {
 // 异步（不阻塞 event loop）：查询 SDK --status 统计存活窗。失败返回 -1（表示“未知”，不得当作全关）。
 async function aliveCount() {
   try {
-    const { stdout } = await execFileP(process.execPath, [SDK, "--status"], { encoding: "utf8", timeout: 15000 });
+    // --readonly：只读查询，不释放/改写锁，避免与运行中的编排器竞态。
+    const { stdout } = await execFileP(process.execPath, [SDK, "--status", "--readonly"], { encoding: "utf8", timeout: 15000 });
     // count lines like "  [B1:..." under the "alive codex TUI windows" section
     const lines = String(stdout || "").split(/\r?\n/);
     let inAlive = false, n = 0;
     for (const l of lines) {
       if (/=== alive codex TUI windows ===/.test(l)) { inAlive = true; continue; }
       if (/=== pending locks/.test(l)) break;
-      if (inAlive && /^\s*\[[A-Za-z0-9]+:/.test(l)) n++;
+      if (inAlive && /^\s*\[/.test(l)) n++;
     }
     return n;
   } catch { return -1; }

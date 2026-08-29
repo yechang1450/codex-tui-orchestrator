@@ -34,8 +34,6 @@ const OPTIONAL_FILES = ['README-zh.md', 'CHANGELOG.md'];
 const DEBRIS_DIRS = new Set([
   'node_modules',
   '__pycache__',
-  'state',
-  'temp',
   '.pytest_cache',
   '.cache',
 ]);
@@ -53,6 +51,9 @@ function listFiles(dir, base = '', out = []) {
   }
   return out;
 }
+
+// republish 只复制常规文件，不跟随符号链接；校验也保持一致（lstat，不 follow symlink）。
+function isRegularFile(p) { try { return fs.lstatSync(p).isFile(); } catch { return false; } }
 
 function isDebrisRel(rel) {
   const parts = rel.split(path.sep);
@@ -75,12 +76,14 @@ function check() {
   console.log(`[${SKILL}] skill root = ${__dirname}`);
 
   for (const name of REQUIRED_FILES) {
-    const ok = fs.existsSync(path.join(__dirname, name));
-    console.log(`  ${ok ? 'OK ' : 'MISSING'} required  ${name}`);
+    const full = path.join(__dirname, name);
+    const ok = isRegularFile(full);
+    const isLink = fs.existsSync(full) && !ok; // 存在但非常规（如符号链接）→ 一致性校验失败
+    console.log(`  ${ok ? 'OK ' : 'MISSING'} required  ${name}${isLink ? ' (symlink/not-regular; will not be published)' : ''}`);
     if (!ok) problems++;
   }
   for (const name of OPTIONAL_FILES) {
-    if (fs.existsSync(path.join(__dirname, name))) {
+    if (isRegularFile(path.join(__dirname, name))) {
       console.log(`  OK  optional  ${name}`);
     }
   }
@@ -105,7 +108,7 @@ function check() {
   console.log('---');
   if (problems) {
     console.log(`[${SKILL}] RESULT: not publishable (${problems} required file(s) missing). Run with --target <root> to publish a clean copy.`);
-    process.exit(1);
+    process.exit(2);
   }
   console.log(`[${SKILL}] RESULT: publishable${debris.length ? ' (debris present; use --clean to remove)' : ''}.`);
   process.exit(0);
@@ -120,7 +123,7 @@ function clean() {
       const abs = path.join(__dirname, rel);
       // Never follow out of the skill root（realpath 兜底，防符号链接逃逸）。
       let real = abs;
-      try { real = fs.realpathSync(abs); } catch { /* path may be gone */ }
+      try { real = fs.realpathSync(abs); } catch { continue; } // realpath 失败则无法确认越界，跳过不删
       const rootReal = fs.realpathSync(__dirname);
       if (real !== rootReal && !real.startsWith(rootReal + path.sep)) continue;
       fs.rmSync(abs, { force: true });

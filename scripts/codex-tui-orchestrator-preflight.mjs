@@ -37,8 +37,17 @@ if (!armed()) {
 }
 
 // liveWindows() 为跨进程快照（存在竞态），此处是 before-you-run 的近似判定；如需严格应在执行前紧邻复验。
-const inWindow = process.env.CODEX_ORCH_WINDOW === "1" && liveWindows().length > 0;
-if (inWindow) {
+const envWindow = process.env.CODEX_ORCH_WINDOW === "1";
+const alive = liveWindows().length;
+// 与 force --assert 保持一致：CODEX_ORCH_WINDOW=1 但无活窗 → env 单独不可采信，一律 REFUSED（含只读 kind）。
+if (envWindow && alive === 0) {
+  console.log(
+    "REFUSED: CODEX_ORCH_WINDOW=1 but no live registered orchestration window (env var alone is not accepted; may be forged). " +
+      "Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive Codex TUI window)."
+  );
+  process.exit(1);
+}
+if (alive > 0) {
   console.log("ok: sanctioned orchestration window; '" + kind + "' may proceed.");
   process.exit(0);
 }

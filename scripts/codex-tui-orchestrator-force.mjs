@@ -110,7 +110,13 @@ function runCli() {
     mkdirSync(TMP, { recursive: true });
     const tmpFlag = FLAG + ".tmp-" + process.pid;
     writeFileSync(tmpFlag, String(Date.now()), "utf8");
-    try { renameSync(tmpFlag, FLAG); } catch (e) { rmSync(tmpFlag, { force: true }); throw e; }
+    try { renameSync(tmpFlag, FLAG); } catch (e) {
+      // Windows: renameSync 不覆盖已存在的目标（EEXIST/EPERM/EACCES）。先移除旧标记再重命名（保持原子）。
+      if (e && (e.code === "EEXIST" || e.code === "EPERM" || e.code === "EACCES")) {
+        try { rmSync(FLAG, { force: true }); } catch { /* ignore */ }
+        try { renameSync(tmpFlag, FLAG); } catch (e2) { rmSync(tmpFlag, { force: true }); throw e2; }
+      } else { rmSync(tmpFlag, { force: true }); throw e; }
+    }
     console.log("enforcement ARMED: real executions must go through --run-windows (visible interactive TUI).");
   } else if (mode === "--disable") {
     try { rmSync(FLAG, { force: true }); } catch { /* ignore */ }
