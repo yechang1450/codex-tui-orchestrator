@@ -68,6 +68,10 @@ const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
 const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
 const EFFORT = process.env.ORCH_EFFORT || "high";
+// 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
+// 但允许用户收紧（ORCH_SANDBOX=workspace-write / read-only，ORCH_APPROVAL=on-request）。
+const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
+const APPROVAL = process.env.ORCH_APPROVAL || "never";
 const TMP = path.join(WORKSPACE, "temp");
 
 // Terminal hosting the visible Codex TUI window.
@@ -121,8 +125,8 @@ function threadBase() {
     modelReasoningEffort: EFFORT,
     workingDirectory: WORKSPACE,
     skipGitRepoCheck: true,
-    sandboxMode: "danger-full-access",
-    approvalPolicy: "never",
+    sandboxMode: SANDBOX,
+    approvalPolicy: APPROVAL,
   };
 }
 
@@ -485,35 +489,6 @@ function ensureCodexCli() {
 // ---------------------------------------------------------------------------
 // Visible window (REAL popup, via cmd /c start — reliably opens a new console)
 // ---------------------------------------------------------------------------
-function writeLauncher(title, prompt) {
-  const s = safe(title);
-  mkdirSync(TMP, { recursive: true });
-  const pf = path.join(TMP, `codex-win-${s}.md`);
-  const lp = path.join(TMP, `win-launch-${s}.ps1`);
-  const pidf = path.join(TMP, `window-${s}.pid`);
-  writeFileSync(pf, prompt, "utf8");
-  const BOM = "\uFEFF";
-  const body = [
-    "$ErrorActionPreference = 'Stop'",
-    `$PID | Set-Content -Path '${pidf}' -Encoding UTF8`,
-    "$env:TERM = 'xterm-256color'",
-    "$env:Path = '" + PY + ";' + $env:Path",
-    "$env:CODEX_ORCH_WINDOW = '1'",
-    "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
-    "$OutputEncoding = [System.Text.Encoding]::UTF8",
-    // Align BOTH console code pages to UTF-8 (not just output). On a Chinese-locale
-    // Windows the default input code page is 936 (GBK); Codex expects UTF-8, and the
-    // mismatch makes the Microsoft Pinyin IME commit/garbled intermittently in the TUI.
-    // chcp 65001 sets GetConsoleCP()/GetConsoleOutputCP() so IME composition stays UTF-8.
-    "chcp 65001 | Out-Null",
-    "[Console]::InputEncoding = [System.Text.Encoding]::UTF8",
-    "$p = (Get-Content -Raw -Encoding UTF8 '" + pf + "').Trim()",
-    "& '" + CODEX_Q + "' --cd '" + WORKSPACE_Q + "' -a never --sandbox danger-full-access $p",
-  ].join("\r\n");
-  writeFileSync(lp, BOM + body, "utf8");
-  return { pf, lp, pidf };
-}
-
 function spawnVisibleWindow(lp, title) {
   // Prefer Windows Terminal: it natively supports IME/TSF composition, so the Codex
   // TUI keeps accepting Microsoft 拼音/日语 IME switches (fixes "偶发失效"). Codex
@@ -642,7 +617,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "} -ArgumentList $token, $PID, $resultFile",
     "$code = 1",
     "try {",
-    "  & '" + CODEX_Q + "' --cd '" + WORKSPACE_Q + "' -a never --sandbox danger-full-access $p",
+    "  & '" + CODEX_Q + "' --cd '" + WORKSPACE_Q + "' -a " + APPROVAL + " --sandbox " + SANDBOX + " $p",
     "  $code = $LASTEXITCODE",
     "} catch {",
     "  $code = 1",

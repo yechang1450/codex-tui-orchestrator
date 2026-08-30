@@ -177,7 +177,11 @@ function runCli() {
           console.log("VIOLATION: file is outside the orchestration workspace (" + WORKSPACE + "); cannot attribute to a sanctioned in-window write.");
           process.exit(1);
         }
-      } catch { /* best-effort: 路径解析失败则不据此拒绝 */ }
+      } catch (e) {
+        // fail-closed：路径解析失败无法确认归属，不得放行。
+        console.log("VIOLATION: could not resolve the file/workspace path for in-window attribution (" + (e && e.message ? e.message : "unknown") + ").");
+        process.exit(1);
+      }
       console.log("PASS: current context is a sanctioned orchestration window with " + wins.length + " live registered window(s) [" + wins.map((w) => w.title).join(", ") + "]; the change is consistent with an in-window write.");
       process.exit(0);
     }

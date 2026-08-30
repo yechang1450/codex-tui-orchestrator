@@ -9,7 +9,7 @@
  *   - all free of runtime debris.
  *
  * Runtime debris (use-and-discard, never bundled, safe to remove):
- *   node_modules/  __pycache__/  state/  temp/
+ *   node_modules/  __pycache__/
  *   .pytest_cache/  .cache/
  *   *.part  *.tmp  *.pyc  *.pyo  *.crdownload  *.partial  *.swp
  *   .enforce-state.json  .DS_Store  Thumbs.db
@@ -152,7 +152,11 @@ function clean() {
     // Also drop now-empty debris dirs (e.g. empty state/, temp/, __pycache__/).
     for (const dir of DEBRIS_DIRS) {
       const full = path.join(__dirname, dir);
-      if (fs.existsSync(full)) {
+      if (fs.existsSync(full) && !fs.lstatSync(full).isSymbolicLink()) {
+        let real = null;
+        try { real = fs.realpathSync(full); } catch { continue; }
+        const rootReal = fs.realpathSync(__dirname);
+        if (real !== rootReal && !real.startsWith(rootReal + path.sep)) continue;
         const empty = fs.readdirSync(full).length === 0;
         if (empty) {
           fs.rmdirSync(full);
@@ -176,7 +180,7 @@ function publish(targetRoot) {
       process.exit(2);
     }
     // publish 前必须验证必需文件
-    const missing = REQUIRED_FILES.filter((nf) => !fs.existsSync(path.join(__dirname, nf)));
+    const missing = REQUIRED_FILES.filter((nf) => !isRegularFile(path.join(__dirname, nf)));
     if (missing.length || !findSkillFile()) { console.error("[" + SKILL + "] publish aborted: missing " + (missing.length ? missing.join(", ") : "skill SKILL.md (under skills/<name>/)")); process.exit(2); }
     const dest = path.join(path.resolve(targetRoot), SKILL);
     console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
