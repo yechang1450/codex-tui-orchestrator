@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL = path.basename(__dirname);
 
-const REQUIRED_FILES = ['SKILL.md', 'README.md', 'LICENSE'];
+const REQUIRED_FILES = ['README.md', 'LICENSE'];
 const OPTIONAL_FILES = ['README-zh.md', 'CHANGELOG.md'];
 
 const DEBRIS_DIRS = new Set([
@@ -55,6 +55,18 @@ function listFiles(dir, base = '', out = []) {
 // republish 只复制常规文件，不跟随符号链接；校验也保持一致（lstat，不 follow symlink）。
 function isRegularFile(p) { try { return fs.lstatSync(p).isFile(); } catch { return false; } }
 
+// 可发布 skill 标志：优先 skills/*/SKILL.md（插件规范），兼容旧式根目录 SKILL.md。
+function findSkillFile() {
+  const sk = path.join(__dirname, 'skills');
+  if (fs.existsSync(sk)) {
+    for (const e of fs.readdirSync(sk, { withFileTypes: true })) {
+      if (e.isDirectory() && isRegularFile(path.join(sk, e.name, 'SKILL.md'))) return path.join(sk, e.name, 'SKILL.md');
+    }
+  }
+  if (isRegularFile(path.join(__dirname, 'SKILL.md'))) return path.join(__dirname, 'SKILL.md');
+  return null;
+}
+
 function isDebrisRel(rel) {
   const parts = rel.split(path.sep);
   if (parts.some((p) => DEBRIS_DIRS.has(p))) return true;
@@ -75,6 +87,13 @@ function check() {
   console.log(`[${SKILL}] repair.mjs - self-contained publish / integrity check`);
   console.log(`[${SKILL}] skill root = ${__dirname}`);
 
+  const skillFile = findSkillFile();
+  if (skillFile) {
+    console.log(`  OK  skill  ${path.relative(__dirname, skillFile)}`);
+  } else {
+    console.log('  MISSING skill  SKILL.md (expected under skills/<name>/SKILL.md)');
+    problems++;
+  }
   for (const name of REQUIRED_FILES) {
     const full = path.join(__dirname, name);
     const ok = isRegularFile(full);
@@ -158,7 +177,7 @@ function publish(targetRoot) {
     }
     // publish 前必须验证必需文件
     const missing = REQUIRED_FILES.filter((nf) => !fs.existsSync(path.join(__dirname, nf)));
-    if (missing.length) { console.error("[" + SKILL + "] publish aborted: missing " + missing.join(", ")); process.exit(2); }
+    if (missing.length || !findSkillFile()) { console.error("[" + SKILL + "] publish aborted: missing " + (missing.length ? missing.join(", ") : "skill SKILL.md (under skills/<name>/)")); process.exit(2); }
     const dest = path.join(path.resolve(targetRoot), SKILL);
     console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
     let copied = 0;
