@@ -833,6 +833,19 @@ async function closeWindow(pidf) {
 // ---------------------------------------------------------------------------
 const WIN_REG = path.join(TMP, "orchestrator-windows.json");
 const LOCK_REG = path.join(TMP, "orchestrator-locks.json");
+const REG_LOCK = path.join(TMP, "orchestrator-registry.lock");
+
+function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, ms); } catch { /* ignore */ } }
+// 跨进程独占锁：openSync 'wx' 原子创建；冲突则有限重试；finally 释放。用于串行化 registry 写，防并发丢失/半写。
+function withRegistryLock(fn) {
+  let got = false;
+  for (let i = 0; i < 100; i++) {
+    let fd;
+    try { fd = openSync(REG_LOCK, 'wx'); closeSync(fd); got = true; break; } catch { sleepSync(20); }
+  }
+  try { return fn(); }
+  finally { if (got) { try { rmSync(REG_LOCK, { force: true }); } catch { /* ignore */ } } }
+}
 
 function loadJson(file, fallback) {
   try { return JSON.parse(readFileSync(file, "utf8")); } catch { return fallback; }
@@ -852,9 +865,9 @@ function saveJson(file, data) {
   } catch (e) { try { rmSync(tmp, { force: true }); } catch {} throw e; }
 }
 function loadWindows() { return loadJson(WIN_REG, []); }
-function saveWindows(w) { saveJson(WIN_REG, w); }
+function saveWindows(w) { withRegistryLock(() => saveJson(WIN_REG, w)); }
 function loadLocks() { return loadJson(LOCK_REG, []); }
-function saveLocks(l) { saveJson(LOCK_REG, l); }
+function saveLocks(l) { withRegistryLock(() => saveJson(LOCK_REG, l)); }
 
 // The launcher writes its codex-exit marker to `win-<s>.result.json` (same dir as the pidfile).
 function resultFileOf(pidf) {
