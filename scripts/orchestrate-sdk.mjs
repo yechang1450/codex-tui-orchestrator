@@ -318,9 +318,9 @@ function projectRef(s, n) {
 function trySingleBlock(request) {
   const text = String(request || "").trim();
   if (!text) return null;
-  // 多动作/多目标/并列连词 -> 交给 LLM/genericProjectSplit，此处不参与。
-  if (/(?:^|[^\u4e00-\u9fa5])(?:和|同时|还|以及|另外|一并|分别|然后|随后|既|又|并)(?:[^\u4e00-\u9fa5]|$)/.test(text)) return null;
-  if (/、/.test(text) && text.split('、').length > 3) return null; // 顿号多项
+  // 多动作/多目标/并列连词/分号/列举 -> 保守：一律交给 LLM/genericProjectSplit（少拆不误拆）。
+  if (/(和|同时|还|以及|另外|一并|分别|然后|随后|再|并|与|或|、|；)/.test(text)) return null;
+  if ((text.match(/。/g) || []).length > 1) return null; // 多个句子视为多任务
   // 项目目录计数：>1 交 LLM；=1 且单动作 -> 单块指向该目录。
   const dirRe = /(?:build|proj|project|app|src|workspace|web|site|game)[\s/\\]+(\d{1,3})/gi;
   const dirSet = new Set(); let mm; while ((mm = dirRe.exec(text))) dirSet.add("proj-" + mm[1]);
@@ -1131,17 +1131,21 @@ async function main() {
       title: titleOf("B" + (i + 1), b.title),
       dependsOn: (Array.isArray(b.dependsOn) ? b.dependsOn : []).map(String),
     }));
+    // B3 双向映射：模型 dependsOn 可能用原始标题/中文标题，统一归一到块 key，再按 key 判 wave。
+    const keyByTitle = new Map();
+    for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
+    for (const r of recs) { r.dependsOn = r.dependsOn.map((d) => keyByTitle.get(String(d)) || keyByTitle.get(d) || String(d)); }
     const waves = [];
     {
       const remaining = recs.slice();
-      const waveTitles = new Set();
+      const doneKeys = new Set();
       let guard = 0;
       while (remaining.length && guard < 200) {
         guard++;
-        const ready = remaining.filter((r) => r.dependsOn.every((d) => waveTitles.has(d)));
+        const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
         if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; } // deadlock/unknown -> run rest in one wave
         waves.push(ready);
-        for (const r of ready) { waveTitles.add(r.title); remaining.splice(remaining.indexOf(r), 1); }
+        for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
       }
     }
 

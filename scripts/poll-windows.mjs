@@ -37,9 +37,10 @@ const deadline = start + timeoutMs;
 // 全关+summary 完整需连续 2 个 cycle 稳定才退出，避免“窗刚关但 summary 未刷新”竞态。
 const STABLE_CYCLES = 2;
 // 终态集合：只有这些 status 才算“已定案”，错误/未知状态不得当作 complete 提前退出。
-const TERMINAL = new Set(["done", "ok", "completed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "done-and-close"]);
-// 成功集合：--require-all-success 时，只有这些才视为"成功返回"，其余一律按失败继续等/超时返回1。
-const SUCCESS = new Set(["done", "ok", "completed"]);
+const TERMINAL = new Set(["done", "ok", "completed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "unlocked", "done-and-close"]);
+// --require-all-success 的"可收尾"集合：真正成功 {done,ok,completed} + 被正确跳过/锁定 {preflight-failed, locked, unlocked}。
+// uncaptured / timeout / unfinished / failed 视为失败阻塞 -> poll 继续等，超时返回 1（不装成功）。
+const SUCCESS = new Set(["done", "ok", "completed", "preflight-failed", "locked", "unlocked"]);
 const requireAllSuccess = process.argv.includes("--require-all-success");
 
 function loadSummary() {
