@@ -460,14 +460,37 @@ function blockBody(block) {
 // ---- "原型/可行性检测"前置门禁（硬约束，已内嵌本 SDK，不依赖外部技能文件）----
 // 每个真实块在 spawn 前做一次内嵌预检：prototype-validation 的"可行性"能力已并入本函数。
 // 判定标准：本地执行块几乎都是用户明确要求做的真实改动，默认可行；仅当提示为空/无实际指令才判不可行，避免误拦"新建文件"类任务。
-function runPrototypeGate(title, prompt) {
+// 确定性复杂度分类：命中任一 -> "复杂"，才可能走 LLM 原型。简单块永远不拦（防误拦建新目录等）。
+function classifyBlockComplexity(prompt) {
+  const t = String(prompt || "");
+  if ((t.match(/。/g) || []).length > 1) return true;          // 多句
+  if (/检查|修复|优化|重构|排查|为什么|怎么回事|调整|完善|推进|分析/.test(t)) return true; // 分析/决策
+  if (/根据|按照|结合|参照/.test(t)) return true;               // 上下文依赖
+  if (t.length > 300) return true;                              // 长指令
+  return false;
+}
+
+// async 三层原型门禁：L1 空判 -> L2 复杂度 -> L3 复杂才 LLM（默认开），LLM 关/简单 -> PASS，绝不误拦。
+async function runPrototypeGate(title, prompt) {
   const text = String(prompt || "").trim();
-  if (!text) {
-    console.log("  preflight FAILED for [" + title + "] (embedded feasibility): 块提示为空，视为不可行。");
-    return false;
+  if (!text) { console.log("  preflight FAILED for [" + title + "] (empty/无动作): reject."); return false; }
+  const complex = classifyBlockComplexity(text);
+  const llmOn = String(process.env.ORCH_PROTOTYPE_LLM || "1") === "1";
+  if (!complex || !llmOn) { console.log("  preflight PASSED for [" + title + "] (" + (complex ? "complex, ORCH_PROTOTYPE_LLM=0 -> PASS" : "simple -> PASS") + ")"); return true; }
+  try {
+    const eff = String(process.env.ORCH_PROTOTYPE_EFFORT || "low");
+    const res = await runThreadPrompt(
+      "你是原型可行性判定。下面是一个要在可见 Codex TUI 窗内执行的块任务。请只做只读判断：该任务是否合理、可行、不矛盾？只回一句：可行 或 不可行。任务：" + text,
+      { sandboxMode: "read-only", modelReasoningEffort: eff }
+    );
+    const ans = String((res && res.final) || "");
+    const ok = /可行/.test(ans) && !/不可行/.test(ans);
+    console.log("  preflight " + (ok ? "PASSED" : "FAILED") + " for [" + title + "] (LLM prototype, effort=" + eff + ")");
+    return ok;
+  } catch (e) {
+    console.log("  preflight PASSED for [" + title + "] (LLM prototype error -> fail-safe PASS): " + (e && e.message));
+    return true; // LLM 判定失败 -> 保守放行（交由窗内 agent 处理），不阻断。
   }
-  console.log("  preflight PASSED for [" + title + "] (embedded feasibility)");
-  return true;
 }
 
 // Enforcement: once the orchestrator is engaged, mark that real executions are gated. The
@@ -1177,7 +1200,7 @@ async function main() {
         }
         // 原型检测前置门禁（硬约束）：执行前先跑一次原型检测，通过才允许 spawn 本块。
         const gateBody = blockBody(r.b);
-        if (!runPrototypeGate(titleOf("B" + (recs.indexOf(r) + 1), r.b.title), gateBody)) {
+                if (!await runPrototypeGate(titleOf("B" + (recs.indexOf(r) + 1), r.b.title), gateBody)) {
           summary[r.key] = { title: titleOf("B" + (recs.indexOf(r) + 1), r.b.title), status: "preflight-failed", exitCode: null, result: "(preflight prototype-validation 未通过，未执行)" };
           console.log("  SKIPPED " + r.key + " -- preflight prototype-validation failed; not spawning.");
           continue;
