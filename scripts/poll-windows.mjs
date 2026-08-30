@@ -38,6 +38,9 @@ const deadline = start + timeoutMs;
 const STABLE_CYCLES = 2;
 // 终态集合：只有这些 status 才算“已定案”，错误/未知状态不得当作 complete 提前退出。
 const TERMINAL = new Set(["done", "ok", "completed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "done-and-close"]);
+// 成功集合：--require-all-success 时，只有这些才视为"成功返回"，其余一律按失败继续等/超时返回1。
+const SUCCESS = new Set(["done", "ok", "completed"]);
+const requireAllSuccess = process.argv.includes("--require-all-success");
 
 function loadSummary() {
   try { return JSON.parse(readFileSync(SUMMARY, "utf8")); } catch { return null; }
@@ -66,8 +69,22 @@ function summaryComplete(sum) {
   return entries.every(([k, r]) => {
     if (!k) return false;
     if (!r || typeof r !== "object") return false;
-    return TERMINAL.has(String(r.status || ""));
+    const st = String(r.status || "");
+    // 全部成功模式：非 success 状态即视为未完成（继续等）。
+    if (requireAllSuccess) return SUCCESS.has(st);
+    return TERMINAL.has(st);
   });
+}
+
+function failures(sum) {
+  const out = [];
+  if (sum && sum.results && typeof sum.results === "object") {
+    for (const [k, r] of Object.entries(sum.results)) {
+      const st = r && String(r.status || "");
+      if (!SUCCESS.has(st)) out.push(k + ":" + (st || "(no status)"));
+    }
+  }
+  return out;
 }
 
 let lastBeat = 0;
@@ -82,6 +99,8 @@ while (Date.now() < deadline) {
     stable++;
     if (stable >= STABLE_CYCLES) {
       console.log("[poll-windows] ALL WINDOWS DONE + SUMMARY COMPLETE (stable) -> stopping poll.");
+      if (requireAllSuccess) console.log("[poll-windows] all blocks returned SUCCESS -> GUI may end turn.");
+      else console.log("[poll-windows] all blocks terminal (may include failures) -> aggregation ready.");
       if (sum) {
         console.log("[poll-windows] win-summary.json:");
         process.stdout.write(JSON.stringify(sum.results, null, 2) + "\n");
@@ -100,7 +119,8 @@ while (Date.now() < deadline) {
   await new Promise((r) => setTimeout(r, intervalMs));
 }
 
-console.log("[poll-windows] TIMED OUT after " + Math.round(timeoutMs / 1000) + "s; some windows may still be running. Partial summary follows:");
+console.log("[poll-windows] TIMED OUT after " + Math.round(timeoutMs / 1000) + "s" + (requireAllSuccess ? "; NOT all blocks succeeded" : "; some windows may still be running") + ". Partial summary follows:");
+if (requireAllSuccess) { const f = failures(loadSummary()); console.log("[poll-windows] non-success blocks: " + (f.length ? f.join(", ") : "(none yet)")); }
 const s = loadSummary();
 if (s) process.stdout.write(JSON.stringify(s.results, null, 2) + "\n");
 else console.log("[poll-windows] no win-summary.json found yet.");
