@@ -182,8 +182,19 @@ function runCli() {
       const rawKeys = Array.isArray(w.keys) ? w.keys.map(String) : [];
       const keys = rawKeys.length ? rawKeys : ["__" + (w.title || "block")];
       return keys.some((kk) => {
-        const raw = String(kk).replace(/^__/, "").replace(/^\s+|\s+$/g, "");
-        return raw && lower.includes(raw.toLowerCase());
+        let raw = String(kk).trim().replace(/^__\s*/, "");
+        if (!raw) return false;
+        // 去掉 SDK 归约键的资源前缀（file:/dir:/port:/service:），再做路径感知匹配，不做裸子串匹配。
+        raw = raw.replace(/^(file|dir|port|service):/i, "").trim();
+        if (!raw) return false;
+        const norm = raw.toLowerCase().replace(/\\/g, "/").replace(/\/+$/, "");
+        if (!norm) return false;
+        // 路径感知：精确 / 目录前缀(带分隔符) / 文件名；裸目录名(无分隔符)按路径段匹配。
+        if (norm === lower) return true;
+        if (lower.startsWith(norm + "/")) return true;
+        if (norm === lower.split("/").pop()) return true;
+        if (!norm.includes("/") && lower.includes("/" + norm + "/")) return true;
+        return false;
       });
     });
     if (wins.length === 0) {

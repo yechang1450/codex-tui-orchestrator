@@ -244,12 +244,12 @@ function extractJson(raw) {
  */
 
 // ---------------------------------------------------------------------------
-// Decompose cache: reuse identical-request block plans for up to 1 year.
-// Refreshes automatically every Jan 1 (year rollover -> cache resets), so ANY
-// user who installs this orchestrator gets "the more you use it, the faster it
-// gets" without any hardcoded project paths. Deterministic safety heuristic
-// below is generic (any mention of multiple distinct project-like dirs), not
-// specific to build/80|81|82|83.
+// Decompose cache: reuse identical-request block plans INDEFINITELY.
+// It NEVER auto-expires (no year rollover / TTL); only `--clear-cache` (or
+// deleting the cache file) resets it, so ANY user who installs this
+// orchestrator gets "the more you use it, the faster it gets" without any
+// hardcoded project paths. Deterministic safety heuristic below is generic
+// (any mention of multiple distinct project-like dirs), not specific to build/80|81|82|83.
 // ---------------------------------------------------------------------------
 const DECOMPOSE_CACHE = path.join(TMP, "orchestrator-decompose-cache.json");
 function decomposeHash(request) {
@@ -385,7 +385,7 @@ async function runThreadPrompt(prompt, opts = {}) {
   try {
     for await (const ev of events) {
       // Absolute safety cap (never hang forever), used only if no terminal event arrives.
-      if (Date.now() - startedAt > (Number(process.env.ORCH_STREAM_CAP_MS) || 600000)) { errored = errored || "thread absolute timeout"; ac.abort(); break; }
+      if (Date.now() - startedAt > (Number(process.env.ORCH_STREAM_CAP_MS) || 600000)) { errored = errored || "thread absolute timeout"; ac.abort(); clearTimeout(abortTimer); break; }
       const p = ev.payload || {};
       const ptype = p.type;
       const normType = ev.type;
@@ -848,7 +848,12 @@ function withRegistryLock(fn) {
 }
 
 function loadJson(file, fallback) {
-  try { return JSON.parse(readFileSync(file, "utf8")); } catch { return fallback; }
+  // 写侧在 Windows 上做 "remove+rename"（原子替换），会瞬时让文件不存在；读侧短暂重试即可桥接该间隙。
+  for (let i = 0; i < 3; i++) {
+    try { return JSON.parse(readFileSync(file, "utf8")); }
+    catch { if (i < 2) sleepSync(12); }
+  }
+  return fallback;
 }
 function saveJson(file, data) {
   mkdirSync(TMP, { recursive: true });
@@ -1035,6 +1040,12 @@ async function main() {
     const request = process.argv.slice(3).join(" ");
     const plan = await decomposeSafely(request);
     console.log(JSON.stringify({ blocks: plan }, null, 2));
+    return;
+  }
+
+  if (mode === "--clear-cache") {
+    try { rmSync(DECOMPOSE_CACHE, { force: true }); console.log("[orchestrator] decompose cache cleared: " + DECOMPOSE_CACHE); }
+    catch (e) { console.log("[orchestrator] nothing to clear (cache absent or unreadable): " + (e && e.message ? e.message : e)); }
     return;
   }
 
@@ -1321,7 +1332,14 @@ async function main() {
       }
       flushRegistry();
     }
-    if (!allSpawned.length && !lockedBacklog.length) { console.log("all blocks locked; nothing spawned."); return; }
+    if (!allSpawned.length && !lockedBacklog.length) {
+      console.log("all blocks locked; nothing spawned.");
+      // 即便一个窗都没弹，也要把已定终态（preflight-failed/locked）写入汇总，
+      // 否则 poll-windows 会因看不到 fresh summary 而空等/挂死。
+      const out0 = path.join(TMP, "win-summary.json");
+      writeFileSync(out0, JSON.stringify({ blocks: plan.map((b, i) => ({ key: "B" + (i + 1), title: b.title })), results: summary }, null, 2), "utf8");
+      return;
+    }
 
     // 收尾（硬约束：全部任务结束前保持轮询，绝不提前收尾/留下"晚生"的孤儿窗）：
     // 只要仍有活窗，或仍有计划块没出现在 summary（未决/未 spawn），就持续轮询等待，直到全部有终态才写 summary/退出。
