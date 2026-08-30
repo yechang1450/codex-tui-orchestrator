@@ -187,6 +187,13 @@ async function decomposeSafely(request) {
     saveDecompose(request, det.blocks);
     return normalizePlan(det.blocks);
   }
+  // 1.5) 单任务快速路径（通用，非写死路径）：明确"单动作"请求 -> 单一窗口，跳过 LLM 拆块，秒级+写缓存。
+  const sb = trySingleBlock(request);
+  if (sb && Array.isArray(sb.blocks) && sb.blocks.length) {
+    console.log("[orchestrator] single-block fast path -> " + sb.blocks[0].title);
+    saveDecompose(request, sb.blocks);
+    return normalizePlan(sb.blocks);
+  }
   // 2) LLM 分类（read-only），失败/超时则重试。
   const attempts = Math.max(1, Number(process.env.ORCH_DECOMPOSE_RETRIES || 2));
   let lastErr = "";
@@ -249,14 +256,13 @@ function decomposeHash(request) {
   return crypto.createHash("sha1").update(String(request || "")).digest("hex");
 }
 function loadDecomposeCache() {
-  const year = new Date().getFullYear();
   try {
     if (existsSync(DECOMPOSE_CACHE)) {
       const j = JSON.parse(readFileSync(DECOMPOSE_CACHE, "utf8").replace(/^\uFEFF/, ""));
-      if (j && j.year === year && j.entries) return j; // 每年 1/1 年份变了 -> 视为刷新
+      if (j && j.entries && typeof j.entries === "object") return j; // 永不自动失效（用户 --clear-cache 才清）
     }
   } catch { /* corrupted -> rebuild */ }
-  return { year, entries: {} };
+  return { entries: {} };
 }
 function saveDecomposeCache(obj) {
   try { mkdirSync(TMP, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
@@ -266,7 +272,6 @@ function loadCachedDecompose(request) {
   const j = loadDecomposeCache();
   const e = j.entries[h];
   if (!e) return null;
-  if (Date.now() - e.createdAt > 365 * 24 * 3600 * 1000) { delete j.entries[h]; saveDecomposeCache(j); return null; }
   return e;
 }
 function saveDecompose(request, plan) {
@@ -308,6 +313,25 @@ function genericProjectSplit(request) {
 function projectRef(s, n) {
   // 无正则的确定匹配：检查句子是否含 "build\N" / "build/N" / 关键词N，避免转义坑
   return s.indexOf("build\\" + n) !== -1 || s.indexOf("build/" + n) !== -1 || new RegExp("(?:^|\\s)" + n + "(?:\\s|$)", "i").test(s);
+}
+// 通用单任务快速判定（不写死 build/N）：无"多动作/多目标"标记、且命中明确动作词 -> 生成单一独立块。
+function trySingleBlock(request) {
+  const text = String(request || "").trim();
+  if (!text) return null;
+  // 多动作/多目标/并列连词 -> 交给 LLM/genericProjectSplit，此处不参与。
+  if (/(?:^|[^\u4e00-\u9fa5])(?:和|同时|还|以及|另外|一并|分别|然后|随后|既|又|并)(?:[^\u4e00-\u9fa5]|$)/.test(text)) return null;
+  if (/、/.test(text) && text.split('、').length > 3) return null; // 顿号多项
+  // 项目目录计数：>1 交 LLM；=1 且单动作 -> 单块指向该目录。
+  const dirRe = /(?:build|proj|project|app|src|workspace|web|site|game)[\s/\\]+(\d{1,3})/gi;
+  const dirSet = new Set(); let mm; while ((mm = dirRe.exec(text))) dirSet.add("proj-" + mm[1]);
+  if (dirSet.size > 1) return null;
+  const actionRe = /(?:创建|写|改|删|复制|启动|重启|生成|新增|修改|优化|修复|清理|列出|检查|删掉|建立|添加)/;
+  if (!actionRe.test(text)) return null;
+  if (dirSet.size === 1) {
+    const d = [...dirSet][0];
+    return { blocks: [{ type: "independent", title: d, dependsOn: [], conflictKeys: ["dir:" + d], tasks: [{ id: "t1", title: d, prompt: text }] }] };
+  }
+  return { blocks: [{ type: "independent", title: "single-task", dependsOn: [], conflictKeys: [], tasks: [{ id: "t1", title: "single-task", prompt: text }] }] };
 }
 
 function splitSentences(request) {
