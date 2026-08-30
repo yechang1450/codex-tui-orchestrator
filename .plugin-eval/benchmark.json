@@ -1,0 +1,73 @@
+{
+  "kind": "plugin-eval-benchmark",
+  "schemaVersion": 2,
+  "version": 2,
+  "targetKind": "plugin",
+  "targetName": "codex-tui-orchestrator",
+  "runner": {
+    "type": "codex-cli",
+    "model": "deepseek-v4-flash-vision-exp",
+    "sandbox": "workspace-write",
+    "approvalPolicy": "never",
+    "extraArgs": []
+  },
+  "workspace": {
+    "sourcePath": "C:/workspace/temp/bench-orch",
+    "setupMode": "copy",
+    "preserve": "on-failure"
+  },
+  "targetProvisioning": {
+    "mode": "workspace-plugin-marketplace"
+  },
+  "verifiers": {
+    "commands": [
+      "powershell -NoProfile -Command \"if (-not (Test-Path &quot;bench-orch\\alpha.txt&quot;)) { exit 1 }; if (-not (Test-Path &quot;bench-orch\\beta.txt&quot;)) { exit 1 }; Write-Output &quot;OK: alpha.txt + beta.txt exist&quot;\""
+    ]
+  },
+  "notes": [
+    "Edit workspace.sourcePath so it points at the repo or template you want Codex to work inside.",
+    "Edit the scenarios so they match real tasks instead of generic starter prompts.",
+    "Benchmark means real codex exec runs now. There is no simulated dry-run mode."
+  ],
+  "setupQuestions": [
+    "What are the 3 highest-value real tasks this plugin should help complete inside a workspace?",
+    "Which scenario is the must-pass end-to-end task for this plugin?",
+    "What output should exist on disk if the scenario succeeds?",
+    "Which verification command would tell you the result is actually usable?",
+    "What boundary case should this plugin narrow, refuse, or hand off instead of overreaching on?"
+  ],
+  "scenarios": [
+    {
+      "id": "orchestrator-parallel-write",
+      "title": "Parallel independent writes",
+      "purpose": "Decompose two independent write tasks and run them in parallel visible windows; measure real token usage of the orchestrator.",
+      "userInput": "Use the local plugin \"codex-tui-orchestrator\". In this workspace, create two independent files: alpha.txt containing ALPHA (UTF-8) and beta.txt containing BETA (UTF-8). These are independent and must run as separate visible parallel Codex TUI windows.",
+      "successChecklist": [
+        "The orchestrator decomposes into two independent blocks (alpha.txt, beta.txt).",
+        "Both files are created on disk with the correct content.",
+        "The run uses --run-windows (visible windows), not headless."
+      ]
+    },
+    {
+      "id": "orchestrator-serial-dependency",
+      "title": "Serial dependent write",
+      "purpose": "Measure the linked/serial path: a second task depends on the first.",
+      "userInput": "Use the local plugin \"codex-tui-orchestrator\". In this workspace, create a file plan.md containing the text \"done\", then create summary.md that contains the full text read back from plan.md (so summary.md depends on plan.md). These are dependent; run them serialized.",
+      "successChecklist": [
+        "The orchestrator detects plan.md -> summary.md dependency and serializes.",
+        "Both files exist; summary.md contains plan.md content.",
+        "The run finishes and reports the captured result."
+      ]
+    },
+    {
+      "id": "orchestrator-boundary",
+      "title": "Boundary: refuse headless",
+      "purpose": "Verify the plugin narrows scope and does not do headless real execution.",
+      "userInput": "This task is a weak match for \"codex-tui-orchestrator\": just read-only summarize the repo README. Do not do any real write. Explain the boundary (read-only stays inline, no window).",
+      "successChecklist": [
+        "No real execution / no window is spawned for a read-only task.",
+        "The read-only summary is given inline."
+      ]
+    }
+  ]
+}

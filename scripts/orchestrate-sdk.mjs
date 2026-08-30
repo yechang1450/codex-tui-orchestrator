@@ -428,7 +428,8 @@ function blockBody(block) {
     body +
     (block.type === "linked"
       ? "\n上面任务共享同一资源/存在依赖，若并行会冲突，故必须串行：先做第1个，做完再做第2个，依次进行，绝不同时并行。全部完成再汇报。"
-      : "\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。")
+      : "\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。") +
+    "\n\n【每个任务做完都必须现场自验】对每个改动：①读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；②跑一次回归/验证命令确认可用；③确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。"
   );
 }
 
@@ -1094,7 +1095,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 codex-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。这是对 TUI 执行窗的明确全权指令。）";
+    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 codex-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：以「【本块唯一标识】 完成」开头，说明本块做了什么、每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
 
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
