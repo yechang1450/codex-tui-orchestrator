@@ -5,7 +5,10 @@
  *   node codex-tui-orchestrator-preflight.mjs <write|build|install|test|restart|run|all>
  *
  * Reuses codex-tui-orchestrator-force.mjs's armed()/liveWindows() (the same enforcement state the guard uses):
- *   - orchestrator not armed        -> prints 未启用 and exits 0.
+ *   - orchestrator not armed and
+ *     kind is read-only             -> prints ok, exits 0.
+ *   - orchestrator not armed and
+ *     kind is real-execution        -> prints REFUSED + route hint, exits 1.
  *   - current context IS a sanctioned
  *     execution window              -> prints ok, exits 0.
  *   - real-execution kind but NOT a
@@ -32,7 +35,14 @@ if (!realKinds.has(kind) && !readKinds.has(kind)) {
 }
 
 if (!armed()) {
-  console.log("preflight: 未启用 (orchestrator not armed; enforcement disabled).");
+  if (realKinds.has(kind)) {
+    console.log(
+      "REFUSED: preflight '" + kind + "' is a real-execution kind but the orchestrator is not armed (enforcement disabled). " +
+        "Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive Codex TUI window)."
+    );
+    process.exit(1);
+  }
+  console.log("ok: read-only kind (" + kind + ").");
   process.exit(0);
 }
 

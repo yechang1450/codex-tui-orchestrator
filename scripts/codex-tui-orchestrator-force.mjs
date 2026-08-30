@@ -55,6 +55,9 @@ function resolveWorkspace() {
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
   const cfgWs = readOpenclawWorkspace();
   if (cfgWs) return cfgWs;
+  // 已知问题：静默回退到 process.cwd() 会让 --assert/--verify/--enable 作用到非编排器工作区的 temp，
+  // 造成假 PASS / 假 VIOLATION。这里醒目提示一次，避免把 cwd 误当成编排器真实工作区。
+  console.warn("[force] WARNING: WORKSPACE_DIR not set and no openclaw workspace found; enforcement/verify will use process.cwd() = " + process.cwd() + " (may not be the orchestrator workspace). Set WORKSPACE_DIR to pin it.");
   return process.cwd();
 }
 
