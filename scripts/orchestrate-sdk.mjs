@@ -1399,6 +1399,10 @@ async function main() {
           return false;
         });
         if (alive.length === 0 && unresolved.length === 0) break;
+        // 兜底防呆死：所有窗已关闭(归零超30s)但仍剩未决块——窗已关且汇报没抓到，无法再进展，
+        // 不能再空等到 ORCH_TIMEOUT_MS，否则 poll 永远拿不到汇总（挂死）。这里视为失败并退出，
+        // 交由 poll-windows 对 uncaptured/failed 返回 1（如实上报，而非假装成功/无限等）。
+        if (alive.length === 0 && zeroAliveSince && Date.now() - zeroAliveSince > 30000) break;
         // 【硬约束】GUI 轮询收尾触发 = 检测到全部 TUI 窗的执行结果均已成功返回。
         // 因此只要还有 unresolved 的块（结果未真实返回），即使所有窗已关闭，也继续轮询，
         // 不提前收尾，直到全部返回或 ORCH_TIMEOUT_MS 超时兜底。
