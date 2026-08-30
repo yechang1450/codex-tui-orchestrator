@@ -478,7 +478,7 @@ async function runPrototypeGate(title, prompt) {
   const llmOn = String(process.env.ORCH_PROTOTYPE_LLM || "1") === "1";
   if (!complex || !llmOn) { console.log("  preflight PASSED for [" + title + "] (" + (complex ? "complex, ORCH_PROTOTYPE_LLM=0 -> PASS" : "simple -> PASS") + ")"); return true; }
   try {
-    const eff = String(process.env.ORCH_PROTOTYPE_EFFORT || "low");
+    const eff = String(process.env.ORCH_PROTOTYPE_EFFORT || "high");
     const res = await runThreadPrompt(
       "你是原型可行性判定。下面是一个要在可见 Codex TUI 窗内执行的块任务。请只做只读判断：该任务是否合理、可行、不矛盾？只回一句：可行 或 不可行。任务：" + text,
       { sandboxMode: "read-only", modelReasoningEffort: eff }
@@ -1159,6 +1159,16 @@ async function main() {
     cleanStaleTransients();
     const request = process.argv.slice(3).join(" ");
     if (!request) throw new Error("--run-windows needs a request");
+    // 确定性「只读→inline」门禁：纯分析/方案/问答且无真实动作词 -> 不弹窗、留在主对话内联。
+    // （弹窗只留给真实执行：写/改/建/装/测/重启/删/起停/配置/还原等；避免把只读分析也弹窗。）
+    {
+      const RO_RE = /(分析|方案|看看|说明|回答|解读|介绍|评估|为什么|怎么回事|怎样|如何|是否|规划|理解|解释|回顾|概述|总结|探讨|讨论|这是什么|怎么理解|报告一下|列表|[?？]\s*$)/;
+      const REAL_RE = /(创建|写入|写文件|修改|改|删除|删|复制|启动|重启|生成|新增|优化|修复|清理|删掉|建立|添加|安装|测试|执行|部署|停止|停|重命名|迁移|解耦|还原|配置|编辑|刷新|重置|连接|运行|编译|构建|打包|发布|提交|推送|发起|build|write|delete|create|fix|install|restart|start|stop|restore|migrate|deploy|run|edit)/i;
+      if (!REAL_RE.test(request) && RO_RE.test(request)) {
+        console.log("[orchestrator] 判定为只读/纯分析（无真实动作词）-> 留在主对话内联执行，不弹窗。");
+        return;
+      }
+    }
     const rid = Date.now().toString(36);
     console.log("[orchestrator] decomposing (read-only)...");
     const plan = await decomposeSafely(request);

@@ -65,6 +65,27 @@ All text I/O is **explicit UTF-8**; launchers set `[Console]::OutputEncoding`/`$
 
 MIT — see `LICENSE`.
 
+## Sub-skills (disablable, defaults all-on)
+
+The orchestrator is decomposed into a bundle of capability sub-skills under `skills/`, each an independent switch:
+
+| Sub-skill | Purpose | Knob |
+|---|---|---|
+| `decompose-classify` | request → linked/independent blocks + read-only→inline gate | `ORCH_DECOMPOSE` |
+| `conflict-lock` | live-window resource conflicts → wait/lock/rerun | `ORCH_CONFLICT` |
+| `dependency-order` | `dependsOn` prerequisite ordering | `ORCH_DEPENDS` |
+| `prototype-gate` | deterministic feasibility (L1/L2) | `ORCH_PROTOTYPE` |
+| `prototype-llm` | LLM feasibility (L3; disable to save tokens) | `ORCH_PROTOTYPE_LLM` |
+| `registry` | cross-process windows/locks store + mutex | `ORCH_REGISTRY` |
+| `window-runtime` | launcher / spawn / watchdog / close + result capture | `ORCH_TUI`,`ORCH_CLOSE_DELAY_MS` |
+| `gather-results` | poll-windows require-all-success contract | — |
+| `enforcement` | armed/assert/kind fail-closed + headless gate | `ORCH_ALLOW_HEADLESS` |
+| `decompose-cache` | cache + `--clear-cache` | `ORCH_CACHE` |
+| `hygiene` | use-and-discard temp cleanup | `ORCH_KEEP_TEMP` |
+| `verify` | `--verify` conflict-key attribution | — |
+
+Disabling a sub-skill turns that capability off (the agent won't set its knob ON). The entry skill (`skills/codex-tui-orchestrator/SKILL.md`) aggregates them and wires the knobs. All LLM reasoning effort defaults to `high`.
+
 ## Disclaimer
 
 THIS TOOL AUTOMATES REAL EXECUTIONS. Review the plan first (`--plan`) and back up as needed. Provided **"AS IS"** without warranty; the copyright holders are not liable for damage arising from its use.
