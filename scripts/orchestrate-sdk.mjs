@@ -212,7 +212,7 @@ async function decomposeSafely(request) {
   }
   console.warn("[orchestrator] decompose LLM failed after " + attempts + " attempt(s): " + lastErr +
     (seenNoJson ? " (no valid JSON)" : "") + " -> fallback to ONE serialized window.");
-  return fallbackPlan(request);
+  return normalizePlan(fallbackPlan(request).blocks);
 }
 
 function extractJson(raw) {

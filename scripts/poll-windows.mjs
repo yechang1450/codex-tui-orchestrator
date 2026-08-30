@@ -8,7 +8,7 @@
 // 例:
 //   node poll-windows.mjs --timeoutMs 1800000 --intervalMs 5000
 
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -45,6 +45,12 @@ const requireAllSuccess = process.argv.includes("--require-all-success");
 function loadSummary() {
   try { return JSON.parse(readFileSync(SUMMARY, "utf8")); } catch { return null; }
 }
+// 本轮新鲜度：记录 poll 启动时 summary 的 mtime。若 summary 是上一轮残留（未在本轮被更新），不得当作已 complete。
+const summaryStartMtime = existsSync(SUMMARY) ? statSync(SUMMARY).mtimeMs : 0;
+function summaryFresh() {
+  try { return existsSync(SUMMARY) && statSync(SUMMARY).mtimeMs > summaryStartMtime; }
+  catch { return false; }
+}
 // 异步（不阻塞 event loop）：查询 SDK --status 统计存活窗。失败返回 -1（表示“未知”，不得当作全关）。
 async function aliveCount() {
   try {
@@ -52,12 +58,13 @@ async function aliveCount() {
     const { stdout } = await execFileP(process.execPath, [SDK, "--status", "--readonly"], { encoding: "utf8", timeout: 15000 });
     // count lines like "  [B1:..." under the "alive codex TUI windows" section
     const lines = String(stdout || "").split(/\r?\n/);
-    let inAlive = false, n = 0;
+    let inAlive = false, n = 0, sawHeader = false;
     for (const l of lines) {
-      if (/=== alive codex TUI windows ===/.test(l)) { inAlive = true; continue; }
+      if (/=== alive codex TUI windows ===/.test(l)) { inAlive = true; sawHeader = true; continue; }
       if (/=== pending locks/.test(l)) break;
       if (inAlive && /^\s*\[/.test(l)) n++;
     }
+    if (!sawHeader) return -1; // header 没匹配到 = 解析失败（非“全关”），不得当作 0
     return n;
   } catch { return -1; }
 }
@@ -93,7 +100,7 @@ console.log("[poll-windows] started (timeout " + Math.round(timeoutMs / 1000) + 
 while (Date.now() < deadline) {
   const alive = await aliveCount();
   const sum = loadSummary();
-  const complete = summaryComplete(sum);
+  const complete = summaryFresh() && summaryComplete(sum);
   const allClosed = alive === 0;
   if (allClosed && complete) {
     stable++;
