@@ -1275,12 +1275,16 @@ async function main() {
             if (text) summary[s.key].result = text.trim().slice(0, 2000);
           }
           if (text && !/no session rollout matched|no result captured/.test(text)) {
+            // 只要抓到真实汇报即认定完成——窗内 codex 的退出码(exitCode)仅作诊断，不影响成功判定。
+            summary[s.key].status = "done";
             console.log(trunc(text, 1600));
             console.log("  report CAPTURED -> closing [" + s.title + "] in " + closeDelayMs + "ms...");
             await new Promise((r) => setTimeout(r, closeDelayMs));
             await closeWindow(s.pidf); // 汇报已安全保存 -> 优雅关窗：只杀 codex 子进程，launcher 跑 exit 0，WT 自动关
           } else {
-            console.log("  !! report not captured for [" + s.title + "] after retry; leaving window to self-close (launcher watchdog), NOT force-closing.");
+            // 没抓到真实汇报就不能算成功：非零退出=失败(崩溃/报错)，0/未知=未捕获(不冒充成功)。
+            summary[s.key].status = (res.exitCode && res.exitCode !== 0) ? "failed" : "uncaptured";
+            console.log("  !! report not captured for [" + s.title + "] after retry; status=" + summary[s.key].status + " (exitCode=" + (res.exitCode ?? "?") + "); leaving window to self-close (launcher watchdog), NOT force-closing.");
           }
         } else {
           console.log("  timeout; window [" + s.title + "] still open (task may still be running).");
@@ -1311,7 +1315,8 @@ async function main() {
         if (res2.done) {
           let t2 = res2.text || "";
           if (!t2 || /no session rollout matched|no result captured/.test(t2)) { t2 = await waitForReportText(matchKey2, resultFile2, 60000); if (t2) summary[r.key].result = t2.trim().slice(0, 2000); }
-          if (t2 && !/no session rollout matched|no result captured/.test(t2)) { console.log("  [re-run " + r.key + "] report CAPTURED -> closing"); await new Promise((x) => setTimeout(x, closeDelayMs)); await closeWindow(la.pidf); }
+          if (t2 && !/no session rollout matched|no result captured/.test(t2)) { summary[r.key].status = "done"; console.log("  [re-run " + r.key + "] report CAPTURED -> closing"); await new Promise((x) => setTimeout(x, closeDelayMs)); await closeWindow(la.pidf); }
+          else { summary[r.key].status = (res2.exitCode && res2.exitCode !== 0) ? "failed" : "uncaptured"; console.log("  !! [re-run " + r.key + "] report not captured; status=" + summary[r.key].status + " (exitCode=" + (res2.exitCode ?? "?") + ")"); }
         }
       }
       flushRegistry();
