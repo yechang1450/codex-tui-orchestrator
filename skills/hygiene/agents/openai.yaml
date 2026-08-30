@@ -1,0 +1,9 @@
+interface:
+  display_name: "Hygiene"
+  short_description: "用完即弃清临时"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $hygiene to 用完即弃清临时."
+policy:
+  allow_implicit_invocation: true

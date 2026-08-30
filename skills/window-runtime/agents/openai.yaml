@@ -1,0 +1,9 @@
+interface:
+  display_name: "Window Runtime"
+  short_description: "窗口生命周期 + 汇报捕获"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $window-runtime to 窗口生命周期 + 汇报捕获."
+policy:
+  allow_implicit_invocation: true

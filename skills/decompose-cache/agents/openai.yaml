@@ -1,0 +1,9 @@
+interface:
+  display_name: "Decompose Cache"
+  short_description: "拆块缓存 + --clear-cache"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $decompose-cache to 拆块缓存 + --clear-cache."
+policy:
+  allow_implicit_invocation: true

@@ -1,0 +1,9 @@
+interface:
+  display_name: "Verify"
+  short_description: "--verify 冲突键归因诊断"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $verify to --verify 冲突键归因诊断."
+policy:
+  allow_implicit_invocation: true

@@ -700,20 +700,29 @@ function listRollouts(dir) {
 // `exitMarkerFile` (the launcher's `win-<s>.result.json`) aborts the wait as soon as codex has exited
 // on its own (crash / non-zero exit): the caller then reclaims the session immediately instead of
 // polling for a rollout that may never appear ("codex 进程先退出" -> no launcher hang).
+function rolloutKeys(matchKey) {
+  // JSON.stringify 不转义 CJK（输出 raw），但 codex rollout 会把 prompt 的 CJK 存成 \uXXXX 转义，
+  // 导致仅凭 raw 匹配会漏。ASCII token 在 raw/转义两种形式中都原样存在，最可靠。
+  const escaped = JSON.stringify(matchKey).slice(1, -1);
+  const ascii = String(matchKey).replace(/[^\x00-\x7F]/g, "");
+  return [escaped, ascii].filter(Boolean);
+}
+function rolloutHit(text, keys) { return keys.some((k) => text.includes(k)); }
+
 async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
   const start = Date.now();
   const seen = new Set();
   // The rollout is JSONL: backslashes (Windows paths) are doubled (`\` -> `\\`) and quotes escaped,
   // so we must match against the JSON-escaped form, not the raw text. The task prompt sits after the
   // (large) AGENTS.md/context block, so we read the whole file (once per new candidate), not just the head.
-  const escaped = JSON.stringify(matchKey).slice(1, -1);
+  const keys = rolloutKeys(matchKey);
   while (Date.now() - start < timeoutMs) {
     if (exitMarkerFile && existsSync(exitMarkerFile)) return null; // codex already exited -> reclaim path
     for (const f of listRollouts(sessionDir())) {
       if (seen.has(f)) continue;
       seen.add(f);
       try {
-        if (readFileSync(f, "utf8").includes(escaped)) return f;
+        if (rolloutHit(readFileSync(f, "utf8"), keys)) return f;
       } catch { /* ignore */ }
     }
     await new Promise((r) => setTimeout(r, 1000));
@@ -776,13 +785,13 @@ function extractResult(file) {
 async function waitForReportText(matchKey, exitMarkerFile, timeoutMs) {
   const start = Date.now();
   const seen = new Set();
-  const escaped = JSON.stringify(matchKey).slice(1, -1);
+  const keys = rolloutKeys(matchKey);
   while (Date.now() - start < timeoutMs) {
     for (const f of listRollouts(sessionDir())) {
       if (seen.has(f)) continue;
       seen.add(f);
       try {
-        if (readFileSync(f, "utf8").includes(escaped)) {
+        if (rolloutHit(readFileSync(f, "utf8"), keys)) {
           const r = extractResult(f);
           if (r && r.text) return r.text;
         }

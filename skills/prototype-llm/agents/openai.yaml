@@ -1,0 +1,9 @@
+interface:
+  display_name: "Prototype LLM"
+  short_description: "LLM 可行性门禁（关它省 token）"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $prototype-llm to LLM 可行性门禁（关它省 token）."
+policy:
+  allow_implicit_invocation: true

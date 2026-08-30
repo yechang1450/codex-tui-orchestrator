@@ -1,0 +1,9 @@
+interface:
+  display_name: "Prototype Gate"
+  short_description: "确定性可行性门禁（L1/L2）"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $prototype-gate to 确定性可行性门禁（L1/L2）."
+policy:
+  allow_implicit_invocation: true

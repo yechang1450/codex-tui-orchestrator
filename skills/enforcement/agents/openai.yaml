@@ -1,0 +1,9 @@
+interface:
+  display_name: "Enforcement"
+  short_description: "执行门禁（armed/assert/kind）"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $enforcement to 执行门禁（armed/assert/kind）."
+policy:
+  allow_implicit_invocation: true

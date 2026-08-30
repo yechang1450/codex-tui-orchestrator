@@ -1,0 +1,9 @@
+interface:
+  display_name: "Decompose & Classify"
+  short_description: "请求→linked/independent 块 + 只读→inline 门禁"
+  icon_small: "./assets/icon.png"
+  icon_large: "./assets/icon.svg"
+  brand_color: "#6A3DE8"
+  default_prompt: "Use $decompose-classify to 请求→linked/independent 块 + 只读→inline 门禁."
+policy:
+  allow_implicit_invocation: true
