@@ -30,7 +30,7 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 
 ## 拆块缓存（越用越快）
 
-相同请求缓存 **1 年**、**每年 1/1 自动刷新**（`orchestrator-decompose-cache.json`）。首次请求走规则+LLM 拆块，之后相同请求立即命中缓存。完全可移植——对**任意用户**有效，**无硬编码路径**。
+相同请求缓存 **永久**（`orchestrator-decompose-cache.json`）且**永不自动失效**——仅手动 `--clear-cache`（或删除缓存文件）才会重置。首次请求走规则+LLM 拆块，之后相同请求立即命中缓存。完全可移植——对**任意用户**有效，**无硬编码路径**。
 
 ## 配置（环境变量，全部可选）
 

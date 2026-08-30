@@ -33,7 +33,7 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 
 ## Decompose cache (越用越快)
 
-Identical requests are cached for **1 year** and **auto-refresh every Jan 1** (`orchestrator-decompose-cache.json`). The first time a request is seen it is decomposed (rule + LLM); the next identical request hits the cache immediately. This is portable — it works for *any* user, no hardcoded paths.
+Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.json`) and **never auto-expire** — only a manual `--clear-cache` (or deleting the cache file) resets them. The first time a request is seen it is decomposed (rule + LLM); the next identical request hits the cache immediately. This is portable — it works for *any* user, no hardcoded paths.
 
 ## Configuration (env, all optional)
 

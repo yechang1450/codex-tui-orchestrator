@@ -159,31 +159,48 @@ function runCli() {
     if (!file) { console.log("Usage: codex-tui-orchestrator-force.mjs --verify <file>"); process.exit(2); }
     if (!armed()) { console.log("verify: orchestrator not armed; in-window verification not applicable."); process.exit(0); }
     if (!existsSync(file)) { console.log("verify: file not found: " + file); process.exit(2); }
-    const wins = liveWindows();
-    const inWindow = process.env.CODEX_ORCH_WINDOW === "1" && wins.length > 0;
-    if (inWindow) {
-      // 关联：被改文件若在工作区外，不能确认是窗内写的（更严格署名）。
-      try {
-        const realFile = realpathSync(file);
-        const ws = realpathSync(WORKSPACE);
-        if (realFile !== ws && !realFile.startsWith(ws + path.sep)) {
-          console.log("VIOLATION: file is outside the orchestration workspace (" + WORKSPACE + "); cannot attribute to a sanctioned in-window write.");
-          process.exit(1);
-        }
-      } catch (e) {
-        // fail-closed：路径解析失败无法确认归属，不得放行。
-        console.log("VIOLATION: could not resolve the file/workspace path for in-window attribution (" + (e && e.message ? e.message : "unknown") + ").");
-        process.exit(1);
-      }
-      console.log("PASS: current context is a sanctioned orchestration window with " + wins.length + " live registered window(s) [" + wins.map((w) => w.title).join(", ") + "]; the change is consistent with an in-window write.");
-      process.exit(0);
+    // 归因精化：不再「任一活窗+文件在工作区内=放行」，而是按 conflictKeys 确定归因——
+    //   仅 1 个活窗且其 conflictKeys 命中该文件 → PASS；
+    //   多个活窗 → INDETERMINATE（无法唯一归因到某个窗）；
+    //   无活窗 / 无命中 → VIOLATION（不能确认是窗内受权写入）。
+    let realFile, ws;
+    try {
+      realFile = realpathSync(file);
+      ws = realpathSync(WORKSPACE);
+    } catch (e) {
+      // fail-closed：路径解析失败无法确认归属，不得放行。
+      console.log("VIOLATION: could not resolve the file/workspace path for in-window attribution (" + (e && e.message ? e.message : "unknown") + ").");
+      process.exit(1);
     }
+    if (realFile !== ws && !realFile.startsWith(ws + path.sep)) {
+      console.log("VIOLATION: file is outside the orchestration workspace (" + WORKSPACE + "); cannot attribute to a sanctioned in-window write.");
+      process.exit(1);
+    }
+    const wins = liveWindows();
+    const lower = realFile.toLowerCase().replace(/\\/g, "/");
+    const covering = wins.filter((w) => {
+      const rawKeys = Array.isArray(w.keys) ? w.keys.map(String) : [];
+      const keys = rawKeys.length ? rawKeys : ["__" + (w.title || "block")];
+      return keys.some((kk) => {
+        const raw = String(kk).replace(/^__/, "").replace(/^\s+|\s+$/g, "");
+        return raw && lower.includes(raw.toLowerCase());
+      });
+    });
     if (wins.length === 0) {
       console.log("VIOLATION: no live registered orchestration window exists; this change cannot be confirmed as an in-window write. Verify/re-run inside a window (node orchestrate-sdk.mjs --run-windows \"<request>\").");
       process.exit(1);
     }
-    console.log("INDETERMINATE: a live registered window exists but the current context is not inside one; the write cannot be reliably attributed to a window. Suggest verifying/re-running inside a window.");
-    process.exit(2);
+    if (wins.length > 1) {
+      console.log("INDETERMINATE: " + wins.length + " live orchestration window(s) exist; the change cannot be uniquely attributed to one window. Confirm per-window attribution for [" + wins.map((w) => w.title).join(", ") + "].");
+      process.exit(2);
+    }
+    // 恰好一个活窗：按其 conflictKeys 归因。
+    if (covering.length === 1) {
+      console.log("PASS: change attributed to live sanctioned orchestration window [" + (wins[0].title || "?") + "] (conflictKeys hit).");
+      process.exit(0);
+    }
+    console.log("VIOLATION: the only live orchestration window [" + (wins[0].title || "?") + "] does not cover this file's conflictKeys; cannot attribute to a sanctioned in-window write.");
+    process.exit(1);
   } else {
     console.log("Usage: codex-tui-orchestrator-force.mjs --enable | --disable | --status | --assert <kind> | --verify <file>");
   }

@@ -868,6 +868,9 @@ function loadWindows() { return loadJson(WIN_REG, []); }
 function saveWindows(w) { withRegistryLock(() => saveJson(WIN_REG, w)); }
 function loadLocks() { return loadJson(LOCK_REG, []); }
 function saveLocks(l) { withRegistryLock(() => saveJson(LOCK_REG, l)); }
+// 全事务：load+mutate+save 在同一个锁内完成，杜绝跨进程 lost-update。
+function updateWindows(mutator) { withRegistryLock(() => { const w = loadJson(WIN_REG, []); saveJson(WIN_REG, mutator(w)); }); }
+function updateLocks(mutator) { withRegistryLock(() => { const l = loadJson(LOCK_REG, []); saveJson(LOCK_REG, mutator(l)); }); }
 
 // The launcher writes its codex-exit marker to `win-<s>.result.json` (same dir as the pidfile).
 function resultFileOf(pidf) {
@@ -1013,7 +1016,7 @@ function showStatus(readonly) {
   let locks = loadLocks();
   const before = locks.length;
   locks = locks.filter((l) => { const bw = alive.find((w) => w.title === l.blockedBy); return !!bw; });
-  if (!readonly && locks.length !== before) { saveLocks(locks); console.log("released " + (before - locks.length) + " lock(s) whose window closed"); }
+  if (!readonly && locks.length !== before) { updateLocks(() => { const cur = loadJson(LOCK_REG, []); return cur.filter((l) => { const bw = (loadWindows()).find((w) => w.title === l.blockedBy); return !!bw; }); }); console.log("released " + (before - locks.length) + " lock(s) whose window closed"); }
   console.log("=== alive codex TUI windows ===");
   for (const w of alive) console.log("  [" + w.title + "] keys=" + (w.keys || []).join(","));
   if (!alive.length) console.log("  (none)");
@@ -1149,8 +1152,13 @@ async function main() {
     console.log("[orchestrator] decomposing (read-only)...");
     const plan = await decomposeSafely(request);
     console.log("[orchestrator] blocks=" + plan.length);
-    const windows = loadWindows();
-    let locks = loadLocks();
+    // 全事务写 registry：只追加本批新增记录，绝不整表覆盖，避免跨进程 lost-update。
+    let pendingWins = [];
+    let pendingLocks = [];
+    const flushRegistry = () => {
+      if (pendingWins.length) { updateWindows((ws) => ws.concat(pendingWins)); pendingWins = []; }
+      if (pendingLocks.length) { updateLocks((ls) => ls.concat(pendingLocks)); pendingLocks = []; }
+    };
     const inRun = [];
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
@@ -1194,7 +1202,7 @@ async function main() {
         // 同批内部防冲突：normalizePlan 已保证独立块互不重叠；这里双保险，若仍重叠则跳过。
         const clashRun = inRun.find((s) => keysOverlap(nkeys, s.keys));
         if (clashRun) {
-          locks.push({ block: r.key, title: r.title, blockedBy: clashRun.title, keys: nkeys });
+          pendingLocks.push({ block: r.key, title: r.title, blockedBy: clashRun.title, keys: nkeys });
           console.log("  LOCKED " + r.key + " -- conflicts with a block already spawned in this batch [" + clashRun.title + "]");
           lockedBacklog.push({ r, nkeys });
           continue;
@@ -1205,7 +1213,7 @@ async function main() {
           console.log("  WAIT " + r.key + " -- conflict with running window [" + blocker + "], waiting up to " + Math.round(waitMs / 1000) + "s...");
           const ok = await waitClear(nkeys, waitMs);
           if (!ok) {
-            locks.push({ block: r.key, title: r.title, blockedBy: blocker, keys: nkeys });
+            pendingLocks.push({ block: r.key, title: r.title, blockedBy: blocker, keys: nkeys });
             console.log("  LOCKED " + r.key + " -- still conflicting after wait [" + blocker + "]");
             lockedBacklog.push({ r, nkeys });
             continue;
@@ -1221,7 +1229,7 @@ async function main() {
         // 并发兜底：冲突检查后、真正 spawn 前紧邻复检一次（另一进程可能在等待期抢占/写入 registry）。
         const recheck = conflictByKeys(nkeys);
         if (recheck) {
-          locks.push({ block: r.key, title: r.title, blockedBy: recheck, keys: nkeys });
+          pendingLocks.push({ block: r.key, title: r.title, blockedBy: recheck, keys: nkeys });
           console.log("  LOCKED " + r.key + " -- conflicted during gate ([" + recheck + "]); not spawning.");
           lockedBacklog.push({ r, nkeys });
           continue;
@@ -1230,13 +1238,12 @@ async function main() {
         const body = blockBody(r.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
         spawnVisibleWindow(lp, r.title);
-        windows.push({ title: r.title, keys: nkeys, pidFile: pidf, locked: false });
+        pendingWins.push({ title: r.title, keys: nkeys, pidFile: pidf, locked: false });
         spawnedWave.push({ key: r.key, title: r.title, pidf, lp, pf, rf, prompt: body, matchToken: "【本块唯一标识】" + tk });
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
         console.log("  popped interactive TUI window [" + r.title + "]");
       }
-      saveWindows(windows);
-      saveLocks(locks);
+      flushRegistry();
       allSpawned.push(...spawnedWave);
       if (!spawnedWave.length) continue;
 
@@ -1291,10 +1298,10 @@ async function main() {
         const body2 = blockBody(r.b) + "\n\n【本块唯一标识】" + tk2 + "\n（最终汇报请以「【本块唯一标识】" + tk2 + " 完成」开头，并说明本块完成情况）\n" + auth;
         const la = writeInteractiveLauncher(r.key, body2, rid);
         spawnVisibleWindow(la.lp, r.title);
-        windows.push({ title: r.title, keys: nkeys, pidFile: la.pidf, locked: false });
+        pendingWins.push({ title: r.title, keys: nkeys, pidFile: la.pidf, locked: false });
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
         allSpawned.push({ key: r.key, title: r.title, pidf: la.pidf, lp: la.lp, pf: la.pf, rf: la.rf, prompt: body2, matchToken: "【本块唯一标识】" + tk2 });
-        saveWindows(windows);
+        flushRegistry();
         const matchKey2 = "【本块唯一标识】" + tk2, resultFile2 = la.rf;
         const sf2 = await waitForSessionFile(matchKey2, 90000, resultFile2);
         let res2 = { done: false, text: "" };
@@ -1307,7 +1314,7 @@ async function main() {
           if (t2 && !/no session rollout matched|no result captured/.test(t2)) { console.log("  [re-run " + r.key + "] report CAPTURED -> closing"); await new Promise((x) => setTimeout(x, closeDelayMs)); await closeWindow(la.pidf); }
         }
       }
-      saveWindows(windows);
+      flushRegistry();
     }
     if (!allSpawned.length && !lockedBacklog.length) { console.log("all blocks locked; nothing spawned."); return; }
 
@@ -1336,7 +1343,7 @@ async function main() {
             }
           }
           // 移除已写完 result 且 __DONE__ 的窗（避免重复轮询）
-          saveWindows(loadWindows().filter((x) => {
+          updateWindows((ws) => ws.filter((x) => {
             const rf = resultFileOf(x.pidFile || "");
             if (!rf || !existsSync(rf)) return true;
             const txt = readFileSync(rf, "utf8").replace(/^\uFEFF/, "");
@@ -1386,8 +1393,8 @@ async function main() {
         }
       }
     }
+    updateWindows((ws) => ws.filter((w) => windowAlive(w)));
     const remaining = loadWindows().filter((w) => windowAlive(w));
-    saveWindows(remaining);
     const out = path.join(TMP, "win-summary.json");
     writeFileSync(out, JSON.stringify({ blocks: plan.map((b, i) => ({ key: "B" + (i + 1), title: b.title })), results: summary }, null, 2), "utf8");
     console.log("[orchestrator] summary -> " + out);
