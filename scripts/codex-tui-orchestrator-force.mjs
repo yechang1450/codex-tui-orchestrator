@@ -223,4 +223,4 @@ function runCli() {
 const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
 if (isMain) runCli();
 
-export { armed, liveWindows, pidAlive, pidOf, WINDOWS_REG, TMP };
+export { armed, liveWindows, pidAlive, pidOf, WINDOWS_REG, TMP, FLAG };

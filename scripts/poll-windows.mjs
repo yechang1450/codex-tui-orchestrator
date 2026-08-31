@@ -97,6 +97,8 @@ function failures(sum) {
 
 let lastBeat = 0;
 let stable = 0;
+const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+if (isMain) {
 console.log("[poll-windows] started (timeout " + Math.round(timeoutMs / 1000) + "s, interval " + Math.round(intervalMs / 1000) + "s)");
 while (Date.now() < deadline) {
   const alive = await aliveCount();
@@ -136,3 +138,8 @@ const s = loadSummary();
 if (s) process.stdout.write(JSON.stringify(s.results, null, 2) + "\n");
 else console.log("[poll-windows] no win-summary.json found yet.");
 process.exit(1);
+}
+
+export { TERMINAL, SUCCESS, loadSummary, summaryFresh, summaryComplete, failures };
+
+

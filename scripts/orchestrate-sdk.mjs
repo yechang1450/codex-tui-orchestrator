@@ -49,6 +49,7 @@ import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync
 import os from "node:os";
 import crypto from "node:crypto";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 // ---------------------------------------------------------------------------
 // Config (env-first, portable)
@@ -1523,7 +1524,11 @@ async function main() {
   );
 }
 
-main().catch((e) => {
+const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
+if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
+
+export { classifyBlockComplexity, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose };
+
