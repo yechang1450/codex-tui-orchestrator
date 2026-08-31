@@ -57,7 +57,9 @@ if (envWindow && alive === 0) {
   );
   process.exit(1);
 }
-if (alive > 0) {
+// Only a process that (a) sets CODEX_ORCH_WINDOW=1 AND (b) has a live registered window is sanctioned.
+// A headless/script context running while a legitimate window happens to be open must NOT pass.
+if (envWindow && alive > 0) {
   console.log("ok: sanctioned orchestration window; '" + kind + "' may proceed.");
   process.exit(0);
 }

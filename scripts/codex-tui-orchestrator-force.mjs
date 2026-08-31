@@ -39,10 +39,9 @@ import { fileURLToPath } from "node:url";
 // 优先级：env WORKSPACE_DIR → process.cwd()（不再依赖 openclaw 配置）
 function resolveWorkspace() {
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
-  // 已知问题：静默回退到 process.cwd() 会让 --assert/--verify/--enable 作用到非编排器工作区的 temp，
-  // 造成假 PASS / 假 VIOLATION。这里醒目提示一次，避免把 cwd 误当成编排器真实工作区。
-  console.warn("[force] WARNING: WORKSPACE_DIR not set; enforcement/verify will use process.cwd() = " + process.cwd() + " (may not be the orchestrator workspace). Set WORKSPACE_DIR to pin it.");
-  return process.cwd();
+  // Fail-closed: refusing to enforce against an unknown workspace prevents a cwd-based bypass.
+  console.error("[force] FATAL: WORKSPACE_DIR not set; refusing to enforce against an unknown workspace (fail-closed). Set WORKSPACE_DIR to the orchestrator workspace.");
+  process.exit(2);
 }
 
 const WORKSPACE = resolveWorkspace();
@@ -81,15 +80,18 @@ function pidOf(w) {
 function pidAlive(pid) {
   if (!pid || pid <= 0) return false;
   if (process.platform === "win32") {
-    // 校验镜像名确为 codex 相关进程——防伪造 registry 指向任一存活进程（如 shell）即可过门禁。
+    // 防伪造：仅识别“编排器工作窗”的真实进程，而非任意 powershell/codex 像。
     try {
       const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
       const out = String(r.stdout || "");
       if (!/"\S+","\d+"/.test(out)) return false; // 该 PID 无对应行
       const img = String(out.split(/\r?\n/)[0] || "").split(",")[0].replace(/"/g, "");
-      // 注册的窗口 PID 是 launcher 的 powershell.exe（其子进程 codex 才是真正的执行体）。
-      // 只认 codex 会误报 launcher 已死（--status 显示 0 活窗）；这里同时认 codex 与 powershell。
-      return /codex|powershell/i.test(img);
+      const codexish = /codex|powershell/i.test(img);
+      if (!codexish) return false;
+      // 命令行动态核对：编排器工作窗（launcher 或其 codex 子进程）需在命令行引用 orchestrate-sdk.mjs / --run-windows；否则一律视作伪造，不得过门禁（fail-closed）。
+      const ps = spawnSync("powershell.exe", ["-NoProfile", "-Command", "(Get-CimInstance Win32_Process -Filter \"ProcessId=$($args[0])\" -ErrorAction SilentlyContinue).CommandLine", String(pid)], { encoding: "utf8", windowsHide: true });
+      const cl = String(ps.stdout || "");
+      return /orchestrate-sdk\.mjs/i.test(cl) || /--run-windows/i.test(cl);
     } catch { return false; }
   }
   try { process.kill(pid, 0); return true; } catch (e) { return e && (e.code === "EPERM" || e.code === "EACCES") ? true : false; } // EPERM/EACCES = 存在但无权限, 不视为 dead
@@ -97,7 +99,9 @@ function pidAlive(pid) {
 // Only windows whose process is really alive are returned. A record whose pidFile exists but whose
 // process has already exited is treated as NOT alive and dropped from the result.
 function liveWindows() {
-  return (loadJson(WINDOWS_REG, [])).filter((w) => {
+  const reg = loadJson(WINDOWS_REG, []);
+  if (!Array.isArray(reg)) { console.error("[force] refusing: orchestrator-windows.json is not an array (fail-closed)."); return []; }
+  return reg.filter((w) => {
     if (!w.pidFile) return false;
     return pidAlive(pidOf(w));
   });
@@ -122,6 +126,7 @@ function runCli() {
   } else if (mode === "--assert") {
     const kind = String(process.argv[3] || "exec").toLowerCase();
     const realKinds = new Set(["exec", "write", "build", "install", "test", "restart", "start", "stop", "real", "all", "run"]);
+    const readKinds = new Set(["read", "analyze", "plan", "view", "query", "search", "status", "list", "preview", "ls", "show", "check", "validate", "dry-run", "help"]);
     if (!armed()) { console.log("ok: orchestrator not armed."); process.exit(0); }
     if (process.env.CODEX_ORCH_WINDOW === "1") {
       const wins = liveWindows();
@@ -139,6 +144,14 @@ function runCli() {
       console.log(
         "REFUSED: real execution ('" + kind + "') from a NON-orchestrator context. " +
           "Route it through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive Codex TUI window)."
+      );
+      process.exit(1);
+    }
+    // Unknown kind = fail-closed by default (a typo / future real kind must NOT silently pass).
+    if (!readKinds.has(kind)) {
+      console.log(
+        "REFUSED: unknown execution kind ('" + kind + "'); refusing by default (fail-closed). " +
+          "'read/analyze/plan/view/query/search/status/list/preview/ls/show/check/validate/dry-run/help' are read-only kinds."
       );
       process.exit(1);
     }

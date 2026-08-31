@@ -37,7 +37,7 @@ const deadline = start + timeoutMs;
 // 全关+summary 完整需连续 2 个 cycle 稳定才退出，避免“窗刚关但 summary 未刷新”竞态。
 const STABLE_CYCLES = 2;
 // 终态集合：只有这些 status 才算“已定案”，错误/未知状态不得当作 complete 提前退出。
-const TERMINAL = new Set(["done", "ok", "completed", "done-retried", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "unlocked", "done-and-close"]);
+const TERMINAL = new Set(["done", "ok", "completed", "done-retried", "failed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "unlocked", "done-and-close"]);
 // --require-all-success 的"可收尾"集合：真正成功 {done,ok,completed} + 被正确跳过/锁定 {preflight-failed, locked, unlocked}。
 // uncaptured / timeout / unfinished / failed 视为失败阻塞 -> poll 继续等，超时返回 1（不装成功）。
 const SUCCESS = new Set(["done", "ok", "completed", "done-retried", "preflight-failed", "locked", "unlocked"]);
@@ -103,7 +103,10 @@ while (Date.now() < deadline) {
   const sum = loadSummary();
   const complete = summaryFresh() && summaryComplete(sum);
   const allClosed = alive === 0;
-  if (allClosed && complete) {
+  // When zero windows are alive, a complete summary is authoritative even if it was written
+  // just before poll started (no-window / fast run): do not hang on the mtime race.
+  const done = complete || (allClosed && summaryComplete(sum));
+  if (allClosed && done) {
     stable++;
     if (stable >= STABLE_CYCLES) {
       console.log("[poll-windows] ALL WINDOWS DONE + SUMMARY COMPLETE (stable) -> stopping poll.");
