@@ -470,13 +470,13 @@ function classifyBlockComplexity(prompt) {
   return false;
 }
 
-// async 三层原型门禁：L1 空判 -> L2 复杂度 -> L3 复杂才 LLM（默认开），LLM 关/简单 -> PASS，绝不误拦。
+// async 三层原型门禁：L1 空判 -> L2 复杂度 -> L3 复杂必 LLM（恒启用不可关）-> 确保无白窗浪费；简单 -> PASS，绝不误拦。
 async function runPrototypeGate(title, prompt) {
   const text = String(prompt || "").trim();
   if (!text) { console.log("  preflight FAILED for [" + title + "] (empty/无动作): reject."); return false; }
   const complex = classifyBlockComplexity(text);
-  const llmOn = String(process.env.ORCH_PROTOTYPE_LLM || "1") === "1";
-  if (!complex || !llmOn) { console.log("  preflight PASSED for [" + title + "] (" + (complex ? "complex, ORCH_PROTOTYPE_LLM=0 -> PASS" : "simple -> PASS") + ")"); return true; }
+  // LLM 原型测试恒启用（确保无白窗浪费），不接受关闭；仅简单块直接 PASS。
+  if (!complex) { console.log("  preflight PASSED for [" + title + "] (simple -> PASS)"); return true; }
   try {
     const eff = String(process.env.ORCH_PROTOTYPE_EFFORT || "high");
     const res = await runThreadPrompt(

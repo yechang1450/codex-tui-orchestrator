@@ -4,7 +4,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 ---
 # Codex TUI Orchestrator (entry / dispatcher)
 
-引擎在 `scripts/orchestrate-sdk.mjs`；本文件是**入口**：按任务场景分发 + 遵守行为纪律（`conduct`），并把**能力开关**映射到启/禁用子skill。
+引擎在 `scripts/orchestrate-sdk.mjs`；本文件是**入口**：按任务场景分发 + 遵守行为纪律（`conduct`），并把**全部能力**恒启用（无用户可关闭的开关）。
 
 ## 何时弹窗 / 何时 inline
 - **只读 / 纯分析 / 纯方案 / 纯解答** → 留在主对话内联，**不弹窗**。`--run-windows` 入口已有确定性只读门禁（命中只读词且无真实动作词→直接 inline、exit 0）。
@@ -20,25 +20,25 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完，禁止「这条下轮做/先做几项剩下再说」。
 8. 留痕：经本 skill 完成的真实执行后，须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
 
-## 子skill = 能力开关（默认全开，可自主关）
-每个能力对应一个子skill；**启用它=该能力开**（agent 按子skill 说明把对应 env 置 ON）；**关掉该子skill=该能力关**（agent 不读它、不置 ON，引擎对可选项默认 OFF）。入口按此组装 env。
+## 子skill = 能力（全部恒启用，无开关）
+每个能力对应一个子skill，**全部恒启用**（agent 必然读取并置 I/O ON），**没有用户可关闭的开关**——避免用户误关导致编排效果打折。入口按此固定组装。
 
-| 子skill | 职责 | 开关（默认全开） |
-|---|---|---|
-| `decompose-classify` | 请求→linked/independent 块 + 只读→inline 门禁 | `ORCH_DECOMPOSE=auto\|single` |
-| `conflict-lock` | 活窗资源冲突→等待/上锁/重跑 | `ORCH_CONFLICT=on\|off` |
-| `dependency-order` | dependsOn 前置顺序/串行 | `ORCH_DEPENDS=on\|off` |
-| `prototype-gate` | 确定性可行性（L1/L2） | `ORCH_PROTOTYPE=on\|off` |
-| `prototype-llm` | LLM 可行性（L3，可关省钱） | `ORCH_PROTOTYPE_LLM=1\|0`（effort=`ORCH_PROTOTYPE_EFFORT`，默认 high）|
-| `registry` | 跨进程 windows/locks + 互斥 | `ORCH_REGISTRY=on\|off` |
-| `window-runtime` | launcher/spawn/watchdog/close + 汇报捕获 | `ORCH_TUI`、`ORCH_CLOSE_DELAY_MS` |
-| `gather-results` | poll-windows 保轮询契约 | 常开 |
-| `enforcement` | 执行门禁（armed/assert/kind fail-closed/headless 硬关） | `ORCH_ALLOW_HEADLESS` |
-| `decompose-cache` | 拆块缓存 + `--clear-cache` | `ORCH_CACHE=on\|off` |
-| `hygiene` | 用完即弃清临时 | `ORCH_KEEP_TEMP` |
-| `verify` | `--verify` 冲突键归因 | 只读诊断 |
+| 子skill | 职责 |
+|---|---|
+| `decompose-classify` | 请求→linked/independent 块 + 只读→inline 门禁 |
+| `conflict-lock` | 活窗资源冲突→等待/上锁/重跑 |
+| `dependency-order` | dependsOn 前置顺序/串行 |
+| `prototype-gate` | 确定性可行性（L1/L2） |
+| `prototype-llm` | LLM 可行性（L3，确保无白窗浪费；effort 由 `ORCH_PROTOTYPE_EFFORT`，默认 high）|
+| `registry` | 跨进程 windows/locks + 互斥 |
+| `window-runtime` | launcher/spawn/watchdog/close + 汇报捕获（`ORCH_TUI=wt/conhost`，`ORCH_CLOSE_DELAY_MS`）|
+| `gather-results` | poll-windows 保疆询@约（常开契约）|
+| `enforcement` | 执行门禁（armed/assert/kind fail-closed/headless 硬关） |
+| `decompose-cache` | 拆块缓存 + `--clear-cache` |
+| `hygiene` | 用完即弃清临时（`ORCH_KEEP_TEMP` 排查用） |
+| `verify` | `--verify` 冲突键归因（只读诊断） |
 
-> 全模型 effort 默认 `high`（`ORCH_EFFORT`、`ORCH_PROTOTYPE_EFFORT`）；可用 env 覆盖。
+> 全模型 effort 默认 `high`（`ORCH_EFFORT`、`ORCH_PROTOTYPE_EFFORT`）；以上为可调 I/O 参数，非能力开关。
 
 ## 引擎调用（从 `scripts/` 运行）
 - `node orchestrate-sdk.mjs --run-windows "<request>"` → 批量真实执行（独立并行/联动串行，自动关窗，结果进 `temp/win-summary.json`）。
