@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * codex-tui-orchestrator-force — technical enforcement gate for codex-tui-orchestrator.
+ * agent-tui-orchestrator-force — technical enforcement gate for agent-tui-orchestrator.
  *
  * The ONLY sanctioned path for REAL execution (write / build / install / test / restart / any
  * command that changes state) is a real, visible, interactive Codex TUI window launched by
@@ -27,7 +27,7 @@
  * (ORCH_ALLOW_HEADLESS must be `1`, verboten for real work), this is the "once the skill is
  * enabled, real executions must go through the TUI window" enforcement.
  *
- * Usage (from scripts dir):  node codex-tui-orchestrator-force.mjs --status | --assert <kind> | --verify <file> | --enable | --disable
+ * Usage (from scripts dir):  node agent-tui-orchestrator-force.mjs --status | --assert <kind> | --verify <file> | --enable | --disable
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, lstatSync, renameSync, realpathSync } from "node:fs";
 import os from "node:os";
@@ -36,7 +36,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // ---------- 工作区动态探测（不写死工作区绝对路径）----------
-// 优先级：env WORKSPACE_DIR → process.cwd()（不再依赖 openclaw 配置）
+// 优先级：env WORKSPACE_DIR → process.cwd()（不再依赖外部通道配置）
 function resolveWorkspace() {
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
   // Fail-closed: refusing to enforce against an unknown workspace prevents a cwd-based bypass.
@@ -158,7 +158,7 @@ function runCli() {
     console.log("ok: read-only kind.");
   } else if (mode === "--verify") {
     const file = process.argv[3];
-    if (!file) { console.log("Usage: codex-tui-orchestrator-force.mjs --verify <file>"); process.exit(2); }
+    if (!file) { console.log("Usage: agent-tui-orchestrator-force.mjs --verify <file>"); process.exit(2); }
     if (!armed()) { console.log("verify: orchestrator not armed; in-window verification not applicable."); process.exit(0); }
     if (!existsSync(file)) { console.log("verify: file not found: " + file); process.exit(2); }
     // 归因精化：不再「任一活窗+文件在工作区内=放行」，而是按 conflictKeys 确定归因——
@@ -215,11 +215,11 @@ function runCli() {
     console.log("VIOLATION: the only live orchestration window [" + (wins[0].title || "?") + "] does not cover this file's conflictKeys; cannot attribute to a sanctioned in-window write.");
     process.exit(1);
   } else {
-    console.log("Usage: codex-tui-orchestrator-force.mjs --enable | --disable | --status | --assert <kind> | --verify <file>");
+    console.log("Usage: agent-tui-orchestrator-force.mjs --enable | --disable | --status | --assert <kind> | --verify <file>");
   }
 }
 
-// Only run the CLI when this module is the main entrypoint, so codex-tui-orchestrator-preflight.mjs can reuse armed()/liveWindows().
+// Only run the CLI when this module is the main entrypoint, so agent-tui-orchestrator-preflight.mjs can reuse armed()/liveWindows().
 const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
 if (isMain) runCli();
 

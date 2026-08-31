@@ -1,10 +1,10 @@
-# codex-tui-orchestrator
+# agent-tui-orchestrator
 
 > 作者：**Yang Wenchàng**
 
 把多部分请求按「并发冲突」拆成 **安全并行块**，并通过 **真实可见的 Codex TUI 窗** 执行——独立任务并发、会破坏的串行。
 
-> 命名说明：插件 id、`name` 字段、目录、GitHub 仓库、显示名均为小写连字符 `codex-tui-orchestrator`，符合 Codex 插件清单规范。
+> 命名说明：插件 id、`name` 字段、目录、GitHub 仓库、显示名均为小写连字符 `agent-tui-orchestrator`，符合 Codex 插件清单规范。
 
 ## 编排设计（依赖图 + 有界并行）
 

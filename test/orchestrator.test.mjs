@@ -48,7 +48,7 @@ test('poll-windows failures lists non-success blocks', () => {
 // force.mjs reads WORKSPACE_DIR at import; we set it before import and test helpers.
 const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-test-'));
 process.env.WORKSPACE_DIR = wsDir;
-const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG } = await import(importUrl(path.join(scripts, 'codex-tui-orchestrator-force.mjs')));
+const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG } = await import(importUrl(path.join(scripts, 'agent-tui-orchestrator-force.mjs')));
 test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
   // fresh workspace -> not armed, no windows
   assert.equal(armed(), false);
@@ -78,17 +78,17 @@ test('force.mjs CLI --status/--assert read/--assert write', () => {
   try {
     const env = { ...process.env, WORKSPACE_DIR: cliDir };
     // --status on empty workspace: armed=false, 0 windows
-    const st = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--status'], { env });
+    const st = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--status'], { env });
     assert.equal(st.code, 0);
     assert.match(st.out, /armed|ARMED|enabled/);
     // --assert read on not-armed -> exit 0 (ok)
-    const ar = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--assert', 'read'], { env });
+    const ar = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'read'], { env });
     assert.equal(ar.code, 0);
     // --assert write on not-armed -> "ok: orchestrator not armed" exit 0
-    const aw = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--assert', 'write'], { env });
+    const aw = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'write'], { env });
     assert.equal(aw.code, 0);
     // --verify on not-armed -> exit 0 (verification not applicable)
-    const v = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--verify', path.join(cliDir, 'nope.txt')], { env });
+    const v = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--verify', path.join(cliDir, 'nope.txt')], { env });
     assert.equal(v.code, 0);
   } finally {
     fs.rmSync(cliDir, { recursive: true, force: true });
@@ -104,16 +104,16 @@ test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATIO
     // arm enforcement
     fs.writeFileSync(path.join(tmpDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
     // --assert read when armed + no window -> read-only ok (exit 0)
-    const ar = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--assert', 'read'], { env });
+    const ar = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'read'], { env });
     assert.equal(ar.code, 0);
     // --assert exec when armed + no window -> REFUSED (exit 1)
-    const ae = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--assert', 'exec'], { env });
+    const ae = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'exec'], { env });
     assert.equal(ae.code, 1);
     assert.match(ae.out, /REFUSED/i);
     // --verify a file when armed + no window -> VIOLATION (exit 1)
     const target = path.join(cliDir, 'file.txt');
     fs.writeFileSync(target, 'x', 'utf8');
-    const v = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--verify', target], { env });
+    const v = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--verify', target], { env });
     assert.equal(v.code, 1);
     assert.match(v.out, /VIOLATION/i);
   } finally {
@@ -125,7 +125,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-enable-'));
   try {
     const env = { ...process.env, WORKSPACE_DIR: cliDir };
-    const en = runNode(path.join(scripts, 'codex-tui-orchestrator-force.mjs'), ['--enable'], { env });
+    const en = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--enable'], { env });
     assert.equal(en.code, 0);
     const flag = path.join(cliDir, 'temp', '.orchestrator-enabled');
     assert.equal(fs.existsSync(flag), true);

@@ -1,12 +1,12 @@
-# codex-tui-orchestrator
+# agent-tui-orchestrator
 
 > Author: **Yang Wenchàng**
 
 Split a multi-part request into **safe parallel blocks** and execute them through **real, visible Codex TUI windows** — independent work runs concurrently, anything that would break if run simultaneously stays serialized.
 
-> **搭配 Superpowers 使用，就等于拥有了 plan 并行 + work 并行的完整能力**：Superpowers 负责把"该做什么/怎么拆/步骤"planning 好（brainstorming/writing-plans/subagent-driven-development 的并行计划编排），codex-tui-orchestrator 负责把这些真实执行拆成互不冲突的**独立块并行弹 TUI 窗**落地（work 并行）。二者一"计划并行"、一"执行并行"，配合即得到"从头到尾的高吞吐编排"。
+> **搭配 Superpowers 使用，就等于拥有了 plan 并行 + work 并行的完整能力**：Superpowers 负责把"该做什么/怎么拆/步骤"planning 好（brainstorming/writing-plans/subagent-driven-development 的并行计划编排），agent-tui-orchestrator 负责把这些真实执行拆成互不冲突的**独立块并行弹 TUI 窗**落地（work 并行）。二者一"计划并行"、一"执行并行"，配合即得到"从头到尾的高吞吐编排"。
 
-> Plugin name note: the plugin id, `name` field, directory, GitHub repo, and display name are all lowercase hyphen-case `codex-tui-orchestrator`, as required by the Codex plugin manifest spec.
+> Plugin name note: the plugin id, `name` field, directory, GitHub repo, and display name are all lowercase hyphen-case `agent-tui-orchestrator`, as required by the Codex plugin manifest spec.
 
 ## Orchestration design (dependency graph, bounded parallelism)
 
@@ -84,7 +84,7 @@ The orchestrator is decomposed into a bundle of capability sub-skills under `ski
 | `hygiene` | use-and-discard temp cleanup | `ORCH_KEEP_TEMP` |
 | `verify` | `--verify` conflict-key attribution | — |
 
-Disabling a sub-skill turns that capability off (the agent won't set its knob ON). The entry skill (`skills/codex-tui-orchestrator/SKILL.md`) aggregates them and wires the knobs. All LLM reasoning effort defaults to `high`.
+Disabling a sub-skill turns that capability off (the agent won't set its knob ON). The entry skill (`skills/agent-tui-orchestrator/SKILL.md`) aggregates them and wires the knobs. All LLM reasoning effort defaults to `high`.
 
 ## Disclaimer
 

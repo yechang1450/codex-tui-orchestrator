@@ -1,9 +1,9 @@
 interface:
-  display_name: "Codex TUI Orchestrator"
+  display_name: "Agent TUI Orchestrator"
   short_description: "按并发冲突拆块、可见 Codex TUI 窗真实并发执行"
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.svg"
   brand_color: "#6A3DE8"
-  default_prompt: "Use $codex-tui-orchestrator to split this multi-part real task into independent/linked blocks and run them in visible parallel Codex TUI windows."
+  default_prompt: "Use $agent-tui-orchestrator to split this multi-part real task into independent/linked blocks and run them in visible parallel Codex TUI windows."
 policy:
   allow_implicit_invocation: true

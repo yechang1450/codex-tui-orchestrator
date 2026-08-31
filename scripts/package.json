@@ -1,8 +1,8 @@
 {
-  "name": "codex-tui-orchestrator",
-  "private": true,
-  "version": "0.7.21",
-  "dependencies": {
-    "@openai/codex-sdk": "0.149.0"
-  }
+    "name":  "agent-tui-orchestrator",
+    "private":  true,
+    "version":  "0.0.1",
+    "dependencies":  {
+                         "@openai/codex-sdk":  "0.149.0"
+                     }
 }

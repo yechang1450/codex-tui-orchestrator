@@ -1,5 +1,5 @@
 TN:
-SF:scripts\codex-tui-orchestrator-force.mjs
+SF:scripts\agent-tui-orchestrator-force.mjs
 FN:40,resolveWorkspace
 FN:53,isRegularFile
 FN:54,armed
@@ -281,7 +281,7 @@ BRF:31
 BRH:16
 end_of_record
 TN:
-SF:scripts\codex-tui-orchestrator-preflight.mjs
+SF:scripts\agent-tui-orchestrator-preflight.mjs
 FN:1,(empty-report)
 FNF:1
 FNH:0

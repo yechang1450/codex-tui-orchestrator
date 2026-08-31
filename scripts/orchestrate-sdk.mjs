@@ -45,6 +45,7 @@
  */
 import { Codex } from "@openai/codex-sdk";
 import { spawn, spawnSync } from "node:child_process";
+import { resolveAgent } from "./agent.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, openSync, readSync, closeSync, renameSync } from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
@@ -69,6 +70,8 @@ const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
 const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
 const EFFORT = process.env.ORCH_EFFORT || "high";
+// —— Agent 抽象（v0.0.1）：识别当前 agent（默认 codex）+ 本地 cache 其专属配置 ——
+const AGENT = resolveAgent();
 // 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
 // 但允许用户收紧（ORCH_SANDBOX=workspace-write / read-only，ORCH_APPROVAL=on-request）。
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
@@ -496,7 +499,7 @@ async function runPrototypeGate(title, prompt) {
 
 // Enforcement: once the orchestrator is engaged, mark that real executions are gated. The
 // sanction engine is --run-windows (a real, visible, interactive TUI window). headless --run/--exec
-// is additionally hard-gated inside this file (needs ORCH_ALLOW_HEADLESS=1). codex-tui-orchestrator-force.mjs reads
+// is additionally hard-gated inside this file (needs ORCH_ALLOW_HEADLESS=1). agent-tui-orchestrator-force.mjs reads
 // this marker: from a NON-window context it refuses real-execution kinds and tells the caller to
 // route through --run-windows. A sanctioned window sets $env:CODEX_ORCH_WINDOW=1 (in its launcher)
 // so it passes the guard.
@@ -1117,7 +1120,7 @@ async function main() {
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
     const prompt =
-      "这是 codex-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
+      "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
       "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     spawnVisibleWindow(lp, "selftest-close");
@@ -1194,7 +1197,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 codex-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：以「【本块唯一标识】 完成」开头，说明本块做了什么、每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
+    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 agent-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：以「【本块唯一标识】 完成」开头，说明本块做了什么、每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
 
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
@@ -1472,7 +1475,7 @@ async function main() {
     // REAL work is --run-windows (a real visible TUI window). Opt-in via ORCH_ALLOW_HEADLESS=1 only
     // for pure, windowless automation that the user has explicitly sanctioned.
     if (process.env.ORCH_ALLOW_HEADLESS !== "1") {
-      console.error("[orchestrator] REFUSED: headless --run/--exec is disabled by codex-tui-orchestrator enforcement. Real work must go through --run-windows (a real, visible, interactive TUI window). Set ORCH_ALLOW_HEADLESS=1 only for pure automation you explicitly want windowless.");
+      console.error("[orchestrator] REFUSED: headless --run/--exec is disabled by agent-tui-orchestrator enforcement. Real work must go through --run-windows (a real, visible, interactive TUI window). Set ORCH_ALLOW_HEADLESS=1 only for pure automation you explicitly want windowless.");
       process.exitCode = 1;
       return;
     }

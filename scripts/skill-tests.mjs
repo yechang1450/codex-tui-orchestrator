@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 /**
- * Per-skill smoke tests for codex-tui-orchestrator.
+ * Per-skill smoke tests for agent-tui-orchestrator.
  * Runs read-only checks for every capability; never opens a real TUI window.
  * Results written to C:\workspace\temp\orchestrator-skill-tests.json (or $ORCH_TEST_OUT).
  */
@@ -17,7 +17,7 @@ const WRAP = path.join(repoRoot, 'temp');
 
 // The 13 skills (entry + 12 capabilities).
 const SKILLS = [
-  'codex-tui-orchestrator', 'conflict-lock', 'decompose-cache', 'decompose-classify',
+  'agent-tui-orchestrator', 'conflict-lock', 'decompose-cache', 'decompose-classify',
   'dependency-order', 'enforcement', 'gather-results', 'hygiene', 'prototype-gate',
   'prototype-llm', 'registry', 'verify', 'window-runtime',
 ];
@@ -83,25 +83,25 @@ results.prototype_llm = {
 results.prototype_llm.sdkAlwaysOn = /ORCH_PROTOTYPE_LLM=0/.test(fs.readFileSync(sdkFile, 'utf8')) ? 'FAIL' : 'PASS';
 
 // ---- 5) enforcement: force.mjs --status + --verify (read-only) ----
-const forceFile = path.join(repoRoot, 'scripts', 'codex-tui-orchestrator-force.mjs');
+const forceFile = path.join(repoRoot, 'scripts', 'agent-tui-orchestrator-force.mjs');
 results.orchestrate_sdk.forceParse = nodeCheck(forceFile) ? 'PASS' : 'FAIL';
-const st = run(process.execPath, ['codex-tui-orchestrator-force.mjs', '--status']);
+const st = run(process.execPath, ['agent-tui-orchestrator-force.mjs', '--status']);
 results.enforcement = { cli: st.status === 0 ? 'PASS' : 'FAIL', stdout: st.stdout.slice(0, 200) };
 
 // verify: run against a file inside the workspace so attribution logic truly executes.
 // Expected non-zero exit with a clear VIOLATION/INDETERMINATE/PASS verdict is a PASS for the tool itself.
 const wsFile = path.join(process.env.WORKSPACE_DIR || WRAP, 'AGENTS.md');
-const vf = st.status === 0 && fs.existsSync(wsFile) ? run(process.execPath, ['codex-tui-orchestrator-force.mjs', '--verify', wsFile]) : null;
+const vf = st.status === 0 && fs.existsSync(wsFile) ? run(process.execPath, ['agent-tui-orchestrator-force.mjs', '--verify', wsFile]) : null;
 results.verify = {
   cli: vf && /VIOLATION|INDETERMINATE|PASS|attribution/i.test(vf.stdout) ? 'PASS' : (vf ? 'FAIL' : 'N/A'),
   stdout: vf ? vf.stdout.slice(0, 200) : 'skipped',
 };
 
 // ---- 6) preflight: read kind should pass (no windows), real kind REFUSED (fail-closed) ----
-const preFile = path.join(repoRoot, 'scripts', 'codex-tui-orchestrator-preflight.mjs');
+const preFile = path.join(repoRoot, 'scripts', 'agent-tui-orchestrator-preflight.mjs');
 results.orchestrate_sdk.preflightParse = nodeCheck(preFile) ? 'PASS' : 'FAIL';
-const pr = run(process.execPath, ['codex-tui-orchestrator-preflight.mjs', 'read']);
-const pw = run(process.execPath, ['codex-tui-orchestrator-preflight.mjs', 'write']);
+const pr = run(process.execPath, ['agent-tui-orchestrator-preflight.mjs', 'read']);
+const pw = run(process.execPath, ['agent-tui-orchestrator-preflight.mjs', 'write']);
 results.enforcement.preflightRead = pr.status === 0 ? 'PASS' : 'FAIL';
 results.enforcement.preflightRealRefused = pw.status !== 0 ? 'PASS' : 'FAIL';
 
@@ -117,10 +117,10 @@ results.window_runtime = { doc: /launcher|spawn|watchdog|closeWindow/.test(winRt
 results.gather_results = { doc: /poll-windows|require-all-success/.test(gather) && !/on\|off/.test(gather) ? 'PASS' : 'FAIL' };
 results.hygiene = { doc: /用完即弃|清理|KEEP_TEMP/.test(hygiene) ? 'PASS' : 'FAIL' };
 
-// ---- 9) dependency-order + conflict-lock + codex-tui-orchestrator doc-level ----
+// ---- 9) dependency-order + conflict-lock + agent-tui-orchestrator doc-level ----
 const dep = fs.readFileSync(path.join(skillsDir, 'dependency-order', 'SKILL.md'), 'utf8');
 const cl = fs.readFileSync(path.join(skillsDir, 'conflict-lock', 'SKILL.md'), 'utf8');
-const entry = fs.readFileSync(path.join(skillsDir, 'codex-tui-orchestrator', 'SKILL.md'), 'utf8');
+const entry = fs.readFileSync(path.join(skillsDir, 'agent-tui-orchestrator', 'SKILL.md'), 'utf8');
 results.dependency_order = { doc: /\u4f9d\u8d56|dependsOn|wave/.test(dep) && !/on\|off/.test(dep) ? 'PASS' : 'FAIL' };
 results.conflict_lock = { doc: /\u51b2\u7a81|conflictKeys|\u9501/.test(cl) && !/on\|off/.test(cl) ? 'PASS' : 'FAIL' };
 results.codex_tui_orchestrator = { doc: /\u65e0\u5f00\u5173|\u6052\u542f\u7528|--run-windows/.test(entry) && !/\u5f00\u5173\uff08\u9ed8\u8ba4\u5168\u5f00/.test(entry) ? 'PASS' : 'FAIL' };

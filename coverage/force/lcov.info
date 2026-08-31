@@ -1,5 +1,5 @@
 TN:
-SF:scripts\codex-tui-orchestrator-force.mjs
+SF:scripts\agent-tui-orchestrator-force.mjs
 FN:40,resolveWorkspace
 FN:53,isRegularFile
 FN:54,armed

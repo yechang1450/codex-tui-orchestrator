@@ -1,8 +1,8 @@
 ---
-name: codex-tui-orchestrator
+name: agent-tui-orchestrator
 description: 把多部分请求按并发冲突拆成 linked/independent 块，通过可见自动关闭的 Codex TUI 窗真实并发执行（独立并行、联动串行）；纯只读/分析自动 inline 不弹窗。Use when a request contains several real, executable steps that should run concurrently without conflict; read-only analysis stays inline.
 ---
-# Codex TUI Orchestrator (entry / dispatcher)
+# Agent TUI Orchestrator (entry / dispatcher)
 
 引擎在 `scripts/orchestrate-sdk.mjs`；本文件是**入口**：按任务场景分发 + 遵守行为纪律（`conduct`），并把**全部能力**恒启用（无用户可关闭的开关）。
 
@@ -15,7 +15,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 2. **保轮询（gather-results）**：`--run-windows` 之后**必须**运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`；只有它返回 0 才能结束本轮（全部块 status ∈ 成功集）。非 0=仍有未成功→继续等/重试/如实上报，绝不提前收尾。
 3. **每窗自查 + 真实汇报**：每窗结束前必须完成读回/回归/无乱码自验，汇报以「【本块唯一标识】…完成」开头；自验不过=该窗未完成，禁止虚报。
 4. **不得先问是否执行**：凡真实执行且用户已授权（出现「继续/全面推进/允许执行/同意」等），直接 `--run-windows`，严禁「要不要我弹窗/需要授权吗」类二次确认。能并发干的分组，用户说「继续/继续全面推进」后应一次性并发干。
-5. **被动调用**：未显式 `@codex-tui-orchestrator` 的**真实执行**，也必须主动检测并路由到 `--run-windows`；只有只读/纯方案/纯解答留在主对话。
+5. **被动调用**：未显式 `@agent-tui-orchestrator` 的**真实执行**，也必须主动检测并路由到 `--run-windows`；只有只读/纯方案/纯解答留在主对话。
 6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完，禁止「这条下轮做/先做几项剩下再说」。
 8. 留痕：经本 skill 完成的真实执行后，须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
@@ -46,8 +46,8 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - `node orchestrate-sdk.mjs --plan "<request>"` → 只拆块打印（只读）。
 - `node orchestrate-sdk.mjs --status [--readonly]` → 活窗/锁。
 - `node orchestrate-sdk.mjs --clear-cache` → 清拆块缓存。
-- `node scripts/codex-tui-orchestrator-force.mjs --status|--assert <kind>|--enable|--disable|--verify <file>` → 执行门禁与归因。
-- `node scripts/codex-tui-orchestrator-preflight.mjs <kind>` → 未 armed 时按 kind fail-closed 的独立门禁。
+- `node scripts/agent-tui-orchestrator-force.mjs --status|--assert <kind>|--enable|--disable|--verify <file>` → 执行门禁与归因。
+- `node scripts/agent-tui-orchestrator-preflight.mjs <kind>` → 未 armed 时按 kind fail-closed 的独立门禁。
 
 ## 依赖
 - Node 22+、Codex CLI、Windows Terminal/console。

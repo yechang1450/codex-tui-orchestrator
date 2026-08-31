@@ -1,0 +1,16 @@
+{
+  "agent:codex": {
+    "id": "codex",
+    "label": "Codex CLI",
+    "detectBin": [
+      "codex"
+    ],
+    "modelEnv": "ORCH_MODEL",
+    "effortEnv": "ORCH_EFFORT",
+    "completionMarker": "__ORCH_DONE__",
+    "native": true,
+    "bin": "codex",
+    "available": true,
+    "resolvedAt": "2026-08-31T12:32:12.608Z"
+  }
+}
