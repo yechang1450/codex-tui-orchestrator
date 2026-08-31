@@ -1,6 +1,6 @@
 ---
 name: enforcement
-description: 执行门禁：force.mjs --enable/--status/--assert + 未 armed 时按 kind fail-closed（真实 kind REFUSED）+ headless 硬关。Use to decide whether a real execution is sanctioned.
+description: 执行门禁：force.mjs --enable/--status/--assert + 未 armed 时按 kind fail-closed（真实 kind REFUSED）+ headless 硬关。Use when decide whether a real execution is sanctioned.
 ---
 # Enforcement (gate)
 - 职责：`armEnforcement()` 写 `temp/.orchestrator-enabled`；`--assert <kind>` 只在**被授权的窗口**（CODEX_ORCH_WINDOW=1）里放行；headless `--run/--exec` 需 `ORCH_ALLOW_HEADLESS=1`；`codex-tui-orchestrator-preflight.mjs` 未 armed 时按 kind fail-closed（真实 kinds REFUSED+exit1，只读放行）。

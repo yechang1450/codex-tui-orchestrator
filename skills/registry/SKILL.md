@@ -1,6 +1,6 @@
 ---
 name: registry
-description: 跨进程 windows/locks 状态库 + 互斥锁 + 全事务写（updateWindows/updateLocks 锁内追加）。Use as the cross-process state store for live windows and locks.
+description: 跨进程 windows/locks 状态库 + 互斥锁 + 全事务写（updateWindows/updateLocks 锁内追加）。Use when the cross-process state store for live windows and locks.
 ---
 # Registry
 - 职责：共享 `temp/orchestrator-windows.json` / `orchestrator-locks.json`；`withRegistryLock`（独占锁文件）串行写；`updateWindows/updateLocks` 锁内 load+mutate+save，只追加不整表覆盖。

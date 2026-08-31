@@ -1,6 +1,6 @@
 ---
 name: prototype-gate
-description: 确定性可行性前置门禁：L1 空判 + L2 复杂度分类；简单块直接 PASS，不调 LLM。Use as the deterministic feasibility gate before spawning a block.
+description: 确定性可行性前置门禁：L1 空判 + L2 复杂度分类；简单块直接 PASS，不调 LLM。Use when the deterministic feasibility gate before spawning a block.
 ---
 # Prototype Gate (deterministic)
 - 职责：每个块 spawn 前做**确定性**可行性判断：L1 空/无动作→拒绝；L2 复杂度分类（多句/含分析/长指令→复杂）。
