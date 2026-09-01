@@ -38,8 +38,10 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 
 ## 能力细节（内嵌实现约定）
 ### 拆块分类
-- 请求 → `{blocks:[{type:linked|independent,title,dependsOn,conflictKeys,tasks}]}`；同时「只读→inline」预判。
-- 只读门禁：命中只读词（分析/方案/看看/说明/为什么/如何…）且无真实动作词（写/改/建/装/测/重启/删/还原/配置…）→ 输出 inline、**不弹窗、exit 0**。
+- 两段式：**LLM 先定性**（扁平任务清单 `{tasks:[{id,summary,kind,project,conflict_hints,depends_on,feasible,already_done}]}`，字段少、禁工具、纯 JSON）→ **确定性分块引擎**（代码按 project 分组、工具独立、模块→项目 hint 归位、依赖映射、可行性过滤）。
+- 模块→项目 hint 经 `ORCH_TASK_HINTS`（JSON 映射，如 `{"会员管理":"82"}`）传入，把「没写项目号但属于某项目」的任务归位。
+- 入口只读门禁：明显两端走确定性快判，歧义交 LLM；fail-safe 判真实执行。
+- **autosafe 检测**：拆成单一/串行块时，不弹窗，返回 `{"mode":"inline",...}` 由发起对话就地串行执行。
 - 触发：任一 `--run-windows` 请求。
 
 ### 冲突锁

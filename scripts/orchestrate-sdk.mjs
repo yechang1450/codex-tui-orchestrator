@@ -143,54 +143,92 @@ function threadBase() {
   };
 }
 
-// 拆块 LLM 的强制输出 Schema：让模型只产出结构化 JSON（配合 outputSchema），不再 agentic 乱读文件。
-const DECOMPOSE_OUTPUT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    blocks: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        properties: {
-          type: { type: "string", enum: ["linked", "independent"] },
-          title: { type: "string" },
-          dependsOn: { type: "array", items: { type: "string" } },
-          conflictKeys: { type: "array", items: { type: "string" } },
-          tasks: {
-            type: "array",
-            items: {
-              type: "object",
-              properties: { id: { type: "string" }, title: { type: "string" }, prompt: { type: "string" } },
-              required: ["id", "title", "prompt"]
-            }
-          }
-        },
-        required: ["type", "title", "tasks"]
-      }
-    }
-  },
-  required: ["blocks"]
-};
+// ============================================================================
+// 两段式拆块：阶段 A = LLM 定性（扁平任务清单）；阶段 B = 确定性分块引擎（代码）。
+// LLM 只做它擅长的「语义定性」（归属/依赖/可行性），代码负责确定性的分组/键规范化/wave，
+// 既利用 LLM 的语义判断，又不依赖它稳定产出复杂嵌套 blocks JSON（此前 DeepSeek 常 agentic/空输出）。
+// ============================================================================
 
-function decomposePrompt(request) {
+// 模块→项目 归属提示（通用、非硬编码）：调用方经 ORCH_TASK_HINTS 传 JSON 映射，
+// 例 {"会员管理":"82","商品与分类":"82","订单管理":"82"}。用于把「没写项目号但属于某项目」的任务归位。
+function resolveHints() {
+  try {
+    const raw = process.env.ORCH_TASK_HINTS;
+    if (raw && raw.trim()) { const j = JSON.parse(raw); if (j && typeof j === "object" && !Array.isArray(j)) return j; }
+  } catch { /* ignore */ }
+  return {};
+}
+
+// 阶段 A：LLM 定性提示词（扁平任务清单，不分块）。关键：字段少、只定性、禁工具、纯 JSON。
+function classifyPrompt(request, hints = {}) {
+  const hintText = Object.keys(hints || {}).length
+    ? "\n已知模块→项目映射（校正归属用，JSON）：" + JSON.stringify(hints)
+    : "";
   return (
-    "你是任务编排器。把下面这个多任务请求拆成「联动/独立」任务块，只输出 JSON。" +
-    "判定标准是**能否同时执行而不冲突**：若两个任务同时跑会出严重问题（改同一文件/配置/服务/端口/DB、一个有依赖、一个喂给另一个、有先后关系）→ 它们联动，合并成一个块、串行做、只开一个窗；若某任务和任何别的任务同时跑都毫无问题（各改各的文件/子系统、互不依赖）→ 它独立，**单独成一个块、并行开窗**。" +
-    "⚠️ 不要过度合并：**只要两个任务碰的是不相干的资源、互不依赖，就必须各自独立成块**，不要因为“看起来像一回事”就把它们并进一个串行块。宁可多个独立块并行，也别把能并行的任务压成一个串行块。" +
-    "⚠️ 只有两种情形才串行：①两个任务同时跑会冲突(改同一文件/同一服务/同一端口/同一DB/同一资源)；②一个任务必须等另一个完成(有前后依赖)。**除这两种外一律独立并行开窗。严禁把不同项目、不同资源、不相关的任务合并或上锁**。" +
-    "冲突键必须精确：用 `file:<精确路径>`、`port:<端口>`、`service:<服务名>`、`db:<库>`，**绝不要用宽泛目录(如 dir:C:\\Users\\fixture-user、dir:C:\\workspace、C:\\Users\\fixture-user 根)或模糊模式**，否则会把不相干的块误锁成串行。" +
-    "⚠️ **请求文本里若写了「必须串行/依次做/全部完成再汇报」这类，只是用户的原始建议，不能照搬**；你必须按上面「真实冲突/依赖」规则**重新判断**是否为串行，并给出依据。" +
-    "⚠️ **每块在决定是否执行前，先做一次可行性/原型速检（read-only）**：该任务当前是否已达成（如某项目是否已是目标版本/某页是否已实现）、是否可达/可行。**已达成或无需做的，不作为一个真实执行块（跳过，不弹窗）**；只有真正需要改/建的才作为块。" +
-    "请先列出所有任务编号，再给块划分（每个块可含多条任务：仅联动块内按顺序做，独立块内只放一条任务）。不要执行，只给计划。" +
-    "**依赖串行**：若某个块必须等**另一个块完成**才能开始（依赖其产出/结果），在该块的 `dependsOn` 数组里列出**那个前置块的 `title`**（一个或多个）；无依赖则省 `dependsOn` 或给空数组。依赖必须体现为 `dependsOn`，它决定执行顺序（前置块完成后才开此块），与 conflictKeys（冲突才上锁）是两回事。" +
-    "**每块还必须给 `conflictKeys` 数组**：该块会碰到的资源标识，用于跨窗冲突检测（若另一运行中的窗也碰到同一资源，二者就可能冲突、应上锁）。资源标识用 `file:<路径>`、`port:<端口>`、`service:<服务名>`、`dir:<目录>` 这类前缀。**宁可多列、别漏**——漏列会把冲突判成不冲突。" +
-    '格式必须严格为合法 JSON：{"blocks":[{"type":"linked"|"independent","title":"...","dependsOn":["<前置块title>",...],"conflictKeys":["file:...",...],"tasks":[{"id":"...","title":"...","prompt":"可独立执行的提示"}]}]}\n' +
-    "⚠️ **响应规则（必须遵守）**：只输出一个 JSON 对象，禁止调用任何工具/读取任何文件/执行任何命令/搜索/联网；禁止输出任何 JSON 之外的前置或后置文字，禁止把 JSON 包进 Markdown 代码块。输出必须能被 JSON.parse 直接解析。" +
-    "请求：" + request
+    "你是任务定性分析器，只做一件事：把下面请求拆成「扁平任务清单」，不要分块、不要合并、不要执行。" +
+    "每个自然任务一条，字段如下：id(字符串编号)、summary(保留原意的一句话)、kind(project|tool|system)、" +
+    "project(80|81|82|83，只在请求里明确写了才填，否则填 null)、" +
+    "hint(该任务涉及模块/资源关键词，如 会员管理、商品、订单)、" +
+    "conflict_hints(会碰到的资源字符串数组，如 [\"db:订单\",\"dir:管理端\"]，无则 [])、" +
+    "depends_on(依赖的其它任务 id 数组，无则 [])、" +
+    "feasible(是否可行，布尔)、already_done(是否已达成无需做，布尔)。" +
+    "规则：不遗漏任何任务；不合并；请求没写项目号时 project 必须为 null，交给模块映射校正，不许猜；" +
+    "禁止调用任何工具/读文件/搜索/联网；只输出一个 JSON 对象 {\"tasks\":[...]}，能被 JSON.parse 直接解析，不要 Markdown 代码块、不要任何前后缀文字。" +
+    hintText + "\n请求：" + request
   );
 }
+
+// 阶段 B：确定性分块引擎。消费扁平任务清单 -> 产出 blocks（可行性过滤 + 模块归位 + 工具独立 + 未知串行 + 依赖映射）。
+function buildBlocksFromTasks(tasks, hints = {}) {
+  tasks = Array.isArray(tasks) ? tasks : [];
+  const hintMap = hints || {};
+  const byProj = {};      // proj-N -> [item]
+  const toolItems = [];   // kind=tool/system
+  const unkItems = [];    // 无归属 -> linked 串行（绝不并行孤儿）
+  for (const t of tasks) {
+    if (!t || typeof t !== "object") continue;
+    if (t.already_done === true || t.feasible === false) continue; // 已达成/不可行 -> 跳过
+    const summary = String(t.summary || t.prompt || "").trim();
+    if (!summary) continue;
+    let p = String(t.project || "").replace(/[^0-9]/g, "");
+    if (!p) for (const [mod, pn] of Object.entries(hintMap)) { if (summary.includes(mod)) { p = String(pn).replace(/[^0-9]/g, ""); break; } }
+    const item = { id: String(t.id || "t" + (byProjKeyCount(byProj) + toolItems.length + unkItems.length + 1)), summary, kind: String(t.kind || ""), depends_on: Array.isArray(t.depends_on) ? t.depends_on.map(String) : [], conflict_hints: Array.isArray(t.conflict_hints) ? t.conflict_hints.map(String) : [] };
+    if (p) (byProj["proj-" + p] = byProj["proj-" + p] || []).push(item);
+    else if (item.kind === "tool" || item.kind === "system") toolItems.push(item);
+    else unkItems.push(item);
+  }
+  const blocks = [];
+  const blockItems = [];   // 与 blocks 平行的源 item 数组，用于依赖映射
+  for (const [title, arr] of Object.entries(byProj)) {
+    blocks.push({ type: "independent", title, dependsOn: [], conflictKeys: ["dir:" + title], tasks: [{ id: "t" + (blocks.length + 1), title, prompt: "仅处理项目 " + title + "。任务：" + arr.map((a) => a.summary).join("；") + "。不要处理其它项目编号。" }] });
+    blockItems.push(arr);
+  }
+  for (const it of toolItems) {
+    const title = "task-" + (blocks.length + 1);
+    blocks.push({ type: "independent", title, dependsOn: [], conflictKeys: it.conflict_hints.map((h) => (h.includes(":") ? h : "file:" + h)), tasks: [{ id: "t" + (blocks.length + 1), title, prompt: it.summary }] });
+    blockItems.push([it]);
+  }
+  if (unkItems.length) {
+    const title = "linked-ambiguous";
+    blocks.push({ type: "linked", title, dependsOn: [], conflictKeys: [], tasks: unkItems.map((it) => ({ id: "t" + (blocks.length + 1), title: it.summary.slice(0, 40), prompt: it.summary })) });
+    blockItems.push(unkItems);
+  }
+  // 依赖映射：item.depends_on (task id) -> 所在块 title
+  for (let i = 0; i < blocks.length; i++) {
+    const deps = new Set();
+    for (const it of blockItems[i]) {
+      for (const depId of it.depends_on) {
+        for (let j = 0; j < blocks.length; j++) {
+          if (j !== i && blockItems[j].some((x) => x.id === depId)) { deps.add(blocks[j].title); break; }
+        }
+      }
+    }
+    blocks[i].dependsOn = [...deps];
+  }
+  return blocks;
+}
+
+function byProjKeyCount(map) { let n = 0; for (const k in map) n += (map[k] || []).length; return n; }
 
 /**
  * 【兜底】当 LLM 拆块失败/超时且重试耗尽时，保证 --run-windows 仍能真正拉起而不是死掉：
@@ -239,23 +277,26 @@ async function decomposeSafely(request) {
     saveDecompose(request, sb.blocks);
     return normalizePlan(sb.blocks);
   }
-  // 2) LLM 分类（read-only），失败/超时则重试。
+  // 2) 两段式：LLM 定性（扁平任务清单）→ 确定性分块引擎。失败/超时则重试。
+  const hints = resolveHints();
   const attempts = Math.max(1, Number(process.env.ORCH_DECOMPOSE_RETRIES || 2));
   let lastErr = "";
   let seenNoJson = false;
   for (let i = 0; i < attempts; i++) {
     try {
-      const res = await runThreadPrompt(decomposePrompt(request), { sandboxMode: "read-only" });
+      const res = await runThreadPrompt(classifyPrompt(request, hints), { sandboxMode: "read-only" });
       let plan;
       try {
-        plan = normalizePlan(extractJson(res.final || ""));
+        const tasks = extractTasks(res.final || "");
+        plan = buildBlocksFromTasks(tasks, hints);
+        if (!plan || !plan.length) throw new Error("plan.blocks empty");
       } catch (e2) {
-        if (/no JSON in plan output|plan\.blocks empty/.test(e2 && e2.message ? e2.message : String(e2))) seenNoJson = true;
+        if (/no JSON in classify output|no tasks array|plan\.blocks empty/.test(e2 && e2.message ? e2.message : String(e2))) seenNoJson = true;
         if (i === attempts - 1) throw e2;
         lastErr = e2 && e2.message ? e2.message : String(e2);
         continue;
       }
-      if (plan && plan.length) { saveDecompose(request, plan); return plan; }
+      if (plan && plan.length) { saveDecompose(request, plan); return normalizePlan(plan); }
       lastErr = lastErr || "(extracted empty plan)";
       if (i === attempts - 1) throw new Error(lastErr);
     } catch (e) {
@@ -263,16 +304,23 @@ async function decomposeSafely(request) {
     }
   }
   console.warn("[orchestrator] decompose LLM failed after " + attempts + " attempt(s): " + lastErr +
-    (seenNoJson ? " (no valid JSON)" : "") + " -> fallback to ONE serialized window.");
+    (seenNoJson ? " (no valid JSON)" : "") + " -> fallback to single serial block (autosafe detect).");
   return normalizePlan(fallbackPlan(request).blocks);
 }
 
-function extractJson(raw) {
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("no JSON in plan output: " + raw.slice(0, 300));
-  const plan = JSON.parse(m[0]);
-  if (!Array.isArray(plan.blocks) || plan.blocks.length === 0) throw new Error("plan.blocks empty");
-  return splitIndependentBlocks(plan.blocks);
+function extractTasks(raw) {
+  const s = String(raw || "");
+  const stripped = s.replace(/```(?:json)?/gi, "").trim();
+  let parsed;
+  try {
+    const m = stripped.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(m ? m[0] : stripped);
+  } catch (e) {
+    throw new Error("no JSON in classify output: " + s.slice(0, 300));
+  }
+  if (Array.isArray(parsed)) return parsed;
+  if (parsed && Array.isArray(parsed.tasks)) return parsed.tasks;
+  throw new Error("no tasks array in classify output");
 }
 
 /**
@@ -389,20 +437,6 @@ function trySingleBlock(request) {
 
 function splitSentences(request) {
   return String(request).split(/[。；;\n]+/).map((s) => s.trim()).filter(Boolean);
-}
-
-function splitIndependentBlocks(blocks) {
-  const out = [];
-  for (const b of blocks) {
-    if (b.type === "independent" && Array.isArray(b.tasks) && b.tasks.length > 1) {
-      for (const t of b.tasks) {
-        out.push({ ...b, title: t.title || b.title, tasks: [t] });
-      }
-    } else {
-      out.push(b);
-    }
-  }
-  return out;
 }
 
 async function runThreadPrompt(prompt, opts = {}) {
@@ -1256,6 +1290,11 @@ async function main() {
     console.log("[orchestrator] decomposing (read-only)...");
     const plan = await decomposeSafely(request);
     console.log("[orchestrator] blocks=" + plan.length);
+    // autosafe 检测：只有单一/串行块时无需弹窗——直接在发起对话中就地执行（不弹 TUI 窗）。
+    if (plan.length < 2) {
+      console.log(JSON.stringify({ mode: "inline", blocks: plan, reason: "单一/串行块：直接在发起对话中就地执行（不弹 TUI 窗）" }));
+      return;
+    }
     // 全事务写 registry：只追加本批新增记录，绝不整表覆盖，避免跨进程 lost-update。
     let pendingWins = [];
     let pendingLocks = [];
@@ -1603,4 +1642,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt };
