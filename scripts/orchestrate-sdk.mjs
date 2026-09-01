@@ -764,12 +764,10 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "          if ($f.FullName -ne $match) { continue }",
     "          try {",
             "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
-            "            # 汇报驱动关窗：只在「agent 最终汇报」（agent_message/assistant 行含本窗 token）出现后才关；",
-            "            # token 是 ASCII 且全局唯一，prompt 里虽有但 prompt 不是 agent_message，故不会误判。",
-            "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) })",
-            "            if ($report) {",
+            "            if (($tail -join \"`n\").Contains('task_complete')) {",
             "              $age = [TimeSpan]::Zero; try { $age = (Get-Date) - $f.LastWriteTime } catch { }",
-            "              # 稳定 ~6s 再关，给父进程足够时间捕获汇报，避免关窗丢汇报。",
+            "              # 等回合真正完成(task_complete)且稳定~6s 再关：确保父进程在此期间已从 rollout 抓到最终汇报。",
+            "              # 不要仅凭“agent 消息含 token”就关——agent 可能在计划/中间消息里也带 token，导致误关/提前结束。",
             "              if ($age.TotalSeconds -gt 6) {",
             "                $kids = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -eq $rootPid -and $_.ProcessId -ne $PID }",
             "                foreach ($k in $kids) { taskkill /PID $($k.ProcessId) /T /F 2>$null | Out-Null }",
@@ -1457,24 +1455,25 @@ async function main() {
         summary[s.key] = { title: s.title, status: tagged, exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
         console.log("=== " + s.key + " " + s.title + " ===");
         if (res.done) {
-          // 自动关闭锚点 = 已抓到汇报 (report captured). 抓不到就不关，先继续从 rollout 重抓。
+          // 自动关闭锚点 = 已抓到【本块自己的完成汇报】(自己的 matchToken + 完成)。抓不到就不算 done、不关窗，继续轮询。
           let text = res.text || "";
           const placeholder = /no session rollout matched|no result captured/.test(text);
           if (!text || placeholder) {
             text = await waitForReportText(matchKey, resultFile, 60000);
-            if (text) summary[s.key].result = text.trim().slice(0, 2000);
           }
-          if (text && !/no session rollout matched|no result captured/.test(text)) {
-            // 只要抓到真实汇报即认定完成——窗内 codex 的退出码(exitCode)仅作诊断，不影响成功判定。
+          const ownReport = s.matchToken && text.includes(s.matchToken) && text.includes("完成");
+          if (ownReport) {
+            summary[s.key].result = text.trim().slice(0, 2000);
             summary[s.key].status = "done";
             console.log(trunc(text, 1600));
-            console.log("  report CAPTURED -> closing [" + s.title + "] in " + closeDelayMs + "ms...");
+            console.log("  own completion report CAPTURED -> closing [" + s.title + "] in " + closeDelayMs + "ms...");
             await new Promise((r) => setTimeout(r, closeDelayMs));
-            await closeWindow(s.pidf); // 汇报已安全保存 -> 优雅关窗：只杀 codex 子进程，launcher 跑 exit 0，WT 自动关
+            await closeWindow(s.pidf);
           } else {
-            // 没抓到真实汇报就不能算成功：非零退出=失败(崩溃/报错)，0/未知=未捕获(不冒充成功)。
-            summary[s.key].status = (res.exitCode && res.exitCode !== 0) ? "failed" : "uncaptured";
-            console.log("  !! report not captured for [" + s.title + "] after retry; status=" + summary[s.key].status + " (exitCode=" + (res.exitCode ?? "?") + "); leaving window to self-close (launcher watchdog), NOT force-closing.");
+            // 抓到文本但不是本块自己的完成汇报（跨窗串了/只是计划草稿）——不算成功，不关窗，保持轮询。
+            if (text) summary[s.key].result = text.trim().slice(0, 2000);
+            summary[s.key].status = "uncaptured";
+            console.log("  !! own completion report NOT captured for [" + s.title + "] (text=" + String(text).slice(0, 60) + "); keeping polling, NOT closing." + (res.exitCode ? " (exitCode=" + res.exitCode + ")" : ""));
           }
         } else {
           console.log("  timeout; window [" + s.title + "] still open (task may still be running).");
@@ -1560,12 +1559,10 @@ async function main() {
           const s = summary[k];
           if (!s) return true;
           const st = String(s.status || "");
-          if (st === "preflight-failed" || st === "locked" || st === "unfinished" || st === "popup-failed") return false; // 被正确拦截/终态
-          const r = String(s.result || "");
-          // 纯按“全部任务的汇报是否都返回”判定：块有非空汇报（非占位）即视为已返回。
-          // 占位(no result captured / no session rollout matched) 视为未返回 -> 继续轮询。
-          if (!r || /\(no result captured\)|no session rollout matched|no result captured/i.test(r)) return true;
-          return false;
+          // 只有真正 done、或明确被拦截/终态，才算“已解决”；uncaptured/failed/timeout 一律视为未解决 -> 继续轮询，绝不提前收尾。
+          if (st === "done") return false;
+          if (st === "preflight-failed" || st === "locked" || st === "unfinished" || st === "popup-failed") return false;
+          return true;
         });
         if (alive.length === 0 && unresolved.length === 0) break;
         // 兜底防呆死：所有窗已关闭(归零超30s)但仍剩未决块——窗已关且汇报没抓到，无法再进展，
