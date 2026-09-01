@@ -77,6 +77,8 @@ const AGENT = resolveAgent();
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = process.env.ORCH_APPROVAL || "never";
 const TMP = path.join(WORKSPACE, "temp");
+// plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
+const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".agents", "agent-tui-orchestrator");
 
 // Terminal hosting the visible Codex TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
@@ -255,7 +257,7 @@ function extractJson(raw) {
 // hardcoded project paths. Deterministic safety heuristic below is generic
 // (any mention of multiple distinct project-like dirs), not specific to build/80|81|82|83.
 // ---------------------------------------------------------------------------
-const DECOMPOSE_CACHE = path.join(TMP, "orchestrator-decompose-cache.json");
+const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
 function decomposeHash(request) {
   return crypto.createHash("sha1").update(String(request || "")).digest("hex");
 }
@@ -269,7 +271,7 @@ function loadDecomposeCache() {
   return { entries: {} };
 }
 function saveDecomposeCache(obj) {
-  try { mkdirSync(TMP, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
+  try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
 }
 function loadCachedDecompose(request) {
   const h = decomposeHash(request);
@@ -503,9 +505,9 @@ async function runPrototypeGate(title, prompt) {
 // this marker: from a NON-window context it refuses real-execution kinds and tells the caller to
 // route through --run-windows. A sanctioned window sets $env:CODEX_ORCH_WINDOW=1 (in its launcher)
 // so it passes the guard.
-const ORCH_ARMED = path.join(TMP, ".orchestrator-enabled");
+const ORCH_ARMED = path.join(STATE_DIR, ".orchestrator-enabled");
 function armEnforcement() {
-  try { mkdirSync(TMP, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
+  try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
 }
 
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
@@ -844,9 +846,9 @@ async function closeWindow(pidf) {
 // ---------------------------------------------------------------------------
 // Running-window registry + conflict locking (stability)
 // ---------------------------------------------------------------------------
-const WIN_REG = path.join(TMP, "orchestrator-windows.json");
-const LOCK_REG = path.join(TMP, "orchestrator-locks.json");
-const REG_LOCK = path.join(TMP, "orchestrator-registry.lock");
+const WIN_REG = path.join(STATE_DIR, "orchestrator-windows.json");
+const LOCK_REG = path.join(STATE_DIR, "orchestrator-locks.json");
+const REG_LOCK = path.join(STATE_DIR, "orchestrator-registry.lock");
 
 function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, ms); } catch { /* ignore */ } }
 // 跨进程独占锁：openSync 'wx' 原子创建；冲突则有限重试；finally 释放。用于串行化 registry 写，防并发丢失/半写。
@@ -869,7 +871,7 @@ function loadJson(file, fallback) {
   return fallback;
 }
 function saveJson(file, data) {
-  mkdirSync(TMP, { recursive: true });
+  mkdirSync(STATE_DIR, { recursive: true });
   const tmp = file + ".tmp-" + process.pid;
   try {
     writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");

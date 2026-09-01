@@ -46,8 +46,10 @@ function resolveWorkspace() {
 
 const WORKSPACE = resolveWorkspace();
 const TMP = path.join(WORKSPACE, "temp");
-const FLAG = path.join(TMP, ".orchestrator-enabled");
-const WINDOWS_REG = path.join(TMP, "orchestrator-windows.json");
+// plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
+const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".agents", "agent-tui-orchestrator");
+const FLAG = path.join(STATE_DIR, ".orchestrator-enabled");
+const WINDOWS_REG = path.join(STATE_DIR, "orchestrator-windows.json");
 
 // 拒绝符号链接/非常规文件，防止伪造/篡改 registry 或 marker（安全网）。
 function isRegularFile(p) { try { return lstatSync(p).isFile(); } catch { return false; } }
@@ -111,7 +113,7 @@ const mode = process.argv[2];
 
 function runCli() {
   if (mode === "--enable") {
-    mkdirSync(TMP, { recursive: true });
+    mkdirSync(STATE_DIR, { recursive: true });
     // 小标记直接用 writeFileSync 覆盖写，避免 tmp+rename→rm→rename 间隙内标记缺失的竞态。
     writeFileSync(FLAG, String(Date.now()), "utf8");
     console.log("enforcement ARMED: real executions must go through --run-windows (visible interactive TUI).");
@@ -223,4 +225,4 @@ function runCli() {
 const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
 if (isMain) runCli();
 
-export { armed, liveWindows, pidAlive, pidOf, WINDOWS_REG, TMP, FLAG };
+export { armed, liveWindows, pidAlive, pidOf, WINDOWS_REG, TMP, FLAG, STATE_DIR };

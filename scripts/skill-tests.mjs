@@ -7,6 +7,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFileSync, spawnSync } from 'node:child_process';
 
@@ -106,7 +107,7 @@ results.enforcement.preflightRead = pr.status === 0 ? 'PASS' : 'FAIL';
 results.enforcement.preflightRealRefused = pw.status !== 0 ? 'PASS' : 'FAIL';
 
 // ---- 7) registry viability: temp json path present logic ----
-const regFile = path.join(process.env.WORKSPACE_DIR || WRAP, 'orchestrator-windows.json');
+const regFile = path.join(process.env.ORCH_STATE_DIR || path.join(os.homedir(), '.agents', 'agent-tui-orchestrator'), 'orchestrator-windows.json');
 results.registry = { file: regFile, exists: fs.existsSync(regFile) ? 'yes' : 'no(cold-start ok)' };
 
 // ---- 8) window-runtime + gather-results + hygiene contract check (doc-level, since they need a real window) ----

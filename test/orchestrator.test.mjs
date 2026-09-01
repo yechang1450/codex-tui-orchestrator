@@ -48,7 +48,9 @@ test('poll-windows failures lists non-success blocks', () => {
 // force.mjs reads WORKSPACE_DIR at import; we set it before import and test helpers.
 const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-test-'));
 process.env.WORKSPACE_DIR = wsDir;
-const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG } = await import(importUrl(path.join(scripts, 'agent-tui-orchestrator-force.mjs')));
+const stDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-force-state-"));
+process.env.ORCH_STATE_DIR = stDir;
+const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG, STATE_DIR } = await import(importUrl(path.join(scripts, 'agent-tui-orchestrator-force.mjs')));
 test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
   // fresh workspace -> not armed, no windows
   assert.equal(armed(), false);
@@ -64,19 +66,20 @@ test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
   assert.equal(pidAlive(process.pid), false);
   assert.equal(pidAlive(99999999), false);
   // armed becomes true once the flag file exists with a numeric payload
-  fs.mkdirSync(path.join(wsDir, 'temp'), { recursive: true });
-  const flag = path.join(wsDir, 'temp', '.orchestrator-enabled');
+  fs.mkdirSync(stDir, { recursive: true });
+  const flag = path.join(stDir, '.orchestrator-enabled');
   fs.writeFileSync(flag, String(Date.now()), 'utf8');
   assert.equal(armed(), true);
   // WINDOWS_REG/TMP point under the temp workspace
   assert.equal(TMP, path.join(wsDir, 'temp'));
-  assert.ok(WINDOWS_REG.startsWith(TMP));
+  assert.ok(WINDOWS_REG.startsWith(STATE_DIR));
+  assert.equal(FLAG, path.join(STATE_DIR, '.orchestrator-enabled'));
 });
 
 test('force.mjs CLI --status/--assert read/--assert write', () => {
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-cli-'));
   try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir };
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
     // --status on empty workspace: armed=false, 0 windows
     const st = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--status'], { env });
     assert.equal(st.code, 0);
@@ -98,8 +101,8 @@ test('force.mjs CLI --status/--assert read/--assert write', () => {
 test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATION when armed', () => {
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-cli2-'));
   try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir };
-    const tmpDir = path.join(cliDir, 'temp');
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    const tmpDir = path.join(cliDir, 'state');
     fs.mkdirSync(tmpDir, { recursive: true });
     // arm enforcement
     fs.writeFileSync(path.join(tmpDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
@@ -124,10 +127,10 @@ test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATIO
 test('force.mjs CLI --enable arms enforcement', () => {
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-enable-'));
   try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir };
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
     const en = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--enable'], { env });
     assert.equal(en.code, 0);
-    const flag = path.join(cliDir, 'temp', '.orchestrator-enabled');
+    const flag = path.join(cliDir, 'state', '.orchestrator-enabled');
     assert.equal(fs.existsSync(flag), true);
   } finally {
     fs.rmSync(cliDir, { recursive: true, force: true });
