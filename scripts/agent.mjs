@@ -51,3 +51,18 @@ export function resolveAgent() {
 }
 
 export function agentCacheFile() { return CACHE_FILE; }
+// 主流 agent 通用启动参数（按 agent 各自 CLI 拼装；codex 保持原样）
+export function launchArgs(agentConfig, o = {}) {
+  const cwd = o.cwd || "";
+  const approval = o.approval || "never";
+  const sandbox = o.sandbox || "danger-full-access";
+  switch (String(agentConfig.id || "")) {
+    case "claude": return ["--cwd", cwd];
+    case "gemini": return ["-c", cwd];
+    case "opencode": return ["--cwd", cwd];
+    case "aichat": return ["-c", cwd, "-s"];
+    case "codex":
+    default: return ["--cd", cwd, "-a", approval, "--sandbox", sandbox];
+  }
+}
+
