@@ -637,6 +637,24 @@ function spawnVisibleWindow(lp, title) {
   console.log("spawned visible codex TUI: " + title);
 }
 
+// 弹窗后检测是否真正弹出：launcher 第一行就写 pid 文件；轮询其出现（最多 ~6s）。
+// 失败重试（上限 maxRetry，默认 3），仍失败返回 false（由调用方标记 popup-failed 并汇报）。
+async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3) {
+  for (let attempt = 1; attempt <= maxRetry; attempt++) {
+    spawnVisibleWindow(lp, title);
+    const deadline = Date.now() + 6000;
+    let ok = false;
+    while (Date.now() < deadline) {
+      if (existsSync(pidf)) { ok = true; break; }
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    if (ok) { if (attempt > 1) console.log("  [window] popped on attempt " + attempt + " for [" + title + "]"); return true; }
+    console.log("  [window] popup not detected (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
+  }
+  console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");
+  return false;
+}
+
 // Interactive-TUI launcher. The interactive `codex "prompt"` window does not exit on its own; the
 // orchestrator detects `task_complete` in the session rollout and robotically closes this process tree
 // (see closeWindow, which taskkills the whole tree and has a PowerShell fallback that also kills the
@@ -1366,7 +1384,12 @@ async function main() {
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
         const body = blockBody(r.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
-        spawnVisibleWindow(lp, r.title);
+        const popped = await spawnWindowWithRetry(lp, r.title, pidf);
+        if (!popped) {
+          summary[r.key] = { title: r.title, status: "popup-failed", exitCode: null, result: "(弹窗失败：多次尝试仍未出现窗口)" };
+          console.log("  POPUP-FAILED " + r.key + " -- window did not appear; not tracking as running.");
+          continue;
+        }
         pendingWins.push({ title: r.title, keys: nkeys, pidFile: pidf, locked: false });
         spawnedWave.push({ key: r.key, title: r.title, pidf, lp, pf, rf, prompt: body, matchToken: "【本块唯一标识】" + tk });
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
@@ -1499,7 +1522,7 @@ async function main() {
           const s = summary[k];
           if (!s) return true;
           const st = String(s.status || "");
-          if (st === "preflight-failed" || st === "locked" || st === "unfinished") return false; // 被正确拦截/终态
+          if (st === "preflight-failed" || st === "locked" || st === "unfinished" || st === "popup-failed") return false; // 被正确拦截/终态
           const r = String(s.result || "");
           // 纯按“全部任务的汇报是否都返回”判定：块有非空汇报（非占位）即视为已返回。
           // 占位(no result captured / no session rollout matched) 视为未返回 -> 继续轮询。
