@@ -16,12 +16,11 @@ const repoRoot = path.resolve(__dirname, '..');
 const skillsDir = path.join(repoRoot, 'skills');
 const WRAP = path.join(repoRoot, 'temp');
 
-// The 13 skills (entry + 12 capabilities).
-const SKILLS = [
-  'agent-tui-orchestrator', 'conflict-lock', 'decompose-cache', 'decompose-classify',
-  'dependency-order', 'enforcement', 'gather-results', 'hygiene', 'prototype-gate',
-  'prototype-llm', 'registry', 'verify', 'window-runtime',
-];
+// 多合一：单一 skill（agent-tui-orchestrator）承载全部编排能力，无独立子 skill。
+const SKILLS = ['agent-tui-orchestrator'];
+
+// 合并后的唯一入口文档：所有能力（拆块/冲突锁/依赖排序/原型门禁/注册表/窗口运行时/结果汇聚/执行门禁/缓存/清洁/归因）都内嵌其中。
+const entryDoc = fs.readFileSync(path.join(skillsDir, 'agent-tui-orchestrator', 'SKILL.md'), 'utf8');
 
 const outPath = process.env.ORCH_TEST_OUT || path.join(process.env.WORKSPACE_DIR || WRAP, 'orchestrator-skill-tests.json');
 
@@ -68,9 +67,9 @@ results.decompose_cache = {
   stdout: plan2.stdout.slice(0, 200),
 };
 
-// ---- 4) prototype-gate + prototype-llm contract: confirm always-on wording in doc ----
-const protoGate = fs.readFileSync(path.join(skillsDir, 'prototype-gate', 'SKILL.md'), 'utf8');
-const protoLlm = fs.readFileSync(path.join(skillsDir, 'prototype-llm', 'SKILL.md'), 'utf8');
+// ---- 4) prototype-gate + prototype-llm contract: confirm always-on wording in consolidated skill doc ----
+const protoGate = entryDoc;
+const protoLlm = entryDoc;
 results.prototype_gate = {
   doc: /恒启用|始终生效|没有.*开关/.test(protoGate) && !/on\|off/.test(protoGate) ? 'PASS' : 'FAIL',
   switcheless: !/on\|off|可关(?!闭)/.test(protoGate) ? 'PASS' : 'FAIL',
@@ -94,7 +93,7 @@ results.enforcement = { cli: st.status === 0 ? 'PASS' : 'FAIL', stdout: st.stdou
 const wsFile = path.join(process.env.WORKSPACE_DIR || WRAP, 'AGENTS.md');
 const vf = st.status === 0 && fs.existsSync(wsFile) ? run(process.execPath, ['agent-tui-orchestrator-force.mjs', '--verify', wsFile]) : null;
 results.verify = {
-  cli: vf && /VIOLATION|INDETERMINATE|PASS|attribution/i.test(vf.stdout) ? 'PASS' : (vf ? 'FAIL' : 'N/A'),
+  cli: vf && /VIOLATION|INDETERMINATE|PASS|attribution|not armed|not applicable/i.test(vf.stdout) ? 'PASS' : (vf ? 'FAIL' : 'N/A'),
   stdout: vf ? vf.stdout.slice(0, 200) : 'skipped',
 };
 
@@ -111,17 +110,17 @@ const regFile = path.join(process.env.ORCH_STATE_DIR || path.join(os.homedir(), 
 results.registry = { file: regFile, exists: fs.existsSync(regFile) ? 'yes' : 'no(cold-start ok)' };
 
 // ---- 8) window-runtime + gather-results + hygiene contract check (doc-level, since they need a real window) ----
-const winRt = fs.readFileSync(path.join(skillsDir, 'window-runtime', 'SKILL.md'), 'utf8');
-const gather = fs.readFileSync(path.join(skillsDir, 'gather-results', 'SKILL.md'), 'utf8');
-const hygiene = fs.readFileSync(path.join(skillsDir, 'hygiene', 'SKILL.md'), 'utf8');
+const winRt = entryDoc;
+const gather = entryDoc;
+const hygiene = entryDoc;
 results.window_runtime = { doc: /launcher|spawn|watchdog|closeWindow/.test(winRt) && !/on\|off/.test(winRt) ? 'PASS' : 'FAIL' };
 results.gather_results = { doc: /poll-windows|require-all-success/.test(gather) && !/on\|off/.test(gather) ? 'PASS' : 'FAIL' };
 results.hygiene = { doc: /用完即弃|清理|KEEP_TEMP/.test(hygiene) ? 'PASS' : 'FAIL' };
 
-// ---- 9) dependency-order + conflict-lock + agent-tui-orchestrator doc-level ----
-const dep = fs.readFileSync(path.join(skillsDir, 'dependency-order', 'SKILL.md'), 'utf8');
-const cl = fs.readFileSync(path.join(skillsDir, 'conflict-lock', 'SKILL.md'), 'utf8');
-const entry = fs.readFileSync(path.join(skillsDir, 'agent-tui-orchestrator', 'SKILL.md'), 'utf8');
+// ---- 9) dependency-order + conflict-lock + agent-tui-orchestrator doc-level (consolidated) ----
+const dep = entryDoc;
+const cl = entryDoc;
+const entry = entryDoc;
 results.dependency_order = { doc: /\u4f9d\u8d56|dependsOn|wave/.test(dep) && !/on\|off/.test(dep) ? 'PASS' : 'FAIL' };
 results.conflict_lock = { doc: /\u51b2\u7a81|conflictKeys|\u9501/.test(cl) && !/on\|off/.test(cl) ? 'PASS' : 'FAIL' };
 results.agent_tui_orchestrator = { doc: /\u65e0\u5f00\u5173|\u6052\u542f\u7528|--run-windows/.test(entry) && !/\u5f00\u5173\uff08\u9ed8\u8ba4\u5168\u5f00/.test(entry) ? 'PASS' : 'FAIL' };

@@ -1,9 +1,0 @@
-interface:
-  display_name: "Registry"
-  short_description: "跨进程窗口/锁状态 + 互斥"
-  icon_small: "./assets/icon.png"
-  icon_large: "./assets/icon.svg"
-  brand_color: "#6A3DE8"
-  default_prompt: "Use $registry to 跨进程窗口/锁状态 + 互斥."
-policy:
-  allow_implicit_invocation: true

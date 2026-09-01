@@ -65,26 +65,26 @@ All text I/O is **explicit UTF-8**; launchers set `[Console]::OutputEncoding`/`$
 
 MIT — see `LICENSE`.
 
-## Sub-skills (disablable, defaults all-on)
+## Capabilities (single skill, multi-in-one)
 
-The orchestrator is decomposed into a bundle of capability sub-skills under `skills/`, each an independent switch:
+The plugin exposes **one skill** (`skills/agent-tui-orchestrator/SKILL.md`) that embeds all orchestrator capabilities. There are no per-capability sub-skills and no switches; everything is always enabled:
 
-| Sub-skill | Purpose | Knob |
-|---|---|---|
-| `decompose-classify` | request → linked/independent blocks + read-only→inline gate | `ORCH_DECOMPOSE` |
-| `conflict-lock` | live-window resource conflicts → wait/lock/rerun | `ORCH_CONFLICT` |
-| `dependency-order` | `dependsOn` prerequisite ordering | `ORCH_DEPENDS` |
-| `prototype-gate` | deterministic feasibility (L1/L2) | `ORCH_PROTOTYPE` |
-| `prototype-llm` | LLM feasibility (L3; disable to save tokens) | `ORCH_PROTOTYPE_LLM` |
-| `registry` | cross-process windows/locks store + mutex | `ORCH_REGISTRY` |
-| `window-runtime` | launcher / spawn / watchdog / close + result capture | `ORCH_TUI`,`ORCH_CLOSE_DELAY_MS` |
-| `gather-results` | poll-windows require-all-success contract | — |
-| `enforcement` | armed/assert/kind fail-closed + headless gate | `ORCH_ALLOW_HEADLESS` |
-| `decompose-cache` | cache + `--clear-cache` | `ORCH_CACHE` |
-| `hygiene` | use-and-discard temp cleanup | `ORCH_KEEP_TEMP` |
-| `verify` | `--verify` conflict-key attribution | — |
+| Capability | Purpose |
+|---|---|
+| Decompose/classify | request → linked/independent blocks + read-only→inline gate |
+| Conflict lock | live-window resource conflicts → wait/lock/rerun |
+| Dependency order | `dependsOn` prerequisite ordering |
+| Prototype gate (deterministic) | L1/L2 feasibility, no LLM for simple blocks |
+| Prototype gate (LLM) | L3 feasibility, avoid blank windows |
+| Registry | cross-process windows/locks store + mutex |
+| Window runtime | launcher / spawn / watchdog / close + result capture |
+| Gather results | poll-windows require-all-success contract |
+| Enforcement | armed/assert/kind fail-closed + headless gate |
+| Decompose cache | cache + `--clear-cache` |
+| Hygiene | use-and-discard temp cleanup |
+| Verify | `--verify` conflict-key attribution |
 
-Disabling a sub-skill turns that capability off (the agent won't set its knob ON). The entry skill (`skills/agent-tui-orchestrator/SKILL.md`) aggregates them and wires the knobs. All LLM reasoning effort defaults to `high`.
+Tunable knobs are environment variables only (`ORCH_*`); none of them disables a capability. All LLM reasoning effort defaults to `high`.
 
 ## Disclaimer
 
