@@ -123,7 +123,7 @@ const cl = fs.readFileSync(path.join(skillsDir, 'conflict-lock', 'SKILL.md'), 'u
 const entry = fs.readFileSync(path.join(skillsDir, 'agent-tui-orchestrator', 'SKILL.md'), 'utf8');
 results.dependency_order = { doc: /\u4f9d\u8d56|dependsOn|wave/.test(dep) && !/on\|off/.test(dep) ? 'PASS' : 'FAIL' };
 results.conflict_lock = { doc: /\u51b2\u7a81|conflictKeys|\u9501/.test(cl) && !/on\|off/.test(cl) ? 'PASS' : 'FAIL' };
-results.codex_tui_orchestrator = { doc: /\u65e0\u5f00\u5173|\u6052\u542f\u7528|--run-windows/.test(entry) && !/\u5f00\u5173\uff08\u9ed8\u8ba4\u5168\u5f00/.test(entry) ? 'PASS' : 'FAIL' };
+results.agent_tui_orchestrator = { doc: /\u65e0\u5f00\u5173|\u6052\u542f\u7528|--run-windows/.test(entry) && !/\u5f00\u5173\uff08\u9ed8\u8ba4\u5168\u5f00/.test(entry) ? 'PASS' : 'FAIL' };
 
 fs.writeFileSync(outPath, JSON.stringify(results, null, 2), 'utf8');
 
