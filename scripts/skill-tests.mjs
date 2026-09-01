@@ -3,7 +3,7 @@
 /**
  * Per-skill smoke tests for agent-tui-orchestrator.
  * Runs read-only checks for every capability; never opens a real TUI window.
- * Results written to C:\workspace\temp\orchestrator-skill-tests.json (or $ORCH_TEST_OUT).
+ * Results written to D:\temp\orchestrator-skill-tests.json (or $ORCH_TEST_OUT).
  */
 import fs from 'node:fs';
 import path from 'node:path';
