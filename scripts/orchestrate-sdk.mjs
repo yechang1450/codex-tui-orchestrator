@@ -296,15 +296,20 @@ function genericProjectSplit(request) {
   const re = /(?:^|[\s,/\\])(?:build|proj|project|app|src|workspace|web|site|game)[\s/\\]+(\d{1,3})(?=\D|$)/gi;
   let m;
   while ((m = re.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
+  // fallback: bare standalone 2-digit project numbers (e.g. "给80的前端", "81登录页")
+  const bareRe = /(?<![0-9])(\d{2})(?![0-9])/g;
+  while ((m = bareRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   if (dirs.size < 2) return null;
   const sentences = splitSentences(request);
   const ownByProj = {};
+  const misc = [];
   let ambiguous = false;
   for (const s of sentences) {
     const hits = [];
     for (const d of dirs) { const n = d.replace("proj-", ""); if (projectRef(s, n)) hits.push(d); }
     if (hits.length === 1) (ownByProj[hits[0]] = ownByProj[hits[0]] || []).push(s);
     else if (hits.length > 1) ambiguous = true;
+    else misc.push(s);
   }
   const allOwn = [...dirs].every((d) => (ownByProj[d] && ownByProj[d].length > 0));
   if (!allOwn || ambiguous) return null;
@@ -313,12 +318,14 @@ function genericProjectSplit(request) {
     conflictKeys: ["dir:" + title],
     tasks: [{ id: "t" + (i + 1), title, prompt: "仅处理项目 " + title + "。任务：" + ownByProj[title].join("；") + "。不要处理其它项目编号。" }],
   }));
-  return { blocks };
+  let ti = dirs.size;
+  for (const s of misc) { ti += 1; blocks.push({ type: "independent", title: "task-" + ti, dependsOn: [], conflictKeys: [], tasks: [{ id: "t" + ti, title: "task-" + ti, prompt: s }] }); }
+  return blocks.length ? { blocks } : null;
 }
 
 function projectRef(s, n) {
   // 无正则的确定匹配：检查句子是否含 "build\N" / "build/N" / 关键词N，避免转义坑
-  return s.indexOf("build\\" + n) !== -1 || s.indexOf("build/" + n) !== -1 || new RegExp("(?:^|\\s)" + n + "(?:\\s|$)", "i").test(s);
+  return s.indexOf("build\\" + n) !== -1 || s.indexOf("build/" + n) !== -1 || new RegExp("(?<![0-9])" + n + "(?![0-9])", "i").test(s);
 }
 // 通用单任务快速判定（不写死 build/N）：无"多动作/多目标"标记、且命中明确动作词 -> 生成单一独立块。
 function trySingleBlock(request) {
@@ -364,7 +371,7 @@ async function runThreadPrompt(prompt, opts = {}) {
   const { events } = await thread.runStreamed(prompt, { signal: ac.signal });
   // 外部 abort 定时器：即使 SDK generator 卡住不出事件（'async generator NEVER closes' bug），到点 ac.abort()
   // 终止卡住的 codex 子进程，for-await 抛 AbortError 被 catch 接住，避免超时判断写循环体内永不执行导致无限挂死。
-  const ORCH_DECOMPOSE_TIMEOUT_MS = Number(process.env.ORCH_DECOMPOSE_TIMEOUT_MS || 6000000);
+  const ORCH_DECOMPOSE_TIMEOUT_MS = Number(process.env.ORCH_DECOMPOSE_TIMEOUT_MS || 60000);
   const abortTimer = setTimeout(() => { try { ac.abort(); } catch {} }, ORCH_DECOMPOSE_TIMEOUT_MS);
   let final = "";
   let errored = null;
