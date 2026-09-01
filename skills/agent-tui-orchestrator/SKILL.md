@@ -71,6 +71,8 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 
 ### 窗口运行时
 - 写 `win-launch-*.ps1`（UTF-8+BOM、chcp 65001）→ spawn 可见 TUI → watchdog 在「最终完成标记」后杀 codex 子进程→launcher `exit 0`→窗自动关；同时从 rollout 捕获最终汇报写入 `win-summary.json`。
+- **弹窗检测 + 重试**：spawn 后轮询 pid 文件确认窗口真弹出；失败重试（上限 3），仍失败标记 `popup-failed` 并汇报，不把没弹出来的窗当运行中。
+- **汇报驱动关窗**：watchdog 等 task_complete 稳定 ~6s（给父进程足够时间捕获汇报）才杀 codex 子进程，确保汇报不因关窗丢失；关闭与汇报互为检测点。
 - 触发：`--run-windows` / `--spawn`。
 - **窗口 prompt 规则**：必须要求「一次性完成全部改动→读回+node --check+无乱码→才输出以【本块唯一标识】…完成 开头的最终汇报」，**禁止中途输出未完状态**（否则 auto-close 会误关）。
 
