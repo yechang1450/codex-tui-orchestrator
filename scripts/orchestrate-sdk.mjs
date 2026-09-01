@@ -1096,6 +1096,28 @@ function showStatus(readonly) {
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
+// 入口判定（真实执行 vs 只读分析）：明显两端走确定性快判，歧义交给 LLM（更准）。
+// fail-safe：LLM 失败/无结论 -> 判 execute（宁可弹窗，也不把真实执行误当只读而跳过）。
+async function classifyExecutionMode(request) {
+  const req = String(request || "").trim();
+  if (!req) return "inline";
+  const RO_RE = /(分析|方案|看看|说明|回答|解读|介绍|评估|为什么|怎么回事|怎样|如何|是否|规划|理解|解释|回顾|概述|总结|探讨|讨论|这是什么|怎么理解|报告一下|列表|[?？]\s*$)/;
+  const REAL_RE = /(创建|写入|写文件|修改|改|删除|删|复制|启动|重启|生成|新增|优化|修复|清理|删掉|建立|添加|安装|测试|执行|部署|停止|停|重命名|迁移|解耦|还原|配置|编辑|刷新|重置|连接|运行|编译|构建|打包|发布|提交|推送|发起|build|write|delete|create|fix|install|restart|start|stop|restore|migrate|deploy|run|edit)/i;
+  const ro = RO_RE.test(req);
+  const real = REAL_RE.test(req);
+  if (real && !ro) return "execute";
+  if (ro && !real) return "inline";
+  // 歧义（同时命中或都不命中）→ LLM 判定，更准。
+  const prompt = "你只做一件事：判断下面这段请求是「只读/纯分析（不修改文件、不安装、不构建、不运行、不配置，只是看/解释/评估/方案/回答）」还是「真实执行（会写文件/改代码/安装/构建/运行/配置/重启/删除等）」。只回一个词：inline 或 execute，不要任何其它文字。\n请求：" + req;
+  try {
+    const res = await runThreadPrompt(prompt, { sandboxMode: "read-only" });
+    const ans = String((res && res.final) || "");
+    if (/execute|真实|执行|修改|写入|安装|构建|运行|部署|重启|删除/.test(ans)) return "execute";
+    if (/inline|只读|分析|评估|查看|方案|回答|说明/.test(ans)) return "inline";
+  } catch { /* ignore */ }
+  return "execute"; // fail-safe
+}
+
 async function main() {
   const mode = process.argv[2];
 
@@ -1224,15 +1246,11 @@ async function main() {
     cleanStaleTransients();
     const request = process.argv.slice(3).join(" ");
     if (!request) throw new Error("--run-windows needs a request");
-    // 确定性「只读→inline」门禁：纯分析/方案/问答且无真实动作词 -> 不弹窗、留在主对话内联。
-    // （弹窗只留给真实执行：写/改/建/装/测/重启/删/起停/配置/还原等；避免把只读分析也弹窗。）
-    {
-      const RO_RE = /(分析|方案|看看|说明|回答|解读|介绍|评估|为什么|怎么回事|怎样|如何|是否|规划|理解|解释|回顾|概述|总结|探讨|讨论|这是什么|怎么理解|报告一下|列表|[?？]\s*$)/;
-      const REAL_RE = /(创建|写入|写文件|修改|改|删除|删|复制|启动|重启|生成|新增|优化|修复|清理|删掉|建立|添加|安装|测试|执行|部署|停止|停|重命名|迁移|解耦|还原|配置|编辑|刷新|重置|连接|运行|编译|构建|打包|发布|提交|推送|发起|build|write|delete|create|fix|install|restart|start|stop|restore|migrate|deploy|run|edit)/i;
-      if (!REAL_RE.test(request) && RO_RE.test(request)) {
-        console.log("[orchestrator] 判定为只读/纯分析（无真实动作词）-> 留在主对话内联执行，不弹窗。");
-        return;
-      }
+    // 入口判定（真实执行 vs 只读分析）：明显两端走确定性快判，歧义交给 LLM；fail-safe 判 execute。
+    const execMode = await classifyExecutionMode(request);
+    if (execMode === "inline") {
+      console.log("[orchestrator] 判定为只读/纯分析 -> 留在主对话内联执行，不弹窗。");
+      return;
     }
     const rid = Date.now().toString(36);
     console.log("[orchestrator] decomposing (read-only)...");
@@ -1585,4 +1603,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose };
