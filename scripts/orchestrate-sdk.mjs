@@ -139,6 +139,37 @@ function threadBase() {
   };
 }
 
+// 拆块 LLM 的强制输出 Schema：让模型只产出结构化 JSON（配合 outputSchema），不再 agentic 乱读文件。
+const DECOMPOSE_OUTPUT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    blocks: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          type: { type: "string", enum: ["linked", "independent"] },
+          title: { type: "string" },
+          dependsOn: { type: "array", items: { type: "string" } },
+          conflictKeys: { type: "array", items: { type: "string" } },
+          tasks: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: { id: { type: "string" }, title: { type: "string" }, prompt: { type: "string" } },
+              required: ["id", "title", "prompt"]
+            }
+          }
+        },
+        required: ["type", "title", "tasks"]
+      }
+    }
+  },
+  required: ["blocks"]
+};
+
 function decomposePrompt(request) {
   return (
     "你是任务编排器。把下面这个多任务请求拆成「联动/独立」任务块，只输出 JSON。" +
@@ -152,6 +183,7 @@ function decomposePrompt(request) {
     "**依赖串行**：若某个块必须等**另一个块完成**才能开始（依赖其产出/结果），在该块的 `dependsOn` 数组里列出**那个前置块的 `title`**（一个或多个）；无依赖则省 `dependsOn` 或给空数组。依赖必须体现为 `dependsOn`，它决定执行顺序（前置块完成后才开此块），与 conflictKeys（冲突才上锁）是两回事。" +
     "**每块还必须给 `conflictKeys` 数组**：该块会碰到的资源标识，用于跨窗冲突检测（若另一运行中的窗也碰到同一资源，二者就可能冲突、应上锁）。资源标识用 `file:<路径>`、`port:<端口>`、`service:<服务名>`、`dir:<目录>` 这类前缀。**宁可多列、别漏**——漏列会把冲突判成不冲突。" +
     '格式必须严格为合法 JSON：{"blocks":[{"type":"linked"|"independent","title":"...","dependsOn":["<前置块title>",...],"conflictKeys":["file:...",...],"tasks":[{"id":"...","title":"...","prompt":"可独立执行的提示"}]}]}\n' +
+    "⚠️ **响应规则（必须遵守）**：只输出一个 JSON 对象，禁止调用任何工具/读取任何文件/执行任何命令/搜索/联网；禁止输出任何 JSON 之外的前置或后置文字，禁止把 JSON 包进 Markdown 代码块。输出必须能被 JSON.parse 直接解析。" +
     "请求：" + request
   );
 }
@@ -315,14 +347,15 @@ function genericProjectSplit(request) {
     else misc.push(s);
   }
   const allOwn = [...dirs].every((d) => (ownByProj[d] && ownByProj[d].length > 0));
-  if (!allOwn || ambiguous) return null;
+  // 保守(权威修复)：一旦存在无法归属到某个具体项目编号的句子（如"给会员管理…做分页"这种跨项目续句），
+  // 确定性拆分无法安全归类——若硬把它当成独立 task-* 并行块，会与它真实所属项目竞态/改同一批文件。
+  // 此时整体交给 LLM 拆块：LLM 能读上下文，把它归到正确项目，同时仍会把真正独立的工具任务(openclaw/theme-repo/visualize 等)单独成块。
+  if (!allOwn || ambiguous || misc.length > 0) return null;
   const blocks = [...dirs].map((title, i) => ({
     type: "independent", title, dependsOn: [],
     conflictKeys: ["dir:" + title],
     tasks: [{ id: "t" + (i + 1), title, prompt: "仅处理项目 " + title + "。任务：" + ownByProj[title].join("；") + "。不要处理其它项目编号。" }],
   }));
-  let ti = dirs.size;
-  for (const s of misc) { ti += 1; blocks.push({ type: "independent", title: "task-" + ti, dependsOn: [], conflictKeys: [], tasks: [{ id: "t" + ti, title: "task-" + ti, prompt: s }] }); }
   return blocks.length ? { blocks } : null;
 }
 
@@ -369,11 +402,13 @@ function splitIndependentBlocks(blocks) {
 }
 
 async function runThreadPrompt(prompt, opts = {}) {
-  const thread = codex.startThread({ ...threadBase(), ...opts });
+  // outputSchema 走 runStreamed 的 turn 选项（强制结构化输出 / 纯 JSON），不能混进 startThread 配置。
+  const { outputSchema, ...threadOpts } = opts;
+  const thread = codex.startThread({ ...threadBase(), ...threadOpts });
   const ac = new AbortController();
-  const { events } = await thread.runStreamed(prompt, { signal: ac.signal });
-  // 外部 abort 定时器：即使 SDK generator 卡住不出事件（'async generator NEVER closes' bug），到点 ac.abort()
-  // 终止卡住的 codex 子进程，for-await 抛 AbortError 被 catch 接住，避免超时判断写循环体内永不执行导致无限挂死。
+  const turnOpts = { signal: ac.signal };
+  if (outputSchema) turnOpts.outputSchema = outputSchema;
+  const { events } = await thread.runStreamed(prompt, turnOpts);
   const ORCH_DECOMPOSE_TIMEOUT_MS = Number(process.env.ORCH_DECOMPOSE_TIMEOUT_MS || 60000);
   const abortTimer = setTimeout(() => { try { ac.abort(); } catch {} }, ORCH_DECOMPOSE_TIMEOUT_MS);
   let final = "";
