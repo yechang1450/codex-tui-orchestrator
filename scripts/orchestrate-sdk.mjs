@@ -559,27 +559,13 @@ function classifyBlockComplexity(prompt) {
   return false;
 }
 
-// async 三层原型门禁：L1 空判 -> L2 复杂度 -> L3 复杂必 LLM（恒启用不可关）-> 确保无白窗浪费；简单 -> PASS，绝不误拦。
+// 可行性门禁（L1 空判）：复杂/可行性判断已由拆块 LLM 定性（feasible/already_done）承担，
+// 这里只保留最后一道确定性 sanity 空判，不再为每块单独调一次 LLM（避免重复往返）。
 async function runPrototypeGate(title, prompt) {
   const text = String(prompt || "").trim();
   if (!text) { console.log("  preflight FAILED for [" + title + "] (empty/无动作): reject."); return false; }
-  const complex = classifyBlockComplexity(text);
-  // LLM 原型测试恒启用（确保无白窗浪费），不接受关闭；仅简单块直接 PASS。
-  if (!complex) { console.log("  preflight PASSED for [" + title + "] (simple -> PASS)"); return true; }
-  try {
-    const eff = String(process.env.ORCH_PROTOTYPE_EFFORT || "high");
-    const res = await runThreadPrompt(
-      "你是原型可行性判定。下面是一个要在可见 Codex TUI 窗内执行的块任务。请只做只读判断：该任务是否合理、可行、不矛盾？只回一句：可行 或 不可行。任务：" + text,
-      { sandboxMode: "read-only", modelReasoningEffort: eff }
-    );
-    const ans = String((res && res.final) || "");
-    const ok = /可行/.test(ans) && !/不可行/.test(ans);
-    console.log("  preflight " + (ok ? "PASSED" : "FAILED") + " for [" + title + "] (LLM prototype, effort=" + eff + ")");
-    return ok;
-  } catch (e) {
-    console.log("  preflight PASSED for [" + title + "] (LLM prototype error -> fail-safe PASS): " + (e && e.message));
-    return true; // LLM 判定失败 -> 保守放行（交由窗内 agent 处理），不阻断。
-  }
+  console.log("  preflight PASSED for [" + title + "] (feasibility already resolved at decompose)");
+  return true;
 }
 
 // Enforcement: once the orchestrator is engaged, mark that real executions are gated. The
