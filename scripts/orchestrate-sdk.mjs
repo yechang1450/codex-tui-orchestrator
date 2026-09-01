@@ -727,17 +727,19 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "        if ($match) {",
     "          if ($f.FullName -ne $match) { continue }",
     "          try {",
-     "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
-     "            if (($tail -join \"`n\").Contains('task_complete')) {",
-     "              $age = [TimeSpan]::Zero; try { $age = (Get-Date) - $f.LastWriteTime } catch { }",
-     "              # Only auto-close once the rollout is STABLE (no new writes for ~6s). Every agent",
-     "              # turn emits task_complete, so firing on any task_complete kills a window mid-work.",
-     "              if ($age.TotalSeconds -gt 6) {",
-     "                $kids = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -eq $rootPid -and $_.ProcessId -ne $PID }",
-     "                foreach ($k in $kids) { taskkill /PID $($k.ProcessId) /T /F 2>$null | Out-Null }",
-     "                exit 0",
-     "              }",
-     "            }",
+            "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
+            "            # 汇报驱动关窗：只在「agent 最终汇报」（agent_message/assistant 行含本窗 token）出现后才关；",
+            "            # token 是 ASCII 且全局唯一，prompt 里虽有但 prompt 不是 agent_message，故不会误判。",
+            "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) })",
+            "            if ($report) {",
+            "              $age = [TimeSpan]::Zero; try { $age = (Get-Date) - $f.LastWriteTime } catch { }",
+            "              # 稳定 ~6s 再关，给父进程足够时间捕获汇报，避免关窗丢汇报。",
+            "              if ($age.TotalSeconds -gt 6) {",
+            "                $kids = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -eq $rootPid -and $_.ProcessId -ne $PID }",
+            "                foreach ($k in $kids) { taskkill /PID $($k.ProcessId) /T /F 2>$null | Out-Null }",
+            "                exit 0",
+            "              }",
+            "            }",
     "          } catch { }",
     "          continue",
     "        }",
@@ -1651,4 +1653,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, writeInteractiveLauncher };
