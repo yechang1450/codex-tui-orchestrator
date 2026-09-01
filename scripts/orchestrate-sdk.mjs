@@ -71,14 +71,14 @@ const PY = process.env.PYTHON || "python";
 const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
 const EFFORT = process.env.ORCH_EFFORT || "high";
 // —— Agent 抽象（v0.0.1）：识别当前 agent（默认 codex）+ 本地 cache 其专属配置 ——
-const AGENT = resolveAgent();
-const AGENT_BIN = (AGENT.config && AGENT.config.bin) || "codex";
-const AGENT_BIN_Q = String(AGENT_BIN).replace(/'/g, "''");
-const AGENT_ARGS = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }).map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 // 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
 // 但允许用户收紧（ORCH_SANDBOX=workspace-write / read-only，ORCH_APPROVAL=on-request）。
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = process.env.ORCH_APPROVAL || "never";
+const AGENT = resolveAgent();
+const AGENT_BIN = (AGENT.config && AGENT.config.bin) || "codex";
+const AGENT_BIN_Q = String(AGENT_BIN).replace(/'/g, "''");
+const AGENT_ARGS = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }).map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
@@ -351,7 +351,7 @@ function trySingleBlock(request) {
 }
 
 function splitSentences(request) {
-  return String(request).split(/[。；;，,\n]+/).map((s) => s.trim()).filter(Boolean);
+  return String(request).split(/[。；;\n]+/).map((s) => s.trim()).filter(Boolean);
 }
 
 function splitIndependentBlocks(blocks) {
