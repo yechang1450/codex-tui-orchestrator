@@ -152,17 +152,27 @@ function threadBase() {
 // 模块→项目 归属提示（通用、非硬编码）：调用方经 ORCH_TASK_HINTS 传 JSON 映射，
 // 例 {"会员管理":"82","商品与分类":"82","订单管理":"82"}。用于把「没写项目号但属于某项目」的任务归位。
 function resolveHints() {
+  const hints = { moduleToProj: {}, foldRules: {}, tailKeywords: [] };
   try {
     const raw = process.env.ORCH_TASK_HINTS;
-    if (raw && raw.trim()) { const j = JSON.parse(raw); if (j && typeof j === "object" && !Array.isArray(j)) return j; }
+    if (raw && raw.trim()) { const j = JSON.parse(raw); if (j && typeof j === "object" && !Array.isArray(j)) hints.moduleToProj = j; }
   } catch { /* ignore */ }
-  return {};
+  try {
+    const raw = process.env.ORCH_TASK_FOLD;
+    if (raw && raw.trim()) { const j = JSON.parse(raw); if (j && typeof j === "object" && !Array.isArray(j)) hints.foldRules = j; }
+  } catch { /* ignore */ }
+  try {
+    const raw = process.env.ORCH_TASK_TAIL;
+    if (raw && raw.trim()) { const arr = JSON.parse(raw); if (Array.isArray(arr)) hints.tailKeywords = arr.map(String); }
+  } catch { /* ignore */ }
+  return hints;
 }
 
 // 阶段 A：LLM 定性提示词（扁平任务清单，不分块）。关键：字段少、只定性、禁工具、纯 JSON。
 function classifyPrompt(request, hints = {}) {
-  const hintText = Object.keys(hints || {}).length
-    ? "\n已知模块→项目映射（校正归属用，JSON）：" + JSON.stringify(hints)
+  const modToProj = (hints && hints.moduleToProj) || {};
+  const hintText = Object.keys(modToProj).length
+    ? "\n已知模块→项目映射（校正归属用，JSON）：" + JSON.stringify(modToProj)
     : "";
   return (
     "你是任务定性分析器，只做一件事：把下面请求拆成「扁平任务清单」，不要分块、不要合并、不要执行。" +
@@ -181,7 +191,9 @@ function classifyPrompt(request, hints = {}) {
 // 阶段 B：确定性分块引擎。消费扁平任务清单 -> 产出 blocks（可行性过滤 + 模块归位 + 工具独立 + 未知串行 + 依赖映射）。
 function buildBlocksFromTasks(tasks, hints = {}) {
   tasks = Array.isArray(tasks) ? tasks : [];
-  const hintMap = hints || {};
+  const modToProj = (hints && hints.moduleToProj) || {};
+  const foldRules = (hints && hints.foldRules) || {};
+  const tailKeywords = Array.isArray(hints && hints.tailKeywords) ? hints.tailKeywords : [];
   const byProj = {};      // proj-N -> [item]
   const toolItems = [];   // kind=tool/system
   const unkItems = [];    // 无归属 -> linked 串行（绝不并行孤儿）
@@ -191,11 +203,25 @@ function buildBlocksFromTasks(tasks, hints = {}) {
     const summary = String(t.summary || t.prompt || "").trim();
     if (!summary) continue;
     let p = String(t.project || "").replace(/[^0-9]/g, "");
-    if (!p) for (const [mod, pn] of Object.entries(hintMap)) { if (summary.includes(mod)) { p = String(pn).replace(/[^0-9]/g, ""); break; } }
+    if (!p) for (const [mod, pn] of Object.entries(modToProj)) { if (summary.includes(mod)) { p = String(pn).replace(/[^0-9]/g, ""); break; } }
     const item = { id: String(t.id || "t" + (byProjKeyCount(byProj) + toolItems.length + unkItems.length + 1)), summary, kind: String(t.kind || ""), depends_on: Array.isArray(t.depends_on) ? t.depends_on.map(String) : [], conflict_hints: Array.isArray(t.conflict_hints) ? t.conflict_hints.map(String) : [] };
     if (p) (byProj["proj-" + p] = byProj["proj-" + p] || []).push(item);
     else if (item.kind === "tool" || item.kind === "system") toolItems.push(item);
     else unkItems.push(item);
+  }
+  // fold 规则：某工具/系统任务命中 fold 关键字 -> 折进指定项目（作为该项目任务一环，不再独立并行，避免与项目竞态）。
+  for (const key of Object.keys(foldRules)) {
+    const targets = (foldRules[key] || []).map((x) => String(x).replace(/[^0-9]/g, ""));
+    for (const list of [toolItems, unkItems]) {
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].summary.includes(key)) {
+          const tt = list.splice(i, 1)[0];
+          for (const pn of targets) {
+            (byProj["proj-" + pn] = byProj["proj-" + pn] || []).push({ id: tt.id + "-fold" + pn, summary: tt.summary, kind: "project", depends_on: [], conflict_hints: [] });
+          }
+        }
+      }
+    }
   }
   const blocks = [];
   const blockItems = [];   // 与 blocks 平行的源 item 数组，用于依赖映射
@@ -210,7 +236,7 @@ function buildBlocksFromTasks(tasks, hints = {}) {
   }
   if (unkItems.length) {
     const title = "linked-ambiguous";
-    blocks.push({ type: "linked", title, dependsOn: [], conflictKeys: [], tasks: unkItems.map((it) => ({ id: "t" + (blocks.length + 1), title: it.summary.slice(0, 40), prompt: it.summary })) });
+    blocks.push({ type: "linked", title, dependsOn: [], conflictKeys: [], tasks: unkItems.map((it, idx) => ({ id: "t" + (blocks.length + 1) + "-" + (idx + 1), title: it.summary.slice(0, 40), prompt: it.summary })) });
     blockItems.push(unkItems);
   }
   // 依赖映射：item.depends_on (task id) -> 所在块 title
@@ -224,6 +250,16 @@ function buildBlocksFromTasks(tasks, hints = {}) {
       }
     }
     blocks[i].dependsOn = [...deps];
+  }
+  // tail 规则：命中 tail 关键字的块（收尾/汇总类，如 "最后用Visualize"）依赖所有项目块，跑在最后。
+  if (tailKeywords.length) {
+    const projTitles = blocks.filter((b) => b.title.startsWith("proj-")).map((b) => b.title);
+    for (const b of blocks) {
+      const text = (b.tasks && b.tasks[0] && b.tasks[0].prompt) || "";
+      if (tailKeywords.some((k) => text.includes(k))) {
+        b.dependsOn = Array.from(new Set([...(b.dependsOn || []), ...projTitles]));
+      }
+    }
   }
   return blocks;
 }
