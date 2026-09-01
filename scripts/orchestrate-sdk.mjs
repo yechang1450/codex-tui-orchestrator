@@ -82,6 +82,10 @@ const AGENT_ARGS = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
+// 轮询总上限：默认 6 小时（ORCH_MAX_POLL_MS 可调）。用于「检测是否有默认时间限制会提前结束轮询」——
+// 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
+// ORCH_TIMEOUT_MS 仍可覆盖（比如测试时缩短）。
+const POLL_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || process.env.ORCH_MAX_POLL_MS || 21600000);
 
 // Terminal hosting the visible Codex TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
@@ -580,9 +584,7 @@ function ensureCodexCli() {
     const after = firstOnPath("codex");
     if (after) return after;
   } catch { /* ignore */ }
-  console.error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
-  process.exitCode = 1;
-  return null;
+  throw new Error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
 }
 
 // ---------------------------------------------------------------------------
@@ -1112,6 +1114,7 @@ async function main() {
 
   if (mode === "--spawn") {
     armEnforcement();
+    ensureCodexCli();
     const title = process.argv[3] || "codex-task";
     let promptContent = process.argv.slice(4).join(" ");
     const probablyFile = process.argv[4];
@@ -1128,7 +1131,7 @@ async function main() {
     const sessionFile = await waitForSessionFile(matchToken, 120000, rf);
     let res = { done: false, text: "" };
     if (sessionFile) {
-      res = await waitTaskComplete(sessionFile, Number(process.env.ORCH_TIMEOUT_MS) || 20000000, rf);
+      res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, rf);
     } else if (existsSync(rf)) {
       res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     }
@@ -1216,7 +1219,8 @@ async function main() {
 
   if (mode === "--run-windows") {
     armEnforcement();
-    ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
+    const codexCli = ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
+    console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
     const request = process.argv.slice(3).join(" ");
     if (!request) throw new Error("--run-windows needs a request");
@@ -1337,7 +1341,7 @@ async function main() {
         const sessionFile = await waitForSessionFile(matchKey, 90000, resultFile);
         let res = { done: false, text: "" };
         if (sessionFile) {
-          res = await waitTaskComplete(sessionFile, Number(process.env.ORCH_TIMEOUT_MS) || 20000000, resultFile);
+          res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile);
         } else if (existsSync(resultFile)) {
           // codex 进程先退出（任意退出码）且没匹配到 rollout：立即回收，窗口已/即将自动关闭。
           const code = readExitCode(resultFile);
@@ -1391,7 +1395,7 @@ async function main() {
         const matchKey2 = "【本块唯一标识】" + tk2, resultFile2 = la.rf;
         const sf2 = await waitForSessionFile(matchKey2, 90000, resultFile2);
         let res2 = { done: false, text: "" };
-        if (sf2) res2 = await waitTaskComplete(sf2, Number(process.env.ORCH_TIMEOUT_MS) || 20000000, resultFile2);
+        if (sf2) res2 = await waitTaskComplete(sf2, POLL_TIMEOUT_MS, resultFile2);
         else if (existsSync(resultFile2)) { const c2 = readExitCode(resultFile2); res2 = { done: true, text: "(launcher exited code " + (c2 === null ? "?" : c2) + "; no session rollout matched)", exitCode: c2 }; }
         summary[r.key] = { title: r.title, status: res2.done ? "done" : "timeout", exitCode: res2.exitCode ?? null, result: (res2.text || "(no result captured)").trim().slice(0, 2000) };
         if (res2.done) {
@@ -1417,7 +1421,7 @@ async function main() {
     const planned = new Set(plan.map((b, i) => "B" + (i + 1)));
     {
       const holdStart = Date.now();
-      const holdMax = Number(process.env.ORCH_TIMEOUT_MS || 20000000);
+      const holdMax = POLL_TIMEOUT_MS;
       let beat = Date.now();
       let zeroAliveSince = 0;
       while (Date.now() - holdStart < holdMax) {
