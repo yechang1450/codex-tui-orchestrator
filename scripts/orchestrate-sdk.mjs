@@ -638,6 +638,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     // (codex already exited on its own). Never touches the launcher, the job itself, or other windows.
     "$watch = Start-Job -ScriptBlock {",
     "  param($token, $rootPid, $resultFile)",
+    "  if ([string]::IsNullOrWhiteSpace($token)) { return }",
     "  $dir = Join-Path $env:USERPROFILE '.codex\\sessions'",
     "  $seen = @{}",
     "  $sizes = @{}",
@@ -1546,4 +1547,3 @@ if (isMain) main().catch((e) => {
 });
 
 export { classifyBlockComplexity, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose };
-

@@ -38,12 +38,24 @@ function binAvailable(bin) {
 /** 解析生效的 agent：默认 codex；ORCH_AGENT 指定；检测 CLI 可用性并把结果缓存。 */
 export function resolveAgent() {
   const requested = String(process.env.ORCH_AGENT || 'codex').trim().toLowerCase();
-  const id = AGENTS[requested] ? requested : 'codex';
-  const desc = AGENTS[id];
+  let id = AGENTS[requested] ? requested : 'codex';
   const cache = readCache();
   const key = 'agent:' + id;
   const prev = cache[key] || {};
-  const bin = prev.bin && binAvailable(prev.bin) ? prev.bin : desc.detectBin.find(binAvailable) || (id === 'codex' ? 'codex' : null);
+  const desc = AGENTS[id];
+  let bin = prev.bin && binAvailable(prev.bin) ? prev.bin : desc.detectBin.find(binAvailable) || (id === 'codex' ? 'codex' : null);
+  // 请求的 agent CLI 不可用 -> 完整回退到 codex（bin 与 args 保持一致，否则会拿 codex 跑别的 agent 的参数）。
+  if (!bin && id !== 'codex') {
+    id = 'codex';
+    const ck = 'agent:codex';
+    const cprev = cache[ck] || {};
+    const cdesc = AGENTS[ck] ? AGENTS[ck] : AGENTS.codex;
+    const cbin = cprev.bin && binAvailable(cprev.bin) ? cprev.bin : cdesc.detectBin.find(binAvailable) || 'codex';
+    const cres = { ...cdesc, bin: cbin, available: !!cbin, resolvedAt: cprev.resolvedAt || new Date().toISOString() };
+    cache[ck] = cres;
+    writeCache(cache);
+    return { agent: 'codex', config: cres };
+  }
   const resolved = { ...desc, bin, available: !!bin, resolvedAt: prev.resolvedAt || new Date().toISOString() };
   cache[key] = resolved;
   writeCache(cache);
@@ -65,4 +77,3 @@ export function launchArgs(agentConfig, o = {}) {
     default: return ["--cd", cwd, "-a", approval, "--sandbox", sandbox];
   }
 }
-
