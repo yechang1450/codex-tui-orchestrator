@@ -47,7 +47,7 @@ function resolveWorkspace() {
 const WORKSPACE = resolveWorkspace();
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
-const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".agents", "agent-tui-orchestrator");
+const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
 const FLAG = path.join(STATE_DIR, ".orchestrator-enabled");
 const WINDOWS_REG = path.join(STATE_DIR, "orchestrator-windows.json");
 

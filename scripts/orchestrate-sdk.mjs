@@ -78,7 +78,7 @@ const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = process.env.ORCH_APPROVAL || "never";
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
-const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".agents", "agent-tui-orchestrator");
+const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
 
 // Terminal hosting the visible Codex TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
