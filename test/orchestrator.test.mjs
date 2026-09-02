@@ -230,6 +230,9 @@ test('orchestrate-sdk checkDiskSpace: returns true on a disk with space (thresho
     process.env.ORCH_MIN_FREE_MB = '0';
     process.env.ORCH_MIN_FREE_HARD_MB = '0';
     assert.equal(checkDiskSpace(), true, 'disk with free space and zero thresholds must pass');
+    // 硬下限高于告警阈值 -> 应被钳制到 min，不因反直觉配置而误判失败。
+    process.env.ORCH_MIN_FREE_HARD_MB = '99999999';
+    assert.equal(checkDiskSpace(), true, 'hard floor above warn threshold is clamped to min and still passes');
   } finally {
     if (prevMin === undefined) delete process.env.ORCH_MIN_FREE_MB; else process.env.ORCH_MIN_FREE_MB = prevMin;
     if (prevHard === undefined) delete process.env.ORCH_MIN_FREE_HARD_MB; else process.env.ORCH_MIN_FREE_HARD_MB = prevHard;

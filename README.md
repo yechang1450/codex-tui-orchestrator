@@ -111,7 +111,7 @@ After `--run-windows`, the initiator MUST poll until all blocks are in the succe
 
 ### 5. Initial environment check
 
-Before real work the orchestrator verifies: the codex CLI (detect/install) and **disk space** on the workspace drive via `statfsSync`. Free space below `ORCH_MIN_FREE_MB` (default 10240MB ≈10GB) warns; below `ORCH_MIN_FREE_HARD_MB` (default 1024MB ≈1GB) refuses (fail-closed) — a low disk cannot even write the launcher/temp files.
+Before real work the orchestrator verifies: the codex CLI (detect/install) and **disk space** on the workspace drive via `statfsSync`. Free space below `ORCH_MIN_FREE_MB` (default 12000MB ≈12GB) warns; below `ORCH_MIN_FREE_HARD_MB` (default 3600MB ≈3.6GB) refuses (fail-closed) — a low disk cannot even write the launcher/temp files. If `ORCH_MIN_FREE_HARD_MB` is set above `ORCH_MIN_FREE_MB`, the hard floor is clamped to the warn threshold.
 
 ## Usage
 
@@ -140,8 +140,8 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `ORCH_WAIT_MS` | `120000` | Max wait for a conflicting window to close. |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | Read-buffer before a finished window auto-closes. |
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |
-| `ORCH_MIN_FREE_MB` | `10240` | Workspace drive free space (MB) below which a warning is emitted before running (≈10GB). |
-| `ORCH_MIN_FREE_HARD_MB` | `1024` | Hard floor (MB) below which the orchestrator refuses to run (fail-closed, ≈1GB). |
+| `ORCH_MIN_FREE_MB` | `12000` | Workspace drive free space (MB) below which a warning is emitted before running (≈12GB). |
+| `ORCH_MIN_FREE_HARD_MB` | `3600` | Hard floor (MB) below which the orchestrator refuses to run (fail-closed, ≈3.6GB); clamped to `ORCH_MIN_FREE_MB` if set higher. |
 
 ## Encoding & IME
 
