@@ -226,14 +226,21 @@ test('orchestrate-sdk decomposeHash: cache key is hints-aware (no cross-project 
 test('orchestrate-sdk checkDiskSpace: returns true on a disk with space (thresholds zeroed)', () => {
   const prevMin = process.env.ORCH_MIN_FREE_MB;
   const prevHard = process.env.ORCH_MIN_FREE_HARD_MB;
+  const ws2 = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-'));
   try {
     process.env.ORCH_MIN_FREE_MB = '0';
     process.env.ORCH_MIN_FREE_HARD_MB = '0';
-    assert.equal(checkDiskSpace(), true, 'disk with free space and zero thresholds must pass');
+    assert.equal(checkDiskSpace({ workspace: ws2 }), true, 'disk with free space and zero thresholds must pass');
     // 硬下限高于告警阈值 -> 应被钳制到 min，不因反直觉配置而误判失败。
     process.env.ORCH_MIN_FREE_HARD_MB = '99999999';
-    assert.equal(checkDiskSpace(), true, 'hard floor above warn threshold is clamped to min and still passes');
+    assert.equal(checkDiskSpace({ workspace: ws2 }), true, 'hard floor above warn threshold is clamped to min and still passes');
+    // 极低磁盘（把阈值拉高到远超当前空间）：strict 应拒绝；warnOnly（--plan 等只读命令）应只告警、仍放行。
+    process.env.ORCH_MIN_FREE_MB = '999999999';
+    process.env.ORCH_MIN_FREE_HARD_MB = '99999999';
+    assert.equal(checkDiskSpace({ workspace: ws2 }), false, 'strict check must hard-fail when disk is below the hard floor');
+    assert.equal(checkDiskSpace({ workspace: ws2, warnOnly: true }), true, 'warnOnly must never block a read-only command');
   } finally {
+    fs.rmSync(ws2, { recursive: true, force: true });
     if (prevMin === undefined) delete process.env.ORCH_MIN_FREE_MB; else process.env.ORCH_MIN_FREE_MB = prevMin;
     if (prevHard === undefined) delete process.env.ORCH_MIN_FREE_HARD_MB; else process.env.ORCH_MIN_FREE_HARD_MB = prevHard;
   }

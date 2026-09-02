@@ -114,6 +114,8 @@ launcher 内置 watchdog 轮询 session rollout，**只有当消息含「本块�
 
 真实执行前先验：codex CLI（探测/安装）+ **工作区磁盘空间**（`statfsSync`）。剩余空间低于 `ORCH_MIN_FREE_MB`（默认 12000MB≈12GB）告警；低于 `ORCH_MIN_FREE_HARD_MB`（默认 3600MB≈3.6GB）直接拒绝（fail-closed）——磁盘空间过低时连 launcher/temp 都写不了，与其半路失败不如一开始就拦。若 `ORCH_MIN_FREE_HARD_MB` 设得比 `ORCH_MIN_FREE_MB` 还高，硬下限会被钳制到告警阈值。
 
+磁盘检查**严格**用于真实执行入口（`--run-windows`/`--spawn`），**只告警不拦截**用于只读的 `--plan`（绝不拦计划输出），`--status` **不调用**（它看运行态，与磁盘无关，且会在 poll 循环里被高频调用）。
+
 ## 用法
 
 ```bash

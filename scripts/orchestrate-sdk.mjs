@@ -657,10 +657,13 @@ function armEnforcement() {
 
 // 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
 // 低于 ORCH_MIN_FREE_MB（默认 12000MB≈12GB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 3600MB≈3.6GB）直接拒绝（fail-closed，
-// 低空间必然写不了 launcher/temp，与其半路失败不如一开始就拦）。硬下限不许高于告警阈值（见下钳制）。
-function checkDiskSpace() {
+// 空盘必然写不了 launcher/temp，与其半路失败不如一开始就拦）。硬下限不许高于告警阈值（见下钳制）。
+// warnOnly=true：只告警、绝不拦截（供 --plan 等只读命令使用——只读命令以「能出信息」为准，不以磁盘为门槛）。
+function checkDiskSpace(opts = {}) {
+  const warnOnly = !!opts.warnOnly;
+  const wsPath = opts.workspace || WORKSPACE;
   try {
-    const s = statfsSync(WORKSPACE);
+    const s = statfsSync(wsPath);
     const freeMB = Math.round((s.bavail * s.bsize) / (1024 * 1024));
     const minMB = Number(process.env.ORCH_MIN_FREE_MB || 12000);
     let hardMB = Number(process.env.ORCH_MIN_FREE_HARD_MB || 3600);
@@ -671,14 +674,18 @@ function checkDiskSpace() {
     }
     if (!Number.isFinite(freeMB) || freeMB < 0) throw new Error("unexpected statfs result");
     if (freeMB < hardMB) {
-      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + WORKSPACE + "; refusing to run (fail-closed).");
+      if (warnOnly) {
+        console.warn("[orchestrator] WARN: workspace disk critically low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; --plan is read-only so still runs, but --run-windows would refuse.");
+        return true;
+      }
+      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; refusing to run (fail-closed).");
       return false;
     }
     if (freeMB < minMB) {
-      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + WORKSPACE + "; TUI window/temp may fail.");
+      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + wsPath + "; TUI window/temp may fail.");
       return true;
     }
-    console.log("[orchestrator] disk: workspace " + WORKSPACE + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
+    console.log("[orchestrator] disk: workspace " + wsPath + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
     return true;
   } catch (e) {
     console.warn("[orchestrator] WARN: could not stat workspace disk (" + (e && e.message ? e.message : String(e)) + "); skipping space check.");
@@ -1335,6 +1342,7 @@ async function main() {
 
   if (mode === "--plan") {
     const request = process.argv.slice(3).join(" ");
+    checkDiskSpace({ warnOnly: true }); // 只读命令：磁盘仅告警、不拦截（计划仍会输出）
     const plan = await decomposeSafely(request);
     console.log(JSON.stringify({ blocks: plan }, null, 2));
     return;

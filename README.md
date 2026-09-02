@@ -113,6 +113,8 @@ After `--run-windows`, the initiator MUST poll until all blocks are in the succe
 
 Before real work the orchestrator verifies: the codex CLI (detect/install) and **disk space** on the workspace drive via `statfsSync`. Free space below `ORCH_MIN_FREE_MB` (default 12000MB ≈12GB) warns; below `ORCH_MIN_FREE_HARD_MB` (default 3600MB ≈3.6GB) refuses (fail-closed) — a low disk cannot even write the launcher/temp files. If `ORCH_MIN_FREE_HARD_MB` is set above `ORCH_MIN_FREE_MB`, the hard floor is clamped to the warn threshold.
 
+The disk check is **strict** for the real-execution entry points (`--run-windows`/`--spawn`), **warn-only** for the read-only `--plan` (it never blocks a plan), and **not invoked** for `--status` (runtime state, unrelated to disk; also called in the poll loop).
+
 ## Usage
 
 ```bash
