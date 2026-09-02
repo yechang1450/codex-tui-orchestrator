@@ -1077,10 +1077,16 @@ function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(
 // 跨进程独占锁：openSync 'wx' 原子创建；冲突则有限重试；finally 释放。用于串行化 registry 写，防并发丢失/半写。
 function withRegistryLock(fn) {
   let got = false;
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 200; i++) {
     let fd;
-    try { fd = openSync(REG_LOCK, 'wx'); closeSync(fd); got = true; break; } catch { sleepSync(20); }
+    try { fd = openSync(REG_LOCK, 'wx'); closeSync(fd); got = true; break; }
+    catch {
+      // 陈旧锁（持有者已崩溃/未释放）：锁文件存在且超过 30s -> 删除并重试，避免被永久卡死、后续全是裸写。
+      try { const st = statSync(REG_LOCK); if (Date.now() - st.mtimeMs > 30000) { rmSync(REG_LOCK, { force: true }); continue; } } catch { /* ignore */ }
+      sleepSync(20);
+    }
   }
+  if (!got) console.warn("[orchestrator] WARN: registry lock not acquired after ~4s; proceeding (stale-lock risk: concurrent registry writes)");
   try { return fn(); }
   finally { if (got) { try { rmSync(REG_LOCK, { force: true }); } catch { /* ignore */ } } }
 }
