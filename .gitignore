@@ -17,3 +17,5 @@ Thumbs.db
 .vscode/
 .idea/
 .plugin-eval/
+.agent-cache.json
+scripts/.agent-cache.json
