@@ -738,7 +738,31 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "$resultFile = '" + rfQ + "'",
     "function Write-Result {",
     "  param([int]$code)",
-    "  try { $line = '__EXIT__=' + $code; $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"ts\":\"' + (Get-Date -Format o) + '\"}'; Set-Content -Path $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8 } catch { }",
+    "  try {",
+    "    $report = ''",
+    "    if ($token) {",
+    "      $dir = Join-Path $env:USERPROFILE '.codex\\sessions'",
+    "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue",
+    "      foreach ($f in $files) {",
+    "        $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
+    "        if ($raw -and $raw.Contains($token)) {",
+    "          foreach ($line in ($raw -split \"`n\")) {",
+    "            try {",
+    "              $o = $line | ConvertFrom-Json -ErrorAction SilentlyContinue",
+    "              $p = $o.payload",
+    "              $msg = ''",
+    "              if ($p -and $p.type -eq 'agent_message' -and $p.message) { $msg = $p.message }",
+    "              elseif ($o.type -eq 'response_item' -and $p -and $p.type -eq 'message' -and $p.role -eq 'assistant' -and $p.content) { $msg = (($p.content | ForEach-Object { $_.text }) -join '') }",
+    "              if ($msg -and $msg.Contains($token) -and $msg.Contains('完成')) { $report = $msg }",
+    "            } catch { }",
+    "          }",
+    "        }",
+    "      }",
+    "    }",
+    "    $line = '__EXIT__=' + $code",
+    "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
+    "    Set-Content -LiteralPath $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8",
+    "  } catch { }",
     "}",
     "$p = (Get-Content -Raw -Encoding UTF8 '" + pfQ + "').Trim()",
     "if ([string]::IsNullOrWhiteSpace($p)) { Write-Result 2; exit 0 }",
@@ -764,10 +788,11 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "          if ($f.FullName -ne $match) { continue }",
     "          try {",
             "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
-            "            if (($tail -join \"`n\").Contains('task_complete')) {",
+            "            # 报告驱动关窗：只有 agent 完成汇报（agent_message/assistant 行含本块 token 且含 完成）才关窗。",
+            "            # 计划/中间消息不带“完成”，不会被误关；稳定~6s 后关，确保父进程已抓到汇报。",
+            "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') })",
+            "            if ($report) {",
             "              $age = [TimeSpan]::Zero; try { $age = (Get-Date) - $f.LastWriteTime } catch { }",
-            "              # 等回合真正完成(task_complete)且稳定~6s 再关：确保父进程在此期间已从 rollout 抓到最终汇报。",
-            "              # 不要仅凭“agent 消息含 token”就关——agent 可能在计划/中间消息里也带 token，导致误关/提前结束。",
             "              if ($age.TotalSeconds -gt 6) {",
             "                $kids = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -eq $rootPid -and $_.ProcessId -ne $PID }",
             "                foreach ($k in $kids) { taskkill /PID $($k.ProcessId) /T /F 2>$null | Out-Null }",
@@ -861,14 +886,20 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
 // agent's final message. Returns { done, text, exitCode }. Also treats the launcher's exit marker as a
 // completion signal (codex exited, whatever the code): a non-zero exit WITH task_complete is a done
 // turn, and a launcher exit WITHOUT task_complete is still a reclaimable (already-closing) window.
-async function waitTaskComplete(file, timeoutMs, exitMarkerFile) {
+async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     if (exitMarkerFile && existsSync(exitMarkerFile)) {
+      const rep = readReportFromResult(exitMarkerFile, matchToken);
+      if (rep) return { done: true, text: rep, exitCode: readExitCode(exitMarkerFile) };
       const code = readExitCode(exitMarkerFile);
-      const base = extractResult(file); // may or may not already contain task_complete
+      const base = matchToken ? { text: extractOwnResult(file, matchToken) } : extractResult(file);
       if (base.text) return { done: true, text: base.text, exitCode: code };
       return { done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code };
+    }
+    if (exitMarkerFile && existsSync(exitMarkerFile)) {
+      const rep = readReportFromResult(exitMarkerFile, matchToken);
+      if (rep) return { done: true, text: rep, exitCode: readExitCode(exitMarkerFile) };
     }
     let tail = "";
     try {
@@ -882,7 +913,7 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile) {
     } catch { /* ignore */ }
     if (tail.includes('"type":"task_complete"')) {
       // exit code non-zero but task_complete seen -> still a completed turn
-      return { done: true, text: extractResult(file).text, exitCode: readExitCode(exitMarkerFile) };
+      return { done: true, text: (matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text), exitCode: readExitCode(exitMarkerFile) };
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -906,6 +937,36 @@ function extractResult(file) {
     } catch { /* ignore */ }
   }
   return { done: true, text: last };
+}
+// 在（可能混合了多窗消息的）rollout 里，取“含本块唯一 token 的最后一条消息”（真正的本块完成汇报），避免跨窗串号。
+function extractOwnResult(file, token) {
+  if (!token) return "";
+  let full = "";
+  try { full = readFileSync(file, "utf8"); } catch { return ""; }
+  let last = "";
+  for (const line of full.split("\n")) {
+    const l = line.trim();
+    if (!l) continue;
+    try {
+      const o = JSON.parse(l);
+      const p = o.payload || {};
+      let msg = "";
+      if (p.type === "agent_message" && p.message) msg = p.message;
+      else if (o.type === "response_item" && p.type === "message" && p.role === "assistant" && Array.isArray(p.content)) msg = p.content.map((c) => c.text || "").join("");
+      if (msg && msg.includes(token)) last = msg;
+    } catch { /* ignore */ }
+  }
+  return last;
+}
+// 确定性结果：读 launcher 写入的 __REPORT__（本块完成汇报），含本块 token+完成 才返回；否则 ""。
+function readReportFromResult(resultFile, token) {
+  if (!resultFile || !existsSync(resultFile)) return "";
+  try {
+    const j = JSON.parse(String(readFileSync(resultFile, "utf8")).replace(/^\uFEFF/, ""));
+    const rep = String(j.__REPORT__ || "");
+    if (rep && token && rep.includes(token) && rep.includes("完成")) return rep;
+  } catch { /* ignore */ }
+  return "";
 }
 // Re-scan rollouts for the block's report and return the latest agent message, or "" if none found yet.
 // Used so a window is only auto-closed AFTER its report has been captured ("close anchor = report captured"),
@@ -1227,7 +1288,7 @@ async function main() {
     const sessionFile = await waitForSessionFile(matchToken, 120000, rf);
     let res = { done: false, text: "" };
     if (sessionFile) {
-      res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, rf);
+      res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, rf, matchToken);
     } else if (existsSync(rf)) {
       res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     }
@@ -1275,7 +1336,7 @@ async function main() {
     console.log("selftest window spawned (pidfile=" + pidf + "), waiting for task_complete...");
     let res = { done: false, text: "" };
     const sessionFile = await waitForSessionFile(matchToken, 120000, rf);
-    if (sessionFile) res = await waitTaskComplete(sessionFile, 180000, rf);
+    if (sessionFile) res = await waitTaskComplete(sessionFile, 180000, rf, matchToken);
     else if (existsSync(rf)) res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     const tComplete = Date.now();
     console.log("=== selftest-close result ===");
@@ -1443,7 +1504,7 @@ async function main() {
         const sessionFile = await waitForSessionFile(matchKey, 90000, resultFile);
         let res = { done: false, text: "" };
         if (sessionFile) {
-          res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile);
+          res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile, s.matchToken);
         } else if (existsSync(resultFile)) {
           // codex 进程先退出（任意退出码）且没匹配到 rollout：立即回收，窗口已/即将自动关闭。
           const code = readExitCode(resultFile);
@@ -1498,7 +1559,7 @@ async function main() {
         const matchKey2 = "【本块唯一标识】" + tk2, resultFile2 = la.rf;
         const sf2 = await waitForSessionFile(matchKey2, 90000, resultFile2);
         let res2 = { done: false, text: "" };
-        if (sf2) res2 = await waitTaskComplete(sf2, POLL_TIMEOUT_MS, resultFile2);
+        if (sf2) res2 = await waitTaskComplete(sf2, POLL_TIMEOUT_MS, resultFile2, matchKey2);
         else if (existsSync(resultFile2)) { const c2 = readExitCode(resultFile2); res2 = { done: true, text: "(launcher exited code " + (c2 === null ? "?" : c2) + "; no session rollout matched)", exitCode: c2 }; }
         summary[r.key] = { title: r.title, status: res2.done ? "done" : "timeout", exitCode: res2.exitCode ?? null, result: (res2.text || "(no result captured)").trim().slice(0, 2000) };
         if (res2.done) {
