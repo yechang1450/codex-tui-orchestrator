@@ -112,7 +112,7 @@ launcher 内置 watchdog 轮询 session rollout，**只有当消息含「本块�
 
 ### 5. 初始环境检测
 
-真实执行前先验：codex CLI（探测/安装）+ 本版本新增的**工作区磁盘空间**（`statfsSync`）。剩余空间低于 `ORCH_MIN_FREE_MB`（默认 1024MB）告警；低于 `ORCH_MIN_FREE_HARD_MB`（默认 128MB）直接拒绝（fail-closed）——磁盘几乎占满时连 launcher/temp 都写不了，与其半路失败不如一开始就拦。
+真实执行前先验：codex CLI（探测/安装）+ **工作区磁盘空间**（`statfsSync`）。剩余空间低于 `ORCH_MIN_FREE_MB`（默认 10240MB≈10GB）告警；低于 `ORCH_MIN_FREE_HARD_MB`（默认 1024MB≈1GB）直接拒绝（fail-closed）——磁盘空间过低时连 launcher/temp 都写不了，与其半路失败不如一开始就拦。
 
 ## 用法
 
@@ -141,8 +141,8 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `ORCH_WAIT_MS` | `120000` | 等待冲突窗关闭的最长时间。 |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | 窗完成后自动关窗的读缓冲。 |
 | `ORCH_TUI` | `wt` | `wt`=Windows Terminal（最佳 CJK 输入法），`conhost`=经典控制台。 |
-| `ORCH_MIN_FREE_MB` | `1024` | 工作区所在盘剩余空间（MB）低于此值则告警。 |
-| `ORCH_MIN_FREE_HARD_MB` | `128` | 硬下限（MB），低于此值直接拒绝执行（fail-closed）。 |
+| `ORCH_MIN_FREE_MB` | `10240` | 工作区所在盘剩余空间（MB）低于此值则告警（≈10GB）。 |
+| `ORCH_MIN_FREE_HARD_MB` | `1024` | 硬下限（MB），低于此值直接拒绝执行（fail-closed，≈1GB）。 |
 
 ## 编码与输入法
 

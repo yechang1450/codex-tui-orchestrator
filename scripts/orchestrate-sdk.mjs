@@ -656,14 +656,14 @@ function armEnforcement() {
 }
 
 // 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
-// 低于 ORCH_MIN_FREE_MB（默认 1024MB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 128MB）直接拒绝（fail-closed，
-// 极低空间必然写不了 launcher/temp，与其半路失败不如一开始就拦）。
+// 低于 ORCH_MIN_FREE_MB（默认 10240MB≈10GB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 1024MB≈1GB）直接拒绝（fail-closed，
+// 低空间必然写不了 launcher/temp，与其半路失败不如一开始就拦）。
 function checkDiskSpace() {
   try {
     const s = statfsSync(WORKSPACE);
     const freeMB = Math.round((s.bavail * s.bsize) / (1024 * 1024));
-    const minMB = Number(process.env.ORCH_MIN_FREE_MB || 1024);
-    const hardMB = Number(process.env.ORCH_MIN_FREE_HARD_MB || 128);
+    const minMB = Number(process.env.ORCH_MIN_FREE_MB || 10240);
+    const hardMB = Number(process.env.ORCH_MIN_FREE_HARD_MB || 1024);
     if (!Number.isFinite(freeMB) || freeMB < 0) throw new Error("unexpected statfs result");
     if (freeMB < hardMB) {
       console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + WORKSPACE + "; refusing to run (fail-closed).");
