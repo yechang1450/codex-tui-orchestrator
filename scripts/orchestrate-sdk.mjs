@@ -180,9 +180,9 @@ function classifyPrompt(request, hints = {}) {
     "project(80|81|82|83，只在请求里明确写了才填，否则填 null)、" +
     "hint(该任务涉及模块/资源关键词，如 会员管理、商品、订单)、" +
     "conflict_hints(会碰到的资源字符串数组，如 [\"db:订单\",\"dir:管理端\"]，无则 [])、" +
-    "depends_on(依赖的其它任务 id 数组，无则 [])、" +
+    "depends_on(依赖的其它任务 id 数组，禁止引用自身 id，无则 [])、" +
     "feasible(是否可行，布尔)、already_done(是否已达成无需做，布尔)。" +
-    "规则：不遗漏任何任务；不合并；请求没写项目号时 project 必须为 null，交给模块映射校正，不许猜；" +
+    "规则：不遗漏任何任务；不合并；depends_on 只能引用其它任务的 id、禁止包含自身 id；请求没写项目号时 project 必须为 null，交给模块映射校正，不许猜；" +
     "禁止调用任何工具/读文件/搜索/联网；只输出一个 JSON 对象 {\"tasks\":[...]}，能被 JSON.parse 直接解析，不要 Markdown 代码块、不要任何前后缀文字。" +
     hintText + "\n请求：" + request
   );
@@ -582,6 +582,42 @@ function blockBody(block) {
   );
 }
 
+// 构造"带本块唯一标识"的执行窗 prompt：<body>\n\n【本块唯一标识】<token>\n（最终汇报请以「【本块唯一标识】<token> 完成」开头…）。
+// token 必须为非空 ASCII（watchdog / 窗口匹配、以及窗内「本块唯一标识」都靠它），绝不能落入
+// 「【本块唯一标识】 完成」这种"裸完成"形态（标识后无 token，watchdog 会把"完成"当 token 清洗成空而失配）。
+function buildBlockPrompt(bodyText, token) {
+  return (
+    String(bodyText || "") +
+    "\n\n【本块唯一标识】" + token +
+    "\n（最终汇报请以「【本块唯一标识】" + token + " 完成」开头，并说明本块完成情况）"
+  );
+}
+
+// 依赖归一化 + 按层排队（wave）：把块 dependsOn 统一归一到块 key，剔除自引用与未知目标，
+// 再排成 wave（层内可并行、层间按依赖先后）。避免 LLM 产出「块依赖自己/未知块」时，其依赖
+// 被判成永不满足而落入死锁兜底，导致依赖串行失效（例如 task-2 dependsOn:["task-1","task-2"]）。
+function levelWaves(recs) {
+  const keyByTitle = new Map();
+  for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
+  for (const r of recs) {
+    r.dependsOn = (Array.isArray(r.dependsOn) ? r.dependsOn : [])
+      .map((d) => keyByTitle.get(String(d)) || keyByTitle.get(d))
+      .filter((d) => d && d !== r.key);
+  }
+  const waves = [];
+  const remaining = recs.slice();
+  const doneKeys = new Set();
+  let guard = 0;
+  while (remaining.length && guard < 200) {
+    guard++;
+    const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
+    if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; } // 真环/无法归位 -> 一股并跑（兜底）
+    waves.push(ready);
+    for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
+  }
+  return waves;
+}
+
 // ---- "原型/可行性检测"前置门禁（硬约束，已内嵌本 SDK，不依赖外部技能文件）----
 // 每个真实块在 spawn 前做一次内嵌预检：prototype-validation 的"可行性"能力已并入本函数。
 // 判定标准：本地执行块几乎都是用户明确要求做的真实改动，默认可行；仅当提示为空/无实际指令才判不可行，避免误拦"新建文件"类任务。
@@ -595,12 +631,14 @@ function classifyBlockComplexity(prompt) {
   return false;
 }
 
-// 可行性门禁（L1 空判）：复杂/可行性判断已由拆块 LLM 定性（feasible/already_done）承担，
-// 这里只保留最后一道确定性 sanity 空判，不再为每块单独调一次 LLM（避免重复往返）。
+// 可行性门禁（最终确定性 sanity）：复杂/可行性判断已由拆块 LLM 定性（feasible/already_done）承担，
+// 这里只做最后一道确定性门禁：L1 空判（空/无动作→拒绝）+ L2 复杂度识别（命中→复杂，仅状态提示）。
+// 不为每个块单开一次 LLM（避免重复往返、成本友好）；复杂块的可行性已由拆块阶段判过。
 async function runPrototypeGate(title, prompt) {
   const text = String(prompt || "").trim();
   if (!text) { console.log("  preflight FAILED for [" + title + "] (empty/无动作): reject."); return false; }
-  console.log("  preflight PASSED for [" + title + "] (feasibility already resolved at decompose)");
+  const complex = classifyBlockComplexity(text);
+  console.log("  preflight PASSED for [" + title + "] " + (complex ? "(complex; feasibility resolved at decompose)" : "(simple)"));
   return true;
 }
 
@@ -1279,7 +1317,7 @@ async function main() {
       promptContent = readFileSync(probablyFile, "utf8");
     }
     const rid = Date.now().toString(36);
-    const trackedPrompt = promptContent + "\n\n【本块唯一标识】spawn-" + rid + "\n（最终汇报请以「【本块唯一标识】spawn-" + rid + " 完成」开头，并说明本块完成情况）";
+    const trackedPrompt = buildBlockPrompt(promptContent, "spawn-" + rid);
     const { lp, pidf, pf, rf } = writeInteractiveLauncher(title, trackedPrompt, rid);
     spawnVisibleWindow(lp, title);
     console.log("write launcher -> " + lp);
@@ -1327,9 +1365,10 @@ async function main() {
     cleanStaleTransients();
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
-    const prompt =
-      "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
-      "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
+    const prompt = buildBlockPrompt(
+      "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。",
+      "selftest-" + rid
+    );
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     spawnVisibleWindow(lp, "selftest-close");
     const matchToken = "【本块唯一标识】selftest-" + rid;
@@ -1407,7 +1446,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 agent-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：以「【本块唯一标识】 完成」开头，说明本块做了什么、每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
+    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 agent-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：请严格按本窗上方指定的格式开头，如实说明本块做了什么与每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
 
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
@@ -1419,23 +1458,8 @@ async function main() {
       title: titleOf("B" + (i + 1), b.title),
       dependsOn: (Array.isArray(b.dependsOn) ? b.dependsOn : []).map(String),
     }));
-    // B3 双向映射：模型 dependsOn 可能用原始标题/中文标题，统一归一到块 key，再按 key 判 wave。
-    const keyByTitle = new Map();
-    for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
-    for (const r of recs) { r.dependsOn = r.dependsOn.map((d) => keyByTitle.get(String(d)) || keyByTitle.get(d) || String(d)); }
-    const waves = [];
-    {
-      const remaining = recs.slice();
-      const doneKeys = new Set();
-      let guard = 0;
-      while (remaining.length && guard < 200) {
-        guard++;
-        const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
-        if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; } // deadlock/unknown -> run rest in one wave
-        waves.push(ready);
-        for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
-      }
-    }
+    // 依赖归一化 + 按层排队：把块 dependsOn（可能是标题/自引用/未知值）归一到块 key 并剔除无效项。
+    const waves = levelWaves(recs);
 
     const summary = {};
     const allSpawned = [];
@@ -1479,7 +1503,7 @@ async function main() {
           continue;
         }
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body = blockBody(r.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
+        const body = buildBlockPrompt(blockBody(r.b), tk) + "\n" + auth;
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
         const popped = await spawnWindowWithRetry(lp, r.title, pidf);
         if (!popped) {
@@ -1549,7 +1573,7 @@ async function main() {
         if (conflictByKeys(nkeys)) { console.log("  still locked " + r.key + "; not re-run yet."); continue; }
         console.log("  re-running previously-locked block [" + r.key + "] (conflict cleared)");
         const tk2 = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body2 = blockBody(r.b) + "\n\n【本块唯一标识】" + tk2 + "\n（最终汇报请以「【本块唯一标识】" + tk2 + " 完成」开头，并说明本块完成情况）\n" + auth;
+        const body2 = buildBlockPrompt(blockBody(r.b), tk2) + "\n" + auth;
         const la = writeInteractiveLauncher(r.key, body2, rid);
         spawnVisibleWindow(la.lp, r.title);
         pendingWins.push({ title: r.title, keys: nkeys, pidFile: la.pidf, locked: false });
@@ -1747,4 +1771,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, writeInteractiveLauncher };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, writeInteractiveLauncher };

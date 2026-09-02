@@ -20,14 +20,13 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完。
 8. **留痕**：真实执行后须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
 
-## 内嵌能力（12 项，全部恒启用、无开关）
+## 内嵌能力（11 项，全部恒启用、无开关）
 | 能力 | 职责 |
 |---|---|
 | 拆块分类 | 请求→linked/independent 块 + 只读→inline 门禁 |
 | 冲突锁 | 活窗资源冲突→等待/上锁/重跑 |
 | 依赖排序 | dependsOn 前置顺序/串行 |
-| 原型门禁-确定性 | L1/L2 可行性，简单块不调 LLM |
-| 原型门禁-LLM | L3 可行性（确保无白窗浪费；effort `ORCH_PROTOTYPE_EFFORT` 默认 high）|
+| 原型门禁 | L1 空判 + L2 复杂度识别（确定性，不单开 LLM）；可行性已由拆块 LLM 判定 |
 | 注册表 | 跨进程 windows/locks + 互斥 |
 | 窗口运行时 | launcher/spawn/watchdog/close + 汇报捕获（`ORCH_TUI=wt/conhost`、`ORCH_CLOSE_DELAY_MS`）|
 | 结果汇聚 | poll-windows 保轮询契约（常开）|
@@ -54,16 +53,10 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - 触发：decompose 之后、spawn 之前。
 - 边界：只处理**逻辑先后**（前置/产出依赖），**不等于**资源冲突（那是冲突锁）。
 
-### 原型门禁-确定性
-- 每个块 spawn 前做**确定性**可行性判断：L1 空/无动作→拒绝；L2 复杂度分类（多句/含分析/长指令→复杂）。
+### 原型门禁（确定性）
+- 每个块 spawn 前做**确定性**门禁：L1 空/无动作→拒绝；L2 复杂度识别（多句/含分析/长指令→复杂，仅作状态提示）。
 - 触发：每块 spawn 前。
-- 与 LLM 原型门禁：本能力是**不花 LLM 的判断**；复杂块才交给 LLM 原型门禁。
-
-### 原型门禁-LLM
-- 确定性判「复杂」的块，再请 LLM（只读）判「该任务是否可行、不矛盾」，只回「可行/不可行」。
-- 触发：复杂块（恒启用）。
-- 目的：**确保无白窗浪费**——复杂块先判可行性，避免开出空白/注定失败的窗。
-- LLM 报错/超时→ fail-safe PASS（不误拦，宁可多测也不白开窗）。
+- 可行性（是否可行/已达成）已由**拆块 LLM**在分块阶段判定（`feasible`/`already_done`，不可行或已完成任务会被过滤）；执行前不再为每块单开一次 LLM（避免重复往返、成本友好）。
 
 ### 注册表
 - 共享 `temp/orchestrator-windows.json` / `orchestrator-locks.json`；`withRegistryLock`（独占锁文件）串行写；`updateWindows/updateLocks` 锁内 load+mutate+save，只追加不整表覆盖。

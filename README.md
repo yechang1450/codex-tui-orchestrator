@@ -74,8 +74,7 @@ The plugin exposes **one skill** (`skills/agent-tui-orchestrator/SKILL.md`) that
 | Decompose/classify | request → linked/independent blocks + read-only→inline gate |
 | Conflict lock | live-window resource conflicts → wait/lock/rerun |
 | Dependency order | `dependsOn` prerequisite ordering |
-| Prototype gate (deterministic) | L1/L2 feasibility, no LLM for simple blocks |
-| Prototype gate (LLM) | L3 feasibility, avoid blank windows |
+| Prototype gate | deterministic L1 empty-check + L2 complexity; feasibility decided at decompose |
 | Registry | cross-process windows/locks store + mutex |
 | Window runtime | launcher / spawn / watchdog / close + result capture |
 | Gather results | poll-windows require-all-success contract |

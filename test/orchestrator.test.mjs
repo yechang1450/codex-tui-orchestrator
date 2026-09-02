@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -80,6 +80,9 @@ test('force.mjs CLI --status/--assert read/--assert write', () => {
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-cli-'));
   try {
     const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    // 测试模拟“非窗/窗外观”语境：剥离宿主（已授权编排窗）遗留的 CODEX_ORCH_WINDOW，
+    // 否则子进程会误判为“已授权窗活窗=0”，让本应 read-only ok 的 --assert read 变成 REFUSED。
+    delete env.CODEX_ORCH_WINDOW;
     // --status on empty workspace: armed=false, 0 windows
     const st = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--status'], { env });
     assert.equal(st.code, 0);
@@ -102,6 +105,8 @@ test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATIO
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-cli2-'));
   try {
     const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    // 同上：模拟非窗语境，剥离宿主 CODEX_ORCH_WINDOW，避免 --assert read 被误判为已授权窗。
+    delete env.CODEX_ORCH_WINDOW;
     const tmpDir = path.join(cliDir, 'state');
     fs.mkdirSync(tmpDir, { recursive: true });
     // arm enforcement
@@ -128,6 +133,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
   const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-enable-'));
   try {
     const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    delete env.CODEX_ORCH_WINDOW;
     const en = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--enable'], { env });
     assert.equal(en.code, 0);
     const flag = path.join(cliDir, 'state', '.orchestrator-enabled');
@@ -138,7 +144,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -178,6 +184,39 @@ test('orchestrate-sdk genericProjectSplit returns null for single project', () =
 test('orchestrate-sdk loadCachedDecompose returns null for empty cache', () => {
   assert.equal(loadCachedDecompose('修复 81 登录页'), null);
 });
+test('orchestrate-sdk blockPrompt: run-windows block prompt embeds a real ASCII token, no bare 完成', () => {
+  // 复刻 --run-windows 生成块 prompt 的精确拼接：buildBlockPrompt(blockBody, tk) + "\n" + auth
+  const body = '仅处理项目 proj-81。任务：修复登录页；优化 UI。不要处理其它项目编号。\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。';
+  const token = 'B1-abc123-4f2g9z'; // 真实非空 ASCII（r.key-rid-随机 base36）
+  const auth = '\n\n（用户已明确、反复授权「同意推进，允许执行」……）\n执行完即可结束本窗、汇报。';
+  const prompt = buildBlockPrompt(body, token) + '\n' + auth;
+  // 必须含【本块唯一标识】<token> 完成（token 为真实非空 ASCII）
+  assert.ok(prompt.includes('【本块唯一标识】' + token), 'prompt must embed the real token after the marker');
+  const m = prompt.match(/【本块唯一标识】([A-Za-z0-9_-]+) 完成/);
+  assert.ok(m, 'prompt must contain 【本块唯一标识】<token> 完成');
+  assert.equal(m[1], token, 'the token before 完成 must be the real block token');
+  // 不得出现裸『【本块唯一标识】 完成』（标识后紧跟空格+完成 = token 缺失，watchdog 会把“完成”当 token 再清洗成空而失配）
+  assert.doesNotMatch(prompt, /【本块唯一标识】\s+完成/);
+});
 
-fs.rmSync(wsDir, { recursive: true, force: true });
-console.log('orchestrator tests passed.');
+test('orchestrate-sdk levelWaves strips self/unknown dependsOn and enforces ordering', () => {
+  const recs = [
+    { key: 'B1', title: 'B1:task-1', b: { title: 'task-1' }, dependsOn: [] },
+    { key: 'B2', title: 'B2:task-2', b: { title: 'task-2' }, dependsOn: ['task-1', 'task-2', 'not-a-block'] },
+  ];
+  const waves = levelWaves(recs);
+  // 自引用 task-2 与未知 not-a-block 应被剔除，仅保留对 task-1(B1) 的依赖 -> 严格两波、B1 在前
+  assert.equal(waves.length, 2, 'self/unknown deps removed -> B2 must wait for B1');
+  assert.deepEqual(waves[0].map((r) => r.key), ['B1']);
+  assert.deepEqual(waves[1].map((r) => r.key), ['B2']);
+  // B2 的 dependsOn 归一化后只剩 [B1]
+  assert.deepEqual(recs[1].dependsOn, ['B1']);
+});
+
+// 全部测试完成后统一清理顶层临时工作区（wsDir 与 stDir 都是测试专用一次性目录），
+// 避免像原先那样只清理 wsDir、导致每次运行都在 %TEMP% 遗留 orch-force-state-* 目录。
+after(() => {
+  fs.rmSync(wsDir, { recursive: true, force: true });
+  fs.rmSync(stDir, { recursive: true, force: true });
+  console.log('orchestrator tests passed.');
+});
