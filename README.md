@@ -8,20 +8,110 @@ Split a multi-part request into **safe parallel blocks** and execute them throug
 
 > Plugin name note: the plugin id, `name` field, directory, GitHub repo, and display name are all lowercase hyphen-case `agent-tui-orchestrator`, as required by the Codex plugin manifest spec.
 
-## Orchestration design (dependency graph, bounded parallelism)
+## Complete implementation approach (request → on-disk)
 
-This orchestrator classifies by a conservative axis:
+### 0. The core classification axis
+
+The orchestrator is driven by one conservative question:
 
 > **Would running these two tasks at the SAME TIME break something?**
 
-- If **yes** (both edit the same file/config, restart the same service, use the same port/DB, one needs the other's output, one is a prerequisite) → **linked** → merge into ONE block, run **strictly serialized**.
-- If **no** (they touch disjoint files/subsystems) → **independent** → each gets its OWN block, run **in parallel**.
+- If **yes** (same file/config, same service restart, same port/DB, one needs the other's output, one is a prerequisite) → **linked** → merged into ONE block, run **strictly serialized**.
+- If **no** (disjoint files/subsystems) → **independent** → its own block, run **in parallel**.
 
-## How it runs
+Two orthogonal dimensions are modeled separately and deliberately:
+- **Logical order (dependency)** → `dependsOn` → decides *when* a block runs (prerequisite ordering).
+- **Resource overlap (conflict)** → `conflictKeys` → decides *whether* two blocks may start at the same time.
 
-- **`--run-windows` (THE engine for real work)** — decomposes, then each **independent** block opens its OWN real **interactive** Codex TUI window (Windows Terminal default) and runs in parallel; each **linked** block stays in ONE window serialized. Before executing it SDK-pre-checks each block against running windows — conflict → it **waits** then executes; still-conflicting blocks are **locked**. Every window **auto-closes** when its task finishes (via session `task_complete`, with a result-written fallback), and results aggregate to `temp/win-summary.json`.
-- **`--spawn` (real interactive window)** — opens an actual popup terminal running Codex interactively with the prompt pre-seeded.
-- **`--run` / `--exec` (Codex SDK, headless)** — pure automation only (per AGENTS.md, real changes must use `--run-windows`).
+Dependencies are about ordering; conflicts are about mutual exclusion — they are **not** the same thing, and this separation is the backbone of the design.
+
+### 1. Lifecycle
+
+```
+request → ①mode-classify → ②decompose(cache/rule/LLM/fallback) → ③normalize
+        → ④level-waves → ⑤per-wave conflict-gate + prototype-gate + popup
+        → ⑥in-window authorized exec + self-verify → ⑦report-triggered auto-close
+        → ⑧aggregate win-summary → ⑨poll contract → ⑩cleanup + parent re-verify
+```
+
+#### ① Execution-mode classify (`classifyExecutionMode`)
+Read-only vs real detection. Read-only words with no real action → `inline` (stay in the main conversation, no popup). Real action with no read-only → `execute` (must popup). Ambiguous / neither → let the LLM decide, and on LLM failure **fail-safe `execute`** (never skip a real execution by misclassifying it as read-only).
+
+#### ② Two-stage decompose (`decomposeSafely`) — the core
+**LLM is qualitative; determinism decides how to block/order.** The LLM only says "which natural tasks exist", never how to group/sort/place them (that is code, and reliable). Path order:
+
+1. **Cache first** (hints-aware). Key = `sha1(requestText + projectHints)` — hints (module→project map, fold rules, tail keywords) are project-specific config and MUST be part of the key, or the same sentence would collide across projects. Never auto-expires; only `--clear-cache` resets it.
+2. **`genericProjectSplit`** — request names several distinct project dirs → split into independent blocks (no LLM, instant, cached).
+3. **`trySingleBlock`** — a clear single action → one block (no LLM).
+4. **LLM two-stage**:
+   - `classifyPrompt` → flat task list `{tasks:[{id,summary,kind,project,hint,conflict_hints,depends_on,feasible,already_done}]}` (few fields, no tools, pure JSON).
+   - `extractTasks` → parse JSON (strip code fences, tolerant).
+   - `buildBlocksFromTasks` → deterministic block engine: group by project, tool tasks independent, unknown items → linked, dependency mapping (guards self-references with `i !== j`), **feasibility filter** (`feasible=false` / `already_done=true` tasks are dropped here — this is the "no wasted window" guarantee).
+5. LLM failure/timeout is retried, then `fallbackPlan` → single serial window (guarantees the batch lands).
+
+#### ③ Normalize (`normalizePlan`) — anti-over-merge / anti-self-conflict
+- An `independent` block carrying multiple tasks → split into one block per task (prevents the model over-merging into a single parallel block).
+- Two blocks sharing a `conflictKey` → merged into one linked block (prevents a block fighting itself).
+
+#### ④ Level waves (`levelWaves`)
+Normalize every block's `dependsOn` to block keys, **strip self-references and unknown targets**, then level into waves: same wave = parallelizable; between waves = ordered. This makes real ordering reliable — a self-referential `dependsOn` (e.g. `task-2:["task-1","task-2"]`) previously defeated serialization by never being satisfiable.
+
+#### ⑤ Per-wave spawn (conflict lock + prototype gate + popup)
+For each block, before spawning:
+- **Conflict check** `conflictByKeys` against **running windows** (registry + `windowAlive`). Overlap → `waitClear` (poll); still conflicting → **lock** (terminal, not a false window); released → auto-rerun (never silently dropped).
+- **In-batch double-check** — re-check against already-spawned blocks this wave.
+- **Prototype gate** `runPrototypeGate` — L1 empty/no-action → reject; L2 complexity (multi-sentence / analysis / long → complex, informational only). Feasibility is already decided at decompose (no extra per-block LLM, cost-friendly).
+- **Registry write** `updateWindows` (load+mutate+save inside an exclusive lock, append-only, no cross-process lost-update).
+- **`writeInteractiveLauncher`** — prompt = `buildBlockPrompt(blockBody, token)` + `auth`; writes `win-launch-*.ps1` (UTF-8 + BOM + `chcp 65001`), `codex-win-*.md`, `window-*.pid`.
+- **`spawnWindowWithRetry`** — pop a real visible window (Windows Terminal preferred, conhost fallback); popup detection (poll pid file, up to 3 retries); if it truly never popped → `popup-failed`, never treated as running.
+
+#### ⑥ In-window authorized execution + self-verify
+The window agent receives a full-authorization prompt with hard constraints baked in: no nesting (no `--run-windows`/`--spawn`/new window), no stalling (must not ask "need authorization?"), must self-verify every change (read back + UTF-8 no BOM, run regression, no leftover temp / no mojibake), and must report honestly.
+
+#### ⑦ Report-triggered auto-close
+The launcher runs a watchdog over the session rollout. A window only auto-closes once a message containing **this block's real token + 完成** is captured (`own completion report CAPTURED`), then waits ~1s before closing. Planned/intermediate messages (without 完成) are never misfired. Fallback: even if rollout matching fails, if the result file has `__DONE__` the parent does `done-and-close`.
+
+#### ⑧ Aggregate → `win-summary.json`
+Each block writes a result. Completion is judged by **"have all results truly returned"**, not "are all windows closed": a block resolves when it has a real report, or was correctly intercepted (`preflight-failed`/`locked`/`unfinished`/`popup-failed`). `uncaptured`/`failed`/`timeout` remain unresolved — never finish early.
+
+#### ⑨ Poll contract (`poll-windows.mjs --require-all-success`)
+After `--run-windows`, the initiator MUST poll until all blocks are in the success set (`done/ok/completed/done-retried` + correctly-intercepted `preflight-failed/locked/unlocked`) and no windows alive → exit 0. Otherwise poll to timeout and exit 1 (never claim success on `uncaptured`/`failed`/`timeout`). Anti-race: summary must be fresh (mtime) + stable for 2 cycles; a zero-window-but-complete summary also terminates (closes the "window closed before summary refreshed" race).
+
+#### ⑩ Cleanup + parent verification
+- `ORCH_KEEP_TEMP!=1` → use-and-discard: delete `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json`; **never** delete `win-summary.json`.
+- Parent independently re-verifies with `--verify`/read-back, never trusts the in-window self-report; mismatch → disk truth wins and is corrected.
+
+### 2. Enforcement (real work must go through a window)
+
+`force.mjs` turns "real execution goes through a visible TUI window" into a checkable invariant:
+- **armed** via `.orchestrator-enabled` (timestamp). Once armed, a real-execution kind from a non-window context is refused.
+- **`--assert <kind>`** → 0(ok)/1(refused). A window sets `CODEX_ORCH_WINDOW=1`, but that env alone is not trusted — it must be backed by a live registered window (registry + pid + tasklist + command line matching `win-launch-*.ps1`/`orchestrate-sdk`). Read-only kinds pass; unknown kinds **fail-closed**.
+- **`--verify <file>`** — attribute a changed file to an authorized in-window write via `conflictKeys`, using **path-aware matching** (strip `file:/dir:/port:/service:` prefixes; exact / dir-prefix / basename / path-segment). No live window → VIOLATION; multiple live windows → INDETERMINATE; exactly one with a hit → PASS.
+- **`preflight.mjs`** — a before-you-run decision, reusing force's `armed`/`liveWindows` (read-only → ok; real + not-a-window → REFUSED).
+
+### 3. Cross-process registry & concurrency
+
+- **`withRegistryLock`** — `openSync('wx')` atomic exclusive lock to serialize registry writes; **stale-lock age-out** (>30s holder considered dead, removed and retried); warned if still unacquired.
+- **`saveJson`** — `tmp + rename`; Windows `renameSync` won't overwrite → `rm` then `rename`, no half-write; readers briefly retry over the transient gap.
+- **`updateWindows`/`updateLocks`** — the whole `load+mutate+save` happens under one lock → no cross-process lost-update.
+- **`windowAlive`** — pid file exists + process in tasklist + result file has no `__EXIT__` (so a done-but-zombie launcher isn't treated as running).
+
+### 4. Correctness invariants
+
+1. **No nesting** — a window may not re-invoke the orchestrator or open another window.
+2. **No wasted window** — feasibility decided at decompose + deterministic L1/L2 gate.
+3. **No fake success** — report must contain the real token + 完成, and must self-verify; capture uses the token as the sole anchor.
+4. **No lost report** — close anchor = report captured; delay before closing.
+5. **No broken serialization** — `levelWaves` strips self/unknown dependencies.
+6. **No cross-project collision** — cache key includes the project-hints fingerprint.
+7. **No forged pass** — fail-closed enforcement; command-line + live-window-backed auth.
+8. **No pollution** — use-and-discard temp; explicit UTF-8; `.ps1` with BOM; source==cache (one-family consistency).
+9. **Fail-safe execution** — ambiguous mode → execute; LLM failure → serial fallback.
+10. **Cost-friendly** — deterministic fast paths avoid the LLM; feasibility is not re-queried per block; decompose cache hits reuse.
+
+### 5. Initial environment check
+
+Before real work the orchestrator verifies: the codex CLI (detect/install) and, since this release, **disk space** on the workspace drive via `statfsSync`. Free space below `ORCH_MIN_FREE_MB` (default 1024MB) warns; below `ORCH_MIN_FREE_HARD_MB` (default 128MB) refuses (fail-closed) — a nearly-full disk cannot even write the launcher/temp files.
 
 ## Usage
 
@@ -50,6 +140,8 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `ORCH_WAIT_MS` | `120000` | Max wait for a conflicting window to close. |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | Read-buffer before a finished window auto-closes. |
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |
+| `ORCH_MIN_FREE_MB` | `1024` | Workspace drive free space (MB) below which a warning is emitted before running. |
+| `ORCH_MIN_FREE_HARD_MB` | `128` | Hard floor (MB) below which the orchestrator refuses to run (fail-closed). |
 
 ## Encoding & IME
 

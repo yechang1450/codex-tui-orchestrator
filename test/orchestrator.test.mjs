@@ -144,7 +144,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -221,6 +221,19 @@ test('orchestrate-sdk decomposeHash: cache key is hints-aware (no cross-project 
   const h3 = decomposeHash('修复会员管理', a);
   assert.notEqual(h1, h2, 'different project hints must not collide on the same request text');
   assert.equal(h1, h3, 'same request + same hints must reuse the cache entry');
+});
+
+test('orchestrate-sdk checkDiskSpace: returns true on a disk with space (thresholds zeroed)', () => {
+  const prevMin = process.env.ORCH_MIN_FREE_MB;
+  const prevHard = process.env.ORCH_MIN_FREE_HARD_MB;
+  try {
+    process.env.ORCH_MIN_FREE_MB = '0';
+    process.env.ORCH_MIN_FREE_HARD_MB = '0';
+    assert.equal(checkDiskSpace(), true, 'disk with free space and zero thresholds must pass');
+  } finally {
+    if (prevMin === undefined) delete process.env.ORCH_MIN_FREE_MB; else process.env.ORCH_MIN_FREE_MB = prevMin;
+    if (prevHard === undefined) delete process.env.ORCH_MIN_FREE_HARD_MB; else process.env.ORCH_MIN_FREE_HARD_MB = prevHard;
+  }
 });
 
 // 全部测试完成后统一清理顶层临时工作区（wsDir 与 stDir 都是测试专用一次性目录），

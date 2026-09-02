@@ -46,7 +46,7 @@
 import { Codex } from "@openai/codex-sdk";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
-import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, openSync, readSync, closeSync, renameSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, closeSync, renameSync } from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -653,6 +653,32 @@ async function runPrototypeGate(title, prompt) {
 const ORCH_ARMED = path.join(STATE_DIR, ".orchestrator-enabled");
 function armEnforcement() {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
+}
+
+// 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
+// 低于 ORCH_MIN_FREE_MB（默认 1024MB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 128MB）直接拒绝（fail-closed，
+// 极低空间必然写不了 launcher/temp，与其半路失败不如一开始就拦）。
+function checkDiskSpace() {
+  try {
+    const s = statfsSync(WORKSPACE);
+    const freeMB = Math.round((s.bavail * s.bsize) / (1024 * 1024));
+    const minMB = Number(process.env.ORCH_MIN_FREE_MB || 1024);
+    const hardMB = Number(process.env.ORCH_MIN_FREE_HARD_MB || 128);
+    if (!Number.isFinite(freeMB) || freeMB < 0) throw new Error("unexpected statfs result");
+    if (freeMB < hardMB) {
+      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + WORKSPACE + "; refusing to run (fail-closed).");
+      return false;
+    }
+    if (freeMB < minMB) {
+      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + WORKSPACE + "; TUI window/temp may fail.");
+      return true;
+    }
+    console.log("[orchestrator] disk: workspace " + WORKSPACE + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
+    return true;
+  } catch (e) {
+    console.warn("[orchestrator] WARN: could not stat workspace disk (" + (e && e.message ? e.message : String(e)) + "); skipping space check.");
+    return true; // stat 失败无法确定 -> 不误拦
+  }
 }
 
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
@@ -1318,6 +1344,7 @@ async function main() {
   if (mode === "--spawn") {
     armEnforcement();
     ensureCodexCli();
+    if (!checkDiskSpace()) { process.exitCode = 1; return; }
     const title = process.argv[3] || "codex-task";
     let promptContent = process.argv.slice(4).join(" ");
     const probablyFile = process.argv[4];
@@ -1424,6 +1451,7 @@ async function main() {
   if (mode === "--run-windows") {
     armEnforcement();
     const codexCli = ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
+    if (!checkDiskSpace()) { process.exitCode = 1; return; } // 初始环境检测：磁盘空间
     console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
     const request = process.argv.slice(3).join(" ");
@@ -1779,4 +1807,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, writeInteractiveLauncher };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, writeInteractiveLauncher };
