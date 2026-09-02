@@ -1779,4 +1779,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, writeInteractiveLauncher };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, writeInteractiveLauncher };

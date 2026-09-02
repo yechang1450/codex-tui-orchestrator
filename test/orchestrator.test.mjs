@@ -144,7 +144,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -211,6 +211,16 @@ test('orchestrate-sdk levelWaves strips self/unknown dependsOn and enforces orde
   assert.deepEqual(waves[1].map((r) => r.key), ['B2']);
   // B2 的 dependsOn 归一化后只剩 [B1]
   assert.deepEqual(recs[1].dependsOn, ['B1']);
+});
+
+test('orchestrate-sdk decomposeHash: cache key is hints-aware (no cross-project collision)', () => {
+  const a = { moduleToProj: { 会员管理: '82' }, foldRules: {}, tailKeywords: [] };
+  const b = { moduleToProj: { 会员管理: '81' }, foldRules: {}, tailKeywords: [] };
+  const h1 = decomposeHash('修复会员管理', a);
+  const h2 = decomposeHash('修复会员管理', b);
+  const h3 = decomposeHash('修复会员管理', a);
+  assert.notEqual(h1, h2, 'different project hints must not collide on the same request text');
+  assert.equal(h1, h3, 'same request + same hints must reuse the cache entry');
 });
 
 // 全部测试完成后统一清理顶层临时工作区（wsDir 与 stDir 都是测试专用一次性目录），
