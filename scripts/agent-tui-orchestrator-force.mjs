@@ -90,10 +90,12 @@ function pidAlive(pid) {
       const img = String(out.split(/\r?\n/)[0] || "").split(",")[0].replace(/"/g, "");
       const codexish = /codex|powershell/i.test(img);
       if (!codexish) return false;
-      // 命令行动态核对：编排器工作窗（launcher 或其 codex 子进程）需在命令行引用 orchestrate-sdk.mjs / --run-windows；否则一律视作伪造，不得过门禁（fail-closed）。
+      // 命令行动态核对：编排器工作窗的 launcher 命令行是 `powershell -File ...\win-launch-*.ps1`
+      // （其 codex 子进程命令行不含编排器字样），故需命中 win-launch-*.ps1；同时保留 orchestrate-sdk.mjs / --run-windows 以兼容旧判定。
+      // 其它任意 powershell/codex 一律视作伪造，不得过门禁（fail-closed）。
       const ps = spawnSync("powershell.exe", ["-NoProfile", "-Command", "(Get-CimInstance Win32_Process -Filter \"ProcessId=$($args[0])\" -ErrorAction SilentlyContinue).CommandLine", String(pid)], { encoding: "utf8", windowsHide: true });
       const cl = String(ps.stdout || "");
-      return /orchestrate-sdk\.mjs/i.test(cl) || /--run-windows/i.test(cl);
+      return /win-launch-.*\.ps1/i.test(cl) || /orchestrate-sdk\.mjs/i.test(cl) || /--run-windows/i.test(cl);
     } catch { return false; }
   }
   try { process.kill(pid, 0); return true; } catch (e) { return e && (e.code === "EPERM" || e.code === "EACCES") ? true : false; } // EPERM/EACCES = 存在但无权限, 不视为 dead

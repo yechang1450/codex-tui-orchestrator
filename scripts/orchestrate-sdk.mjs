@@ -293,8 +293,9 @@ function fallbackPlan(request) {
  * 返回已 normalize + split 的 blocks；绝不因拆块失败而抛错中止整批。
  */
 async function decomposeSafely(request) {
-  // 0) 缓存优先：相同请求的拆块结果缓存 1 年（每年 1/1 自动刷新），命中直接复用 -> 越用越快。
-  const cached = loadCachedDecompose(request);
+  // 0) 缓存优先：键含「请求 + 项目 hints 指纹」，避免跨项目/配置复用串扰；命中即复用，永不自动失效（仅 --clear-cache 清）。
+  const hints = resolveHints();
+  const cached = loadCachedDecompose(request, hints);
   if (cached && Array.isArray(cached.blocks) && cached.blocks.length) {
     console.log("[orchestrator] decompose cache HIT -> " + cached.blocks.map((b) => b.title).join(", "));
     return normalizePlan(cached.blocks);
@@ -303,18 +304,18 @@ async function decomposeSafely(request) {
   const det = genericProjectSplit(request);
   if (det && Array.isArray(det.blocks) && det.blocks.length) {
     console.log("[orchestrator] generic project split -> " + det.blocks.map((b) => b.title).join(", "));
-    saveDecompose(request, det.blocks);
+    saveDecompose(request, det.blocks, hints);
     return normalizePlan(det.blocks);
   }
   // 1.5) 单任务快速路径（通用，非写死路径）：明确"单动作"请求 -> 单一窗口，跳过 LLM 拆块，秒级+写缓存。
   const sb = trySingleBlock(request);
   if (sb && Array.isArray(sb.blocks) && sb.blocks.length) {
     console.log("[orchestrator] single-block fast path -> " + sb.blocks[0].title);
-    saveDecompose(request, sb.blocks);
+    saveDecompose(request, sb.blocks, hints);
     return normalizePlan(sb.blocks);
   }
   // 2) 两段式：LLM 定性（扁平任务清单）→ 确定性分块引擎。失败/超时则重试。
-  const hints = resolveHints();
+  // (hints 已在函数开头解析)
   const attempts = Math.max(1, Number(process.env.ORCH_DECOMPOSE_RETRIES || 2));
   let lastErr = "";
   let seenNoJson = false;
@@ -332,7 +333,7 @@ async function decomposeSafely(request) {
         lastErr = e2 && e2.message ? e2.message : String(e2);
         continue;
       }
-      if (plan && plan.length) { saveDecompose(request, plan); return normalizePlan(plan); }
+      if (plan && plan.length) { saveDecompose(request, plan, hints); return normalizePlan(plan); }
       lastErr = lastErr || "(extracted empty plan)";
       if (i === attempts - 1) throw new Error(lastErr);
     } catch (e) {
@@ -381,8 +382,9 @@ function extractTasks(raw) {
 // (any mention of multiple distinct project-like dirs), not specific to build/80|81|82|83.
 // ---------------------------------------------------------------------------
 const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
-function decomposeHash(request) {
-  return crypto.createHash("sha1").update(String(request || "")).digest("hex");
+function decomposeHash(request, hints) {
+  const hintKey = hints ? JSON.stringify({ m: hints.moduleToProj || {}, f: hints.foldRules || {}, t: hints.tailKeywords || [] }) : "";
+  return crypto.createHash("sha1").update(String(request || "") + "\u0000" + hintKey).digest("hex");
 }
 function loadDecomposeCache() {
   try {
@@ -396,15 +398,15 @@ function loadDecomposeCache() {
 function saveDecomposeCache(obj) {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
 }
-function loadCachedDecompose(request) {
-  const h = decomposeHash(request);
+function loadCachedDecompose(request, hints) {
+  const h = decomposeHash(request, hints);
   const j = loadDecomposeCache();
   const e = j.entries[h];
   if (!e) return null;
   return e;
 }
-function saveDecompose(request, plan) {
-  const h = decomposeHash(request);
+function saveDecompose(request, plan, hints) {
+  const h = decomposeHash(request, hints);
   const j = loadDecomposeCache();
   j.entries[h] = { createdAt: Date.now(), blocks: plan };
   saveDecomposeCache(j);
