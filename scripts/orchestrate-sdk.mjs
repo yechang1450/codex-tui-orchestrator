@@ -1509,6 +1509,21 @@ async function main() {
 
     const summary = {};
     const allSpawned = [];
+    // 记录每个块首次弹窗时刻，用于判断“是否已在盘上做出改动”——避免未决块重复执行同一任务。
+    const blockStarted = {};
+    const diskProgressSince = (key, rec) => {
+      const start = blockStarted[key] || 0;
+      if (!start) return false;
+      for (const k of (rec && rec.keys) || []) {
+        if (typeof k === "string" && k.startsWith("file:")) {
+          try {
+            const p = k.slice("file:".length);
+            if (existsSync(p) && statSync(p).mtimeMs >= start) return true;
+          } catch { /* ignore */ }
+        }
+      }
+      return false;
+    };
     for (const wave of waves) {
       const spawnedWave = [];
       for (const r of wave) {
@@ -1560,6 +1575,7 @@ async function main() {
         pendingWins.push({ title: r.title, keys: nkeys, pidFile: pidf, locked: false });
         spawnedWave.push({ key: r.key, title: r.title, pidf, lp, pf, rf, prompt: body, matchToken: "【本块唯一标识】" + tk });
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
+        blockStarted[r.key] = Date.now();
         console.log("  popped interactive TUI window [" + r.title + "]");
       }
       flushRegistry();
@@ -1627,6 +1643,7 @@ async function main() {
         spawnVisibleWindow(la.lp, r.title);
         pendingWins.push({ title: r.title, keys: nkeys, pidFile: la.pidf, locked: false });
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
+        blockStarted[r.key] = Date.now();
         allSpawned.push({ key: r.key, title: r.title, pidf: la.pidf, lp: la.lp, pf: la.pf, rf: la.rf, prompt: body2, matchToken: "【本块唯一标识】" + tk2 });
         flushRegistry();
         const matchKey2 = "【本块唯一标识】" + tk2, resultFile2 = la.rf;
@@ -1661,7 +1678,10 @@ async function main() {
       const holdMax = POLL_TIMEOUT_MS;
       let beat = Date.now();
       let zeroAliveSince = 0;
-      const retryState = { attempts: {}, max: Math.max(0, Number(process.env.ORCH_BLOCK_MAX_RETRY || 2)) };
+      // 默认不再自动重跑“未决”块（ORCH_BLOCK_MAX_RETRY 默认 0）：窗若关闭却没捕获到本块自己的
+      // “完成”汇报，一律交由主对话外部复核落盘产物；除非显式设置 ORCH_BLOCK_MAX_RETRY>0。
+      // 修复此前“未决块反复重启 TUI 窗执行同一任务”的循环。
+      const retryState = { attempts: {}, max: Math.max(0, Number(process.env.ORCH_BLOCK_MAX_RETRY || 0)) };
       while (Date.now() - holdStart < holdMax) {
         const alive = loadWindows().filter((w) => windowAlive(w));
         // 【兜底自动关窗】凡某窗的 win-<s>.result.json（由 resultFileOf 从 pidFile 精确推导）已写出且含 __DONE__:true，
@@ -1704,7 +1724,15 @@ async function main() {
         // 直到重试耗尽(ORCH_BLOCK_MAX_RETRY，默认 2)才结束，杜绝“提前结束轮询/留计划草稿”。
         if (alive.length === 0 && zeroAliveSince && Date.now() - zeroAliveSince > 15000) {
           const keyToIdx = new Map(); recs.forEach((r, i) => keyToIdx.set(r.key, i));
-          const retryable = unresolved.filter((k) => (retryState.attempts[k] || 0) < retryState.max);
+          const retryable = unresolved.filter((k) => {
+            if ((retryState.attempts[k] || 0) >= retryState.max) return false;
+            const rec = recs[keyToIdx.get(k)];
+            if (rec && diskProgressSince(k, rec)) {
+              summary[k] = { title: rec.title, status: "done-on-disk", exitCode: null, result: "(窗未捕获本块完成汇报，但目标文件已被修改：视为已落地，不再重复弹窗；请主对话外部复核落盘产物)" };
+              return false;
+            }
+            return true;
+          });
           if (!retryable.length) break; // 重试耗尽 -> 结束（如实标记失败）
           for (const k of retryable) {
             const rec = recs[keyToIdx.get(k)];
