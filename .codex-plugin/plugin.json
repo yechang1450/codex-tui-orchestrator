@@ -1,44 +1,42 @@
 {
-    "name":  "agent-tui-orchestrator",
-    "version":  "0.2.0",
-    "description":  "把多部分请求按并发冲突拆成 linked/independent 块，通过可见自动关闭的 Codex TUI 窗并发执行（独立并行、联动串行）。Use when 涉及写/建/装/测/重启等真实执行且需并发；只读分析留在主对话不弹窗。",
-    "author":  {
-                   "name":  "Yang Wenchàng"
-               },
-    "homepage":  "https://github.com/",
-    "license":  "MIT",
-    "keywords":  [
-                     "codex",
-                     "orchestrator",
-                     "parallel",
-                     "tui",
-                     "plugin",
-                     "skill"
-                 ],
-    "skills":  "./skills/",
-    "interface":  {
-                      "displayName":  "Agent TUI Orchestrator",
-                      "shortDescription":  "真实执行并发编排",
-                      "longDescription":  "按并发冲突拆块，可见 TUI 窗并发/串行执行；确定性用规则、动态交给窗内 Agent；路径取自 WORKSPACE_DIR，面向任意用户。",
-                      "developerName":  "Yang Wenchàng",
-                      "category":  "Productivity",
-                      "capabilities":  [
-                                           "Read",
-                                           "Write"
-                                       ],
-                      "websiteURL":  "https://github.com/",
-                      "privacyPolicyURL":  "https://github.com/",
-                      "termsOfServiceURL":  "https://github.com/",
-                      "brandColor":  "#6A3DE8",
-                      "composerIcon":  "./assets/icon.png",
-                      "logo":  "./assets/icon.png",
-                      "logoDark":  "./assets/icon.png",
-                      "screenshots":  [
-
-                                      ],
-                      "defaultPrompt":  [
-                                            "把这些改动一次并发执行：独立块并行弹窗，联动块串行",
-                                            "按并发冲突拆块后调用 --run-windows 真实执行"
-                                        ]
-                  }
+  "name": "agent-tui-orchestrator",
+  "version": "0.2.1+codex.20260903120000",
+  "description": "把多部分请求按并发冲突拆成 linked/independent 块，通过可见自动关闭的 Codex TUI 窗并发执行（独立并行、联动串行）。Use when 涉及写/建/装/测/重启等真实执行且需并发；只读分析留在主对话不弹窗。",
+  "author": {
+    "name": "Yang Wenchàng"
+  },
+  "homepage": "https://github.com/",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "orchestrator",
+    "parallel",
+    "tui",
+    "plugin",
+    "skill"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent TUI Orchestrator",
+    "shortDescription": "真实执行并发编排",
+    "longDescription": "按并发冲突拆块，可见 TUI 窗并发/串行执行；确定性用规则、动态交给窗内 Agent；路径取自 WORKSPACE_DIR，面向任意用户。",
+    "developerName": "Yang Wenchàng",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/",
+    "privacyPolicyURL": "https://github.com/",
+    "termsOfServiceURL": "https://github.com/",
+    "brandColor": "#6A3DE8",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "logoDark": "./assets/icon.png",
+    "screenshots": [],
+    "defaultPrompt": [
+      "把这些改动一次并发执行：独立块并行弹窗，联动块串行",
+      "按并发冲突拆块后调用 --run-windows 真实执行"
+    ]
+  }
 }

@@ -180,9 +180,9 @@ function classifyPrompt(request, hints = {}) {
     "project(80|81|82|83，只在请求里明确写了才填，否则填 null)、" +
     "hint(该任务涉及模块/资源关键词，如 会员管理、商品、订单)、" +
     "conflict_hints(会碰到的资源字符串数组，如 [\"db:订单\",\"dir:管理端\"]，无则 [])、" +
-    "depends_on(依赖的其它任务 id 数组，禁止引用自身 id，无则 [])、" +
+    "depends_on(依赖的其它任务 id 数组，无则 [])、" +
     "feasible(是否可行，布尔)、already_done(是否已达成无需做，布尔)。" +
-    "规则：不遗漏任何任务；不合并；depends_on 只能引用其它任务的 id、禁止包含自身 id；请求没写项目号时 project 必须为 null，交给模块映射校正，不许猜；" +
+    "规则：不遗漏任何任务；不合并；请求没写项目号时 project 必须为 null，交给模块映射校正，不许猜；" +
     "禁止调用任何工具/读文件/搜索/联网；只输出一个 JSON 对象 {\"tasks\":[...]}，能被 JSON.parse 直接解析，不要 Markdown 代码块、不要任何前后缀文字。" +
     hintText + "\n请求：" + request
   );
@@ -293,9 +293,8 @@ function fallbackPlan(request) {
  * 返回已 normalize + split 的 blocks；绝不因拆块失败而抛错中止整批。
  */
 async function decomposeSafely(request) {
-  // 0) 缓存优先：键含「请求 + 项目 hints 指纹」，避免跨项目/配置复用串扰；命中即复用，永不自动失效（仅 --clear-cache 清）。
-  const hints = resolveHints();
-  const cached = loadCachedDecompose(request, hints);
+  // 0) 缓存优先：相同请求的拆块结果缓存 1 年（每年 1/1 自动刷新），命中直接复用 -> 越用越快。
+  const cached = loadCachedDecompose(request);
   if (cached && Array.isArray(cached.blocks) && cached.blocks.length) {
     console.log("[orchestrator] decompose cache HIT -> " + cached.blocks.map((b) => b.title).join(", "));
     return normalizePlan(cached.blocks);
@@ -304,18 +303,18 @@ async function decomposeSafely(request) {
   const det = genericProjectSplit(request);
   if (det && Array.isArray(det.blocks) && det.blocks.length) {
     console.log("[orchestrator] generic project split -> " + det.blocks.map((b) => b.title).join(", "));
-    saveDecompose(request, det.blocks, hints);
+    saveDecompose(request, det.blocks);
     return normalizePlan(det.blocks);
   }
   // 1.5) 单任务快速路径（通用，非写死路径）：明确"单动作"请求 -> 单一窗口，跳过 LLM 拆块，秒级+写缓存。
   const sb = trySingleBlock(request);
   if (sb && Array.isArray(sb.blocks) && sb.blocks.length) {
     console.log("[orchestrator] single-block fast path -> " + sb.blocks[0].title);
-    saveDecompose(request, sb.blocks, hints);
+    saveDecompose(request, sb.blocks);
     return normalizePlan(sb.blocks);
   }
   // 2) 两段式：LLM 定性（扁平任务清单）→ 确定性分块引擎。失败/超时则重试。
-  // (hints 已在函数开头解析)
+  const hints = resolveHints();
   const attempts = Math.max(1, Number(process.env.ORCH_DECOMPOSE_RETRIES || 2));
   let lastErr = "";
   let seenNoJson = false;
@@ -333,7 +332,7 @@ async function decomposeSafely(request) {
         lastErr = e2 && e2.message ? e2.message : String(e2);
         continue;
       }
-      if (plan && plan.length) { saveDecompose(request, plan, hints); return normalizePlan(plan); }
+      if (plan && plan.length) { saveDecompose(request, plan); return normalizePlan(plan); }
       lastErr = lastErr || "(extracted empty plan)";
       if (i === attempts - 1) throw new Error(lastErr);
     } catch (e) {
@@ -382,9 +381,8 @@ function extractTasks(raw) {
 // (any mention of multiple distinct project-like dirs), not specific to build/80|81|82|83.
 // ---------------------------------------------------------------------------
 const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
-function decomposeHash(request, hints) {
-  const hintKey = hints ? JSON.stringify({ m: hints.moduleToProj || {}, f: hints.foldRules || {}, t: hints.tailKeywords || [] }) : "";
-  return crypto.createHash("sha1").update(String(request || "") + "\u0000" + hintKey).digest("hex");
+function decomposeHash(request) {
+  return crypto.createHash("sha1").update(String(request || "")).digest("hex");
 }
 function loadDecomposeCache() {
   try {
@@ -398,15 +396,15 @@ function loadDecomposeCache() {
 function saveDecomposeCache(obj) {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
 }
-function loadCachedDecompose(request, hints) {
-  const h = decomposeHash(request, hints);
+function loadCachedDecompose(request) {
+  const h = decomposeHash(request);
   const j = loadDecomposeCache();
   const e = j.entries[h];
   if (!e) return null;
   return e;
 }
-function saveDecompose(request, plan, hints) {
-  const h = decomposeHash(request, hints);
+function saveDecompose(request, plan) {
+  const h = decomposeHash(request);
   const j = loadDecomposeCache();
   j.entries[h] = { createdAt: Date.now(), blocks: plan };
   saveDecomposeCache(j);
@@ -580,44 +578,9 @@ function blockBody(block) {
     (block.type === "linked"
       ? "\n上面任务共享同一资源/存在依赖，若并行会冲突，故必须串行：先做第1个，做完再做第2个，依次进行，绝不同时并行。全部完成再汇报。"
       : "\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。") +
-    "\n\n【每个任务做完都必须现场自验】对每个改动：①读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；②跑一次回归/验证命令确认可用；③确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。"
+    "\n\n【每个任务做完都必须现场自验】对每个改动：①读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；②跑一次回归/验证命令确认可用；③确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。" +
+    "\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。"
   );
-}
-
-// 构造"带本块唯一标识"的执行窗 prompt：<body>\n\n【本块唯一标识】<token>\n（最终汇报请以「【本块唯一标识】<token> 完成」开头…）。
-// token 必须为非空 ASCII（watchdog / 窗口匹配、以及窗内「本块唯一标识」都靠它），绝不能落入
-// 「【本块唯一标识】 完成」这种"裸完成"形态（标识后无 token，watchdog 会把"完成"当 token 清洗成空而失配）。
-function buildBlockPrompt(bodyText, token) {
-  return (
-    String(bodyText || "") +
-    "\n\n【本块唯一标识】" + token +
-    "\n（最终汇报请以「【本块唯一标识】" + token + " 完成」开头，并说明本块完成情况）"
-  );
-}
-
-// 依赖归一化 + 按层排队（wave）：把块 dependsOn 统一归一到块 key，剔除自引用与未知目标，
-// 再排成 wave（层内可并行、层间按依赖先后）。避免 LLM 产出「块依赖自己/未知块」时，其依赖
-// 被判成永不满足而落入死锁兜底，导致依赖串行失效（例如 task-2 dependsOn:["task-1","task-2"]）。
-function levelWaves(recs) {
-  const keyByTitle = new Map();
-  for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
-  for (const r of recs) {
-    r.dependsOn = (Array.isArray(r.dependsOn) ? r.dependsOn : [])
-      .map((d) => keyByTitle.get(String(d)) || keyByTitle.get(d))
-      .filter((d) => d && d !== r.key);
-  }
-  const waves = [];
-  const remaining = recs.slice();
-  const doneKeys = new Set();
-  let guard = 0;
-  while (remaining.length && guard < 200) {
-    guard++;
-    const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
-    if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; } // 真环/无法归位 -> 一股并跑（兜底）
-    waves.push(ready);
-    for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
-  }
-  return waves;
 }
 
 // ---- "原型/可行性检测"前置门禁（硬约束，已内嵌本 SDK，不依赖外部技能文件）----
@@ -633,14 +596,12 @@ function classifyBlockComplexity(prompt) {
   return false;
 }
 
-// 可行性门禁（最终确定性 sanity）：复杂/可行性判断已由拆块 LLM 定性（feasible/already_done）承担，
-// 这里只做最后一道确定性门禁：L1 空判（空/无动作→拒绝）+ L2 复杂度识别（命中→复杂，仅状态提示）。
-// 不为每个块单开一次 LLM（避免重复往返、成本友好）；复杂块的可行性已由拆块阶段判过。
+// 可行性门禁（L1 空判）：复杂/可行性判断已由拆块 LLM 定性（feasible/already_done）承担，
+// 这里只保留最后一道确定性 sanity 空判，不再为每块单独调一次 LLM（避免重复往返）。
 async function runPrototypeGate(title, prompt) {
   const text = String(prompt || "").trim();
   if (!text) { console.log("  preflight FAILED for [" + title + "] (empty/无动作): reject."); return false; }
-  const complex = classifyBlockComplexity(text);
-  console.log("  preflight PASSED for [" + title + "] " + (complex ? "(complex; feasibility resolved at decompose)" : "(simple)"));
+  console.log("  preflight PASSED for [" + title + "] (feasibility already resolved at decompose)");
   return true;
 }
 
@@ -653,44 +614,6 @@ async function runPrototypeGate(title, prompt) {
 const ORCH_ARMED = path.join(STATE_DIR, ".orchestrator-enabled");
 function armEnforcement() {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
-}
-
-// 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
-// 低于 ORCH_MIN_FREE_MB（默认 12000MB≈12GB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 3600MB≈3.6GB）直接拒绝（fail-closed，
-// 空盘必然写不了 launcher/temp，与其半路失败不如一开始就拦）。硬下限不许高于告警阈值（见下钳制）。
-// warnOnly=true：只告警、绝不拦截（供 --plan 等只读命令使用——只读命令以「能出信息」为准，不以磁盘为门槛）。
-function checkDiskSpace(opts = {}) {
-  const warnOnly = !!opts.warnOnly;
-  const wsPath = opts.workspace || WORKSPACE;
-  try {
-    const s = statfsSync(wsPath);
-    const freeMB = Math.round((s.bavail * s.bsize) / (1024 * 1024));
-    const minMB = Number(process.env.ORCH_MIN_FREE_MB || 12000);
-    let hardMB = Number(process.env.ORCH_MIN_FREE_HARD_MB || 3600);
-    // 一致性：硬下限不能高于告警阈值，否则「还没告警就拒绝」很反直觉；异常配置钳到 min。
-    if (!Number.isFinite(hardMB) || hardMB > minMB) {
-      if (Number.isFinite(hardMB) && hardMB > minMB) console.warn("[orchestrator] WARN: ORCH_MIN_FREE_HARD_MB (" + hardMB + ") > ORCH_MIN_FREE_MB (" + minMB + "); clamping hard floor to min.");
-      hardMB = minMB;
-    }
-    if (!Number.isFinite(freeMB) || freeMB < 0) throw new Error("unexpected statfs result");
-    if (freeMB < hardMB) {
-      if (warnOnly) {
-        console.warn("[orchestrator] WARN: workspace disk critically low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; --plan is read-only so still runs, but --run-windows would refuse.");
-        return true;
-      }
-      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; refusing to run (fail-closed).");
-      return false;
-    }
-    if (freeMB < minMB) {
-      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + wsPath + "; TUI window/temp may fail.");
-      return true;
-    }
-    console.log("[orchestrator] disk: workspace " + wsPath + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
-    return true;
-  } catch (e) {
-    console.warn("[orchestrator] WARN: could not stat workspace disk (" + (e && e.message ? e.message : String(e)) + "); skipping space check.");
-    return true; // stat 失败无法确定 -> 不误拦
-  }
 }
 
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
@@ -719,6 +642,43 @@ function ensureCodexCli() {
     if (after) return after;
   } catch { /* ignore */ }
   throw new Error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
+}
+
+// ---------------------------------------------------------------------------
+// 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
+// 低于 ORCH_MIN_FREE_MB（默认 12000MB≈12GB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 3600MB≈3.6GB）直接拒绝（fail-closed）。
+// warnOnly=true：只告警、绝不拦截（供 --plan 等只读命令使用）。
+function checkDiskSpace(opts = {}) {
+  const warnOnly = !!opts.warnOnly;
+  const wsPath = opts.workspace || WORKSPACE;
+  try {
+    const s = statfsSync(wsPath);
+    const freeMB = Math.round((s.bavail * s.bsize) / (1024 * 1024));
+    const minMB = Number(process.env.ORCH_MIN_FREE_MB || 12000);
+    let hardMB = Number(process.env.ORCH_MIN_FREE_HARD_MB || 3600);
+    if (!Number.isFinite(hardMB) || hardMB > minMB) {
+      if (Number.isFinite(hardMB) && hardMB > minMB) console.warn("[orchestrator] WARN: ORCH_MIN_FREE_HARD_MB (" + hardMB + ") > ORCH_MIN_FREE_MB (" + minMB + "); clamping hard floor to min.");
+      hardMB = minMB;
+    }
+    if (!Number.isFinite(freeMB) || freeMB < 0) throw new Error("unexpected statfs result");
+    if (freeMB < hardMB) {
+      if (warnOnly) {
+        console.warn("[orchestrator] WARN: workspace disk critically low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; --plan is read-only so still runs, but --run-windows would refuse.");
+        return true;
+      }
+      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; refusing to run (fail-closed).");
+      return false;
+    }
+    if (freeMB < minMB) {
+      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + wsPath + "; TUI window/temp may fail.");
+      return true;
+    }
+    console.log("[orchestrator] disk: workspace " + wsPath + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
+    return true;
+  } catch (e) {
+    console.warn("[orchestrator] WARN: could not stat workspace disk (" + (e && e.message ? e.message : String(e)) + "); skipping space check.");
+    return true;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -767,6 +727,34 @@ async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3) {
   }
   console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");
   return false;
+}
+
+// 失败/未决块自动重试：窗已关但块未完成时，用全新 token 重新弹窗再跑，避免“提前结束轮询/留计划草稿”。
+// 返回 { status, exitCode, result }；只有抓到本块自己的完成标记才算 done。
+async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
+  for (let attempt = 1; attempt <= maxRetry; attempt++) {
+    const tk = rec.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
+    const body = blockBody(rec.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
+    const { lp, pidf, pf, rf } = writeInteractiveLauncher(rec.key, body, rid);
+    const popped = await spawnWindowWithRetry(lp, rec.title, pidf);
+    if (!popped) { console.log("  !! [retry " + rec.key + " att" + attempt + "] popup failed."); continue; }
+    const matchKey = "【本块唯一标识】" + tk;
+    const sf = await waitForSessionFile(matchKey, 90000, rf);
+    let res = { done: false, text: "" };
+    if (sf) res = await waitTaskComplete(sf, POLL_TIMEOUT_MS, rf, matchKey);
+    else if (existsSync(rf)) { const c = readExitCode(rf); res = { done: true, text: "(launcher exited code " + (c === null ? "?" : c) + "; no session rollout matched)", exitCode: c }; }
+    let text = res.text || "";
+    if (!text || /no session rollout matched|no result captured/.test(text)) text = await waitForReportText(matchKey, rf, 60000);
+    const own = matchKey && text.includes(matchKey) && text.includes("完成");
+    if (own) {
+      console.log("  [retry " + rec.key + " att" + attempt + "] OWN completion CAPTURED -> closing");
+      await new Promise((x) => setTimeout(x, closeDelayMs));
+      await closeWindow(pidf);
+      return { status: "done", exitCode: res.exitCode ?? null, result: text.trim().slice(0, 2000) };
+    }
+    console.log("  !! [retry " + rec.key + " att" + attempt + "] not own completion (text=" + String(text).slice(0, 50) + ")");
+  }
+  return { status: "uncaptured", exitCode: null, result: "(重试后仍未捕获本块自己完成汇报)" };
 }
 
 // Interactive-TUI launcher. The interactive `codex "prompt"` window does not exit on its own; the
@@ -818,22 +806,20 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "  param([int]$code)",
     "  try {",
     "    $report = ''",
-    "    if ($token) {",
-    "      $dir = Join-Path $env:USERPROFILE '.codex\\sessions'",
-    "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue",
-    "      foreach ($f in $files) {",
-    "        $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
-    "        if ($raw -and $raw.Contains($token)) {",
-    "          foreach ($line in ($raw -split \"`n\")) {",
-    "            try {",
-    "              $o = $line | ConvertFrom-Json -ErrorAction SilentlyContinue",
-    "              $p = $o.payload",
-    "              $msg = ''",
-    "              if ($p -and $p.type -eq 'agent_message' -and $p.message) { $msg = $p.message }",
-    "              elseif ($o.type -eq 'response_item' -and $p -and $p.type -eq 'message' -and $p.role -eq 'assistant' -and $p.content) { $msg = (($p.content | ForEach-Object { $_.text }) -join '') }",
-    "              if ($msg -and $msg.Contains($token) -and $msg.Contains('完成')) { $report = $msg }",
-    "            } catch { }",
-    "          }",
+    "    $dir = Join-Path $env:USERPROFILE '.codex\\sessions'",
+    "    $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue",
+    "    foreach ($f in $files) {",
+    "      $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
+    "      if ($raw -and $raw.Contains($token)) {",
+    "        foreach ($line in ($raw -split \"`n\")) {",
+    "          try {",
+    "            $o = $line | ConvertFrom-Json -ErrorAction SilentlyContinue",
+    "            $p = $o.payload",
+    "            $msg = ''",
+    "            if ($p -and $p.type -eq 'agent_message' -and $p.message) { $msg = $p.message }",
+    "            elseif ($o.type -eq 'response_item' -and $p -and $p.type -eq 'message' -and $p.role -eq 'assistant' -and $p.content) { $msg = (($p.content | ForEach-Object { $_.text }) -join '') }",
+    "            if ($msg -and $msg.Contains($token) -and $msg.Contains('完成')) { $report = $msg }",
+    "          } catch { }",
     "        }",
     "      }",
     "    }",
@@ -866,8 +852,8 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "          if ($f.FullName -ne $match) { continue }",
     "          try {",
             "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
-            "            # 报告驱动关窗：只有 agent 完成汇报（agent_message/assistant 行含本块 token 且含 完成）才关窗。",
-            "            # 计划/中间消息不带“完成”，不会被误关；稳定~6s 后关，确保父进程已抓到汇报。",
+            "            # 自动关闭设计 = watchdog 检测到【本块 agent 的完成汇报】(agent_message/assistant 行含本块 token 且含 完成) 才关窗。",
+            "            # 计划/中间消息不带“完成”，不会被误关；仅真正的完成汇报触发。稳定~6s 后关，确保父进程已抓到汇报。",
             "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') })",
             "            if ($report) {",
             "              $age = [TimeSpan]::Zero; try { $age = (Get-Date) - $f.LastWriteTime } catch { }",
@@ -896,7 +882,8 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "} -ArgumentList $token, $PID, $resultFile",
     "$code = 1",
     "try {",
-    "  & '" + AGENT_BIN_Q + "' " + AGENT_ARGS + " $p",
+    "  $codexArgs = @(" + AGENT_ARGS.split(" ").join(", ") + ", $p)",
+    "  & '" + AGENT_BIN_Q + "' @codexArgs",
     "  $code = $LASTEXITCODE",
     "} catch {",
     "  $code = 1",
@@ -975,6 +962,7 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken) {
       if (base.text) return { done: true, text: base.text, exitCode: code };
       return { done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code };
     }
+    // 确定性来源：launcher 已把本块完成汇报写入结果文件 __REPORT__（含本块 token + 完成），直接据此判定。
     if (exitMarkerFile && existsSync(exitMarkerFile)) {
       const rep = readReportFromResult(exitMarkerFile, matchToken);
       if (rep) return { done: true, text: rep, exitCode: readExitCode(exitMarkerFile) };
@@ -1016,7 +1004,18 @@ function extractResult(file) {
   }
   return { done: true, text: last };
 }
-// 在（可能混合了多窗消息的）rollout 里，取“含本块唯一 token 的最后一条消息”（真正的本块完成汇报），避免跨窗串号。
+// 确定性结果文件：读 launcher 写入的 __REPORT__（本块自己的完成汇报），含本块 token+完成 才返回；否则 ""。
+function readReportFromResult(resultFile, token) {
+  if (!resultFile || !existsSync(resultFile)) return "";
+  try {
+    const j = JSON.parse(String(readFileSync(resultFile, "utf8")).replace(/^\uFEFF/, ""));
+    const rep = String(j.__REPORT__ || "");
+    if (rep && token && rep.includes(token) && rep.includes("完成")) return rep;
+  } catch { /* ignore */ }
+  return "";
+}
+// 在（可能混合了多窗消息的）rollout 里，取“含本块唯一 token 的最后一条消息”（真正的本块完成汇报），
+// 避免混合会话下 extractResult 取到别的窗的“全局最后一条”而跨窗串号。
 function extractOwnResult(file, token) {
   if (!token) return "";
   let full = "";
@@ -1036,16 +1035,6 @@ function extractOwnResult(file, token) {
   }
   return last;
 }
-// 确定性结果：读 launcher 写入的 __REPORT__（本块完成汇报），含本块 token+完成 才返回；否则 ""。
-function readReportFromResult(resultFile, token) {
-  if (!resultFile || !existsSync(resultFile)) return "";
-  try {
-    const j = JSON.parse(String(readFileSync(resultFile, "utf8")).replace(/^\uFEFF/, ""));
-    const rep = String(j.__REPORT__ || "");
-    if (rep && token && rep.includes(token) && rep.includes("完成")) return rep;
-  } catch { /* ignore */ }
-  return "";
-}
 // Re-scan rollouts for the block's report and return the latest agent message, or "" if none found yet.
 // Used so a window is only auto-closed AFTER its report has been captured ("close anchor = report captured"),
 // instead of blind-grace timing. Bounded by `timeoutMs`.
@@ -1059,8 +1048,8 @@ async function waitForReportText(matchKey, exitMarkerFile, timeoutMs) {
       seen.add(f);
       try {
         if (rolloutHit(readFileSync(f, "utf8"), keys)) {
-          const r = extractResult(f);
-          if (r && r.text) return r.text;
+          const t = extractOwnResult(f, matchKey);
+          if (t) return t;
         }
       } catch { /* ignore */ }
     }
@@ -1115,16 +1104,10 @@ function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(
 // 跨进程独占锁：openSync 'wx' 原子创建；冲突则有限重试；finally 释放。用于串行化 registry 写，防并发丢失/半写。
 function withRegistryLock(fn) {
   let got = false;
-  for (let i = 0; i < 200; i++) {
+  for (let i = 0; i < 100; i++) {
     let fd;
-    try { fd = openSync(REG_LOCK, 'wx'); closeSync(fd); got = true; break; }
-    catch {
-      // 陈旧锁（持有者已崩溃/未释放）：锁文件存在且超过 30s -> 删除并重试，避免被永久卡死、后续全是裸写。
-      try { const st = statSync(REG_LOCK); if (Date.now() - st.mtimeMs > 30000) { rmSync(REG_LOCK, { force: true }); continue; } } catch { /* ignore */ }
-      sleepSync(20);
-    }
+    try { fd = openSync(REG_LOCK, 'wx'); closeSync(fd); got = true; break; } catch { sleepSync(20); }
   }
-  if (!got) console.warn("[orchestrator] WARN: registry lock not acquired after ~4s; proceeding (stale-lock risk: concurrent registry writes)");
   try { return fn(); }
   finally { if (got) { try { rmSync(REG_LOCK, { force: true }); } catch { /* ignore */ } } }
 }
@@ -1342,7 +1325,7 @@ async function main() {
 
   if (mode === "--plan") {
     const request = process.argv.slice(3).join(" ");
-    checkDiskSpace({ warnOnly: true }); // 只读命令：磁盘仅告警、不拦截（计划仍会输出）
+    checkDiskSpace({ warnOnly: true });
     const plan = await decomposeSafely(request);
     console.log(JSON.stringify({ blocks: plan }, null, 2));
     return;
@@ -1365,7 +1348,7 @@ async function main() {
       promptContent = readFileSync(probablyFile, "utf8");
     }
     const rid = Date.now().toString(36);
-    const trackedPrompt = buildBlockPrompt(promptContent, "spawn-" + rid);
+    const trackedPrompt = promptContent + "\n\n【本块唯一标识】spawn-" + rid + "\n（最终汇报请以「【本块唯一标识】spawn-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher(title, trackedPrompt, rid);
     spawnVisibleWindow(lp, title);
     console.log("write launcher -> " + lp);
@@ -1413,10 +1396,9 @@ async function main() {
     cleanStaleTransients();
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
-    const prompt = buildBlockPrompt(
-      "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。",
-      "selftest-" + rid
-    );
+    const prompt =
+      "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
+      "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     spawnVisibleWindow(lp, "selftest-close");
     const matchToken = "【本块唯一标识】selftest-" + rid;
@@ -1464,7 +1446,7 @@ async function main() {
   if (mode === "--run-windows") {
     armEnforcement();
     const codexCli = ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
-    if (!checkDiskSpace()) { process.exitCode = 1; return; } // 初始环境检测：磁盘空间
+    if (!checkDiskSpace()) { process.exitCode = 1; return; }
     console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
     const request = process.argv.slice(3).join(" ");
@@ -1495,7 +1477,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 agent-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：请严格按本窗上方指定的格式开头，如实说明本块做了什么与每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
+    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 agent-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：以「【本块唯一标识】 完成」开头，说明本块做了什么、每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
 
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
@@ -1507,8 +1489,23 @@ async function main() {
       title: titleOf("B" + (i + 1), b.title),
       dependsOn: (Array.isArray(b.dependsOn) ? b.dependsOn : []).map(String),
     }));
-    // 依赖归一化 + 按层排队：把块 dependsOn（可能是标题/自引用/未知值）归一到块 key 并剔除无效项。
-    const waves = levelWaves(recs);
+    // B3 双向映射：模型 dependsOn 可能用原始标题/中文标题，统一归一到块 key，再按 key 判 wave。
+    const keyByTitle = new Map();
+    for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
+    for (const r of recs) { r.dependsOn = r.dependsOn.map((d) => keyByTitle.get(String(d)) || keyByTitle.get(d) || String(d)); }
+    const waves = [];
+    {
+      const remaining = recs.slice();
+      const doneKeys = new Set();
+      let guard = 0;
+      while (remaining.length && guard < 200) {
+        guard++;
+        const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
+        if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; } // deadlock/unknown -> run rest in one wave
+        waves.push(ready);
+        for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
+      }
+    }
 
     const summary = {};
     const allSpawned = [];
@@ -1552,7 +1549,7 @@ async function main() {
           continue;
         }
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body = buildBlockPrompt(blockBody(r.b), tk) + "\n" + auth;
+        const body = blockBody(r.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
         const popped = await spawnWindowWithRetry(lp, r.title, pidf);
         if (!popped) {
@@ -1604,10 +1601,13 @@ async function main() {
             await new Promise((r) => setTimeout(r, closeDelayMs));
             await closeWindow(s.pidf);
           } else {
-            // 抓到文本但不是本块自己的完成汇报（跨窗串了/只是计划草稿）——不算成功，不关窗，保持轮询。
+            // 回合已完成(task_complete)但没抓到本块自己的完成汇报（可能跨窗串了/只是计划草稿）：
+            // 窗已经做完了，一定要关掉（否则会死锁/一直留着），块标记为 uncaptured 交由 hold 循环重试重新弹窗。
             if (text) summary[s.key].result = text.trim().slice(0, 2000);
             summary[s.key].status = "uncaptured";
-            console.log("  !! own completion report NOT captured for [" + s.title + "] (text=" + String(text).slice(0, 60) + "); keeping polling, NOT closing." + (res.exitCode ? " (exitCode=" + res.exitCode + ")" : ""));
+            console.log("  !! own completion report NOT captured for [" + s.title + "] (text=" + String(text).slice(0, 60) + "); window DONE, closing; block=uncaptured for retry." + (res.exitCode ? " (exitCode=" + res.exitCode + ")" : ""));
+            await new Promise((r) => setTimeout(r, closeDelayMs));
+            await closeWindow(s.pidf);
           }
         } else {
           console.log("  timeout; window [" + s.title + "] still open (task may still be running).");
@@ -1622,7 +1622,7 @@ async function main() {
         if (conflictByKeys(nkeys)) { console.log("  still locked " + r.key + "; not re-run yet."); continue; }
         console.log("  re-running previously-locked block [" + r.key + "] (conflict cleared)");
         const tk2 = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body2 = buildBlockPrompt(blockBody(r.b), tk2) + "\n" + auth;
+        const body2 = blockBody(r.b) + "\n\n【本块唯一标识】" + tk2 + "\n（最终汇报请以「【本块唯一标识】" + tk2 + " 完成」开头，并说明本块完成情况）\n" + auth;
         const la = writeInteractiveLauncher(r.key, body2, rid);
         spawnVisibleWindow(la.lp, r.title);
         pendingWins.push({ title: r.title, keys: nkeys, pidFile: la.pidf, locked: false });
@@ -1661,6 +1661,7 @@ async function main() {
       const holdMax = POLL_TIMEOUT_MS;
       let beat = Date.now();
       let zeroAliveSince = 0;
+      const retryState = { attempts: {}, max: Math.max(0, Number(process.env.ORCH_BLOCK_MAX_RETRY || 2)) };
       while (Date.now() - holdStart < holdMax) {
         const alive = loadWindows().filter((w) => windowAlive(w));
         // 【兜底自动关窗】凡某窗的 win-<s>.result.json（由 resultFileOf 从 pidFile 精确推导）已写出且含 __DONE__:true，
@@ -1699,10 +1700,21 @@ async function main() {
           return true;
         });
         if (alive.length === 0 && unresolved.length === 0) break;
-        // 兜底防呆死：所有窗已关闭(归零超30s)但仍剩未决块——窗已关且汇报没抓到，无法再进展，
-        // 不能再空等到 ORCH_TIMEOUT_MS，否则 poll 永远拿不到汇总（挂死）。这里视为失败并退出，
-        // 交由 poll-windows 对 uncaptured/failed 返回 1（如实上报，而非假装成功/无限等）。
-        if (alive.length === 0 && zeroAliveSince && Date.now() - zeroAliveSince > 30000) break;
+        // 兜底：所有窗已关闭(归零>15s)但仍剩未决块——不提前放弃，把每个未决块自动重试（全新 token 弹窗），
+        // 直到重试耗尽(ORCH_BLOCK_MAX_RETRY，默认 2)才结束，杜绝“提前结束轮询/留计划草稿”。
+        if (alive.length === 0 && zeroAliveSince && Date.now() - zeroAliveSince > 15000) {
+          const keyToIdx = new Map(); recs.forEach((r, i) => keyToIdx.set(r.key, i));
+          const retryable = unresolved.filter((k) => (retryState.attempts[k] || 0) < retryState.max);
+          if (!retryable.length) break; // 重试耗尽 -> 结束（如实标记失败）
+          for (const k of retryable) {
+            const rec = recs[keyToIdx.get(k)];
+            if (!rec) continue;
+            retryState.attempts[k] = (retryState.attempts[k] || 0) + 1;
+            console.log("[orchestrator] RETRY unresolved block [" + k + "] (attempt " + retryState.attempts[k] + "/" + retryState.max + ")");
+            summary[k] = await retryBlock(rec, rid, auth, 1, closeDelayMs);
+          }
+          zeroAliveSince = 0;
+        }
         // 【硬约束】GUI 轮询收尾触发 = 检测到全部 TUI 窗的执行结果均已成功返回。
         // 因此只要还有 unresolved 的块（结果未真实返回），即使所有窗已关闭，也继续轮询，
         // 不提前收尾，直到全部返回或 ORCH_TIMEOUT_MS 超时兜底。
@@ -1820,4 +1832,4 @@ if (isMain) main().catch((e) => {
   process.exitCode = 1;
 });
 
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, writeInteractiveLauncher };
+export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, writeInteractiveLauncher };
