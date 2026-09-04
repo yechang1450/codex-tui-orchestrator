@@ -506,6 +506,23 @@ test('runtime: watchdog requires SUBAGENTS_DONE when the window spawned a sub-ag
     assert.match(src, /SUBAGENTS_DONE/, 'TUI prompt must mention the SUBAGENTS_DONE ending suffix');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
+test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to uncaptured (未落盘=未完成)', () => {
+  // A window may plan to create a file but never actually write it (the marker.txt case). Under "done=execution ended",
+  // that would be wrongly accepted. The fix adds a disk recheck at aggregation: for producing blocks whose file:/dir:
+  // targets show no change since the window started, status is downgraded to "uncaptured" so poll-windows won't count it.
+  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  // 1) must define a "producing block" classifier
+  assert.match(src, /PROD_VERBS/, 'orchestrator must classify producing tasks via PROD_VERBS');
+  assert.match(src, /isProducingBlock/, 'orchestrator must have isProducingBlock');
+  // 2) must re-check file:/dir: targets for a change since the window started
+  assert.match(src, /targetChangedSinceStart/, 'orchestrator must detect on-disk change since window start');
+  assert.match(src, /assertProductLanding/, 'orchestrator must run assertProductLanding at aggregation');
+  // 3) the aggregation done-path must invoke the landing recheck
+  assert.match(src, /assertProductLanding\(s\.key, recsByKey\.get\(s\.key\), s, summary\[s\.key\]\)/, 'aggregation must call assertProductLanding on each done block');
+  // 4) TUI prompt must forbid emitting the done marker if a declared product is not actually on disk
+  assert.match(src, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
+  assert.match(src, /真实落盘且自验通过/, 'TUI prompt must require the product to really land + self-check');
+});
 
 test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> recreates it, writes .self-closed, exits 0', async () => {
   // Regression for the exact reported bug: a Codex TUI window finished (agent reported ORCH_DONE) but the

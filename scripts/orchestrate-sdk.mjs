@@ -1972,7 +1972,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理收尾要求（重要）】若本窗真实开启了任何子代理，则在输出结束标记前，**必须先用 wait_agent 等待全部子代理返回并拿到各自结果**，然后**最后一行输出 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`**（多了 SUBAGENTS_DONE 后缀）。未开子代理时输出 `__ORCH_DONE__ <本窗token>`（维持原样）。**若本窗开了子代理却未输出 SUBAGENTS_DONE，orchestrator 不会关窗**（会继续等待，视为尚未完成）。\n\n执行结束判定=本窗完成实际操作并验证落盘后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
+    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理收尾要求（重要）】若本窗真实开启了任何子代理，则在输出结束标记前，**必须先用 wait_agent 等待全部子代理返回并拿到各自结果**，然后**最后一行输出 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`**（多了 SUBAGENTS_DONE 后缀）。未开子代理时输出 `__ORCH_DONE__ <本窗token>`（维持原样）。**若本窗开了子代理却未输出 SUBAGENTS_DONE，orchestrator 不会关窗**（会继续等待，视为尚未完成）。\n\n【自验未落盘=未完成，禁止输出结束标记（硬约束）】本窗在输出结束标记（`__ORCH_DONE__`/`SUBAGENTS_DONE`）前，**必须逐一真实读回/检查它声称创建或修改的产物**，确认其真实存在于盘上且内容/编码正确。若**任一自验失败**（文件不存在/内容不符/未落盘），则**无论如何都禁止输出结束标记**——只能如实输出失败说明，让本窗不被当作成功收尾（orchestrator 会据此判为未完成）。只有在所有声明的产物都**真实落盘且自验通过**后，才允许输出结束标记。\n\n执行结束判定=本窗完成实际操作并**现场自验全部产物真实落盘**后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.
@@ -1983,6 +1983,7 @@ async function main() {
       title: titleOf("B" + (i + 1), b.title),
       dependsOn: (Array.isArray(b.dependsOn) ? b.dependsOn : []).map(String),
     }));
+    const recsByKey = new Map(recs.map((r) => [r.key, r]));
     // B3 双向映射：模型 dependsOn 可能用原始标题/中文标题，统一归一到块 key，再按 key 判 wave。
     const keyByTitle = new Map();
     for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
@@ -2011,6 +2012,44 @@ async function main() {
         }
       }
       return false;
+    };
+    // 「未落盘=未完成」盘面复核（用户建议治本）：对"产出类"任务（创建/写入/生成/新建等），若其 file:/dir: 目标
+    // 自窗启动后没有任何落盘改动（mtime 未变 / 文件未出现 / 目录为空判定靠文件 key），则不允许当作成功收尾，
+    // 把 status 降为 uncaptured，让 poll-windows 不把它当成功、主对话能据此发现"计划了但没真正落地"。
+    const PROD_VERBS = /创建|写入|生成|新建|添加|改成|追加|marker|create|write|append|add|new|generate/;
+    const targetChangedSinceStart = (key, rec) => {
+      const start = blockStarted[key] || 0;
+      if (!start) return false;
+      const fileHit = (rec && rec.keys || []).some((k) => {
+        if (typeof k !== "string" || !k.startsWith("file:")) return false;
+        try { const p = k.slice("file:".length); return existsSync(p) && statSync(p).mtimeMs >= start; } catch { return false; }
+      });
+      if (fileHit) return true;
+      // 允许"目录目标但其中已出现新文件"也视作落地（dir: 前缀，向下扫一层看是否有 mtime>=start 的新文件）。
+      const dirHit = (rec && rec.keys || []).some((k) => {
+        if (typeof k !== "string" || !k.startsWith("dir:")) return false;
+        try {
+          const p = k.slice("dir:".length);
+          if (!existsSync(p)) return false;
+          for (const e of readdirSync(p, { withFileTypes: true })) {
+            const fp = path.join(p, e.name);
+            try { if (statSync(fp).mtimeMs >= start) return true; } catch { /* ignore */ }
+          }
+        } catch { return false; }
+      });
+      return dirHit;
+    };
+    const isProducingBlock = (rec, s) => {
+      const prompt = ((rec && rec.b && rec.b.tasks || []).map((t) => (t.prompt || "")).join(" ") + " " + (s && s.prompt || "")).trim();
+      return PROD_VERBS.test(prompt);
+    };
+    const assertProductLanding = (key, rec, s, entry) => {
+      if (!rec || !isProducingBlock(rec, s)) return entry;
+      if (targetChangedSinceStart(key, rec)) return entry;
+      entry.status = "uncaptured";
+      entry.result = ((entry.result || "") + "\n【盘面复核】任务要求产出文件，但检测到其 file:/dir: 目标自窗启动后无落盘改动，判定为未完成（未落盘），请主对话核实。").trim().slice(0, 2000);
+      console.log("  !! [" + s.title + "] producing block shows NO on-disk change since start -> marked uncaptured (未落盘)");
+      return entry;
     };
     // 块一旦被锁就立即写入终态记录：即使整批全部被锁（无窗可弹），win-summary.json 也有非空 results，
     // poll-windows 不会因空 summary 空等到超时；冲突释放后自动重跑成功会覆盖成 done。
@@ -2124,6 +2163,8 @@ async function main() {
           const hasText = !!(text && text.trim());
           summary[s.key].result = (hasText ? text.trim() : ("（窗内 codex 已执行结束并自动关闭；退出码=" + (res.exitCode ?? "?") + "，未捕获汇报文本，请按任务提示词核对真实落盘状态）")).slice(0, 2000);
           summary[s.key].status = "done";
+          // 「未落盘=未完成」：产出类任务若窗启动后目标无落盘改动，降为 uncaptured（不当作成功收尾）。
+          assertProductLanding(s.key, recsByKey.get(s.key), s, summary[s.key]);
           console.log("  execution ended -> marked done -> closing [" + s.title + "]");
           await new Promise((r) => setTimeout(r, closeDelayMs));
           await closeWindow(s.pidf);
