@@ -52,6 +52,7 @@ Read-only vs real detection. Read-only words with no real action → `inline` (s
 #### ③ Normalize (`normalizePlan`) — anti-over-merge / anti-self-conflict
 - An `independent` block carrying multiple tasks → split into one block per task (prevents the model over-merging into a single parallel block).
 - Two blocks sharing a `conflictKey` → merged into one linked block (prevents a block fighting itself).
+- **`blockBody` serial fallback** — as long as one window carries >1 task it NEVER says "mutually independent / run in parallel"; it always says "serial: do task 1, then task 2". A cascade block (write s.txt → read it and append z.txt) was once mis-typed `independent` and told the window "parallel", misleading the in-window agent to treat dependent tasks as independent and skip the second step (disk missing but status=done). This fallback guarantees any multi-task window receives serial semantics.
 
 #### ④ Level waves (`levelWaves`)
 Normalize every block's `dependsOn` to block keys, **strip self-references and unknown targets**, then level into waves: same wave = parallelizable; between waves = ordered. This makes real ordering reliable — a self-referential `dependsOn` (e.g. `task-2:["task-1","task-2"]`) previously defeated serialization by never being satisfiable.
