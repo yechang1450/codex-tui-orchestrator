@@ -66,10 +66,11 @@ const CODEX = process.env.CODEX_EXE || defaultCodexPath();
 const WORKSPACE_Q = WORKSPACE.replace(/'/g, "''");
 const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
-// 模型/推理力度：ORCH_MODEL/ORCH_EFFORT 环境变量优先，否则用默认 deepseek-v4-flash-vision-exp / high。
+// 模型/推理力度：ORCH_MODEL/ORCH_EFFORT 环境变量优先，否则用默认 deepseek-v4-flash / max。
 // 值内不能含空格（下文透传成 CLI 参数 -m/-c，空格会拆散成多个参数破坏解析）。
-const MODEL = process.env.ORCH_MODEL || "deepseek-v4-flash-vision-exp";
-const EFFORT = process.env.ORCH_EFFORT || "high";
+// 注：codex CLI(TUI 窗) 默认 flash/max；只有 codex GUI 主机才用 config.toml 的 vision-exp/high，二者勿混淆。
+const MODEL = process.env.ORCH_MODEL || "deepseek-v4-flash";
+const EFFORT = process.env.ORCH_EFFORT || "max";
 // —— Agent 抽象（v0.0.1）：识别当前 agent（默认 codex）+ 本地 cache 其专属配置 ——
 // 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
 // 但允许用户收紧（ORCH_SANDBOX=workspace-write / read-only，ORCH_APPROVAL=on-request）。
@@ -713,7 +714,26 @@ function checkDiskSpace(opts = {}) {
 // ---------------------------------------------------------------------------
 // Visible window (REAL popup, via cmd /c start — reliably opens a new console)
 // ---------------------------------------------------------------------------
+// 自动信任弹窗工作区（codex CLI 0.153.2 在未信任目录会弹「Do you trust this directory?」，使窗内 agent 卡在
+// 信任选择而不干活）。在 codex 启动前把该目录写入 config.toml [projects.'<dir>'] trust_level="trusted"，
+// 等价于自动选「Yes, continue」；幂等（已信任则跳过），后续该目录弹窗不再提示。
+function ensureProjectTrust(dir) {
+  if (!dir) return;
+  try {
+    const cfg = path.join(os.homedir(), ".codex", "config.toml");
+    if (!existsSync(cfg)) return;
+    let txt = readFileSync(cfg, "utf8");
+    const lit = String(dir).replace(/'/g, "''");
+    const key = "[projects.'" + lit + "']";
+    if (txt.includes(key)) return; // 已信任，跳过
+    const block = "\n" + key + "\ntrust_level = \"trusted\"\n";
+    txt = txt.replace(/\s*$/, "") + block;
+    writeFileSync(cfg, txt, "utf8");
+    console.log("[orchestrator] trusted codex TUI workspace: " + dir);
+  } catch { /* ignore */ }
+}
 function spawnVisibleWindow(lp, title) {
+  ensureProjectTrust(WORKSPACE);
   // Prefer Windows Terminal: it natively supports IME/TSF composition, so the Codex
   // TUI keeps accepting Microsoft 拼音/日语 IME switches (fixes "偶发失效"). Codex
   // runs the same launcher (UTF-8 + chcp 65001), just hosted in a WT ConPTY.
@@ -871,6 +891,24 @@ function psKillDescendantsLines() {
   ];
 }
 
+// 内存 → 最大并发 TUI 窗数：n GB 内存 -> n/2 台并发，上限 8 台（16GB 设备即封顶，超大内存不再叠加窗口，
+// 避免内存超载/OOM）；下限由调用方以 <2 判定为不支持。为可测试而独立成函数。
+function computeMaxWindows(memGb) {
+  const n = Math.floor(memGb / 2);
+  return Math.min(n, 8);
+}
+
+// 硬性要求（用户明确，必须遵守）：对 orchestrator 自身的改动，必须先于并独立于所有 TUI 窗执行——
+// 先 inline 就地把 orchestrator 改完，再据此发起并发 TUI 窗。原因：TUI 窗依赖 orchestrator SDK；
+// 若把“改 SDK”交给一个 TUI 窗去做，该窗的 watchdog/关窗也依赖被改的 SDK，会出现“改它的窗自己关不掉”。
+// 故 --run-windows 检测到这类请求一律返回 inline（由发起对话就地改完再另发窗）。
+function isOrchestratorSelfMod(text) {
+  const t = String(text || "");
+  const target = /agent-tui-orchestrator|orchestrate-sdk\.mjs|scripts\/orchestrate|orchestration.*(source|script)/i.test(t);
+  if (!target) return false;
+  return /(修复|修改|改|升级|加固|优化|调整|重构|补|fix|edit|update|build)/i.test(t);
+}
+
 function writeInteractiveLauncher(title, prompt, sfx) {
   const s = safe(title) + (sfx ? "-" + sfx : "");
   mkdirSync(TMP, { recursive: true });
@@ -878,12 +916,23 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   const lp = path.join(TMP, `win-launch-${s}.ps1`);
   const pidf = path.join(TMP, `window-${s}.pid`);
   const rf = path.join(TMP, `win-${s}.result.json`);
+  // 加固：生成新窗启动脚本时清掉本块路径上可能残留的旧 result / .self-closed 标记，避免窗内 watchdog 把
+  // “旧块已完成的残留标记”误当成“本窗 codex 已退出”，从而提前 exit 0 不再杀 codex，造成“窗口任务完成但
+  // codex 仍存活、窗未自动关”的常驻窗。仅删本块自己的 result 产物，绝不触碰其它窗/活窗。
+  try { if (existsSync(rf)) rmSync(rf, { force: true }); } catch { /* ignore */ }
+  try { if (existsSync(rf + ".self-closed")) rmSync(rf + ".self-closed", { force: true }); } catch { /* ignore */ }
   writeFileSync(pf, prompt, "utf8");
   // Unique ASCII token embedded in every block prompt ("【本块唯一标识】<token>"): the watchdog uses it
   // to find THIS window's own session rollout (same token the orchestrator matches, ASCII-only so the
   // PowerShell match never has to deal with JSON-escaped CJK).
-  const tokenMatch = String(prompt || "").match(/【本块唯一标识】\s*([^\s\r\n】]+)/);
-  const token = tokenMatch ? String(tokenMatch[1]).replace(/[^A-Za-z0-9_\-]/g, "") : "";
+  // Only capture the REAL ASCII token (alnum/_/-) right after the marker. The block prompt/report
+  // contract also contains boilerplate text like 「【本块唯一标识】…完成」开头 BEFORE the injected
+  // unique token; the old pattern ([^\s\r\n】]+) matched that boilerplate first, stripped it to an
+  // empty $token, which silently disabled the launcher's self-close watchdog (thence the stuck
+  // "[进程已退出，代码为 1]" pane). Requiring an ASCII-leading token skips the CJK boilerplate and
+  // lands on the true block token.
+  const tokenMatch = String(prompt || "").match(/【本块唯一标识】\s*([A-Za-z0-9][A-Za-z0-9_\-]*)/);
+  const token = tokenMatch ? String(tokenMatch[1]) : "";
   const BOM = "\uFEFF";
   // PowerShell 单引号字符串内嵌路径/变量：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
   const pidfQ = String(pidf || "").replace(/'/g, "''");
@@ -938,6 +987,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    $line = '__EXIT__=' + $code",
     "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
     "    Set-Content -LiteralPath $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8",
+    "    if ($report -and $report.ToString().Trim()) { try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
     "  } catch { }",
     "}",
     "$p = (Get-Content -Raw -Encoding UTF8 '" + pfQ + "').Trim()",
@@ -956,15 +1006,32 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    param([int]$root)",
     ...psKillDescendantsLines().map((ln) => "    " + ln),
     "  }",
+    "  # 加固：连续重扫并递归杀净，直到 launcher 不再有任何后代（codex 若在快照后重新生成子进程也一并回收），",
+    "  # 绝不因为一次快照遗漏子进程就放过 codex，造成“窗口任务已完成但 codex TUI 仍存活、窗未自动关”。",
+    "  function Kill-LauncherTree {",
+    "    param([int]$root)",
+    "    for ($k = 0; $k -lt 3; $k++) {",
+    "      $n = Stop-LauncherDescendants $root",
+    "      if ($n -eq 0) { break }",
+    "      Start-Sleep -Milliseconds 300",
+    "    }",
+    "  }",
     "  $dir = $env:ORCH_SDIR",
     "  $seen = @{}",
     "  $sizes = @{}",
     "  $match = $null",
+    "  $sawChild = $false",
     "  $watchdogMaxMin = 45",
     "  try { if ($env:ORCH_WATCHDOG_MAX_MIN) { $watchdogMaxMin = [double]$env:ORCH_WATCHDOG_MAX_MIN } } catch { }",
     "  $deadline = (Get-Date).AddMinutes($watchdogMaxMin)",
     "  while ((Get-Date) -lt $deadline) {",
-    "    if (Test-Path -LiteralPath $resultFile) { exit 0 }",
+    "    if (Test-Path -LiteralPath $resultFile) {",
+    "      $n = Stop-LauncherDescendants $rootPid",
+    "      if ($n -gt 0) { $sawChild = $true }",
+    "      # 加固：陈旧/旧块 result 文件可能在 codex 尚未生成后代时误触发提前退出；故仅当确曾观测到本窗 codex",
+    "      # 后代（$sawChild）且现已杀净时才结束，并补写 .self-closed 完成标记，避免“任务完成但窗未自动关”。",
+    "      if ($n -eq 0 -and $sawChild) { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII; exit 0 }",
+    "    }",
     "    try {",
     "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }",
     "      foreach ($f in $files) {",
@@ -975,20 +1042,20 @@ function writeInteractiveLauncher(title, prompt, sfx) {
             "            # 自动关闭设计 = watchdog 检测到【本块 agent 的完成汇报】(agent_message/assistant 行含本块 token 且含 完成) 才关窗。",
             "            # 计划/中间消息不带“完成”，不会被误关；仅真正的完成汇报触发。稳定~1.5s 后关，确保父进程已抓到汇报。",
             "            $done = ($tail | Where-Object { $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
-            "            if ($done) {",
-            "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
-            "                # 递归杀净 launcher 的全部后代（codex 树）：绝不强杀 launcher 自身；codex 已退出(无后代)则函数直接跳过。",
-            "                Stop-LauncherDescendants $rootPid | Out-Null",
-            "                exit 0",
-            "            }",
+    "            if ($done) {",
+    "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
+    "                # 递归杀净 launcher 的全部后代（codex 树）：绝不强杀 launcher 自身；codex 已退出(无后代)则函数直接跳过。",
+    "                Kill-LauncherTree $rootPid",
+    "                exit 0",
+    "            }",
             "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') } | Select-Object -Last 1)",
-            "            if ($report) {",
-            "                # 命中即收窗：rollout 中最后一条含本窗 token+完成 的 assistant 消息即最终汇报（模板要求最终汇报以 token 开头、禁止中途输出未完状态），出现即写强标记并结束，无需等 1.5s 稳定。",
-            "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
-            "                # 同上：递归杀净 launcher 的全部后代（codex 树），绝不强杀 launcher 自身，codex 已退出则自动跳过。",
-            "                Stop-LauncherDescendants $rootPid | Out-Null",
-            "                exit 0",
-            "            }",
+    "            if ($report) {",
+    "                # 命中即收窗：rollout 中最后一条含本窗 token+完成 的 assistant 消息即最终汇报（模板要求最终汇报以 token 开头、禁止中途输出未完状态），出现即写强标记并结束，无需等 1.5s 稳定。",
+    "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
+    "                # 同上：递归杀净 launcher 的全部后代（codex 树），绝不强杀 launcher 自身，codex 已退出则自动跳过。",
+    "                Kill-LauncherTree $rootPid",
+    "                exit 0",
+    "            }",
     "          } catch { }",
     "          continue",
     "        }",
@@ -1012,6 +1079,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "  # 会话级容错：codex 若异常退出(无最终汇报)则在同一窗内自动重跑一次，避免并发时 provider/会话瞬时失败造成无输出；不重复弹窗、不二次执行。",
     "  $attempt = 0",
     "  $rep = ''",
+    "  $wdDone = $false",
     "  while ($attempt -lt 2) {",
     "    $attempt++",
     "    & '" + AGENT_BIN_Q + "' @codexArgs",
@@ -1019,6 +1087,14 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    $rdir = $env:ORCH_SDIR",
     "    $rep = Get-LastReport -dir $rdir -tok $token",
     "    if ($rep) { break }",
+    "    # 加固：watchdog 刚杀完 codex，rollout 汇报 / .self-closed 标记可能仍在落盘/跨进程可见性传播中，",
+    "    # 先短等再复检，避免把“已完成、正在关窗”的窗口误判成失败，重跑出一个失去 watchdog 背书的常驻 codex。",
+    "    Start-Sleep -Milliseconds 400",
+    "    $rep = Get-LastReport -dir $rdir -tok $token",
+    "    if ($rep) { break }",
+    "    # 加固：watchdog 已自关（已写入 .self-closed 完成标记）就意味着完成汇报已被确认，此时绝不再重跑，",
+    "    # 避免 codex 重新生成一个失去 watchdog 背书的常驻 TUI（正是“窗口任务完成但 codex 仍存活、窗未自动关”的根因）。",
+    "    if (Test-Path -LiteralPath ($resultFile + '.self-closed')) { $wdDone = $true; break }",
     "    if ($code -eq 0) { break }",
     "    Write-Host ('  [launcher] codex session exited (code=' + $code + ', no report); retry ' + $attempt + '/2 ...')",
     "  }",
@@ -1028,7 +1104,9 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     // 任务完成判定：只要本窗最终汇报已捕获（$rep 非空），watchdog 会为快速关窗而强杀 codex 子进程使
     // $LASTEXITCODE=1，但那不等于失败。此时统一按完成处理并以 exit 0 干净关闭（Windows Terminal
     // closeOnExit:graceful 只认 exit 0；非零会留下“[进程已退出，代码为 1]”的卡壳窗），结果文件也记录 0。
-    "if ($rep) { $code = 0 }",
+    // 拿到最终汇报（$rep）或 watchdog 已确认完成（$wdDone）都归零，确保窗必关、绝不留常驻 codex。
+    "if ($rep -or $wdDone) { $code = 0 }",
+    "if ($rep -or $wdDone) { try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
     "Write-Result $code",
     // Always exit 0: Windows Terminal auto-closes the pane on exit code 0 (closeOnExit:graceful).
     // A non-zero exit keeps the pane open ("process exited, code X") which is the stuck-window bug.
@@ -1076,7 +1154,9 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
   // (large) AGENTS.md/context block, so we read the whole file (once per new candidate), not just the head.
   const keys = rolloutKeys(matchKey);
   while (Date.now() - start < timeoutMs) {
-    if (exitMarkerFile && existsSync(exitMarkerFile)) return null; // codex already exited -> reclaim path
+    // 完成信号优先认窗内自关：result 落盘或窗内 watchdog 写入 .self-closed（即 agent 已报 __ORCH_DONE__）都视为本窗完成，
+    // 立即转入回收路径，避免父进程靠 session 文本匹配去等一个可能永远匹配不到的会话（慢速 agent 时长期 HOLDING）。
+    if (exitMarkerFile && (existsSync(exitMarkerFile) || existsSync(exitMarkerFile + ".self-closed"))) return null; // codex already exited -> reclaim path
     for (const f of listRollouts(sessionDir())) {
       if (seen.has(f)) continue;
       seen.add(f);
@@ -1746,9 +1826,10 @@ async function main() {
       return;
     }
     const rid = Date.now().toString(36);
-    // 内存自适应最大并发：n GB 内存 -> 最多 n/2 并发 TUI 窗；<2 并发(内存<4G)视为不支持(2G 设备默认不支持 orchestrator)。
+    // 内存自适应最大并发：n GB 内存 -> 最多 n/2 并发 TUI 窗，上限 8 个（超过 16GB 也仅并发 8 台，避免内存超载）；
+    // <2 并发(内存<4G)视为不支持(2G 设备默认不支持 orchestrator)。
     const memGb = os.totalmem() / (1024 * 1024 * 1024);
-    const maxByMem = Math.floor(memGb / 2);
+    const maxByMem = computeMaxWindows(memGb);
     if (maxByMem < 2) {
       console.error("[orchestrator] 内存不足：" + Math.round(memGb) + "GB < 4G；orchestrator 至少需要 4G 内存(2 并发)，终止。");
       process.exitCode = 1; return;
@@ -1756,6 +1837,13 @@ async function main() {
     console.log("[orchestrator] decomposing (read-only)...");
     const plan = await decomposeSafely(request);
     console.log("[orchestrator] blocks=" + plan.length);
+    // 【硬性要求】对 orchestrator 自身的改动：先 inline 就地做，绝不当成“一个改它的 TUI 窗”。
+    // （TUI 窗依赖 orchestrator SDK；改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会“改它自己关不掉”。）
+    if (plan.some((b) => (b.tasks || []).some((t) => isOrchestratorSelfMod(t.prompt || t.title || "")))) {
+      console.log("[orchestrator] 检测到对 orchestrator 自身的改动 -> 按硬性要求 inline 就地执行（不弹 TUI 窗）。先改好 orchestrator，再据此发起并发 TUI 窗。");
+      console.log(JSON.stringify({ mode: "inline", reason: "orchestrator 自身改动：必须先在发起对话中完成，才能据此发起并发 TUI 窗" }));
+      return;
+    }
     // autosafe 检测：只有单一/串行块时无需弹窗——直接在发起对话中就地执行（不弹 TUI 窗）。
     if (plan.length < 2) {
       console.log(JSON.stringify({ mode: "inline", blocks: plan, reason: "单一/串行块：直接在发起对话中就地执行（不弹 TUI 窗）" }));
@@ -1794,6 +1882,8 @@ async function main() {
     for (const w of baseWaves) { for (let i = 0; i < w.length; i += maxByMem) { chunks.push(w.slice(i, i + maxByMem)); } }
     const waves = chunks;
     const summary = {};
+    // 新 run 清零上次运行的 win-summary.json（账实一致）：杜绝旧 B1/B2/B3 等残留污染本次 poll/汇报/用户查看。
+    try { writeFileSync(path.join(TMP, "win-summary.json"), JSON.stringify({ blocks: [], results: {} }, null, 2), "utf8"); } catch { /* ignore */ }
     const allSpawned = [];
     // 记录每个块首次弹窗时刻，用于判断“是否已在盘上做出改动”——避免未决块重复执行同一任务。
     const blockStarted = {};
@@ -1898,10 +1988,13 @@ async function main() {
         let res = { done: false, text: "" };
         if (sessionFile) {
           res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile, s.matchToken);
-        } else if (existsSync(resultFile)) {
-          // codex 进程先退出（任意退出码）且没匹配到 rollout：立即回收，窗口已/即将自动关闭。
+        } else if (existsSync(resultFile) || existsSync(resultFile + ".self-closed")) {
+          // 完成信号=窗内自关（.self-closed）或 result 已落盘（codex 已退出/Write-Result 完成）：立即回收。
+          // 优先读本块自己的完成汇报；尚未写出时交给下游 waitForReportText 短暂等报告落盘。
           const code = readExitCode(resultFile);
-          res = { done: true, text: "(launcher exited code " + (code === null ? "?" : code) + "; no session rollout matched)", exitCode: code };
+          let text = readReportFromResult(resultFile, s.matchToken);
+          if (!text && existsSync(resultFile)) text = extractResult(resultFile).text || "";
+          res = { done: true, text: (text || ("(launcher exited code " + (code === null ? "?" : code) + "; no session rollout matched)")), exitCode: code };
         } else {
           console.log("  !! " + s.key + " session rollout not found (prompt match) - window left open; close it manually.");
         }
@@ -2201,4 +2294,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation };
+export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows };

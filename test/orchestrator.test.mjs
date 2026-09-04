@@ -152,7 +152,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -166,13 +166,13 @@ test('orchestrate-sdk conflictByKeys', () => {
   assert.equal(conflictByKeys(['file:C:/workspace/build/81', 'port:8081']), null);
 });
 test('orchestrate-sdk appendModelEffortArgs injects -m/-c and is space-guarded', () => {
-  // 默认 MODEL=deepseek-v4-flash-vision-exp / EFFORT=high（与 config.toml / AGENTS 规则一致）-> 注入 -m / -c model_reasoning_effort
+  // 默认 MODEL=deepseek-v4-flash / EFFORT=max（TUI 窗=codex CLI 默认；GUI 主机才用 config.toml 的 vision-exp/high）
   const base = ['--cd', 'D:\\', '-a', 'never', '--sandbox', 'danger-full-access'];
   const out = appendModelEffortArgs(base);
-  assert.deepEqual(out.slice(-4), ['-m', 'deepseek-v4-flash-vision-exp', '-c', 'model_reasoning_effort=high']);
-  assert.ok(out.includes('deepseek-v4-flash-vision-exp') && out.includes('model_reasoning_effort=high'));
+  assert.deepEqual(out.slice(-4), ['-m', 'deepseek-v4-flash', '-c', 'model_reasoning_effort=max']);
+  assert.ok(out.includes('deepseek-v4-flash') && out.includes('model_reasoning_effort=max'));
   // 值里含空格时不应被注入成 2 个参数（防 launcher 按空格拆散）：模型名 default 不含空格，故这里只测不含空格正常路径。
-  assert.ok(!/\s/.test('deepseek-v4-flash-vision-exp'), 'model value must contain no space (else launcher arg-split breaks it)');
+  assert.ok(!/\s/.test('deepseek-v4-flash'), 'model value must contain no space (else launcher arg-split breaks it)');
 });
 test('orchestrate-sdk classifyExecutionMode: read-only -> inline, real -> execute', async () => {
   // 只读词（分析，无真实动作词）-> inline（命中确定性快判，不触发 LLM）
@@ -399,12 +399,36 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
+test('orchestrate-sdk computeMaxWindows: n GB -> n/2 concurrency, capped at 8 windows', () => {
+  assert.equal(computeMaxWindows(2), 1, '2G -> floor(1) -> 1 (caller refuses <2)');
+  assert.equal(computeMaxWindows(4), 2, '4G -> 2 windows');
+  assert.equal(computeMaxWindows(8), 4, '8G -> 4 windows');
+  assert.equal(computeMaxWindows(12), 6, '12G -> 6 windows');
+  assert.equal(computeMaxWindows(16), 8, '16G -> 8 windows (cap)');
+  assert.equal(computeMaxWindows(32), 8, '32G -> 8 windows (capped, NOT 16)');
+  assert.equal(computeMaxWindows(64), 8, '64G -> 8 windows (capped)');
+});
+test('runtime: launcher extracts the REAL ASCII block token even when boilerplate mentions the marker first (regression: empty $token broke auto-close)', () => {
+  // Replicates the real --run-windows block prompt: the block body contains the 执行纪律 boilerplate
+  // 「【本块唯一标识】…完成」开头 BEFORE the injected unique token. The old regex matched that
+  // boilerplate first and stripped it to an empty $token => watchdog auto-close never fired.
+  const body = '1. 修复TUI窗任务成功后仍报「已退出进程代码为1」且无法自动关窗的问题。\n上面任务之间互相独立：并行执行。\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。\n\n【本块唯一标识】B1-abc123-4f2g9z\n（最终汇报请以「【本块唯一标识】B1-abc123-4f2g9z 完成」开头，并说明本块完成情况）';
+  const auth = '\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
+  const { lp, pidf, pf } = writeInteractiveLauncher('t', body + auth, 'x');
+  try {
+    const ps = fs.readFileSync(lp, 'utf8');
+    const m = ps.match(/^\$token = '([^']*)'/m);
+    assert.ok(m, 'launcher must contain a $token assignment');
+    assert.ok(m[1], 'launcher $token must be non-empty (was silently emptied by the boilerplate-first regex)');
+    assert.equal(m[1], 'B1-abc123-4f2g9z', 'launcher $token must be the real ASCII block token');
+  } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
+});
 test('runtime: completion exits 0 and never force-kills the launcher (regression: no code-1 pane)', () => {
   const { lp, pidf, pf } = writeInteractiveLauncher('reg', 'body\n\n【本块唯一标识】R1-abc 完成', 'rg');
   try {
     const body = fs.readFileSync(lp, 'utf8');
-    // 1) 汇报已捕获(任务完成) -> 统一把退出码归零：watchdog 强杀 codex 子进程使 $LASTEXITCODE=1 不算失败
-    assert.match(body, /if \(\$rep\) \{ \$code = 0 \}/, 'captured report must reset the recorded exit code to 0');
+    // 1) 汇报已捕获(任务完成) 或 watchdog 已自关($wdDone) -> 统一把退出码归零：watchdog 强杀 codex 子进程使 $LASTEXITCODE=1 不算失败
+    assert.match(body, /if \(\$rep -or \$wdDone\) \{ \$code = 0 \}/, 'captured report or watchdog self-closed must reset the recorded exit code to 0');
     // 2) launcher 恒以 exit 0 收尾 -> Windows Terminal 不会留下 "[进程已退出，代码为 1]" 卡壳窗
     assert.ok(body.trimEnd().endsWith('exit 0'), 'launcher must end with exit 0');
     // 3) watchdog 沿 ParentProcessId 链递归枚举全部后代并逐一 kill，绝不强杀 launcher 自身
@@ -413,6 +437,12 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     assert.match(body, /taskkill \/PID \$v \/F/, 'watchdog must kill each enumerated descendant individually');
     assert.doesNotMatch(body, /ParentProcessId -eq \$rootPid/, 'watchdog must not be limited to direct children');
     assert.ok(!body.includes('taskkill /PID $PID'), 'watchdog must never force-kill the launcher pid');
+    // 4) 加固：watchdog 用连续重扫的 Kill-LauncherTree 兜底（codex 重新生成子进程也一并回收），两个完成分支都调用它
+    assert.match(body, /function Kill-LauncherTree/, 'watchdog must define a re-scan descendant-kill helper');
+    assert.match(body, /Kill-LauncherTree \$rootPid/, 'watchdog must call Kill-LauncherTree on completion');
+    // 5) 加固：watchdog 已自关 或 codex 已退出且无后代 才收窗；结果文件存在但 codex 仍存活时继续杀净（拒绝常驻 codex）
+    assert.match(body, /if \(Test-Path -LiteralPath \(\$resultFile \+ '\.self-closed'\)\) \{ \$wdDone = \$true; break \}/, 'launcher must not retry after watchdog self-closed');
+    assert.doesNotMatch(body, /if \(Test-Path -LiteralPath \$resultFile\) \{ exit 0 \}/, 'watchdog must not exit on a stale result file while codex is alive');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
@@ -507,5 +537,62 @@ exit 0`);
     }
     try { child.kill(); } catch { /* ignore */ }
     try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+test('runtime: watchdog self-close reaps codex even when a stale result file pre-exists (regression: codex TUI left alive, window not auto-closed)', async () => {
+  // The in-launcher watchdog must NOT early-exit on a stale result file while codex descendants are still alive;
+  // it must kill the codex tree so `& codex` returns and the launcher reaches `exit 0` (auto-close the window).
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-watchdog-'));
+  const tok = 'W1-abc-123';
+  const { lp, pidf, pf, rf } = writeInteractiveLauncher('wdguard', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
+  const codexPidFile = path.join(ws, 'codex.pid');
+  const grandPidFile = path.join(ws, 'grand.pid');
+  const fakeCodex = path.join(ws, 'fake-codex.ps1');
+  const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
+  writePs(fakeCodex, `$ErrorActionPreference='Continue'
+$dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$token='${tok}'
+$report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
+Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $report -Encoding UTF8
+$PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
+$psi=New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName='powershell.exe'; $psi.Arguments='-NoProfile -Command "Start-Sleep -Seconds 600"'; $psi.UseShellExecute=$false
+$grand=[System.Diagnostics.Process]::Start($psi)
+$grand.Id | Set-Content -LiteralPath '${grandPidFile}' -Encoding UTF8
+$grand.WaitForExit()
+while($true){Start-Sleep -Seconds 600}`);
+  // Patch the generated launcher so the "codex" is our fake interactive process (never self-exits).
+  let ps = fs.readFileSync(lp, 'utf8');
+  const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+  ps = ps.replace(/&\s*'codex'\s*@codexArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @codexArgs");
+  fs.writeFileSync(lp, ps, 'utf8');
+  // Simulate a STALE result from a prior window sharing this block path BEFORE the launcher runs.
+  fs.writeFileSync(rf, '{"__EXIT__":0,"__DONE__":true,"__REPORT__":"STALE prior run"}', 'utf8');
+  const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
+  let codexPid = 0, grandPid = 0;
+  const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
+  try {
+    await waitFor(() => fs.existsSync(codexPidFile) && fs.existsSync(grandPidFile), 15000);
+    codexPid = readPidFile(codexPidFile); grandPid = readPidFile(grandPidFile);
+    assert.ok(codexPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
+    // Watchdog must fire even with a stale result file -> kill codex -> launcher exits 0.
+    const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
+    assert.notEqual(exitCode, 'timeout', 'launcher must exit on its own (no permanently-alive codex window)');
+    assert.equal(exitCode, 0, 'launcher must end with exit 0 so the Windows Terminal pane auto-closes');
+    assert.equal(pidAliveCheck(codexPid), false, 'codex process must be killed even when a stale result pre-exists');
+    assert.equal(pidAliveCheck(grandPid), false, 'codex grandchild must be reaped');
+    assert.equal(fs.existsSync(rf), true, 'result file must be written (Write-Result ran)');
+    assert.equal(fs.existsSync(rf + '.self-closed'), true, 'watchdog must have self-closed after detecting completion');
+  } finally {
+    for (const pid of [codexPid, grandPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    try { child.kill(); } catch { /* ignore */ }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });

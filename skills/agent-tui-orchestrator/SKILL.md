@@ -19,6 +19,8 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完。
 8. **留痕**：真实执行后须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
+9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / agent-tui-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。
+10. **TUI 窗 = codex CLI，默认 `deepseek-v4-flash` / `max`**：orchestrator 弹出的窗走 codex CLI，默认模型 `deepseek-v4-flash`、推理力度 `max`（`ORCH_MODEL`/`ORCH_EFFORT` 可覆盖）；只有 codex GUI 主机才用 config.toml 的 `deepseek-v4-flash-vision-exp` / `high`，二者勿混淆。
 
 ## 内嵌能力（11 项，全部恒启用、无开关）
 | 能力 | 职责 |
