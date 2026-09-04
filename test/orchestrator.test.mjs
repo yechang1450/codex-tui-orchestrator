@@ -457,6 +457,23 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
   assert.ok(idxFallback < idxForceKill, 'force-kill must be guarded by the fallback branch (real exception only)');
 });
 
+test('runtime: spawnWindowWithRetry warms up after popup so the parent never races the session rollout (cold-start regression)', () => {
+  // windowGenuinelyPopped only proves the launcher (WT pane host) is alive; codex TUI cold start can still be slow.
+  // If the parent immediately polls for the window's session rollout, it can miss it ("no session rollout matched")
+  // and wrongly close a still-starting window. The fix wires warmupWindow() (waits for a codex descendant) into
+  // spawnWindowWithRetry's confirmed path. Assert that wiring exists in the source so it can't silently regress.
+  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  // 1) warmupWindow must be defined
+  assert.match(src, /async function warmupWindow/, 'warmupWindow must exist');
+  // 2) spawnWindowWithRetry must invoke warmupWindow after confirming popup
+  const idxConfirmed = src.indexOf('windowGenuinelyPopped(pidf, token)) { ok = true; break; }');
+  const idxWarmup = src.indexOf('await warmupWindow(pidf, token);');
+  assert.ok(idxConfirmed > -1 && idxWarmup > -1, 'spawnWindowWithRetry must confirm popup then warm up');
+  assert.ok(idxWarmup > idxConfirmed, 'warmup must run AFTER the popup is confirmed');
+  // 3) codexDescendantAlive helper must exist (the durable child detection used by warmup)
+  assert.match(src, /function codexDescendantAlive/, 'codexDescendantAlive must exist');
+});
+
 test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> recreates it, writes .self-closed, exits 0', async () => {
   // Regression for the exact reported bug: a Codex TUI window finished (agent reported ORCH_DONE) but the
   // launcher wrote win-<s>.result.json.self-closed into a temp dir that no longer existed (removed when the

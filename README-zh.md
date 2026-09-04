@@ -70,14 +70,24 @@
 #### ⑥ 窗内授权执行 + 自验
 窗内 agent 收到全权指令，硬约束固化在 prompt：防嵌套（禁止再调 `--run-windows`/`--spawn`/另开窗）、防停顿（禁止以「需要授权/要我修吗」暂停问）、必须自验（读回 + UTF-8 无 BOM、跑回归、无残留临时/无乱码）、必须真实汇报。
 
-#### ⑦ 汇报捕获自动关窗
-launcher 内置 watchdog 扫描本窗 session rollout，**命中最后一条含本窗 token + 完成 的 assistant 消息**即写强标记并关窗（命中即关，不等稳定时长）；watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 覆盖），长任务在父进程意外退出后仍能完成即自关。`Write-Result` 用 `Get-LastReport` 把本窗最后一条 assistant 输出写入 result（不要求 token/完成 字样）。父进程完成判定放宽：窗口回合结束且有输出即 `done`（不再因缺 token 判 `uncaptured` 去二次执行）。
+#### ⑦ 获取执行结果：`done=做完了`（不等同于成功），主控去现场看，不信窗内自报
+
+**设计思路来自一段童年记忆：** 小时候在厂子的办公室里，底下来人跟我爸爸汇报完就走了。我问爸爸，不怕那个人没有如实汇报吗？爸爸说，**每次汇报之后他都会亲自去看看活干得怎么样，而且时间还不固定**——正因为"会去现场抽查、且抽查时间不定"，下面的人没有一个敢骗他。亲临现场评估，比翻看汇报的纸面内容更稳妥、也更直接。后来我在"让 TUI 窗汇报结果然后自动关窗"上屡屡碰壁时，就想起了这件事，把这套思想移植了过来。
+
+**落地到 orchestrator：**
+
+- **TUI 窗不做长篇汇报，只输出唯一一行结束识别码 `__ORCH_DONE__ <本窗token>`**。它只代表"我停止动手了"（`done` = 做完了），**不代表"成功了"**。
+- **launcher 内置 watchdog 只认这一行结束符**（且必须是 `agent_message` / `"role":"assistant"` 消息，绝不匹配被注入的提示词行——那行词里原文就教它"最后输出 `__ORCH_DONE__ <token>`"，若不过滤 role/type，窗会在刚拿到任务、还没干活时就把这条提示词误判成完成而提前自关、丢任务）。命中即写 `.self-closed` 强标记并杀 codex 树 → `exit 0` 自动关窗。
+- **`Write-Result` 不再依赖"捕获到汇报文本"**：只要 codex 执行结束就写 result + `.self-closed`；汇报文本尽力带出（有则记，无则标记需外部核对落盘）。
+- **父进程完成判定 = 执行结束即 `done`**，不再因缺 token/缺汇报文本判 `uncaptured`/失败/二次执行。
+- **真正判断"活干得成不成"，是主控关窗后按 prompt 去核对真实落盘状态**（读文件/状态层面），而非分析窗内自报。这正是"爸爸亲自去现场看"：报告不可信，现场不会撒谎。
+- watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 覆盖），长任务在父进程意外退出后仍能"执行结束即自关"。
 
 #### ⑧ 汇总 → `win-summary.json`
-每块写结果。收尾判定用**「全部结果是否真实返回」**而非「窗是否都关」：某块有真实汇报、或被盘面证据证明已落地（`done-on-disk`）、或被正确拦截（`preflight-failed`/`locked`/`unfinished`/`popup-failed`）才视为已解决；`uncaptured`/`failed`/`timeout` 仍视为未决，绝不提前收尾。
+每块写结果。`status` 以「执行结束=done」为准（识别码/`.self-closed`/codex 退出即 done），**不再因缺汇报文本判未决**；`result` 字段尽力带出窗内文本（有则记，无则提示"请按任务提示词核对真实落盘状态"）。真正的"成败"由主控关窗后读现场判断，而不是看 summary 的自报文本。
 
 #### ⑨ poll 收尾契约（`poll-windows.mjs --require-all-success`）
-`--run-windows` 之后**必须**轮询到全部块 ∈ 成功集（`done/ok/completed/done-retried/done-on-disk` + 被正确拦截的 `preflight-failed/locked/unlocked`）且无活窗 → exit 0；否则轮询到超时 exit 1（对 `uncaptured`/`failed`/`timeout` 绝不装成功）；全窗已关且新鲜 summary 已终态但含失败 → **立即**返回 1，不空等到超时。防竞态：summary 需「新鲜（mtime）+ 连续 2 cycle 稳定」；零窗但完整 summary 也收尾（堵住「窗关太快 summary 未刷新」竞态）。
+`--run-windows` 之后**必须**轮询到全部块 ∈ 成功集（`done/ok/completed/done-retried/done-on-disk` + 被正确拦截的 `preflight-failed/locked/unlocked`）且无活窗 → exit 0；否则轮询到超时 exit 1（对 `timeout`/`popup-failed`/`preflight-failed` 等未执行结束的不装成功）。防竞态：summary 需「新鲜（mtime）+ 连续 2 cycle 稳定」；零窗但完整 summary 也收尾（堵住「窗关太快 summary 未刷新」竞态）。
 
 #### ⑩ 清洁 + 父级复核
 - `ORCH_KEEP_TEMP!=1` → 用完即弃：删 `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json` 及 `.self-closed` 标记；清理按 pid 存活态保护活窗文件，绝不误删正在运行的窗口；**绝不删** `win-summary.json`。
@@ -102,8 +112,8 @@ launcher 内置 watchdog 扫描本窗 session rollout，**命中最后一条含�
 
 1. **防嵌套**：窗内禁再调编排/另开窗。
 2. **防白窗**：可行性在拆块判 + spawn 前确定性 L1/L2 门禁。
-3. **防虚报**：汇报必含真实 token + 完成、必自验；捕获以 token 为唯一锚点。
-4. **防丢汇报**：关窗锚点=汇报已捕获，延迟后关。
+3. **防虚报**：TUI 窗只输出 `__ORCH_DONE__ <token>` 识别码，无需自撰"成功汇报"；是否达标由主控去现场核对真实落盘状态，现场不会撒谎。
+4. **防丢任务**：`done`=执行结束（识别码/`.self-closed`/codex 退出），不因缺汇报文本误判未完成/二次执行；window 冷启动后 `warmupWindow` 等 codex 子进程真正拉起，避免父进程过早去等 session rollout 而漏匹配。
 5. **防串行失效**：`levelWaves` 剔除自引用/未知依赖。
 6. **防跨项目串扰**：缓存键含项目 hints 指纹。
 7. **防伪造/误放行**：门禁 fail-closed + 命令行动态核对 + 活窗背书。

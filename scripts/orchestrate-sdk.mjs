@@ -795,15 +795,29 @@ async function confirmWindowPopped(pidf, token) {
   }
   return false;
 }
+// 加固②：检测「launcher 下是否已出现 codex 子进程」。windowGenuinelyPopped 只证明 launcher(WT pane 宿主)活着，
+// 但 codex TUI 冷启动(模型 provider)可能仍很慢——若父进程立刻去等 session rollout，会因 rollout 还没建而误判
+// "no session rollout matched"。此函数在弹窗确认后继续短等 codex 子进程出现，让父进程的会话匹配不会起跑太早。
+// 只读探测，绝不弹出/关闭；失败也不强制 (只是再等，绝不误判未弹出而重复弹窗)。
+function codexDescendantAlive(pidf) {
+  try {
+    const pid = readPidFile(pidf);
+    if (!pid) return false;
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-Command",
+      "$ErrorActionPreference='SilentlyContinue'; $a=@{}; $p=Get-CimInstance Win32_Process; foreach($pr in $p){ if($pr.ParentProcessId -eq 0){continue}; $a[$pr.ProcessId]=$pr.ParentProcessId }; $root=" + Number(pid) + "; $s=@($root); $i=0; while($i -lt $s.Count){ $cur=$s[$i]; $i++; foreach($pr in $p){ if($pr.ParentProcessId -eq $cur){ if(($pr.Name -match 'codex|node') -or ($pr.CommandLine -like '*codex*')){ Write-Output 1; exit 0 }; $s+=$pr.ProcessId } } }; Write-Output 0"],
+      { windowsHide: true, encoding: "utf8", timeout: 8000 });
+    return /^1/m.test(String(r.stdout || ""));
+  } catch { return false; }
+}
 async function warmupWindow(pidf, token) {
-  // 通用冷启动错峰：只依赖 launcher 存活(pidf+launcher，不特判任何 agent 的子进程形态)，确认后短错峰 1.5s，
-  // 避免多个 agent 同时启动期对共享存储的锁竞争（对 codex/claude/gemini/opencode 等主流 agent 通用）。
-  const deadline = Date.now() + 6000;
-  while (Date.now() < deadline) {
-    if (windowGenuinelyPopped(pidf, token)) break;
-    await new Promise((r) => setTimeout(r, 300));
+  // 通用冷启动错峰：已确认 launcher 存活后，再短等 codex 子进程出现（避免父进程过早去等 session rollout 而漏匹配）。
+  // 不特判任何 agent 的子进程形态（对 codex/claude/gemini/opencode 等主流 agent 通用）；失败只继续等，绝不误判未弹出。
+  const codexWarm = Date.now() + 15000;
+  while (Date.now() < codexWarm) {
+    if (codexDescendantAlive(pidf)) break;
+    await new Promise((r) => setTimeout(r, 400));
   }
-  await new Promise((r) => setTimeout(r, 1500));
+  await new Promise((r) => setTimeout(r, 800));
 }
 async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token) {
   for (let attempt = 1; attempt <= maxRetry; attempt++) {
@@ -815,7 +829,12 @@ async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token) {
       if (windowGenuinelyPopped(pidf, token)) { ok = true; break; }
       await new Promise((r) => setTimeout(r, 500));
     }
-    if (ok) { if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+codex child) for [" + title + "]"); return true; }
+    if (ok) {
+      // 加固②：弹窗确认后再等 codex 子进程真正拉起（冷启动），确保父进程随后去等 session rollout 时不会起跑太早。
+      await warmupWindow(pidf, token);
+      if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+codex child) for [" + title + "]");
+      return true;
+    }
     console.log("  [window] popup NOT confirmed (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
   }
   console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");

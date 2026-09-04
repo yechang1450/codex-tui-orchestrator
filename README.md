@@ -69,14 +69,24 @@ For each block, before spawning:
 #### ⑥ In-window authorized execution + self-verify
 The window agent receives a full-authorization prompt with hard constraints baked in: no nesting (no `--run-windows`/`--spawn`/new window), no stalling (must not ask "need authorization?"), must self-verify every change (read back + UTF-8 no BOM, run regression, no leftover temp / no mojibake), and must report honestly.
 
-#### ⑦ Report-triggered auto-close
-The launcher runs a watchdog over the window session rollout: once the **last assistant message containing this block token + 完成** appears, it writes a strong marker and closes (hit-to-close, no stability wait). Watchdog horizon follows the parent poll ceiling (+10 min; `ORCH_WATCHDOG_MAX_MIN` overrides), so long tasks still auto-close if the parent dies. `Write-Result` uses `Get-LastReport` to persist the window's last assistant output into the result file (no token/完成 required). Parent completion is relaxed: window turn finished WITH output => `done` (no longer `uncaptured`→retry for missing token).
+#### ⑦ Getting the result: `done` = "work finished" (NOT "succeeded") — the orchestrator goes on-site, not on-trust
+
+**Design rationale (from a childhood memory):** As a kid in the factory office, a worker would come up to my father, deliver a report, and leave. I asked my father: aren't you afraid that person didn't report truthfully? He said, **after every report he personally walks over to see how the work actually turned out — and the timing is deliberately unpredictable.** Precisely because "he goes on-site to spot-check, at random times," nobody dares to deceive him. Inspecting the actual site is both more reliable and more direct than reading paper reports. After repeatedly failing to get TUI windows to report-and-self-close, I remembered this lesson and transplanted the idea here.
+
+**How it lands in the orchestrator:**
+
+- **The TUI window does NOT write a long report — it emits exactly one ending marker `__ORCH_DONE__ <window-token>`.** That marker means only "I stopped working" (`done` = finished), **not "I succeeded."**
+- **The launcher watchdog accepts ONLY that ending line** — and only when it is an `agent_message` / `"role":"assistant"` message, never the injected prompt text (which literally teaches the agent to end with `__ORCH_DONE__ <token>`; without a role/type filter, the watchdog would misread that instruction as completion and self-close before the agent did any work, dropping the task). On hit it writes `.self-closed`, kills the codex tree, and `exit 0` auto-closes.
+- **`Write-Result` no longer requires captured report text** — once codex ends, it writes result + `.self-closed`; it best-efforts the report text (records it if present, else flags "verify disk state").
+- **The parent judges completion as "execution ended => `done`"** — never `uncaptured`/failed/retry for a missing token or missing report text.
+- **Whether the work actually met the prompt is judged AFTER close by checking real on-disk state** (file/state level), not by analyzing the in-window self-report. That is "father walks to the site": reports can lie, the site cannot.
+- Watchdog horizon follows the parent poll ceiling (+10 min; `ORCH_WATCHDOG_MAX_MIN` overrides), so long tasks still auto-close if the parent dies.
 
 #### ⑧ Aggregate → `win-summary.json`
-Each block writes a result. Completion is judged by **"have all results truly returned"**, not "are all windows closed": a block resolves when it has a real report, was proven by disk progress (`done-on-disk`), or was correctly intercepted (`preflight-failed`/`locked`/`unfinished`/`popup-failed`). `uncaptured`/`failed`/`timeout` remain unresolved — never finish early.
+Each block writes a result. `status` is based on "execution ended = done" (marker/`.self-closed`/codex exit => done), **never unresolved for missing report text**; `result` best-efforts the window text (records it if present, else notes "verify real on-disk state per the task prompt"). Real success/failure is decided by the orchestrator reading the site after close, not by the summary's self-reported text.
 
 #### ⑨ Poll contract (`poll-windows.mjs --require-all-success`)
-After `--run-windows`, the initiator MUST poll until all blocks are in the success set (`done/ok/completed/done-retried/done-on-disk` + correctly-intercepted `preflight-failed/locked/unlocked`) and no windows alive → exit 0. Otherwise poll to timeout and exit 1 (never claim success on `uncaptured`/`failed`/`timeout`); when all windows are already closed and the fresh summary is terminal but NOT all-success, poll returns 1 immediately instead of waiting out the timeout. Anti-race: summary must be fresh (mtime) + stable for 2 cycles; a zero-window-but-complete summary also terminates (closes the "window closed before summary refreshed" race).
+After `--run-windows`, the initiator MUST poll until all blocks are in the success set (`done/ok/completed/done-retried/done-on-disk` + correctly-intercepted `preflight-failed/locked/unlocked`) and no windows alive → exit 0. Otherwise poll to timeout and exit 1 (never claim success on blocks that did not execute to end, e.g. `timeout`/`popup-failed`/`preflight-failed`). Anti-race: summary must be fresh (mtime) + stable for 2 cycles; a zero-window-but-complete summary also terminates (closes the "window closed before summary refreshed" race).
 
 #### ⑩ Cleanup + parent verification
 - `ORCH_KEEP_TEMP!=1` → use-and-discard: delete `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json` plus `.self-closed` markers; cleanup protects any file whose pid process is still alive (never deletes a running window's artifacts); **never** delete `win-summary.json`.
@@ -101,8 +111,8 @@ After `--run-windows`, the initiator MUST poll until all blocks are in the succe
 
 1. **No nesting** — a window may not re-invoke the orchestrator or open another window.
 2. **No wasted window** — feasibility decided at decompose + deterministic L1/L2 gate.
-3. **No fake success** — report must contain the real token + 完成, and must self-verify; capture uses the token as the sole anchor.
-4. **No lost report** — close anchor = report captured; delay before closing.
+3. **No fake success** — the TUI window emits only `__ORCH_DONE__ <token>`; it needn't compose a "success report." Whether it met the prompt is judged by the orchestrator on-site against real on-disk state, which can't lie.
+4. **No lost task** — `done` = execution ended (marker/`.self-closed`/codex exit), never misjudged as incomplete/retried for missing report text; `warmupWindow` waits for the codex child to actually start after popup so the parent never races the session rollout.
 5. **No broken serialization** — `levelWaves` strips self/unknown dependencies.
 6. **No cross-project collision** — cache key includes the project-hints fingerprint.
 7. **No forged pass** — fail-closed enforcement; command-line + live-window-backed auth.
