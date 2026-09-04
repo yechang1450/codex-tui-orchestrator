@@ -698,6 +698,28 @@ function ensureCodexCli() {
   throw new Error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
 }
 // ---------------------------------------------------------------------------
+// Superpowers 插件检测（用户要求：运行环境检测里加入对 Superpowers plugin 的检测）。
+// 若 Superpowers 可正常使用 -> 让 Superpowers 参与到后续流程（并发分析 + 并发干活，强强联合）；
+// 若未检测到 -> 一切照旧（不因缺少它而降级/报错）。只读探测，绝不安装/改动 Superpowers。
+// 判定标准：插件缓存目录存在 + 其 using-superpowers SKILL.md 存在 + 该插件在 config.toml 被启用。
+// ---------------------------------------------------------------------------
+const SUPERPOWERS_CACHE_DIR = path.join(os.homedir(), ".codex", "plugins", "cache", "openai-api-curated", "superpowers");
+function configPluginEnabled(name) {
+  try {
+    const cfg = readFileSync(path.join(os.homedir(), ".codex", "config.toml"), "utf8");
+    return cfg.includes('plugins."' + name + '"') && /\[plugins\."[^"]+"\]\s*\r?\nenabled\s*=\s*true/.test(cfg);
+  } catch { return false; }
+}
+function detectSuperpowers() {
+  try {
+    if (!existsSync(SUPERPOWERS_CACHE_DIR)) return { available: false, reason: "plugin cache dir absent" };
+    const skillMd = path.join(SUPERPOWERS_CACHE_DIR, "1e285826", "skills", "using-superpowers", "SKILL.md");
+    if (!existsSync(skillMd)) return { available: false, reason: "using-superpowers SKILL.md absent" };
+    if (!configPluginEnabled("superpowers@openai-api-curated")) return { available: false, reason: "superpowers plugin not enabled" };
+    return { available: true, reason: "superpowers usable" };
+  } catch (e) { return { available: false, reason: (e && e.message ? e.message : "unknown") }; }
+}
+// ---------------------------------------------------------------------------
 // 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
 // 低于 ORCH_MIN_FREE_MB（默认 12000MB≈12GB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 3600MB≈3.6GB）直接拒绝（fail-closed）。
 // warnOnly=true：只告警、绝不拦截（供 --plan 等只读命令使用）。
@@ -1874,7 +1896,13 @@ async function main() {
     armEnforcement();
     const codexCli = ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
     if (!checkDiskSpace()) { process.exitCode = 1; return; }
-    console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
+    // 用户要求：运行环境检测里加入对 Superpowers plugin 的检测。可用则让 Superpowers 参与后续流程（并发分析+并发干活强强联合）；
+    // 未检测到则照旧（不因缺少它而降级/报错）。把结果写入进程 env，使 spawn 出的 TUI 窗能继承并感知。
+    const sp = detectSuperpowers();
+    process.env.ORCH_SUPERPOWERS = sp.available ? "1" : "0";
+    process.env.ORCH_SUPERPOWERS_REASON = sp.reason || "";
+    console.log("[orchestrator] superpowers plugin: " + (sp.available ? "USABLE -> 参与后续流程 (并发分析+并发干活强强联合)" : "NOT USABLE -> 照旧 (" + sp.reason + ")"));
+    console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " superpowers=" + (sp.available ? "on" : "off") + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
     await cleanStaleWindows();
     const request = process.argv.slice(3).join(" ");
@@ -1920,7 +1948,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。执行结束判定=本窗完成实际操作并验证落盘后，**最后单独输出一行结束标记 `__ORCH_DONE__ <本窗token>`**（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。只需此一行，无需长篇汇报；仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
+    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再允许 sub agent】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许开始执行（含 sub agent）**；sub agent 只承接 TODO LIST 中已明确的、无歧义的任务片段。\n\n执行结束判定=本窗完成实际操作并验证落盘后，**最后单独输出一行结束标记 `__ORCH_DONE__ <本窗token>`**（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.
