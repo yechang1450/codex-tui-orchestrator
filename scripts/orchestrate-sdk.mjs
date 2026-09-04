@@ -1912,6 +1912,14 @@ async function main() {
     armEnforcement();
     const codexCli = ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
     if (!checkDiskSpace()) { process.exitCode = 1; return; }
+    // 内存自适应最大并发：n GB 内存 -> 最多 n/2 并发 TUI 窗，上限 8 个（超过 16GB 也仅并发 8 台，避免内存超载）。
+    // <2 并发(内存<4G)视为不支持(2G 设备默认不支持 orchestrator)。先算 memGb 供下方 Superpowers 与子代理克制使用复用。
+    const memGb = os.totalmem() / (1024 * 1024 * 1024);
+    const maxByMem = computeMaxWindows(memGb);
+    if (maxByMem < 2) {
+      console.error("[orchestrator] 内存不足：" + Math.round(memGb) + "GB < 4G；orchestrator 至少需要 4G 内存(2 并发)，终止。");
+      process.exitCode = 1; return;
+    }
     // 用户要求：运行环境检测里加入对 Superpowers plugin 的检测。可用则让 Superpowers 参与后续流程（并发分析+并发干活强强联合）；
     // 未检测到则照旧（不因缺少它而降级/报错）。把结果写入进程 env，使 spawn 出的 TUI 窗能继承并感知。
     const sp = detectSuperpowers();
@@ -1935,14 +1943,6 @@ async function main() {
       return;
     }
     const rid = Date.now().toString(36);
-    // 内存自适应最大并发：n GB 内存 -> 最多 n/2 并发 TUI 窗，上限 8 个（超过 16GB 也仅并发 8 台，避免内存超载）；
-    // <2 并发(内存<4G)视为不支持(2G 设备默认不支持 orchestrator)。
-    const memGb = os.totalmem() / (1024 * 1024 * 1024);
-    const maxByMem = computeMaxWindows(memGb);
-    if (maxByMem < 2) {
-      console.error("[orchestrator] 内存不足：" + Math.round(memGb) + "GB < 4G；orchestrator 至少需要 4G 内存(2 并发)，终止。");
-      process.exitCode = 1; return;
-    }
     console.log("[orchestrator] decomposing (read-only)...");
     const plan = await decomposeSafely(request);
     console.log("[orchestrator] blocks=" + plan.length);
