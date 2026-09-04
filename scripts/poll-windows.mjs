@@ -37,10 +37,10 @@ const deadline = start + timeoutMs;
 // 全关+summary 完整需连续 2 个 cycle 稳定才退出，避免“窗刚关但 summary 未刷新”竞态。
 const STABLE_CYCLES = 2;
 // 终态集合：只有这些 status 才算“已定案”，错误/未知状态不得当作 complete 提前退出。
-const TERMINAL = new Set(["done", "ok", "completed", "done-retried", "failed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "unlocked", "done-and-close", "popup-failed"]);
+const TERMINAL = new Set(["done", "ok", "completed", "done-retried", "done-on-disk", "failed", "timeout", "unfinished", "uncaptured", "preflight-failed", "locked", "unlocked", "done-and-close", "popup-failed"]);
 // --require-all-success 的"可收尾"集合：真正成功 {done,ok,completed} + 被正确跳过/锁定 {preflight-failed, locked, unlocked}。
 // uncaptured / timeout / unfinished / failed 视为失败阻塞 -> poll 继续等，超时返回 1（不装成功）。
-const SUCCESS = new Set(["done", "ok", "completed", "done-retried", "preflight-failed", "locked", "unlocked"]);
+const SUCCESS = new Set(["done", "ok", "completed", "done-retried", "done-on-disk", "preflight-failed", "locked", "unlocked"]);
 const requireAllSuccess = process.argv.includes("--require-all-success");
 
 function loadSummary() {
@@ -83,6 +83,15 @@ function summaryComplete(sum) {
     return TERMINAL.has(st);
   });
 }
+function summaryTerminal(sum) {
+  if (!sum || !sum.results || typeof sum.results !== "object") return false;
+  const entries = Object.entries(sum.results);
+  if (entries.length === 0) return false;
+  return entries.every(([k, r]) => {
+    if (!k || !r || typeof r !== "object") return false;
+    return TERMINAL.has(String(r.status || ""));
+  });
+}
 
 function failures(sum) {
   const out = [];
@@ -105,6 +114,13 @@ while (Date.now() < deadline) {
   const sum = loadSummary();
   const complete = summaryFresh() && summaryComplete(sum);
   const allClosed = alive === 0;
+  // 已定案但含失败（require-all-success 下）：所有窗已关 + summary 终态非全成功 -> 立即返回 1，
+  // 不再等到超时才暴露（此前 popup-failed/failed 会让 poll 空等到超时）。
+  if (requireAllSuccess && allClosed && summaryFresh() && summaryTerminal(sum) && !complete) {
+    const f = failures(sum);
+    console.log("[poll-windows] ALL WINDOWS CLOSED but not all blocks succeeded -> non-success blocks: " + (f.length ? f.join(", ") : "(none)"));
+    process.exit(1);
+  }
   // When zero windows are alive, a complete summary is authoritative even if it was written
   // just before poll started (no-window / fast run): do not hang on the mtime race.
   const done = complete || (allClosed && summaryComplete(sum));
@@ -140,6 +156,6 @@ else console.log("[poll-windows] no win-summary.json found yet.");
 process.exit(1);
 }
 
-export { TERMINAL, SUCCESS, loadSummary, summaryFresh, summaryComplete, failures };
+export { TERMINAL, SUCCESS, loadSummary, summaryFresh, summaryComplete, summaryTerminal, failures };
 
 

@@ -15,6 +15,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..');
 const skillsDir = path.join(repoRoot, 'skills');
 const WRAP = path.join(repoRoot, 'temp');
+// Enforcement/preflight scripts fail-closed when WORKSPACE_DIR is unset (they refuse to enforce against
+// an unknown workspace). Seed it from the invoking environment, else fall back to the plugin's parent so
+// the read-only enforcement checks can actually run and report GREEN instead of a false FAIL.
+process.env.WORKSPACE_DIR = process.env.WORKSPACE_DIR || path.resolve(repoRoot, '..');
 
 // 多合一：单一 skill（agent-tui-orchestrator）承载全部编排能力，无独立子 skill。
 const SKILLS = ['agent-tui-orchestrator'];
@@ -22,10 +26,14 @@ const SKILLS = ['agent-tui-orchestrator'];
 // 合并后的唯一入口文档：所有能力（拆块/冲突锁/依赖排序/原型门禁/注册表/窗口运行时/结果汇聚/执行门禁/缓存/清洁/归因）都内嵌其中。
 const entryDoc = fs.readFileSync(path.join(skillsDir, 'agent-tui-orchestrator', 'SKILL.md'), 'utf8');
 
-const outPath = process.env.ORCH_TEST_OUT || path.join(process.env.WORKSPACE_DIR || WRAP, 'orchestrator-skill-tests.json');
+const outPath = process.env.ORCH_TEST_OUT || path.join(WRAP, 'orchestrator-skill-tests.json');
 
 function run(node, args, opts = {}) {
-  const r = spawnSync(node, args, { encoding: 'utf8', cwd: path.join(repoRoot, 'scripts'), ...opts });
+  // 子进程必须模拟“窗外观”语境：剥离宿主（已授权编排窗）遗留的 ORCH_WINDOW，
+  // 否则 preflight/force 会把真实窗口当成“已授权窗”而放行真实 kind，测试误报。
+  const env = { ...process.env, ...(opts.env || {}) };
+  delete env.ORCH_WINDOW;
+  const r = spawnSync(node, args, { encoding: 'utf8', cwd: path.join(repoRoot, 'scripts'), ...opts, env });
   return { status: r.status, stdout: String(r.stdout || ''), stderr: String(r.stderr || '') };
 }
 
@@ -77,7 +85,7 @@ results.prototype_gate = {
 results.prototype_llm = {
   doc: /确保无白窗/.test(protoLlm) ? 'PASS' : 'FAIL',
   noOffSwitch: !/可关(?!闭)|关掉本|省.*token|on\|off/.test(protoLlm) ? 'PASS' : 'FAIL',
-  sdkAlwaysOn: fs.readFileSync(sdkFile, 'utf8').includes('总`') ? 'PASS' : 'PASS', // placeholder; real check below
+  sdkAlwaysOn: fs.readFileSync(sdkFile, 'utf8').includes('ORCH_PROTOTYPE_LLM=0') ? 'FAIL' : 'PASS', // real check below keeps this in sync
 };
 // Real SDK gate check: must NOT contain "ORCH_PROTOTYPE_LLM=0"
 results.prototype_llm.sdkAlwaysOn = /ORCH_PROTOTYPE_LLM=0/.test(fs.readFileSync(sdkFile, 'utf8')) ? 'FAIL' : 'PASS';
@@ -90,7 +98,7 @@ results.enforcement = { cli: st.status === 0 ? 'PASS' : 'FAIL', stdout: st.stdou
 
 // verify: run against a file inside the workspace so attribution logic truly executes.
 // Expected non-zero exit with a clear VIOLATION/INDETERMINATE/PASS verdict is a PASS for the tool itself.
-const wsFile = path.join(process.env.WORKSPACE_DIR || WRAP, 'AGENTS.md');
+const wsFile = path.join(repoRoot, 'skills', 'agent-tui-orchestrator', 'SKILL.md');
 const vf = st.status === 0 && fs.existsSync(wsFile) ? run(process.execPath, ['agent-tui-orchestrator-force.mjs', '--verify', wsFile]) : null;
 results.verify = {
   cli: vf && /VIOLATION|INDETERMINATE|PASS|attribution|not armed|not applicable/i.test(vf.stdout) ? 'PASS' : (vf ? 'FAIL' : 'N/A'),
@@ -106,7 +114,7 @@ results.enforcement.preflightRead = pr.status === 0 ? 'PASS' : 'FAIL';
 results.enforcement.preflightRealRefused = pw.status !== 0 ? 'PASS' : 'FAIL';
 
 // ---- 7) registry viability: temp json path present logic ----
-const regFile = path.join(process.env.ORCH_STATE_DIR || path.join(os.homedir(), '.agents', 'agent-tui-orchestrator'), 'orchestrator-windows.json');
+const regFile = path.join(process.env.ORCH_STATE_DIR || path.join(os.homedir(), '.codex', 'orchestrator'), 'orchestrator-windows.json');
 results.registry = { file: regFile, exists: fs.existsSync(regFile) ? 'yes' : 'no(cold-start ok)' };
 
 // ---- 8) window-runtime + gather-results + hygiene contract check (doc-level, since they need a real window) ----
@@ -141,3 +149,7 @@ for (const [k, v] of Object.entries(results)) {
   }
 }
 console.log(`\nSUMMARY: ${pass} PASS, ${fail} FAIL.  Results -> ${outPath}`);
+if (fail > 0) {
+  console.error(`\nskill-tests FAILED: ${fail} check(s) failing.`);
+  process.exitCode = 1;
+}

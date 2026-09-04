@@ -60,25 +60,26 @@ Normalize every block's `dependsOn` to block keys, **strip self-references and u
 For each block, before spawning:
 - **Conflict check** `conflictByKeys` against **running windows** (registry + `windowAlive`). Overlap → `waitClear` (poll); still conflicting → **lock** (terminal, not a false window); released → auto-rerun (never silently dropped).
 - **In-batch double-check** — re-check against already-spawned blocks this wave.
+- **Atomic claim** — before the real popup, write a `pending` reservation (`pid=0`) under the registry lock; it is immediately visible to other processes as occupied, closing the "two processes both checked clear" race. Commit the real pid after popup; stale pending (>120s) self-expires.
 - **Prototype gate** `runPrototypeGate` — L1 empty/no-action → reject; L2 complexity (multi-sentence / analysis / long → complex, informational only). Feasibility is already decided at decompose (no extra per-block LLM, cost-friendly).
-- **Registry write** `updateWindows` (load+mutate+save inside an exclusive lock, append-only, no cross-process lost-update).
+- **Registry write** `updateWindows` (load+mutate+save inside an exclusive lock, append-only, no cross-process lost-update; reservations + live windows share the same conflict-key space).
 - **`writeInteractiveLauncher`** — prompt = `buildBlockPrompt(blockBody, token)` + `auth`; writes `win-launch-*.ps1` (UTF-8 + BOM + `chcp 65001`), `codex-win-*.md`, `window-*.pid`.
-- **`spawnWindowWithRetry`** — pop a real visible window (Windows Terminal preferred, conhost fallback); popup detection (poll pid file, up to 3 retries); if it truly never popped → `popup-failed`, never treated as running.
+- **`spawnWindowWithRetry`** — pop a real visible window (Windows Terminal preferred, conhost fallback); popup detection uses **pid file + launcher (WT pane host) process alive** double evidence (up to 3 retries); if it truly never popped → `popup-failed`, never treated as running.
 
 #### ⑥ In-window authorized execution + self-verify
 The window agent receives a full-authorization prompt with hard constraints baked in: no nesting (no `--run-windows`/`--spawn`/new window), no stalling (must not ask "need authorization?"), must self-verify every change (read back + UTF-8 no BOM, run regression, no leftover temp / no mojibake), and must report honestly.
 
 #### ⑦ Report-triggered auto-close
-The launcher runs a watchdog over the session rollout. A window only auto-closes once a message containing **this block's real token + 完成** is captured (`own completion report CAPTURED`), then waits ~1s before closing. Planned/intermediate messages (without 完成) are never misfired. Fallback: even if rollout matching fails, if the result file has `__DONE__` the parent does `done-and-close`.
+The launcher runs a watchdog over the window session rollout: once the **last assistant message containing this block token + 完成** appears, it writes a strong marker and closes (hit-to-close, no stability wait). Watchdog horizon follows the parent poll ceiling (+10 min; `ORCH_WATCHDOG_MAX_MIN` overrides), so long tasks still auto-close if the parent dies. `Write-Result` uses `Get-LastReport` to persist the window's last assistant output into the result file (no token/完成 required). Parent completion is relaxed: window turn finished WITH output => `done` (no longer `uncaptured`→retry for missing token).
 
 #### ⑧ Aggregate → `win-summary.json`
-Each block writes a result. Completion is judged by **"have all results truly returned"**, not "are all windows closed": a block resolves when it has a real report, or was correctly intercepted (`preflight-failed`/`locked`/`unfinished`/`popup-failed`). `uncaptured`/`failed`/`timeout` remain unresolved — never finish early.
+Each block writes a result. Completion is judged by **"have all results truly returned"**, not "are all windows closed": a block resolves when it has a real report, was proven by disk progress (`done-on-disk`), or was correctly intercepted (`preflight-failed`/`locked`/`unfinished`/`popup-failed`). `uncaptured`/`failed`/`timeout` remain unresolved — never finish early.
 
 #### ⑨ Poll contract (`poll-windows.mjs --require-all-success`)
-After `--run-windows`, the initiator MUST poll until all blocks are in the success set (`done/ok/completed/done-retried` + correctly-intercepted `preflight-failed/locked/unlocked`) and no windows alive → exit 0. Otherwise poll to timeout and exit 1 (never claim success on `uncaptured`/`failed`/`timeout`). Anti-race: summary must be fresh (mtime) + stable for 2 cycles; a zero-window-but-complete summary also terminates (closes the "window closed before summary refreshed" race).
+After `--run-windows`, the initiator MUST poll until all blocks are in the success set (`done/ok/completed/done-retried/done-on-disk` + correctly-intercepted `preflight-failed/locked/unlocked`) and no windows alive → exit 0. Otherwise poll to timeout and exit 1 (never claim success on `uncaptured`/`failed`/`timeout`); when all windows are already closed and the fresh summary is terminal but NOT all-success, poll returns 1 immediately instead of waiting out the timeout. Anti-race: summary must be fresh (mtime) + stable for 2 cycles; a zero-window-but-complete summary also terminates (closes the "window closed before summary refreshed" race).
 
 #### ⑩ Cleanup + parent verification
-- `ORCH_KEEP_TEMP!=1` → use-and-discard: delete `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json`; **never** delete `win-summary.json`.
+- `ORCH_KEEP_TEMP!=1` → use-and-discard: delete `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json` plus `.self-closed` markers; cleanup protects any file whose pid process is still alive (never deletes a running window's artifacts); **never** delete `win-summary.json`.
 - Parent independently re-verifies with `--verify`/read-back, never trusts the in-window self-report; mismatch → disk truth wins and is corrected.
 
 ### 2. Enforcement (real work must go through a window)
@@ -134,12 +135,13 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `WORKSPACE_DIR` | `process.cwd()` | Working dir threads/windows operate in (auto-detected; never hardcoded). |
 | `CODEX_EXE` | auto-detect | Path to the `codex` CLI. |
 | `PYTHON` | `python` | Python to prepend to the spawned window's PATH. |
-| `ORCH_MODEL` | `Codex 默认模型（不指定时用 Codex 自身默认）` | Model the threads use. |
+| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | Model the threads use. |
 | `ORCH_EFFORT` | `high` | Reasoning effort (low/high/max, portable). |
-| `ORCH_TIMEOUT_MS` | `20000000` | Total wait for ALL windows to finish before the aggregator stops. |
-| `ORCH_DECOMPOSE_TIMEOUT_MS` | `6000000` | Timeout for the read-only LLM decompose/classification. |
-| `ORCH_RETRIES` | `2` | Retries before giving up on a block. |
+| `ORCH_TIMEOUT_MS` | `21600000` | Total wait for ALL windows to finish before the aggregator stops (6h default). |
+| `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | Timeout for the read-only LLM decompose/classification. |
+| `ORCH_DECOMPOSE_RETRIES` | `2` | Decompose LLM retries before the deterministic fallback is used. |
 | `ORCH_WAIT_MS` | `120000` | Max wait for a conflicting window to close. |
+| `ORCH_WATCHDOG_MAX_MIN` | `poll ceiling + 10 min` | In-window auto-close watchdog horizon (min). |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | Read-buffer before a finished window auto-closes. |
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |
 | `ORCH_MIN_FREE_MB` | `12000` | Workspace drive free space (MB) below which a warning is emitted before running (≈12GB). |
@@ -166,18 +168,18 @@ The plugin exposes **one skill** (`skills/agent-tui-orchestrator/SKILL.md`) that
 | Capability | Purpose |
 |---|---|
 | Decompose/classify | request → linked/independent blocks + read-only→inline gate |
-| Conflict lock | live-window resource conflicts → wait/lock/rerun |
+| Conflict lock | live-window resource conflicts → wait/lock/rerun; atomic pre-spawn reservation closes cross-process double-popup races |
 | Dependency order | `dependsOn` prerequisite ordering |
 | Prototype gate | deterministic L1 empty-check + L2 complexity; feasibility decided at decompose |
-| Registry | cross-process windows/locks store + mutex |
+| Registry | cross-process windows/locks store + mutex + `pending` reservations |
 | Window runtime | launcher / spawn / watchdog / close + result capture |
 | Gather results | poll-windows require-all-success contract |
 | Enforcement | armed/assert/kind fail-closed + headless gate |
 | Decompose cache | cache + `--clear-cache` |
-| Hygiene | use-and-discard temp cleanup |
+| Hygiene | use-and-discard temp cleanup (incl. `.self-closed` markers; live windows protected) |
 | Verify | `--verify` conflict-key attribution |
 
-Tunable knobs are environment variables only (`ORCH_*`); none of them disables a capability. All LLM reasoning effort defaults to `high`.
+Tunable knobs are environment variables only (`ORCH_*`); none of them disables a capability. Model/effort default to `deepseek-v4-flash-vision-exp` / `high` (`ORCH_MODEL`/`ORCH_EFFORT` override).
 
 ## Disclaimer
 

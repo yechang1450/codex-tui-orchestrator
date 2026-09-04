@@ -61,25 +61,26 @@
 每块 spawn 前：
 - **冲突检查** `conflictByKeys` 对照**运行中窗**（注册表 + `windowAlive`）。重叠 → `waitClear` 轮询等；仍冲突 → **上锁**（终态，不误窗）；释放 → 自动重跑（不静默丢弃）。
 - **同批双保险**：与本波已 spawn 的块再查一次重叠。
+- **原子占位**：真正弹窗前在注册表锁内先写 `pending` 占位（pid=0），其它进程立刻把它视为已占用，封死「两进程都检查通过后再同时弹同键窗」的竞态；弹窗成功后提交真实 pid，超过 120s 的死占位自动作废。
 - **原型门禁** `runPrototypeGate`：L1 空/无动作 → 拒绝；L2 复杂度（多句/含分析/长→复杂，仅状态提示）。可行性已在拆块判过，不再单开 LLM（成本友好）。
-- **注册表写入** `updateWindows`（独占锁内 load+mutate+save，只追加，防跨进程 lost-update）。
+- **注册表写入** `updateWindows`（独占锁内 load+mutate+save，只追加，防跨进程 lost-update；占位与活窗共用同一 conflictKey 空间）。
 - **`writeInteractiveLauncher`**：prompt = `buildBlockPrompt(blockBody, token)` + `auth`；写 `win-launch-*.ps1`（UTF-8 带 BOM + `chcp 65001`）、`codex-win-*.md`、`window-*.pid`。
-- **`spawnWindowWithRetry`**：弹真可见窗（优先 Windows Terminal，conhost 兜底）；弹窗检测（轮询 pid，上限 3 次）；真没弹出 → `popup-failed`，绝不当运行中。
+- **`spawnWindowWithRetry`**：弹真可见窗（优先 Windows Terminal，conhost 兜底）；弹窗检测用「pid 文件 + launcher(WT pane 宿主)进程存活」双重确认（上限 3 次）；真没弹出 → `popup-failed`，绝不当运行中。
 
 #### ⑥ 窗内授权执行 + 自验
 窗内 agent 收到全权指令，硬约束固化在 prompt：防嵌套（禁止再调 `--run-windows`/`--spawn`/另开窗）、防停顿（禁止以「需要授权/要我修吗」暂停问）、必须自验（读回 + UTF-8 无 BOM、跑回归、无残留临时/无乱码）、必须真实汇报。
 
 #### ⑦ 汇报捕获自动关窗
-launcher 内置 watchdog 轮询 session rollout，**只有当消息含「本块真实 token + 完成」**（`own completion report CAPTURED`）才稳定约 1s 后关窗。计划/中间消息（不带「完成」）不会被误关。兜底：rollout 匹配失败但 result 文件有 `__DONE__`，父进程走 `done-and-close`。
+launcher 内置 watchdog 扫描本窗 session rollout，**命中最后一条含本窗 token + 完成 的 assistant 消息**即写强标记并关窗（命中即关，不等稳定时长）；watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 覆盖），长任务在父进程意外退出后仍能完成即自关。`Write-Result` 用 `Get-LastReport` 把本窗最后一条 assistant 输出写入 result（不要求 token/完成 字样）。父进程完成判定放宽：窗口回合结束且有输出即 `done`（不再因缺 token 判 `uncaptured` 去二次执行）。
 
 #### ⑧ 汇总 → `win-summary.json`
-每块写结果。收尾判定用**「全部结果是否真实返回」**而非「窗是否都关」：某块有真实汇报、或被正确拦截（`preflight-failed`/`locked`/`unfinished`/`popup-failed`）才视为已解决；`uncaptured`/`failed`/`timeout` 仍视为未决，绝不提前收尾。
+每块写结果。收尾判定用**「全部结果是否真实返回」**而非「窗是否都关」：某块有真实汇报、或被盘面证据证明已落地（`done-on-disk`）、或被正确拦截（`preflight-failed`/`locked`/`unfinished`/`popup-failed`）才视为已解决；`uncaptured`/`failed`/`timeout` 仍视为未决，绝不提前收尾。
 
 #### ⑨ poll 收尾契约（`poll-windows.mjs --require-all-success`）
-`--run-windows` 之后**必须**轮询到全部块 ∈ 成功集（`done/ok/completed/done-retried` + 被正确拦截的 `preflight-failed/locked/unlocked`）且无活窗 → exit 0；否则轮询到超时 exit 1（对 `uncaptured`/`failed`/`timeout` 绝不装成功）。防竞态：summary 需「新鲜（mtime）+ 连续 2 cycle 稳定」；零窗但完整 summary 也收尾（堵住「窗关太快 summary 未刷新」竞态）。
+`--run-windows` 之后**必须**轮询到全部块 ∈ 成功集（`done/ok/completed/done-retried/done-on-disk` + 被正确拦截的 `preflight-failed/locked/unlocked`）且无活窗 → exit 0；否则轮询到超时 exit 1（对 `uncaptured`/`failed`/`timeout` 绝不装成功）；全窗已关且新鲜 summary 已终态但含失败 → **立即**返回 1，不空等到超时。防竞态：summary 需「新鲜（mtime）+ 连续 2 cycle 稳定」；零窗但完整 summary 也收尾（堵住「窗关太快 summary 未刷新」竞态）。
 
 #### ⑩ 清洁 + 父级复核
-- `ORCH_KEEP_TEMP!=1` → 用完即弃：删 `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json`；**绝不删** `win-summary.json`。
+- `ORCH_KEEP_TEMP!=1` → 用完即弃：删 `win-launch-*`/`codex-win-*`/`window-*.pid`/`win-*.result.json` 及 `.self-closed` 标记；清理按 pid 存活态保护活窗文件，绝不误删正在运行的窗口；**绝不删** `win-summary.json`。
 - 父进程用 `--verify`/读回独立复核真实落盘，不信窗内自报；不一致以盘面为准并纠正。
 
 ### 2. 执行门禁（真执行必走窗）
@@ -135,12 +136,13 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `WORKSPACE_DIR` | `process.cwd()` | 工作目录（自动探测，从不硬编码）。 |
 | `CODEX_EXE` | 自动检测 | `codex` CLI 路径。 |
 | `PYTHON` | `python` | 预制到弹窗 PATH 的 Python。 |
-| `ORCH_MODEL` | `Codex 默认模型（不指定时用 Codex 自身默认）` | 线程用模型。 |
+| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | 线程用模型。 |
 | `ORCH_EFFORT` | `high` | 推理档位（low/high/max，通用）。 |
-| `ORCH_TIMEOUT_MS` | `20000000` | 等全部窗完成的总时长上限。 |
-| `ORCH_DECOMPOSE_TIMEOUT_MS` | `6000000` | 只读 LLM 拆块超时。 |
-| `ORCH_RETRIES` | `2` | 块重试次数。 |
+| `ORCH_TIMEOUT_MS` | `21600000` | 等全部窗完成的总时长上限（默认 6 小时）。 |
+| `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | 只读 LLM 拆块超时（毫秒）。 |
+| `ORCH_DECOMPOSE_RETRIES` | `2` | LLM 拆块失败重试次数，重试耗尽后走确定性兜底单窗。 |
 | `ORCH_WAIT_MS` | `120000` | 等待冲突窗关闭的最长时间。 |
+| `ORCH_WATCHDOG_MAX_MIN` | `轮询上限 + 10 分钟` | 窗内 watchdog「完成即自关」观察上限（分钟）。 |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | 窗完成后自动关窗的读缓冲。 |
 | `ORCH_TUI` | `wt` | `wt`=Windows Terminal（最佳 CJK 输入法），`conhost`=经典控制台。 |
 | `ORCH_MIN_FREE_MB` | `12000` | 工作区所在盘剩余空间（MB）低于此值则告警（≈12GB）。 |

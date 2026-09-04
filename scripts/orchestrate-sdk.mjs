@@ -25,7 +25,7 @@
  *   WORKSPACE_DIR  (default: process.cwd())  — auto-detected workspace root for the user.
  *   CODEX_EXE      (default: auto-detect from PATH or a common user install).
  *   PYTHON         (default: `python`; prepended to the spawned window PATH).
- *   ORCH_MODEL     (default: empty -> Codex uses its configured default model)
+ *   ORCH_MODEL     (default: deepseek-v4-flash-vision-exp)
  *   ORCH_EFFORT    (default: high)
  *
  * Encoding: every text read/write is explicit UTF-8. The window launcher sets
@@ -51,7 +51,6 @@ import os from "node:os";
 import crypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-
 // ---------------------------------------------------------------------------
 // Config (env-first, portable)
 // ---------------------------------------------------------------------------
@@ -60,7 +59,6 @@ function resolveWorkspace() {
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
   return process.cwd();
 }
-
 const WORKSPACE = resolveWorkspace();
 let _codexPathCache;   // memoize: codex 路径检测只做一次（须在 CODEX 初始化前声明，避免 TDZ）
 const CODEX = process.env.CODEX_EXE || defaultCodexPath();
@@ -68,7 +66,9 @@ const CODEX = process.env.CODEX_EXE || defaultCodexPath();
 const WORKSPACE_Q = WORKSPACE.replace(/'/g, "''");
 const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
-const MODEL = process.env.ORCH_MODEL || ""; // empty -> Codex uses its configured default model
+// 模型/推理力度：ORCH_MODEL/ORCH_EFFORT 环境变量优先，否则用默认 deepseek-v4-flash-vision-exp / high。
+// 值内不能含空格（下文透传成 CLI 参数 -m/-c，空格会拆散成多个参数破坏解析）。
+const MODEL = process.env.ORCH_MODEL || "deepseek-v4-flash-vision-exp";
 const EFFORT = process.env.ORCH_EFFORT || "high";
 // —— Agent 抽象（v0.0.1）：识别当前 agent（默认 codex）+ 本地 cache 其专属配置 ——
 // 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
@@ -78,7 +78,21 @@ const APPROVAL = process.env.ORCH_APPROVAL || "never";
 const AGENT = resolveAgent();
 const AGENT_BIN = (AGENT.config && AGENT.config.bin) || "codex";
 const AGENT_BIN_Q = String(AGENT_BIN).replace(/'/g, "''");
-const AGENT_ARGS = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }).map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
+// exec 一次性模式参数：config 已含 approval_policy=never/sandbox，仅剔除交互专用 -a 并在最前加 exec。
+// 模型/推理力度透传给窗内 codex：MODEL/EFFORT 非空且值不含空格时才追加 -m / -c（-c 用 model_reasoning_effort=<EFFORT>）。
+function appendModelEffortArgs(arr) {
+  const out = [...arr];
+  if (MODEL && String(MODEL).trim() && !/\s/.test(String(MODEL))) out.push("-m", String(MODEL));
+  if (EFFORT && String(EFFORT).trim() && !/\s/.test(String(EFFORT))) out.push("-c", "model_reasoning_effort=" + String(EFFORT));
+  return out;
+}
+const AGENT_ARGS_EXEC = (() => {
+  const raw = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX });
+  const cleaned = [];
+  for (let i = 0; i < raw.length; i++) { if (raw[i] === "-a") { i++; continue; } cleaned.push(raw[i]); }
+  return ["exec", ...appendModelEffortArgs(cleaned)].map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
+})();
+const AGENT_ARGS = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX })).map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
@@ -86,7 +100,9 @@ const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex"
 // 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
 // ORCH_TIMEOUT_MS 仍可覆盖（比如测试时缩短）。
 const POLL_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || process.env.ORCH_MAX_POLL_MS || 21600000);
-
+// 窗内 watchdog 的观察上限随父进程轮询上限走（默认 = 轮询上限 + 10 分钟，可用 ORCH_WATCHDOG_MAX_MIN 覆盖）。
+// 原因：watchdog 若固定 45 分钟，长任务在父进程意外退出后会失去“完成即自关”的后盾，遗留孤儿窗。
+process.env.ORCH_WATCHDOG_MAX_MIN = process.env.ORCH_WATCHDOG_MAX_MIN || String(Math.max(45, Math.ceil(POLL_TIMEOUT_MS / 60000) + 10));
 // Terminal hosting the visible Codex TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
 //              "微软拼音输入偶发失效"). Requires wt.exe (WindowsApps).
@@ -112,7 +128,6 @@ function wtAvailable() {
 // propagates to the spawned window processes, instead of only an implicit code default.
 process.env.ORCH_TUI = process.env.ORCH_TUI || "wt";
 const TUI_MODE = String(process.env.ORCH_TUI).toLowerCase();
-
 function defaultCodexPath() {
   if (_codexPathCache !== undefined) return _codexPathCache;
   if (process.platform !== "win32") { _codexPathCache = "codex"; return "codex"; }
@@ -126,12 +141,9 @@ function defaultCodexPath() {
   }
   _codexPathCache = "codex"; return "codex";
 }
-
 const codex = new Codex({ codexPathOverride: CODEX });
-
 // 让出 CPU：orchestrator（含拆解线程）以 BelowNormal 优先级跑，不抢占系统/其它任务（限速=80% 性能，慢慢跑）。
 try { process.setPriority(6); console.log("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }
-
 function threadBase() {
   return {
     model: MODEL,
@@ -142,17 +154,15 @@ function threadBase() {
     approvalPolicy: APPROVAL,
   };
 }
-
 // ============================================================================
 // 两段式拆块：阶段 A = LLM 定性（扁平任务清单）；阶段 B = 确定性分块引擎（代码）。
 // LLM 只做它擅长的「语义定性」（归属/依赖/可行性），代码负责确定性的分组/键规范化/wave，
 // 既利用 LLM 的语义判断，又不依赖它稳定产出复杂嵌套 blocks JSON（此前 DeepSeek 常 agentic/空输出）。
 // ============================================================================
-
 // 模块→项目 归属提示（通用、非硬编码）：调用方经 ORCH_TASK_HINTS 传 JSON 映射，
 // 例 {"会员管理":"82","商品与分类":"82","订单管理":"82"}。用于把「没写项目号但属于某项目」的任务归位。
 function resolveHints() {
-  const hints = { moduleToProj: {}, foldRules: {}, tailKeywords: [] };
+  const hints = { moduleToProj: {}, foldRules: {}, tailKeywords: ['清爽','清理','保持干净','收尾','整理'] };
   try {
     const raw = process.env.ORCH_TASK_HINTS;
     if (raw && raw.trim()) { const j = JSON.parse(raw); if (j && typeof j === "object" && !Array.isArray(j)) hints.moduleToProj = j; }
@@ -167,7 +177,6 @@ function resolveHints() {
   } catch { /* ignore */ }
   return hints;
 }
-
 // 阶段 A：LLM 定性提示词（扁平任务清单，不分块）。关键：字段少、只定性、禁工具、纯 JSON。
 function classifyPrompt(request, hints = {}) {
   const modToProj = (hints && hints.moduleToProj) || {};
@@ -187,7 +196,6 @@ function classifyPrompt(request, hints = {}) {
     hintText + "\n请求：" + request
   );
 }
-
 // 阶段 B：确定性分块引擎。消费扁平任务清单 -> 产出 blocks（可行性过滤 + 模块归位 + 工具独立 + 未知串行 + 依赖映射）。
 function buildBlocksFromTasks(tasks, hints = {}) {
   tasks = Array.isArray(tasks) ? tasks : [];
@@ -263,9 +271,7 @@ function buildBlocksFromTasks(tasks, hints = {}) {
   }
   return blocks;
 }
-
 function byProjKeyCount(map) { let n = 0; for (const k in map) n += (map[k] || []).length; return n; }
-
 /**
  * 【兜底】当 LLM 拆块失败/超时且重试耗尽时，保证 --run-windows 仍能真正拉起而不是死掉：
  * 把整条请求作为【一个 linked 块】（单窗、严格串行、无并发冲突），确保至少有一个真实执行窗落地，
@@ -286,15 +292,16 @@ function fallbackPlan(request) {
     ]
   };
 }
-
 /**
  * 安全拆块：先用 LLM 分类（read-only），失败/超时则重试（ORCH_DECOMPOSE_RETRIES，默认 2），
  * 重试耗尽仍无合法 JSON 时回退到 fallbackPlan —— 单串行窗，确保整批一定落地。
  * 返回已 normalize + split 的 blocks；绝不因拆块失败而抛错中止整批。
  */
 async function decomposeSafely(request) {
-  // 0) 缓存优先：相同请求的拆块结果缓存 1 年（每年 1/1 自动刷新），命中直接复用 -> 越用越快。
-  const cached = loadCachedDecompose(request);
+  const hints = resolveHints(); // hints 参与缓存键（moduleToProj/foldRules/tail），防跨项目映射撞缓存
+  // 0) 缓存优先：相同请求+相同 hints 的拆块结果永不自动失效（仅 --clear-cache 或删除缓存文件才重置），
+  //    命中直接复用 -> 越用越快（与下方 loadDecomposeCache 的“永不自动失效”实现保持一致）。
+  const cached = loadCachedDecompose(request, hints);
   if (cached && Array.isArray(cached.blocks) && cached.blocks.length) {
     console.log("[orchestrator] decompose cache HIT -> " + cached.blocks.map((b) => b.title).join(", "));
     return normalizePlan(cached.blocks);
@@ -303,18 +310,18 @@ async function decomposeSafely(request) {
   const det = genericProjectSplit(request);
   if (det && Array.isArray(det.blocks) && det.blocks.length) {
     console.log("[orchestrator] generic project split -> " + det.blocks.map((b) => b.title).join(", "));
-    saveDecompose(request, det.blocks);
+    saveDecompose(request, det.blocks, hints);
     return normalizePlan(det.blocks);
   }
   // 1.5) 单任务快速路径（通用，非写死路径）：明确"单动作"请求 -> 单一窗口，跳过 LLM 拆块，秒级+写缓存。
   const sb = trySingleBlock(request);
   if (sb && Array.isArray(sb.blocks) && sb.blocks.length) {
     console.log("[orchestrator] single-block fast path -> " + sb.blocks[0].title);
-    saveDecompose(request, sb.blocks);
+    saveDecompose(request, sb.blocks, hints);
     return normalizePlan(sb.blocks);
   }
   // 2) 两段式：LLM 定性（扁平任务清单）→ 确定性分块引擎。失败/超时则重试。
-  const hints = resolveHints();
+  // hints 已上移到函数开头解析（参与缓存键）。
   const attempts = Math.max(1, Number(process.env.ORCH_DECOMPOSE_RETRIES || 2));
   let lastErr = "";
   let seenNoJson = false;
@@ -332,7 +339,7 @@ async function decomposeSafely(request) {
         lastErr = e2 && e2.message ? e2.message : String(e2);
         continue;
       }
-      if (plan && plan.length) { saveDecompose(request, plan); return normalizePlan(plan); }
+      if (plan && plan.length) { saveDecompose(request, plan, hints); return normalizePlan(plan); }
       lastErr = lastErr || "(extracted empty plan)";
       if (i === attempts - 1) throw new Error(lastErr);
     } catch (e) {
@@ -343,7 +350,6 @@ async function decomposeSafely(request) {
     (seenNoJson ? " (no valid JSON)" : "") + " -> fallback to single serial block (autosafe detect).");
   return normalizePlan(fallbackPlan(request).blocks);
 }
-
 function extractTasks(raw) {
   const s = String(raw || "");
   const stripped = s.replace(/```(?:json)?/gi, "").trim();
@@ -358,7 +364,6 @@ function extractTasks(raw) {
   if (parsed && Array.isArray(parsed.tasks)) return parsed.tasks;
   throw new Error("no tasks array in classify output");
 }
-
 /**
  * 【确定性拆块 · 面向 open-code-review 方向】不依赖 LLM，按请求里显式提及的项目目录
  * （build/80、build/81、build/82、build/83，或任意 build/<N>）把任务拆成独立块，秒级返回。
@@ -371,7 +376,6 @@ function extractTasks(raw) {
  * Only a block typed "linked" may keep multiple tasks (those run serialized in ONE window).
  * This enforces "don't over-merge independent work" even if the decompose model mis-bundles.
  */
-
 // ---------------------------------------------------------------------------
 // Decompose cache: reuse identical-request block plans INDEFINITELY.
 // It NEVER auto-expires (no year rollover / TTL); only `--clear-cache` (or
@@ -381,8 +385,43 @@ function extractTasks(raw) {
 // (any mention of multiple distinct project-like dirs), not specific to build/80|81|82|83.
 // ---------------------------------------------------------------------------
 const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
-function decomposeHash(request) {
-  return crypto.createHash("sha1").update(String(request || "")).digest("hex");
+function buildBlockPrompt(body, tk) {
+  return String(body || "") + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n";
+}
+function levelWaves(recs) {
+  const keyByTitle = new Map();
+  for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String((r.b && r.b.title) || ""), r.key); }
+  for (const r of recs) {
+    const clean = [];
+    for (const d of (Array.isArray(r.dependsOn) ? r.dependsOn : [])) {
+      const k = keyByTitle.get(String(d)) || keyByTitle.get(d);
+      if (k && k !== r.key && !clean.includes(k)) clean.push(k);
+    }
+    r.dependsOn = clean;
+  }
+  const waves = [];
+  const remaining = recs.slice();
+  const doneKeys = new Set();
+  let guard = 0;
+  while (remaining.length && guard < 200) {
+    guard++;
+    const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
+    if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; }
+    waves.push(ready);
+    for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
+  }
+  return waves;
+}
+function hintsKey(hints = {}) {
+  const norm = {
+    moduleToProj: (hints && hints.moduleToProj) || {},
+    foldRules: (hints && hints.foldRules) || {},
+    tailKeywords: Array.isArray(hints && hints.tailKeywords) ? hints.tailKeywords : [],
+  };
+  return JSON.stringify(norm);
+}
+function decomposeHash(request, hints = {}) {
+  return crypto.createHash("sha1").update(String(request || "") + "|" + hintsKey(hints)).digest("hex");
 }
 function loadDecomposeCache() {
   try {
@@ -396,15 +435,15 @@ function loadDecomposeCache() {
 function saveDecomposeCache(obj) {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
 }
-function loadCachedDecompose(request) {
-  const h = decomposeHash(request);
+function loadCachedDecompose(request, hints) {
+  const h = decomposeHash(request, hints);
   const j = loadDecomposeCache();
   const e = j.entries[h];
   if (!e) return null;
   return e;
 }
-function saveDecompose(request, plan) {
-  const h = decomposeHash(request);
+function saveDecompose(request, plan, hints) {
+  const h = decomposeHash(request, hints);
   const j = loadDecomposeCache();
   j.entries[h] = { createdAt: Date.now(), blocks: plan };
   saveDecomposeCache(j);
@@ -446,7 +485,6 @@ function genericProjectSplit(request) {
   }));
   return blocks.length ? { blocks } : null;
 }
-
 function projectRef(s, n) {
   // 无正则的确定匹配：检查句子是否含 "build\N" / "build/N" / 关键词N，避免转义坑
   return s.indexOf("build\\" + n) !== -1 || s.indexOf("build/" + n) !== -1 || new RegExp("(?<![0-9])" + n + "(?![0-9])", "i").test(s);
@@ -456,7 +494,7 @@ function trySingleBlock(request) {
   const text = String(request || "").trim();
   if (!text) return null;
   // 多动作/多目标/并列连词/分号/列举 -> 保守：一律交给 LLM/genericProjectSplit（少拆不误拆）。
-  if (/(和|同时|还|以及|另外|一并|分别|然后|随后|再|并|与|或|、|；)/.test(text)) return null;
+  if (/(和|同时|还|以及|另外|一并|分别|然后|随后|再|并|与|或|、|；|，|,)/.test(text)) return null;
   if ((text.match(/。/g) || []).length > 1) return null; // 多个句子视为多任务
   // 项目目录计数：>1 交 LLM；=1 且单动作 -> 单块指向该目录。
   const dirRe = /(?:build|proj|project|app|src|workspace|web|site|game)[\s/\\]+(\d{1,3})/gi;
@@ -470,11 +508,11 @@ function trySingleBlock(request) {
   }
   return { blocks: [{ type: "independent", title: "single-task", dependsOn: [], conflictKeys: [], tasks: [{ id: "t1", title: "single-task", prompt: text }] }] };
 }
-
 function splitSentences(request) {
-  return String(request).split(/[。；;\n]+/).map((s) => s.trim()).filter(Boolean);
+  // 分句含全角/半角逗号：逗号常分隔多个并列目标（如 "修复81的空白，优化82的UI" 是两个独立项目）。
+  // 若逗号后是不带项目号的续句，会在 genericProjectSplit 落入 misc -> 整体交 LLM，仍安全（少拆不误拆）。
+  return String(request).split(/[。；;，,\n]+/).map((s) => s.trim()).filter(Boolean);
 }
-
 async function runThreadPrompt(prompt, opts = {}) {
   // outputSchema 走 runStreamed 的 turn 选项（强制结构化输出 / 纯 JSON），不能混进 startThread 配置。
   const { outputSchema, ...threadOpts } = opts;
@@ -556,12 +594,10 @@ async function runThreadPrompt(prompt, opts = {}) {
   if (!errored && !final) errored = warnings.length ? warnings[warnings.length - 1] : "(no output)";
   return { final, errored, warnings };
 }
-
 function trunc(s, n) {
   s = String(s || "");
   return s.length > n ? s.slice(0, n) + "..." : s;
 }
-
 function titleOf(key, title) {
   // 可读 ASCII 标题：保留英数/常见符号，中文与其它非ASCII统一转成 -（避免 conhost 标题乱码）
   const a = String(title || "").replace(/[^A-Za-z0-9_.\-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
@@ -570,7 +606,6 @@ function titleOf(key, title) {
 function safe(t) {
   return String(t).replace(/[^A-Za-z0-9_-]/g, "_") || "codex-task";
 }
-
 function blockBody(block) {
   const body = block.tasks.map((t, i) => `${i + 1}. ${t.prompt}`).join("\n");
   return (
@@ -582,7 +617,6 @@ function blockBody(block) {
     "\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。"
   );
 }
-
 // ---- "原型/可行性检测"前置门禁（硬约束，已内嵌本 SDK，不依赖外部技能文件）----
 // 每个真实块在 spawn 前做一次内嵌预检：prototype-validation 的"可行性"能力已并入本函数。
 // 判定标准：本地执行块几乎都是用户明确要求做的真实改动，默认可行；仅当提示为空/无实际指令才判不可行，避免误拦"新建文件"类任务。
@@ -595,7 +629,6 @@ function classifyBlockComplexity(prompt) {
   if (t.length > 300) return true;                              // 长指令
   return false;
 }
-
 // 可行性门禁（L1 空判）：复杂/可行性判断已由拆块 LLM 定性（feasible/already_done）承担，
 // 这里只保留最后一道确定性 sanity 空判，不再为每块单独调一次 LLM（避免重复往返）。
 async function runPrototypeGate(title, prompt) {
@@ -604,18 +637,16 @@ async function runPrototypeGate(title, prompt) {
   console.log("  preflight PASSED for [" + title + "] (feasibility already resolved at decompose)");
   return true;
 }
-
 // Enforcement: once the orchestrator is engaged, mark that real executions are gated. The
 // sanction engine is --run-windows (a real, visible, interactive TUI window). headless --run/--exec
 // is additionally hard-gated inside this file (needs ORCH_ALLOW_HEADLESS=1). agent-tui-orchestrator-force.mjs reads
 // this marker: from a NON-window context it refuses real-execution kinds and tells the caller to
-// route through --run-windows. A sanctioned window sets $env:CODEX_ORCH_WINDOW=1 (in its launcher)
+// route through --run-windows. A sanctioned window sets $env:ORCH_WINDOW=1 (in its launcher)
 // so it passes the guard.
 const ORCH_ARMED = path.join(STATE_DIR, ".orchestrator-enabled");
 function armEnforcement() {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
 }
-
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
 // 检测 codex 可执行；找不到则用 node22 的 npm 全局安装 @openai/codex；仍不行则报错中止。
 function ensureCodexCli() {
@@ -643,7 +674,6 @@ function ensureCodexCli() {
   } catch { /* ignore */ }
   throw new Error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
 }
-
 // ---------------------------------------------------------------------------
 // 初始环境检测：磁盘空间检查（与技术栈/CLI 同层）。工作区所在盘需容纳 TUI 窗临时文件与窗内产物。
 // 低于 ORCH_MIN_FREE_MB（默认 12000MB≈12GB）告警；低于 ORCH_MIN_FREE_HARD_MB（默认 3600MB≈3.6GB）直接拒绝（fail-closed）。
@@ -680,7 +710,6 @@ function checkDiskSpace(opts = {}) {
     return true;
   }
 }
-
 // ---------------------------------------------------------------------------
 // Visible window (REAL popup, via cmd /c start — reliably opens a new console)
 // ---------------------------------------------------------------------------
@@ -710,34 +739,74 @@ function spawnVisibleWindow(lp, title) {
   p.unref();
   console.log("spawned visible codex TUI: " + title);
 }
-
-// 弹窗后检测是否真正弹出：launcher 第一行就写 pid 文件；轮询其出现（最多 ~6s）。
+// 弹窗后精准检测：pid 文件存在 + launcher(WT pane 宿主)进程存活 => 窗口真弹出（见 windowGenuinelyPopped）。
 // 失败重试（上限 maxRetry，默认 3），仍失败返回 false（由调用方标记 popup-failed 并汇报）。
-async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3) {
+function windowGenuinelyPopped(pidf, token) {
+  // 弹窗精准判定 = pid 文件存在 + launcher 进程真实存活（launcher 是 Windows Terminal pane 宿主进程，存活即窗口已弹出）。
+  // 不把 codex 子进程作为必选证据：codex 冷启动(模型 provider)可能很慢，若等它会把"已弹出"误判为未弹出而重复弹窗；codex 未起由回收超时兜底。
+  if (!pidf || !existsSync(pidf)) return false;
+  const pid = readPidFile(pidf);
+  if (!pid) return false;
+  if (!pidAliveCheck(pid)) return false;
+  return true;
+}
+async function confirmWindowPopped(pidf, token) {
+  const deadline = Date.now() + 35000;
+  while (Date.now() < deadline) {
+    if (windowGenuinelyPopped(pidf, token)) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+async function warmupWindow(pidf, token) {
+  // 通用冷启动错峰：只依赖 launcher 存活(pidf+launcher，不特判任何 agent 的子进程形态)，确认后短错峰 1.5s，
+  // 避免多个 agent 同时启动期对共享存储的锁竞争（对 codex/claude/gemini/opencode 等主流 agent 通用）。
+  const deadline = Date.now() + 6000;
+  while (Date.now() < deadline) {
+    if (windowGenuinelyPopped(pidf, token)) break;
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  await new Promise((r) => setTimeout(r, 1500));
+}
+async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token) {
   for (let attempt = 1; attempt <= maxRetry; attempt++) {
     spawnVisibleWindow(lp, title);
-    const deadline = Date.now() + 6000;
+    const deadline = Date.now() + 35000;
     let ok = false;
+    const t0 = Date.now();
     while (Date.now() < deadline) {
-      if (existsSync(pidf)) { ok = true; break; }
-      await new Promise((r) => setTimeout(r, 300));
+      if (windowGenuinelyPopped(pidf, token)) { ok = true; break; }
+      await new Promise((r) => setTimeout(r, 500));
     }
-    if (ok) { if (attempt > 1) console.log("  [window] popped on attempt " + attempt + " for [" + title + "]"); return true; }
-    console.log("  [window] popup not detected (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
+    if (ok) { if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+codex child) for [" + title + "]"); return true; }
+    console.log("  [window] popup NOT confirmed (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
   }
   console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");
   return false;
 }
-
 // 失败/未决块自动重试：窗已关但块未完成时，用全新 token 重新弹窗再跑，避免“提前结束轮询/留计划草稿”。
 // 返回 { status, exitCode, result }；只有抓到本块自己的完成标记才算 done。
 async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
   for (let attempt = 1; attempt <= maxRetry; attempt++) {
     const tk = rec.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-    const body = blockBody(rec.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
+    const body = buildBlockPrompt(blockBody(rec.b), tk) + auth;
     const { lp, pidf, pf, rf } = writeInteractiveLauncher(rec.key, body, rid);
-    const popped = await spawnWindowWithRetry(lp, rec.title, pidf);
-    if (!popped) { console.log("  !! [retry " + rec.key + " att" + attempt + "] popup failed."); continue; }
+    // 重试窗同样走原子占位：让其它编排进程能看见/锁定它，也保证本窗满足 enforcement 的“活注册窗”判定。
+    const claim = { id: "claim-" + rid + "-" + rec.key + "-" + Math.random().toString(36).slice(2, 8), title: rec.title, keys: rec.keys, pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
+    const claimBlocker = tryReserveWindow(claim);
+    if (claimBlocker) {
+      console.log("  !! [retry " + rec.key + " att" + attempt + "] atomic claim blocked by [" + claimBlocker + "].");
+      for (const f of [pf, lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      continue;
+    }
+    const popped = await spawnWindowWithRetry(lp, rec.title, pidf, 3, tk);
+    if (!popped) {
+      cancelReservation(claim.id);
+      for (const f of [pf, lp, rf, pidf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      console.log("  !! [retry " + rec.key + " att" + attempt + "] popup failed; reservation cancelled.");
+      continue;
+    }
+    commitReservation(claim.id, readPidFile(pidf) || 0);
     const matchKey = "【本块唯一标识】" + tk;
     const sf = await waitForSessionFile(matchKey, 90000, rf);
     let res = { done: false, text: "" };
@@ -745,27 +814,63 @@ async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
     else if (existsSync(rf)) { const c = readExitCode(rf); res = { done: true, text: "(launcher exited code " + (c === null ? "?" : c) + "; no session rollout matched)", exitCode: c }; }
     let text = res.text || "";
     if (!text || /no session rollout matched|no result captured/.test(text)) text = await waitForReportText(matchKey, rf, 60000);
-    const own = matchKey && text.includes(matchKey) && text.includes("完成");
+    // retry 完成判定同主循环：有真实汇报文本即收（exec 模式 stdout 汇报可靠）。
+    const own = !!(text && text.trim() && !/no session rollout matched|no result captured|launcher exited/.test(text));
     if (own) {
       console.log("  [retry " + rec.key + " att" + attempt + "] OWN completion CAPTURED -> closing");
       await new Promise((x) => setTimeout(x, closeDelayMs));
       await closeWindow(pidf);
+      cancelReservation(claim.id);
+      for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
       return { status: "done", exitCode: res.exitCode ?? null, result: text.trim().slice(0, 2000) };
     }
     console.log("  !! [retry " + rec.key + " att" + attempt + "] not own completion (text=" + String(text).slice(0, 50) + ")");
+    // 未捕获到完成汇报也一律收窗并取消占位，杜绝“重试窗留在屏幕上/重复弹同键窗”的泄漏。
+    await closeWindow(pidf);
+    cancelReservation(claim.id);
+    for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
   }
   return { status: "uncaptured", exitCode: null, result: "(重试后仍未捕获本块自己完成汇报)" };
 }
+// Interactive-TUI launcher. The interactive `codex "prompt"` window does not exit on its own; a
+// background watchdog in the launcher scans THIS window session rollout: as soon as the LAST assistant
+// message containing this block token + 完成 appears, it writes the strong `.self-closed` marker and
+// kills the full codex descendant tree (hit-to-close, no stability wait), so the launcher runs `exit 0` and the
+// pane auto-closes. `Write-Result` then uses `Get-LastReport` to persist the window last assistant output
+// into `win-<s>.result.json` (no token/完成 required), so even a report lacking the token is captured.
+// The launcher ALWAYS reaches `exit 0` (a non-zero exit is the "process exited, code X" stuck-pane bug).
+// Encoding + Windows Terminal hosting set here (see ORCH_TUI and the chcp 65001 + InputEncoding UTF-8) for CJK/IME.
 
-// Interactive-TUI launcher. The interactive `codex "prompt"` window does not exit on its own; the
-// orchestrator detects `task_complete` in the session rollout and robotically closes this process tree
-// (see closeWindow, which taskkills the whole tree and has a PowerShell fallback that also kills the
-// codex child). The launcher is now ALSO self-closing, so auto-close never depends on the orchestrator
-// being alive: a background watchdog polls this window's session rollout for `task_complete` and then
-// kills the codex child tree (~1s after completion), and whatever path ends the codex process, the
-// launcher records its exit code in `win-<s>.result.json` and ALWAYS reaches `exit 0` (a non-zero
-// launcher exit is the "process exited, code X" stuck-pane bug). The encoding + Windows Terminal
-// hosting is set here (see ORCH_TUI and the chcp 65001 + InputEncoding UTF-8 block) for CJK/IME.
+// Shared PowerShell descendant-kill routine used by BOTH the launcher watchdog and closeWindowByPid:
+// snapshot Win32_Process once, then walk the ParentProcessId chain starting at the launcher ($root) to
+// collect EVERY descendant, and kill each PID individually (no reliance on taskkill /T reaching the
+// whole tree). The launcher itself is never in the walk's kill set; $PID (the watchdog's own job
+// process) is always excluded; when the list is empty (codex already exited on its own) nothing is
+// killed, which preserves the "never force-kill launcher / skip if codex exited" safety boundaries.
+function psKillDescendantsLines() {
+  return [
+    "$ErrorActionPreference = 'SilentlyContinue'",
+    "$all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue",
+    "$victims = New-Object 'System.Collections.Generic.List[int]'",
+    "$queue = New-Object 'System.Collections.Generic.Queue[int]'",
+    "$seen = @{}",
+    "$seen[$root] = $true",
+    "$queue.Enqueue($root)",
+    "while ($queue.Count -gt 0) {",
+    "  $cur = $queue.Dequeue()",
+    "  foreach ($pr in $all) {",
+    "    if ($pr.ProcessId -ne $PID -and $pr.ParentProcessId -eq $cur -and -not $seen.ContainsKey($pr.ProcessId)) {",
+    "      $seen[$pr.ProcessId] = $true",
+    "      $victims.Add($pr.ProcessId)",
+    "      $queue.Enqueue($pr.ProcessId)",
+    "    }",
+    "  }",
+    "}",
+    "foreach ($v in $victims) { taskkill /PID $v /F 2>$null | Out-Null }",
+    "Write-Output $victims.Count",
+  ];
+}
+
 function writeInteractiveLauncher(title, prompt, sfx) {
   const s = safe(title) + (sfx ? "-" + sfx : "");
   mkdirSync(TMP, { recursive: true });
@@ -790,7 +895,8 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     `$PID | Set-Content -Path '${pidfQ}' -Encoding UTF8`,
     "$env:TERM = 'xterm-256color'",
     "$env:Path = '" + PY_Q + ";' + $env:Path",
-    "$env:CODEX_ORCH_WINDOW = '1'",
+    "$env:ORCH_WINDOW = '1'",
+    "if ($env:ORCH_SESSION_DIR) { $env:ORCH_SDIR = $env:ORCH_SESSION_DIR } else { $env:ORCH_SDIR = Join-Path $env:USERPROFILE '.codex\\sessions' }",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
     "$OutputEncoding = [System.Text.Encoding]::UTF8",
     // Align BOTH console code pages to UTF-8: on a Chinese-locale Windows the default INPUT code page
@@ -802,27 +908,33 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "Write-Host '  TASK RUNNING - closes automatically on completion'",
     "Write-Host '============================================='",
     "$resultFile = '" + rfQ + "'",
+    "function Get-LastReport {",
+    "  param([string]$dir,[string]$tok)",
+    "  $res = ''",
+    "  $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }",
+    "  foreach ($f in $files) {",
+    "    $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
+    "    if ($raw -and $raw.Contains($tok)) {",
+    "      foreach ($line in ($raw -split \"`n\")) {",
+    "        try {",
+    "          $o = $line | ConvertFrom-Json -ErrorAction SilentlyContinue",
+    "          $p = $o.payload",
+    "          $msg = ''",
+    "          if ($p -and $p.type -eq 'agent_message' -and $p.message) { $msg = $p.message }",
+    "          elseif ($o.type -eq 'response_item' -and $p -and $p.type -eq 'message' -and $p.role -eq 'assistant' -and $p.content) { $msg = (($p.content | ForEach-Object { if ($_.text) { $_.text } elseif ($_.content) { $_.content } elseif ($_.value) { $_.value } }) -join '') }",
+    "          if ($msg -and $msg.Trim()) { $res = $msg }",
+    "        } catch { }",
+    "      }",
+    "    }",
+    "  }",
+    "  return $res",
+    "}",
     "function Write-Result {",
     "  param([int]$code)",
     "  try {",
-    "    $report = ''",
-    "    $dir = Join-Path $env:USERPROFILE '.codex\\sessions'",
-    "    $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue",
-    "    foreach ($f in $files) {",
-    "      $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
-    "      if ($raw -and $raw.Contains($token)) {",
-    "        foreach ($line in ($raw -split \"`n\")) {",
-    "          try {",
-    "            $o = $line | ConvertFrom-Json -ErrorAction SilentlyContinue",
-    "            $p = $o.payload",
-    "            $msg = ''",
-    "            if ($p -and $p.type -eq 'agent_message' -and $p.message) { $msg = $p.message }",
-    "            elseif ($o.type -eq 'response_item' -and $p -and $p.type -eq 'message' -and $p.role -eq 'assistant' -and $p.content) { $msg = (($p.content | ForEach-Object { $_.text }) -join '') }",
-    "            if ($msg -and $msg.Contains($token) -and $msg.Contains('完成')) { $report = $msg }",
-    "          } catch { }",
-    "        }",
-    "      }",
-    "    }",
+    "    # 汇报 = 本窗口 rollout 的最后一条 assistant 输出（不要求 token/完成 字样）：窗口做完即落盘，缺 token 也能带出真实汇报。",
+    "    $dir = $env:ORCH_SDIR",
+    "    $report = Get-LastReport -dir $dir -tok $token",
     "    $line = '__EXIT__=' + $code",
     "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
     "    Set-Content -LiteralPath $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8",
@@ -832,36 +944,50 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "if ([string]::IsNullOrWhiteSpace($p)) { Write-Result 2; exit 0 }",
     "$token = '" + token + "'",
     // Self-close watchdog (background job): when this window's own rollout reaches task_complete, kill
-    // the launcher's direct codex child tree so `& codex` returns and the launcher runs exit 0 -> the
-    // Windows Terminal pane auto-closes ~1s after completion. Also exits when the result marker exists
-    // (codex already exited on its own). Never touches the launcher, the job itself, or other windows.
+    // the launcher's FULL codex descendant tree (recursive along ParentProcessId, each PID killed
+    // individually) so `& codex` returns and the launcher runs exit 0 -> the Windows Terminal pane
+    // auto-closes ~1s after completion. Also exits when the result marker exists (codex already exited
+    // on its own), and the recursive kill skips when no descendants remain. Never touches the launcher,
+    // the watchdog job itself, or other windows.
     "$watch = Start-Job -ScriptBlock {",
     "  param($token, $rootPid, $resultFile)",
     "  if ([string]::IsNullOrWhiteSpace($token)) { return }",
-    "  $dir = Join-Path $env:USERPROFILE '.codex\\sessions'",
+    "  function Stop-LauncherDescendants {",
+    "    param([int]$root)",
+    ...psKillDescendantsLines().map((ln) => "    " + ln),
+    "  }",
+    "  $dir = $env:ORCH_SDIR",
     "  $seen = @{}",
     "  $sizes = @{}",
     "  $match = $null",
-    "  $deadline = (Get-Date).AddMinutes(45)",
+    "  $watchdogMaxMin = 45",
+    "  try { if ($env:ORCH_WATCHDOG_MAX_MIN) { $watchdogMaxMin = [double]$env:ORCH_WATCHDOG_MAX_MIN } } catch { }",
+    "  $deadline = (Get-Date).AddMinutes($watchdogMaxMin)",
     "  while ((Get-Date) -lt $deadline) {",
     "    if (Test-Path -LiteralPath $resultFile) { exit 0 }",
     "    try {",
-    "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue",
+    "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }",
     "      foreach ($f in $files) {",
     "        if ($match) {",
     "          if ($f.FullName -ne $match) { continue }",
     "          try {",
             "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
             "            # 自动关闭设计 = watchdog 检测到【本块 agent 的完成汇报】(agent_message/assistant 行含本块 token 且含 完成) 才关窗。",
-            "            # 计划/中间消息不带“完成”，不会被误关；仅真正的完成汇报触发。稳定~6s 后关，确保父进程已抓到汇报。",
-            "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') })",
-            "            if ($report) {",
-            "              $age = [TimeSpan]::Zero; try { $age = (Get-Date) - $f.LastWriteTime } catch { }",
-            "              if ($age.TotalSeconds -gt 6) {",
-            "                $kids = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ParentProcessId -eq $rootPid -and $_.ProcessId -ne $PID }",
-            "                foreach ($k in $kids) { taskkill /PID $($k.ProcessId) /T /F 2>$null | Out-Null }",
+            "            # 计划/中间消息不带“完成”，不会被误关；仅真正的完成汇报触发。稳定~1.5s 后关，确保父进程已抓到汇报。",
+            "            $done = ($tail | Where-Object { $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
+            "            if ($done) {",
+            "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
+            "                # 递归杀净 launcher 的全部后代（codex 树）：绝不强杀 launcher 自身；codex 已退出(无后代)则函数直接跳过。",
+            "                Stop-LauncherDescendants $rootPid | Out-Null",
             "                exit 0",
-            "              }",
+            "            }",
+            "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') } | Select-Object -Last 1)",
+            "            if ($report) {",
+            "                # 命中即收窗：rollout 中最后一条含本窗 token+完成 的 assistant 消息即最终汇报（模板要求最终汇报以 token 开头、禁止中途输出未完状态），出现即写强标记并结束，无需等 1.5s 稳定。",
+            "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
+            "                # 同上：递归杀净 launcher 的全部后代（codex 树），绝不强杀 launcher 自身，codex 已退出则自动跳过。",
+            "                Stop-LauncherDescendants $rootPid | Out-Null",
+            "                exit 0",
             "            }",
     "          } catch { }",
     "          continue",
@@ -883,11 +1009,26 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "$code = 1",
     "try {",
     "  $codexArgs = @(" + AGENT_ARGS.split(" ").join(", ") + ", $p)",
-    "  & '" + AGENT_BIN_Q + "' @codexArgs",
-    "  $code = $LASTEXITCODE",
+    "  # 会话级容错：codex 若异常退出(无最终汇报)则在同一窗内自动重跑一次，避免并发时 provider/会话瞬时失败造成无输出；不重复弹窗、不二次执行。",
+    "  $attempt = 0",
+    "  $rep = ''",
+    "  while ($attempt -lt 2) {",
+    "    $attempt++",
+    "    & '" + AGENT_BIN_Q + "' @codexArgs",
+    "    $code = $LASTEXITCODE",
+    "    $rdir = $env:ORCH_SDIR",
+    "    $rep = Get-LastReport -dir $rdir -tok $token",
+    "    if ($rep) { break }",
+    "    if ($code -eq 0) { break }",
+    "    Write-Host ('  [launcher] codex session exited (code=' + $code + ', no report); retry ' + $attempt + '/2 ...')",
+    "  }",
     "} catch {",
     "  $code = 1",
     "}",
+    // 任务完成判定：只要本窗最终汇报已捕获（$rep 非空），watchdog 会为快速关窗而强杀 codex 子进程使
+    // $LASTEXITCODE=1，但那不等于失败。此时统一按完成处理并以 exit 0 干净关闭（Windows Terminal
+    // closeOnExit:graceful 只认 exit 0；非零会留下“[进程已退出，代码为 1]”的卡壳窗），结果文件也记录 0。
+    "if ($rep) { $code = 0 }",
     "Write-Result $code",
     // Always exit 0: Windows Terminal auto-closes the pane on exit code 0 (closeOnExit:graceful).
     // A non-zero exit keeps the pane open ("process exited, code X") which is the stuck-window bug.
@@ -896,10 +1037,10 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   writeFileSync(lp, BOM + body, "utf8");
   return { lp, pidf, pf, rf };
 }
-
 // ---- session-rollout discovery + task_complete detection (for interactive auto-close) ----
 function sessionDir() {
-  return path.join(process.env.USERPROFILE || "", ".codex", "sessions");
+  // 默认 codex 会话目录；ORCH_SESSION_DIR 可指向其它 agent 的会话目录（agent 通用化）。
+  return process.env.ORCH_SESSION_DIR || path.join(process.env.USERPROFILE || "", ".codex", "sessions");
 }
 function listRollouts(dir) {
   const res = [];
@@ -926,10 +1067,10 @@ function rolloutKeys(matchKey) {
   return [escaped, ascii].filter(Boolean);
 }
 function rolloutHit(text, keys) { return keys.some((k) => text.includes(k)); }
-
 async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
   const start = Date.now();
   const seen = new Set();
+  let lastReset = Date.now();
   // The rollout is JSONL: backslashes (Windows paths) are doubled (`\` -> `\\`) and quotes escaped,
   // so we must match against the JSON-escaped form, not the raw text. The task prompt sits after the
   // (large) AGENTS.md/context block, so we read the whole file (once per new candidate), not just the head.
@@ -943,6 +1084,7 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
         if (rolloutHit(readFileSync(f, "utf8"), keys)) return f;
       } catch { /* ignore */ }
     }
+    if (Date.now() - lastReset > 15000) { seen.clear(); lastReset = Date.now(); } // 周期重扫：防 rollout 先建后写 token 被永久错过
     await new Promise((r) => setTimeout(r, 1000));
   }
   return null;
@@ -961,11 +1103,6 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken) {
       const base = matchToken ? { text: extractOwnResult(file, matchToken) } : extractResult(file);
       if (base.text) return { done: true, text: base.text, exitCode: code };
       return { done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code };
-    }
-    // 确定性来源：launcher 已把本块完成汇报写入结果文件 __REPORT__（含本块 token + 完成），直接据此判定。
-    if (exitMarkerFile && existsSync(exitMarkerFile)) {
-      const rep = readReportFromResult(exitMarkerFile, matchToken);
-      if (rep) return { done: true, text: rep, exitCode: readExitCode(exitMarkerFile) };
     }
     let tail = "";
     try {
@@ -997,7 +1134,7 @@ function extractResult(file) {
       const p = o.payload || {};
       if (p.type === "agent_message" && p.message) last = p.message;
       else if (o.type === "response_item" && p.type === "message" && p.role === "assistant" && Array.isArray(p.content)) {
-        const t = p.content.map((c) => c.text || "").join("");
+        const t = p.content.map((c) => c.text || c.content || c.value || "").join("");
         if (t) last = t;
       }
     } catch { /* ignore */ }
@@ -1008,9 +1145,11 @@ function extractResult(file) {
 function readReportFromResult(resultFile, token) {
   if (!resultFile || !existsSync(resultFile)) return "";
   try {
-    const j = JSON.parse(String(readFileSync(resultFile, "utf8")).replace(/^\uFEFF/, ""));
+    const raw = String(readFileSync(resultFile, "utf8")).replace(/^\uFEFF/, "");
+    const m = raw.match(/\{[\s\S]*\}/);
+    const j = JSON.parse(m ? m[0] : raw);
     const rep = String(j.__REPORT__ || "");
-    if (rep && token && rep.includes(token) && rep.includes("完成")) return rep;
+    if (rep && String(rep).trim()) return rep;
   } catch { /* ignore */ }
   return "";
 }
@@ -1029,7 +1168,7 @@ function extractOwnResult(file, token) {
       const p = o.payload || {};
       let msg = "";
       if (p.type === "agent_message" && p.message) msg = p.message;
-      else if (o.type === "response_item" && p.type === "message" && p.role === "assistant" && Array.isArray(p.content)) msg = p.content.map((c) => c.text || "").join("");
+      else if (o.type === "response_item" && p.type === "message" && p.role === "assistant" && Array.isArray(p.content)) msg = p.content.map((c) => c.text || c.content || c.value || "").join("");
       if (msg && msg.includes(token)) last = msg;
     } catch { /* ignore */ }
   }
@@ -1060,46 +1199,88 @@ async function waitForReportText(matchKey, exitMarkerFile, timeoutMs) {
 // Close a window GRACEFULLY so Windows Terminal auto-closes the pane. Windows Terminal hosts the
 // launcher powershell (the profile process) with closeOnExit:"graceful": exit code 0 -> the pane
 // auto-closes; a NON-zero exit -> it keeps the pane open and shows "[已退出进程，代码为 X]". The launcher
-// ends with `... & codex ...; exit 0`, so if we kill ONLY the codex child (its direct child), the
-// `&` returns and the launcher runs `exit 0` -> Windows Terminal auto-closes the pane cleanly.
+// ends with `... & codex ...; exit 0`, so if we recursively kill every launcher descendant (the full
+// codex tree, each PID individually), `& codex` returns and the launcher runs `exit 0` -> Windows
+// Terminal auto-closes the pane cleanly.
 // Force-killing the launcher itself (the old `taskkill /PID <launcher> /T /F`) is exactly what made it
 // exit non-zero and left the stuck "[process exited, code 1]" pane. So we target the codex child
 // subtree, never the launcher, then poll for the launcher to exit on its own (exit 0). If it is
 // genuinely stuck we fall back to a force-kill (last resort / never an orphan) and report it.
-async function closeWindow(pidf) {
-  if (!pidf || !existsSync(pidf)) return;
-  const pid = Number(String(readFileSync(pidf, "utf8")).trim());
-  if (!pid) return;
-  // Already gone (launcher self-closed via its watchdog / codex exited on its own) -> nothing to do.
-  try { process.kill(pid, 0); } catch (e) { if (!e || e.code !== "EPERM") return; }
-  // Kill ONLY the launcher's direct child (codex) and its subtree, so the launcher is free to reach
-  // `exit 0`. spawnSync passes args as an array -> no shell arg-splitting of the multi-line script.
-  const killChildrenOnly =
-    "$ErrorActionPreference='SilentlyContinue'; " +
-    "$root=" + pid + "; " +
-    "Get-CimInstance Win32_Process | Where-Object { $_.ParentProcessId -eq $root } | ForEach-Object { " +
-    "taskkill /PID $($_.ProcessId) /T /F | Out-Null }; ";
+function readPidFile(pidf) {
+  try { return Number(String(readFileSync(pidf, "utf8")).trim()) || 0; } catch { return 0; }
+}
+function pidAliveCheck(pid) {
+  const p = Number(pid);
+  if (!Number.isFinite(p) || p <= 0) return false;
+  try { process.kill(p, 0); return true; } catch (e) { return !!(e && e.code === "EPERM"); }
+}
+async function closeWindowByPid(pid) {
+  const p = Number(pid);
+  if (!Number.isFinite(p) || p <= 0) return false;
+  if (!pidAliveCheck(p)) return true; // launcher 已退出（watchdog/自关）-> 无需处理
+  // Recursively enumerate ALL launcher descendants (the full codex tree) along the ParentProcessId
+  // chain and kill each PID individually, so `& codex` always returns and the launcher reaches its own
+  // `exit 0`. Never touches the launcher itself; when codex already exited (no descendants) nothing is
+  // killed. spawnSync passes args as an array -> no shell arg-splitting of the multi-line script.
+  const killScript =
+    "$ErrorActionPreference='SilentlyContinue';" + "\r\n" +
+    "$root=" + p + ";" + "\r\n" +
+    psKillDescendantsLines().join("\r\n");
+  let killedCount = 0;
   try {
-    spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", killChildrenOnly], { windowsHide: true, stdio: "ignore" });
+    const r = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", killScript], { encoding: "utf8", windowsHide: true });
+    killedCount = Number(String(r.stdout || "").trim().split(/\r?\n/).pop()) || 0;
   } catch { /* ignore */ }
   // Poll for the launcher to exit on its own; the launcher runs `exit 0` right after `& codex` returns.
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 500));
-    try { process.kill(pid, 0); } catch (e) { if (e && e.code === "EPERM") continue; return; } // launcher gone -> exit 0 + WT closed
+    if (!pidAliveCheck(p)) return true; // launcher gone -> exit 0 + WT closed
   }
-  // Last resort: launcher is stuck (unusual). Force it so we never leak a window; log the fallback.
-  console.log("  !! launcher " + pid + " did not exit after killing its codex child; force-killing (fallback).");
-  try { const spid2 = Number(pid); spawnSync("taskkill", ["/PID", (Number.isFinite(spid2) ? String(spid2) : "-1"), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" }); } catch { /* ignore */ }
+  if (killedCount === 0) {
+    // codex 已退出 / 无后代可杀：launcher 应自行 Write-Result + exit 0。绝不在此时强杀 launcher，
+    // 否则 Windows Terminal 会留下 "[已退出进程，代码为 1]" 的误报窗。
+    console.log("  !! launcher " + p + " still alive but has no codex descendants (codex already exited); skipping force-kill and leaving it to exit 0 on its own.");
+    return false;
+  }
+  // Last resort (genuine exception only): the launcher did NOT honor `exit 0` within the grace window.
+  // This only ever happens when the launcher is truly stuck (rare) — normal completion always reaches
+  // `exit 0` and exits on its own, so we never hit this path. We force-kill so we never leak a window,
+  // and we report it explicitly instead of pretending the window closed cleanly.
+  console.log("  !! launcher " + p + " did not exit after killing its codex child; force-killing (fallback).");
+  try { spawnSync("taskkill", ["/PID", String(p), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" }); } catch { /* ignore */ }
+  return false;
 }
-
+// 多路定位 launcher：pidFile -> registry pid -> 按 win-launch 脚本路径扫描进程；pidFile 被外部清理时依然能关窗。
+async function closeWindowRobust(w) {
+  const pidf = w && w.pidFile;
+  let pid = (pidf && existsSync(pidf)) ? readPidFile(pidf) : 0;
+  if (!pid && w && Number(w.pid)) pid = Number(w.pid);
+  if (!pid && pidf) {
+    const lp = path.join(path.dirname(pidf), path.basename(pidf).replace(/^window-/, "win-launch-").replace(/\.pid$/, ".ps1"));
+    try {
+      const esc = String(lp).replace(/'/g, "''");
+      const r = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+        "$ErrorActionPreference='SilentlyContinue'; $q = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*" + esc + "*' } | Select-Object -First 1; if ($q) { $q.ProcessId }"], { encoding: "utf8", windowsHide: true });
+      pid = Number(String(r.stdout || "").trim());
+    } catch { /* ignore */ }
+  }
+  if (!pid) return false;
+  if (pidf) { try { writeFileSync(pidf + ".self-closed", "1", "ascii"); } catch { /* ignore */ } }
+  await closeWindowByPid(pid);
+  return true;
+}
+async function closeWindow(pidf) {
+  if (!pidf || !existsSync(pidf)) return;
+  try { writeFileSync(pidf + ".self-closed", "1", "ascii"); } catch { /* ignore */ }
+  await closeWindowByPid(readPidFile(pidf));
+}
 // ---------------------------------------------------------------------------
 // Running-window registry + conflict locking (stability)
 // ---------------------------------------------------------------------------
 const WIN_REG = path.join(STATE_DIR, "orchestrator-windows.json");
 const LOCK_REG = path.join(STATE_DIR, "orchestrator-locks.json");
 const REG_LOCK = path.join(STATE_DIR, "orchestrator-registry.lock");
-
 function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, ms); } catch { /* ignore */ } }
 // 跨进程独占锁：openSync 'wx' 原子创建；冲突则有限重试；finally 释放。用于串行化 registry 写，防并发丢失/半写。
 function withRegistryLock(fn) {
@@ -1111,7 +1292,6 @@ function withRegistryLock(fn) {
   try { return fn(); }
   finally { if (got) { try { rmSync(REG_LOCK, { force: true }); } catch { /* ignore */ } } }
 }
-
 function loadJson(file, fallback) {
   // 写侧在 Windows 上做 "remove+rename"（原子替换），会瞬时让文件不存在；读侧短暂重试即可桥接该间隙。
   for (let i = 0; i < 3; i++) {
@@ -1141,7 +1321,42 @@ function saveLocks(l) { withRegistryLock(() => saveJson(LOCK_REG, l)); }
 // 全事务：load+mutate+save 在同一个锁内完成，杜绝跨进程 lost-update。
 function updateWindows(mutator) { withRegistryLock(() => { const w = loadJson(WIN_REG, []); saveJson(WIN_REG, mutator(w)); }); }
 function updateLocks(mutator) { withRegistryLock(() => { const l = loadJson(LOCK_REG, []); saveJson(LOCK_REG, mutator(l)); }); }
-
+// ---- 跨进程原子占位（防「检查-弹窗」间隙双进程同键竞态）----
+// 弹窗前先在独占锁内写入 pending=true 的记录（pid=0、预留 pidFile），其它编排进程把新鲜占位视作已占用；
+// 弹出成功后再 commit 真实 pid，失败则 cancel。崩溃遗留的占位超过 ORCH_RESERVE_TTL_MS（默认 120s）自动作废。
+const RESERVE_TTL_MS = Math.max(30000, Number(process.env.ORCH_RESERVE_TTL_MS || 120000));
+function freshPending(w) {
+  return !!(w && w.pending === true && Number(w.reservedAt || 0) > Date.now() - RESERVE_TTL_MS);
+}
+function tryReserveWindow(rec) {
+  let conflictTitle = null;
+  withRegistryLock(() => {
+    const ws = loadJson(WIN_REG, []);
+    const cleaned = ws.filter((w) => !(w && w.pending === true && !freshPending(w))); // 顺手回收死占位
+    for (const w of cleaned) {
+      if (windowAlive(w) || freshPending(w)) {
+        const wk = Array.isArray(w.keys) ? w.keys.map(String) : (w.title ? ["__" + w.title] : []);
+        if (keysOverlap(Array.isArray(rec.keys) ? rec.keys.map(String) : [], wk)) {
+          conflictTitle = w.title || "?";
+          break;
+        }
+      }
+    }
+    if (!conflictTitle) {
+      cleaned.push(rec);
+      saveJson(WIN_REG, cleaned);
+    } else if (cleaned.length !== ws.length) {
+      saveJson(WIN_REG, cleaned); // 只清死占位也落盘，避免堆积
+    }
+  });
+  return conflictTitle;
+}
+function commitReservation(id, pid) {
+  updateWindows((ws) => ws.map((w) => w.id === id ? { ...w, pid: Number(pid) || w.pid, pending: false, reservedAt: Date.now() } : w));
+}
+function cancelReservation(id) {
+  updateWindows((ws) => ws.filter((w) => w.id !== id));
+}
 // The launcher writes its codex-exit marker to `win-<s>.result.json` (same dir as the pidfile).
 function resultFileOf(pidf) {
   return pidf ? path.join(path.dirname(pidf), path.basename(pidf).replace(/^window-/, "win-").replace(/\.pid$/, ".result.json")) : "";
@@ -1153,7 +1368,6 @@ function readExitCode(rf) {
     return m ? Number(m[1]) : null;
   } catch { return null; }
 }
-
 // A window is "alive" if its launcher PID still exists (window still open).
 function windowAlive(win) {
   if (!win.pidFile) return false;
@@ -1170,7 +1384,6 @@ function windowAlive(win) {
   }
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
-
 // Returns the conflictKeys of a block (never empty -> at least [<title>]).
 function blockKeys(block) {
   const k = Array.isArray(block.conflictKeys) ? block.conflictKeys.map(String) : [];
@@ -1179,12 +1392,10 @@ function blockKeys(block) {
 function keysOverlap(a, b) {
   return a.some((x) => b.includes(x));
 }
-
 // For each running window, add a pseudo-record so new blocks can be compared.
 function runningRecord() {
-  return loadWindows().filter((w) => windowAlive(w)).map((w) => ({ title: w.title, keys: w.keys }));
+  return loadWindows().filter((w) => windowAlive(w) || freshPending(w)).map((w) => ({ title: w.title, keys: w.keys }));
 }
-
 // Check a new block against alive windows; return the blocking window title or null.
 function conflictBlock(block) {
   const nkeys = blockKeys(block);
@@ -1193,7 +1404,6 @@ function conflictBlock(block) {
   }
   return null;
 }
-
 // Check a set of keys against currently-alive windows; return the blocking window title or null.
 function conflictByKeys(keys) {
   for (const w of runningRecord()) {
@@ -1201,7 +1411,6 @@ function conflictByKeys(keys) {
   }
   return null;
 }
-
 // Poll until no alive window conflicts with `keys`, or the timeout elapses. Returns true if clear.
 async function waitClear(keys, timeoutMs) {
   const start = Date.now();
@@ -1211,7 +1420,6 @@ async function waitClear(keys, timeoutMs) {
   }
   return false;
 }
-
 // Over-merge guard (code-level, not relying on the model):
 //   - any `independent` block carrying multiple tasks -> split into one block per task.
 //   - any two blocks that share a conflictKey (would conflict if parallel) -> merge into ONE linked block.
@@ -1244,30 +1452,80 @@ function normalizePlan(plan) {
   }
   return merged;
 }
-
 // Stale transient auto-clean ("用完即弃"): remove orchestrator's own leftover temp artifacts
-// (prompt/launcher/result/log) and dead-window pid files; never remove live windows' pid files.
+// (prompt/launcher/result/log/pid/.self-closed markers) and dead-window pid files;
+// never remove anything belonging to a live process (registry is not the only source of truth:
+// a launcher may be alive but not yet registered, so the pid file itself is consulted).
+function pidFileOfTransient(f) {
+  let m;
+  if ((m = f.match(/^window-(.*)\.pid$/))) return f;
+  if ((m = f.match(/^window-(.*)\.pid\.self-closed$/))) return "window-" + m[1] + ".pid";
+  if ((m = f.match(/^win-(.*)\.result\.json\.self-closed$/))) return "window-" + m[1] + ".pid";
+  if ((m = f.match(/^win-(.*)\.result\.json$/))) return "window-" + m[1] + ".pid";
+  if ((m = f.match(/^win-launch-(.*)\.ps1$/))) return "window-" + m[1] + ".pid";
+  if ((m = f.match(/^codex-win-(.*)\.md$/))) return "window-" + m[1] + ".pid";
+  if ((m = f.match(/^win-(.*)\.log$/))) return "window-" + m[1] + ".pid";
+  return null;
+}
 function staleTransientFiles() {
   const alivePids = new Set();
-  for (const w of loadWindows()) {
-    if (windowAlive(w) && w.pidFile && existsSync(w.pidFile)) {
-      try { alivePids.add(Number(String(readFileSync(w.pidFile, "utf8")).trim())); } catch { /* ignore */ }
-    }
-  }
   const res = [];
   let names = [];
   try { names = readdirSync(TMP); } catch { return res; }
+  // 先扫一遍全部 window-*.pid：只要进程仍存活即受保护（无论是否已入 registry）。
+  for (const f of names) {
+    if (!/^window-.*\.pid$/.test(f)) continue;
+    try {
+      const pid = Number(String(readFileSync(path.join(TMP, f), "utf8")).trim());
+      if (pid > 0 && pidAliveCheck(pid)) alivePids.add(pid);
+    } catch { /* unreadable -> stale */ }
+  }
   for (const f of names) {
     const p = path.join(TMP, f);
-    if (/^codex-win-.*\.md$/.test(f) || /^win-launch-.*\.ps1$/.test(f) || /^win-.*\.(result\.json|log)$/.test(f)) res.push(p);
-    else if (/^window-.*\.pid$/.test(f)) {
-      try {
-        const pid = Number(String(readFileSync(p, "utf8")).trim());
-        if (pid && !alivePids.has(pid)) res.push(p);
-      } catch { res.push(p); }
-    }
+    if (!/^(codex-win-.*\.md|win-launch-.*\.ps1|win-.*\.(result\.json|log)|window-.*\.pid(\.self-closed)?|win-.*\.result\.json\.self-closed)$/.test(f)) continue;
+    const pidf = pidFileOfTransient(f);
+    if (!pidf) continue;
+    try {
+      const pid = Number(String(readFileSync(path.join(TMP, pidf), "utf8")).trim());
+      if (pid > 0 && alivePids.has(pid)) continue; // 活窗的附属文件一律不删
+    } catch { /* pid 文件缺失/不可读 -> 残留 */ }
+    res.push(p);
   }
   return res;
+}
+async function cleanStaleWindows() {
+  // 兜底：上次若被中断/异常退出，会遗留 orchestrator 窗口(win-launch-*.ps1 launcher + 其 codex 子进程)。
+  // 下次启动时按 orchestrator 自己的命名(win-launch-)识别历史残留，用优雅关窗关闭(杀 codex -> launcher exit0 -> WT pane 自动关)。
+  // 安全边界：只清理「没有活着 pid 文件 / 未被 registry 追踪 / 当前没有 pending 占位」的 launcher——
+  // 绝不误杀同一或另一编排批次仍在运行的窗口（活窗应走冲突锁，而不是被“陈旧清理”干掉）。
+  try {
+    const freshReservations = loadWindows().filter(freshPending);
+    if (freshReservations.length) {
+      console.log("[orchestrator] another process is mid-popup (" + freshReservations.length + " pending reservation(s)); skipping stale-window cleanup.");
+      return;
+    }
+    const protectedPids = new Set();
+    let names = [];
+    try { names = readdirSync(TMP); } catch { names = []; }
+    for (const f of names) {
+      if (!/^window-.*\.pid$/.test(f)) continue;
+      try {
+        const pid = Number(String(readFileSync(path.join(TMP, f), "utf8")).trim());
+        if (pid > 0 && pidAliveCheck(pid)) protectedPids.add(pid);
+      } catch { /* ignore */ }
+    }
+    for (const w of loadWindows()) {
+      if (windowAlive(w) && w.pidFile && existsSync(w.pidFile)) {
+        try { protectedPids.add(Number(String(readFileSync(w.pidFile, "utf8")).trim())); } catch { /* ignore */ }
+      }
+    }
+    const r = spawnSync("powershell.exe", ["-NoProfile","-ExecutionPolicy","Bypass","-Command",
+      "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*win-launch-*' } | ForEach-Object { $_.ProcessId }"], { encoding: "utf8", windowsHide: true });
+    const ids = String(r.stdout || "").split(/\r?\n/).map((s) => Number(String(s).trim())).filter((n) => Number.isFinite(n) && n > 0 && !protectedPids.has(n));
+    if (!ids.length) { console.log("[orchestrator] no stale orchestrator windows from previous run."); return; }
+    console.log("[orchestrator] cleaning " + ids.length + " stale orchestrator window(s) from previous run (protected live windows: " + protectedPids.size + ")...");
+    for (const pid of ids) { try { await closeWindowByPid(pid); } catch { /* ignore */ } }
+  } catch { /* ignore */ }
 }
 function cleanStaleTransients() {
   try {
@@ -1276,7 +1534,6 @@ function cleanStaleTransients() {
     if (stale.length) console.log("[orchestrator] cleaned " + stale.length + " stale transient file(s)");
   } catch { /* ignore */ }
 }
-
 // --status: print alive windows, pending locks, auto-release locks whose window closed.
 // readonly=true 仅用于外部只读查询（如 poll-windows），不释放/改写锁，避免与运行中的编排器竞争。
 function showStatus(readonly) {
@@ -1290,11 +1547,14 @@ function showStatus(readonly) {
   console.log("=== alive codex TUI windows ===");
   for (const w of alive) console.log("  [" + w.title + "] keys=" + (w.keys || []).join(","));
   if (!alive.length) console.log("  (none)");
+  console.log("=== pending window reservations (mid-popup) ===");
+  const pending = wins.filter(freshPending);
+  for (const w of pending) console.log("  [reserve:" + w.title + "] keys=" + (w.keys || []).join(","));
+  if (!pending.length) console.log("  (none)");
   console.log("=== pending locks (waiting for a window to close) ===");
   for (const l of locks) console.log("  [blocked] \"" + (l.title || l.block) + "\" waits for window \"" + l.blockedBy + "\"");
   if (!locks.length) console.log("  (none)");
 }
-
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -1319,10 +1579,8 @@ async function classifyExecutionMode(request) {
   } catch { /* ignore */ }
   return "execute"; // fail-safe
 }
-
 async function main() {
   const mode = process.argv[2];
-
   if (mode === "--plan") {
     const request = process.argv.slice(3).join(" ");
     checkDiskSpace({ warnOnly: true });
@@ -1330,13 +1588,11 @@ async function main() {
     console.log(JSON.stringify({ blocks: plan }, null, 2));
     return;
   }
-
   if (mode === "--clear-cache") {
     try { rmSync(DECOMPOSE_CACHE, { force: true }); console.log("[orchestrator] decompose cache cleared: " + DECOMPOSE_CACHE); }
     catch (e) { console.log("[orchestrator] nothing to clear (cache absent or unreadable): " + (e && e.message ? e.message : e)); }
     return;
   }
-
   if (mode === "--spawn") {
     armEnforcement();
     ensureCodexCli();
@@ -1350,7 +1606,22 @@ async function main() {
     const rid = Date.now().toString(36);
     const trackedPrompt = promptContent + "\n\n【本块唯一标识】spawn-" + rid + "\n（最终汇报请以「【本块唯一标识】spawn-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher(title, trackedPrompt, rid);
-    spawnVisibleWindow(lp, title);
+    const stok = "spawn-" + rid;
+    const claim = { id: "claim-" + rid + "-spawn", title: titleOf("spawn-" + rid, title), keys: ["spawn:" + rid], pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
+    const claimBlocker = tryReserveWindow(claim);
+    if (claimBlocker) {
+      console.log("spawn REFUSED: atomic claim blocked by [" + claimBlocker + "]; not opening another window.");
+      for (const f of [pf, lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      return;
+    }
+    const popped = await spawnWindowWithRetry(lp, title, pidf, 3, stok);
+    if (!popped) {
+      cancelReservation(claim.id);
+      for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      console.log("spawn POPUP-FAILED: window did not appear.");
+      return;
+    }
+    commitReservation(claim.id, readPidFile(pidf) || 0);
     console.log("write launcher -> " + lp);
     console.log("spawned tracked TUI window, polling for completion...");
     const matchToken = "【本块唯一标识】spawn-" + rid;
@@ -1370,7 +1641,7 @@ async function main() {
     console.log("done=" + res.done);
     console.log("final=" + trunc(res.text || "(none)", 500));
     // Wait for launcher to exit on its own, then force close if needed.
-    if (res.done && sessionFile) {
+    if (res.done) {
       const pid = Number(String(readFileSync(pidf, "utf8")).trim());
       let alive = true;
       const t0 = Date.now();
@@ -1380,11 +1651,13 @@ async function main() {
       }
       if (alive) { await closeWindow(pidf); }
       await new Promise((r) => setTimeout(r, Number(process.env.ORCH_CLOSE_DELAY_MS) || 6000));
-      for (const fp of [pidf, lp, pf, rf]) { try { if (existsSync(fp)) rmSync(fp, { force: true }); } catch {} }
+      cancelReservation(claim.id);
+      for (const fp of [pidf, lp, pf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(fp)) rmSync(fp, { force: true }); } catch {} }
+    } else {
+      console.log("spawn window still running (manual interactive); registry record kept for tracking/enforcement.");
     }
     return;
   }
-
   if (mode === "--selftest-close") {
     // Verification helper for the graceful auto-close fix: open ONE real interactive window with a
     // trivial prompt, wait for task_complete in its rollout, then let the launcher's own watchdog
@@ -1400,7 +1673,21 @@ async function main() {
       "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
       "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
-    spawnVisibleWindow(lp, "selftest-close");
+    const claim = { id: "claim-" + rid + "-selftest", title: "selftest-close", keys: ["selftest:" + rid], pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
+    const claimBlocker = tryReserveWindow(claim);
+    if (claimBlocker) {
+      console.log("selftest REFUSED: atomic claim blocked by [" + claimBlocker + "].");
+      for (const f of [pf, lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      return;
+    }
+    const popped = await spawnWindowWithRetry(lp, "selftest-close", pidf, 3, "selftest-" + rid);
+    if (!popped) {
+      cancelReservation(claim.id);
+      for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      console.log("selftest POPUP-FAILED: window did not appear.");
+      return;
+    }
+    commitReservation(claim.id, readPidFile(pidf) || 0);
     const matchToken = "【本块唯一标识】selftest-" + rid;
     console.log("selftest window spawned (pidfile=" + pidf + "), waiting for task_complete...");
     let res = { done: false, text: "" };
@@ -1439,16 +1726,17 @@ async function main() {
     console.log("elapsedAfterDetectMs=" + elapsedAfterDetectMs + " (orchestrator-detect -> launcher gone; launcher watchdog itself polls every 500ms, expect ~1s from task_complete)");
     console.log("orphanChildren=" + orphanCodex + " (expect false => no orphan codex)");
     console.log("=== selftest-close done ===");
-    for (const f of [pf, lp, rf]) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
+    cancelReservation(claim.id);
+    for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
     return;
   }
-
   if (mode === "--run-windows") {
     armEnforcement();
     const codexCli = ensureCodexCli(); // CLI 环境检测与安装（硬约束：先确保 codex 可用再继续）
     if (!checkDiskSpace()) { process.exitCode = 1; return; }
     console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
+    await cleanStaleWindows();
     const request = process.argv.slice(3).join(" ");
     if (!request) throw new Error("--run-windows needs a request");
     // 入口判定（真实执行 vs 只读分析）：明显两端走确定性快判，歧义交给 LLM；fail-safe 判 execute。
@@ -1458,6 +1746,13 @@ async function main() {
       return;
     }
     const rid = Date.now().toString(36);
+    // 内存自适应最大并发：n GB 内存 -> 最多 n/2 并发 TUI 窗；<2 并发(内存<4G)视为不支持(2G 设备默认不支持 orchestrator)。
+    const memGb = os.totalmem() / (1024 * 1024 * 1024);
+    const maxByMem = Math.floor(memGb / 2);
+    if (maxByMem < 2) {
+      console.error("[orchestrator] 内存不足：" + Math.round(memGb) + "GB < 4G；orchestrator 至少需要 4G 内存(2 并发)，终止。");
+      process.exitCode = 1; return;
+    }
     console.log("[orchestrator] decomposing (read-only)...");
     const plan = await decomposeSafely(request);
     console.log("[orchestrator] blocks=" + plan.length);
@@ -1477,8 +1772,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（用户已明确、反复授权「同意推进，允许执行」。本窗是经 agent-tui-orchestrator 授权的**真实执行窗**：请直接在本窗内用你自己的工具执行，禁止再调用/发起 --run-windows、禁止另开新窗、禁止以「需要授权/要我修吗/等允许」为由暂停或询问；本窗自身即被授权的执行环境。执行完即可结束本窗、汇报。**汇报必须真实**：以「【本块唯一标识】 完成」开头，说明本块做了什么、每项自验结果（读回/回归/编码），并给出确凿的落盘证据；若任一步骤失败，如实说明失败点与现场，禁止虚报成功。这是对 TUI 执行窗的明确全权指令。）";
-
+    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）";
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.
@@ -1493,20 +1787,12 @@ async function main() {
     const keyByTitle = new Map();
     for (const r of recs) { keyByTitle.set(r.key, r.key); keyByTitle.set(r.title, r.key); keyByTitle.set(String(r.b.title), r.key); }
     for (const r of recs) { r.dependsOn = r.dependsOn.map((d) => keyByTitle.get(String(d)) || keyByTitle.get(d) || String(d)); }
-    const waves = [];
-    {
-      const remaining = recs.slice();
-      const doneKeys = new Set();
-      let guard = 0;
-      while (remaining.length && guard < 200) {
-        guard++;
-        const ready = remaining.filter((r) => r.dependsOn.every((d) => doneKeys.has(d)));
-        if (!ready.length) { waves.push(remaining.slice()); remaining.length = 0; break; } // deadlock/unknown -> run rest in one wave
-        waves.push(ready);
-        for (const r of ready) { doneKeys.add(r.key); remaining.splice(remaining.indexOf(r), 1); }
-      }
-    }
-
+    // B3 双向映射 + 分层 wave：统一由 levelWaves() 归一（剔除自引用/未知依赖），避免死锁整批并跑。
+    const baseWaves = levelWaves(recs);
+    // 内存自适应并发：把每个依赖层进一步按 maxByMem 切片，最多同时 maxByMem 个窗，避免超出内存承载。
+    const chunks = [];
+    for (const w of baseWaves) { for (let i = 0; i < w.length; i += maxByMem) { chunks.push(w.slice(i, i + maxByMem)); } }
+    const waves = chunks;
     const summary = {};
     const allSpawned = [];
     // 记录每个块首次弹窗时刻，用于判断“是否已在盘上做出改动”——避免未决块重复执行同一任务。
@@ -1524,6 +1810,11 @@ async function main() {
       }
       return false;
     };
+    // 块一旦被锁就立即写入终态记录：即使整批全部被锁（无窗可弹），win-summary.json 也有非空 results，
+    // poll-windows 不会因空 summary 空等到超时；冲突释放后自动重跑成功会覆盖成 done。
+    const markLocked = (r, by) => {
+      summary[r.key] = { title: r.title, status: "locked", exitCode: null, result: "(冲突锁定：等待 [" + by + "] 关闭；释放后自动重跑)" };
+    };
     for (const wave of waves) {
       const spawnedWave = [];
       for (const r of wave) {
@@ -1532,6 +1823,7 @@ async function main() {
         const clashRun = inRun.find((s) => keysOverlap(nkeys, s.keys));
         if (clashRun) {
           pendingLocks.push({ block: r.key, title: r.title, blockedBy: clashRun.title, keys: nkeys });
+          markLocked(r, clashRun.title);
           console.log("  LOCKED " + r.key + " -- conflicts with a block already spawned in this batch [" + clashRun.title + "]");
           lockedBacklog.push({ r, nkeys });
           continue;
@@ -1543,6 +1835,7 @@ async function main() {
           const ok = await waitClear(nkeys, waitMs);
           if (!ok) {
             pendingLocks.push({ block: r.key, title: r.title, blockedBy: blocker, keys: nkeys });
+            markLocked(r, blocker);
             console.log("  LOCKED " + r.key + " -- still conflicting after wait [" + blocker + "]");
             lockedBacklog.push({ r, nkeys });
             continue;
@@ -1559,32 +1852,46 @@ async function main() {
         const recheck = conflictByKeys(nkeys);
         if (recheck) {
           pendingLocks.push({ block: r.key, title: r.title, blockedBy: recheck, keys: nkeys });
+          markLocked(r, recheck);
           console.log("  LOCKED " + r.key + " -- conflicted during gate ([" + recheck + "]); not spawning.");
           lockedBacklog.push({ r, nkeys });
           continue;
         }
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body = blockBody(r.b) + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n" + auth;
+        const body = buildBlockPrompt(blockBody(r.b), tk) + auth;
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
-        const popped = await spawnWindowWithRetry(lp, r.title, pidf);
-        if (!popped) {
-          summary[r.key] = { title: r.title, status: "popup-failed", exitCode: null, result: "(弹窗失败：多次尝试仍未出现窗口)" };
-          console.log("  POPUP-FAILED " + r.key + " -- window did not appear; not tracking as running.");
+        // 跨进程原子占位：复检后、真正 spawn 前先在独占锁内写入 pending=true（pid=0）记录。
+        // 其它进程的 conflictByKeys 会看到这份新鲜占位，从而把“正在弹窗但尚未入册”的窗也视为占用。
+        const claim = { id: "claim-" + rid + "-" + r.key + "-" + Math.random().toString(36).slice(2, 8), title: r.title, keys: nkeys, pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
+        const claimBlocker = tryReserveWindow(claim);
+        if (claimBlocker) {
+          pendingLocks.push({ block: r.key, title: r.title, blockedBy: claimBlocker, keys: nkeys });
+          markLocked(r, claimBlocker);
+          console.log("  LOCKED " + r.key + " -- conflicted during atomic claim ([" + claimBlocker + "]); not spawning.");
+          lockedBacklog.push({ r, nkeys });
+          for (const f of [pf, lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
           continue;
         }
-        pendingWins.push({ title: r.title, keys: nkeys, pidFile: pidf, locked: false });
-        spawnedWave.push({ key: r.key, title: r.title, pidf, lp, pf, rf, prompt: body, matchToken: "【本块唯一标识】" + tk });
+        const popped = await spawnWindowWithRetry(lp, r.title, pidf, 3, tk);
+        if (!popped) {
+          cancelReservation(claim.id);
+          summary[r.key] = { title: r.title, status: "popup-failed", exitCode: null, result: "(弹窗失败：多次尝试仍未出现窗口)" };
+          console.log("  POPUP-FAILED " + r.key + " -- window did not appear; not tracking as running.");
+          for (const f of [pf, lp, rf, pidf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+          continue;
+        }
+        commitReservation(claim.id, readPidFile(pidf) || 0);
+        spawnedWave.push({ key: r.key, title: r.title, pidf, lp, pf, rf, prompt: body, matchToken: "【本块唯一标识】" + tk, tk });
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
         blockStarted[r.key] = Date.now();
-        console.log("  popped interactive TUI window [" + r.title + "]");
+        console.log("  popped interactive TUI window [" + r.title + "] (claim committed)");
       }
       flushRegistry();
       allSpawned.push(...spawnedWave);
       if (!spawnedWave.length) continue;
-
       // 等待本波所有窗完成（会话 rollout 出现 task_complete，或 launcher 的 result 标记出现=codex 已退出），
       // 抓最终消息，再自动关窗；完成后再开下一波。
-      for (const s of spawnedWave) {
+      await Promise.all(spawnedWave.map(async (s) => {
         const matchKey = s.matchToken || s.prompt.slice(0, 40);
         const resultFile = resultFileOf(s.pidf);
         const sessionFile = await waitForSessionFile(matchKey, 90000, resultFile);
@@ -1608,27 +1915,35 @@ async function main() {
           if (!text || placeholder) {
             text = await waitForReportText(matchKey, resultFile, 60000);
           }
-          const ownReport = s.matchToken && text.includes(s.matchToken) && text.includes("完成");
+          // 完成判定（用户方案）：窗口正常退出(resultFile 已落)且有最终汇报文本即收，不再要求 token/完成 字样，杜绝误判 uncaptured 二次执行。
+          const ownReport = !!(text && text.trim() && !/no session rollout matched|no result captured|launcher exited/.test(text));
           if (ownReport) {
             summary[s.key].result = text.trim().slice(0, 2000);
-            summary[s.key].status = "done";
+            summary[s.key].status = (res.exitCode != null && res.exitCode !== 0) ? "failed" : "done";
             console.log(trunc(text, 1600));
             console.log("  own completion report CAPTURED -> closing [" + s.title + "] in " + closeDelayMs + "ms...");
             await new Promise((r) => setTimeout(r, closeDelayMs));
             await closeWindow(s.pidf);
           } else {
-            // 回合已完成(task_complete)但没抓到本块自己的完成汇报（可能跨窗串了/只是计划草稿）：
-            // 窗已经做完了，一定要关掉（否则会死锁/一直留着），块标记为 uncaptured 交由 hold 循环重试重新弹窗。
-            if (text) summary[s.key].result = text.trim().slice(0, 2000);
-            summary[s.key].status = "uncaptured";
-            console.log("  !! own completion report NOT captured for [" + s.title + "] (text=" + String(text).slice(0, 60) + "); window DONE, closing; block=uncaptured for retry." + (res.exitCode ? " (exitCode=" + res.exitCode + ")" : ""));
+            // 用户方案：窗口回合已完成(task_complete/result)且有输出即视为完成（汇报=该窗口最后一条 assistant 输出），
+            // 不再因汇报措辞缺 token 而判定 uncaptured 去二次执行；窗口做完了就收，结束。
+            let lastText = text;
+            if (!lastText || /no session rollout|no result captured|launcher exited/.test(lastText)) {
+              try { if (sessionFile) lastText = extractResult(sessionFile).text || ""; } catch { /* ignore */ }
+            }
+            const hasText = !!(lastText && lastText.trim());
+            // 完成 = 有实质输出 且 含"完成"或本窗 token（auth 约定）。纯错误/中途消息不算完成，如实标 failed 且不二次执行。
+            const isCompletion = hasText && (lastText.includes("完成") || !!(s.matchToken && lastText.includes(s.matchToken)) || lastText.includes(matchKey));
+            summary[s.key].result = (hasText ? lastText : ("（窗口会话异常：退出码=" + (res.exitCode ?? "?") + "，未产出任何汇报文本）")).trim().slice(0, 2000);
+            summary[s.key].status = isCompletion ? "done" : "failed";
+            console.log("  " + (isCompletion ? "completion ACCEPTED" : "SESSION-FAILED (no completion signal; not retried)") + " -> closing [" + s.title + "]");
             await new Promise((r) => setTimeout(r, closeDelayMs));
             await closeWindow(s.pidf);
           }
         } else {
           console.log("  timeout; window [" + s.title + "] still open (task may still be running).");
         }
-      }
+      }));
     }
     // ---- 锁释放→自动重跑被锁块：只要冲突已释放(窗已关/不再冲突)，就重新弹窗执行，保证不被静默丢弃 ----
     if (lockedBacklog.length) {
@@ -1638,13 +1953,27 @@ async function main() {
         if (conflictByKeys(nkeys)) { console.log("  still locked " + r.key + "; not re-run yet."); continue; }
         console.log("  re-running previously-locked block [" + r.key + "] (conflict cleared)");
         const tk2 = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body2 = blockBody(r.b) + "\n\n【本块唯一标识】" + tk2 + "\n（最终汇报请以「【本块唯一标识】" + tk2 + " 完成」开头，并说明本块完成情况）\n" + auth;
+        const body2 = buildBlockPrompt(blockBody(r.b), tk2) + auth;
         const la = writeInteractiveLauncher(r.key, body2, rid);
-        spawnVisibleWindow(la.lp, r.title);
-        pendingWins.push({ title: r.title, keys: nkeys, pidFile: la.pidf, locked: false });
+        const claim2 = { id: "claim-" + rid + "-" + r.key + "-" + Math.random().toString(36).slice(2, 8), title: r.title, keys: nkeys, pidFile: la.pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
+        const claimBlocker2 = tryReserveWindow(claim2);
+        if (claimBlocker2) {
+          console.log("  still locked " + r.key + " -- atomic claim blocked by [" + claimBlocker2 + "]; not re-run yet.");
+          for (const f of [la.pf, la.lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+          continue;
+        }
+        const popped2 = await spawnWindowWithRetry(la.lp, r.title, la.pidf, 3, tk2);
+        if (!popped2) {
+          cancelReservation(claim2.id);
+          summary[r.key] = { title: r.title, status: "popup-failed", exitCode: null, result: "(弹窗失败：多次尝试仍未出现窗口)" };
+          console.log("  POPUP-FAILED " + r.key + " -- window did not appear during locked-block re-run.");
+          for (const f of [la.pf, la.lp, la.rf, la.pidf, la.pidf + ".self-closed", la.rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+          continue;
+        }
+        commitReservation(claim2.id, readPidFile(la.pidf) || 0);
         inRun.push({ key: r.key, title: r.title, keys: nkeys });
-        blockStarted[r.key] = Date.now();
         allSpawned.push({ key: r.key, title: r.title, pidf: la.pidf, lp: la.lp, pf: la.pf, rf: la.rf, prompt: body2, matchToken: "【本块唯一标识】" + tk2 });
+        blockStarted[r.key] = Date.now();
         flushRegistry();
         const matchKey2 = "【本块唯一标识】" + tk2, resultFile2 = la.rf;
         const sf2 = await waitForSessionFile(matchKey2, 90000, resultFile2);
@@ -1655,8 +1984,23 @@ async function main() {
         if (res2.done) {
           let t2 = res2.text || "";
           if (!t2 || /no session rollout matched|no result captured/.test(t2)) { t2 = await waitForReportText(matchKey2, resultFile2, 60000); if (t2) summary[r.key].result = t2.trim().slice(0, 2000); }
-          if (t2 && !/no session rollout matched|no result captured/.test(t2)) { summary[r.key].status = "done"; console.log("  [re-run " + r.key + "] report CAPTURED -> closing"); await new Promise((x) => setTimeout(x, closeDelayMs)); await closeWindow(la.pidf); }
-          else { summary[r.key].status = (res2.exitCode && res2.exitCode !== 0) ? "failed" : "uncaptured"; console.log("  !! [re-run " + r.key + "] report not captured; status=" + summary[r.key].status + " (exitCode=" + (res2.exitCode ?? "?") + ")"); }
+          if (t2 && !/no session rollout matched|no result captured/.test(t2)) {
+            summary[r.key].status = "done";
+            console.log("  [re-run " + r.key + "] report CAPTURED -> closing");
+            await new Promise((x) => setTimeout(x, closeDelayMs));
+            await closeWindow(la.pidf);
+            cancelReservation(claim2.id);
+          } else {
+            summary[r.key].status = (res2.exitCode && res2.exitCode !== 0) ? "failed" : "uncaptured";
+            console.log("  !! [re-run " + r.key + "] report not captured; status=" + summary[r.key].status + " (exitCode=" + (res2.exitCode ?? "?") + ")");
+            await new Promise((x) => setTimeout(x, closeDelayMs));
+            await closeWindow(la.pidf);
+            cancelReservation(claim2.id);
+          }
+        } else {
+          console.log("  !! [re-run " + r.key + "] wait timeout; closing window to avoid leak.");
+          await closeWindow(la.pidf);
+          cancelReservation(claim2.id);
         }
       }
       flushRegistry();
@@ -1669,7 +2013,6 @@ async function main() {
       writeFileSync(out0, JSON.stringify({ blocks: plan.map((b, i) => ({ key: "B" + (i + 1), title: b.title })), results: summary }, null, 2), "utf8");
       return;
     }
-
     // 收尾（硬约束：全部任务结束前保持轮询，绝不提前收尾/留下"晚生"的孤儿窗）：
     // 只要仍有活窗，或仍有计划块没出现在 summary（未决/未 spawn），就持续轮询等待，直到全部有终态才写 summary/退出。
     const planned = new Set(plan.map((b, i) => "B" + (i + 1)));
@@ -1693,10 +2036,9 @@ async function main() {
             if (!rf || !existsSync(rf)) continue;
             const txt = readFileSync(rf, "utf8").replace(/^\uFEFF/, "");
             if (txt.indexOf("__DONE__") === -1) continue;
-            if (w.pidFile && existsSync(w.pidFile)) {
-              console.log("[orchestrator] done-and-close fallback: closing " + w.title);
-              await closeWindow(w.pidFile);
-            }
+                        // 多路兜底关闭：pidFile 缺失/被外部清理时仍按 registry pid 或 launcher 脚本定位并关闭，绝不遗留屏幕窗。
+            const robustClosed = await closeWindowRobust(w);
+            if (robustClosed) console.log("[orchestrator] done-and-close fallback: closed " + w.title);
           }
           // 移除已写完 result 且 __DONE__ 的窗（避免重复轮询）
           updateWindows((ws) => ws.filter((x) => {
@@ -1716,12 +2058,13 @@ async function main() {
           const st = String(s.status || "");
           // 只有真正 done、或明确被拦截/终态，才算“已解决”；uncaptured/failed/timeout 一律视为未解决 -> 继续轮询，绝不提前收尾。
           if (st === "done") return false;
-          if (st === "preflight-failed" || st === "locked" || st === "unfinished" || st === "popup-failed") return false;
+          if (st === "preflight-failed" || st === "locked" || st === "unfinished" || st === "popup-failed" || st === "failed" || st === "done-on-disk") return false;
           return true;
         });
         if (alive.length === 0 && unresolved.length === 0) break;
         // 兜底：所有窗已关闭(归零>15s)但仍剩未决块——不提前放弃，把每个未决块自动重试（全新 token 弹窗），
-        // 直到重试耗尽(ORCH_BLOCK_MAX_RETRY，默认 2)才结束，杜绝“提前结束轮询/留计划草稿”。
+        // 直到重试耗尽(ORCH_BLOCK_MAX_RETRY，默认 0=不自动重试)才结束；显式开启时若目标文件已被改动，
+        // 标记 done-on-disk 而不是重复弹窗执行同一任务。
         if (alive.length === 0 && zeroAliveSince && Date.now() - zeroAliveSince > 15000) {
           const keyToIdx = new Map(); recs.forEach((r, i) => keyToIdx.set(r.key, i));
           const retryable = unresolved.filter((k) => {
@@ -1770,6 +2113,8 @@ async function main() {
         }
       }
     }
+    // 收尾兜底：本批窗口按多路 robust 关闭（pidFile 可能已被并发清理任务删除，仍可按 registry pid/launcher 脚本定位关窗）。
+    for (const s of allSpawned) { await closeWindowRobust({ pidFile: s.pidf, pid: readPidFile(s.pidf) }); }
     updateWindows((ws) => ws.filter((w) => windowAlive(w)));
     const remaining = loadWindows().filter((w) => windowAlive(w));
     const out = path.join(TMP, "win-summary.json");
@@ -1781,22 +2126,22 @@ async function main() {
       try {
         const stillAlive = new Set(remaining.map((w) => w.title));
         for (const s of allSpawned) {
-          for (const f of [s.pf, s.lp, ...(stillAlive.has(s.title) ? [] : [s.pidf, s.rf])]) {
+          for (const f of [s.pf, s.lp, s.pidf + ".self-closed", s.rf + ".self-closed", ...(stillAlive.has(s.title) ? [] : [s.pidf, s.rf])]) {
             if (f && existsSync(f)) rmSync(f, { force: true });
           }
         }
+        // 兜底：顺带清掉上一批遗留的 .self-closed / 死 pid 附属文件（活窗 pid 受保护，不会被误删）。
+        for (const f of staleTransientFiles()) { try { rmSync(f, { force: true }); } catch { /* ignore */ } }
         if (existsSync(out)) { /* 绝不删 win-summary.json：它是给主对话/用户聚合的汇报 */ }
         console.log("[orchestrator] temp artifacts cleaned (win-summary.json preserved)");
       } catch { /* ignore */ }
     }
     return;
   }
-
   if (mode === "--status") {
     showStatus(process.argv.includes("--readonly"));
     return;
   }
-
   if (mode === "--run" || mode === "--exec") {
     // Enforcement: headless real execution is hard-disabled by default. The sanctioned engine for
     // REAL work is --run-windows (a real visible TUI window). Opt-in via ORCH_ALLOW_HEADLESS=1 only
@@ -1811,7 +2156,6 @@ async function main() {
     console.log("[orchestrator] decomposing...");
     const plan = await decomposeSafely(request);
     console.log("[orchestrator] blocks=" + plan.length);
-
     const summary = {};
     for (let i = 0; i < plan.length; i++) {
       summary["B" + (i + 1)] = { title: plan[i].title, type: plan[i].type, status: "pending" };
@@ -1844,7 +2188,6 @@ async function main() {
     }
     return;
   }
-
   console.log(
     "Usage:\n" +
       "  node orchestrate-sdk.mjs --plan \"<request>\"\n" +
@@ -1853,11 +2196,9 @@ async function main() {
       "  node orchestrate-sdk.mjs --spawn <title> \"<prompt or .md>\"",
   );
 }
-
 const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
 if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-
-export { classifyBlockComplexity, classifyExecutionMode, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, writeInteractiveLauncher };
+export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation };

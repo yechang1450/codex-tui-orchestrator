@@ -24,10 +24,10 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 | 能力 | 职责 |
 |---|---|
 | 拆块分类 | 请求→linked/independent 块 + 只读→inline 门禁 |
-| 冲突锁 | 活窗资源冲突→等待/上锁/重跑 |
+| 冲突锁 | 活窗资源冲突→等待/上锁/重跑；弹窗前**原子占位**（跨进程同键防「检查-弹窗」间隙竞态） |
 | 依赖排序 | dependsOn 前置顺序/串行 |
 | 原型门禁 | L1 空判 + L2 复杂度识别（确定性，不单开 LLM）；可行性已由拆块 LLM 判定 |
-| 注册表 | 跨进程 windows/locks + 互斥 |
+| 注册表 | 跨进程 windows/locks + 互斥；`pending` 占位窗（pid=0，超 120s 自动作废）也参与冲突判定 |
 | 窗口运行时 | launcher/spawn/watchdog/close + 汇报捕获（`ORCH_TUI=wt/conhost`、`ORCH_CLOSE_DELAY_MS`）|
 | 结果汇聚 | poll-windows 保轮询契约（常开）|
 | 执行门禁 | armed/assert/kind fail-closed + headless 硬关 |
@@ -45,6 +45,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 
 ### 冲突锁
 - 与**正在运行的窗**比对 conflictKeys；重叠→等待其关闭；仍冲突→上锁（`locked` 终态，不误窗）；冲突释放→自动重跑。
+- 弹窗前在独占锁内先写 `pending` 占位（pid=0、保留 pidFile），弹出成功再提交真实 pid；`pending` 新鲜占位对其它编排进程视为已占用，杜绝两个进程同时通过检查后弹同键窗。
 - 触发：`--run-windows` 每次 spawn 前，以及同批窗口之间。
 - 依赖：注册表（读 windows/locks）。
 
@@ -55,26 +56,27 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 
 ### 原型门禁（确定性）
 - 每个块 spawn 前做**确定性**门禁：L1 空/无动作→拒绝；L2 复杂度识别（多句/含分析/长指令→复杂，仅作状态提示）。
+- 该门禁**恒启用、无开关**，核心目的就是**确保无白窗**：绝不弹出一个“空壳/无动作/已达成”的占位窗，宁可拦下（preflight-failed）也不虚跑。
 - 触发：每块 spawn 前。
 - 可行性（是否可行/已达成）已由**拆块 LLM**在分块阶段判定（`feasible`/`already_done`，不可行或已完成任务会被过滤）；执行前不再为每块单开一次 LLM（避免重复往返、成本友好）。
 
 ### 注册表
-- 共享 `temp/orchestrator-windows.json` / `orchestrator-locks.json`；`withRegistryLock`（独占锁文件）串行写；`updateWindows/updateLocks` 锁内 load+mutate+save，只追加不整表覆盖。
+- 共享 `~/.codex/orchestrator/orchestrator-windows.json` / `orchestrator-locks.json`（`ORCH_STATE_DIR` 可覆盖）；`withRegistryLock`（独占锁文件）串行写；`updateWindows/updateLocks` 锁内 load+mutate+save，只追加不整表覆盖；超过 120s 的 `pending` 死占位自动回收。
 - 触发：所有读活窗/锁、写新窗口/锁、done-and-close 清理、`--status`。
 
 ### 窗口运行时
-- 写 `win-launch-*.ps1`（UTF-8+BOM、chcp 65001）→ spawn 可见 TUI → watchdog 在「最终完成标记」后杀 codex 子进程→launcher `exit 0`→窗自动关；同时从 rollout 捕获最终汇报写入 `win-summary.json`。
-- **弹窗检测 + 重试**：spawn 后轮询 pid 文件确认窗口真弹出；失败重试（上限 3），仍失败标记 `popup-failed` 并汇报，不把没弹出来的窗当运行中。
-- **汇报驱动关窗**：watchdog 等 task_complete 稳定 ~6s（给父进程足够时间捕获汇报）才杀 codex 子进程，确保汇报不因关窗丢失；关闭与汇报互为检测点。
+- 写 `win-launch-*.ps1`（UTF-8+BOM、chcp 65001）→ spawn **交互式 Codex TUI 窗** → 窗口 agent 汇报**最后一行必须输出结束标记 `__ORCH_DONE__ <本窗token>`**；launcher 内置 watchdog **优先识别该结束符**（字符串匹配，含本窗 token 唯一，防误关其它窗）即写强标记并杀 codex → `exit 0` 自动关窗；未输出结束符时回退到"最后一条含本窗 token+完成 的 assistant 消息"。watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 可覆盖），长任务/父进程意外退出后仍能「完成即自关」。`Write-Result` 用 `Get-LastReport` 落本窗最后输出到 `win-<s>.result.json`。
+- **弹窗检测（精准）**：spawn 后以「pid 文件存在 + launcher(Windows Terminal pane 宿主)进程存活」双重确认窗口真弹出；**同批多个窗并行弹窗 + 并行确认**（不逐窗串行等待），失败重试（上限 3），仍失败标记 `popup-failed` 并汇报。
+- **完成判定（不再因缺 token 二次执行）**：窗口回合结束(result 文件/`__DONE__`)且有最终输出且含「完成」或本窗 token → `done`；无输出/仅错误/中途消息 → 如实标 `failed` 且不重试（`poll-windows` 对 `failed` 返回 non-success 如实暴露），绝不再把失败当成功。
 - 触发：`--run-windows` / `--spawn`。
 - **窗口 prompt 规则**：必须要求「一次性完成全部改动→读回+node --check+无乱码→才输出以【本块唯一标识】…完成 开头的最终汇报」，**禁止中途输出未完状态**（否则 auto-close 会误关）。
 
 ### 结果汇聚
-- `--run-windows` 之后，主对话必须运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`，仅当全部块成功集（done/ok/completed/done-retried）+被正确拦截（preflight-failed/locked/unlocked）时返回 0；非 0=仍有未成功→继续等/重试/如实上报。
+- `--run-windows` 之后，主对话必须运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`，仅当全部块成功集（done/ok/completed/done-retried/done-on-disk）+被正确拦截（preflight-failed/locked/unlocked）时返回 0；非 0=仍有未成功→继续等/重试/如实上报（全窗已关且 summary 已终态但含失败 → 立即返回 1，不空等到超时）。
 - 触发：每次 `--run-windows` 之后。
 
 ### 执行门禁
-- `armEnforcement()` 写 `.orchestrator-enabled`；`--assert <kind>` 只在**被授权的窗口**（CODEX_ORCH_WINDOW=1）里放行；headless `--run/--exec` 需 `ORCH_ALLOW_HEADLESS=1`；`agent-tui-orchestrator-preflight.mjs` 未 armed 时按 kind fail-closed（真实 kinds REFUSED+exit1，只读放行）。
+- `armEnforcement()` 写 `.orchestrator-enabled`；`--assert <kind>` 只在**被授权的窗口**（`ORCH_WINDOW=1`）里放行；headless `--run/--exec` 需 `ORCH_ALLOW_HEADLESS=1`；`agent-tui-orchestrator-preflight.mjs` 未 armed 时按 kind fail-closed（真实 kinds REFUSED+exit1，只读放行）。
 - 触发：每次真实执行发起前。
 
 ### 拆块缓存
@@ -82,7 +84,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - 清理：`node orchestrate-sdk.mjs --clear-cache` 或删除缓存文件。
 
 ### 清洁
-- 清理 `temp/` 下 `codex-win-*`/`win-launch-*`/`win-*.result.json`/`win-*.log`/`window-*.pid` 等一次性产物（`win-summary.json` 默认保留给 poll）。
+- 清理 `temp/` 下 `codex-win-*`/`win-launch-*`/`win-*.result.json`/`win-*.log`/`window-*.pid` 及 `.self-closed` 标记等一次性产物（`win-summary.json` 默认保留给 poll）；清理按 pid 文件存活态保护活窗，绝不误删正在运行的窗口。
 - 触发：`--run-windows` / `--spawn` 结束后。
 
 ### 归因验证

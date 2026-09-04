@@ -11,7 +11,7 @@
  *   - `--disable` : disarm.
  *   - `--status`  : report armed state + currently alive execution windows.
  *   - `--assert <kind>` : returns 0 (ok) / 1 (refused). A sanctioned window sets
- *                   $env:CODEX_ORCH_WINDOW=1 (its launcher does), so it passes. A non-window
+ *                   $env:ORCH_WINDOW=1 (its launcher does), so it passes. A non-window
  *                   context that tries a real-execution kind gets refused with a route hint.
  *   - `--verify <file>` : best-effort check whether a changed file was written inside a live
  *                   sanctioned window. Reliably PASS (in a window), reliably VIOLATION (no live
@@ -134,14 +134,14 @@ function runCli() {
     const realKinds = new Set(["exec", "write", "build", "install", "test", "restart", "start", "stop", "real", "all", "run"]);
     const readKinds = new Set(["read", "analyze", "plan", "view", "query", "search", "status", "list", "preview", "ls", "show", "check", "validate", "dry-run", "help"]);
     if (!armed()) { console.log("ok: orchestrator not armed."); process.exit(0); }
-    if (process.env.CODEX_ORCH_WINDOW === "1") {
+    if (process.env.ORCH_WINDOW === "1") {
       const wins = liveWindows();
       if (wins.length > 0) {
         console.log("ok: sanctioned orchestration window (" + wins.length + " live registered window(s)).");
         process.exit(0);
       }
       console.log(
-        "REFUSED: CODEX_ORCH_WINDOW=1 but no live registered orchestration window (orchestrator-windows.json). " +
+        "REFUSED: ORCH_WINDOW=1 but no live registered orchestration window (orchestrator-windows.json). " +
           "The env var alone is not accepted — it may be forged. Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive Codex TUI window)."
       );
       process.exit(1);
