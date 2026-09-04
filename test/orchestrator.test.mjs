@@ -152,7 +152,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -409,6 +409,21 @@ test('orchestrate-sdk computeMaxWindows: n GB -> n/2 concurrency, capped at 8 wi
   assert.equal(computeMaxWindows(16), 8, '16G -> 8 windows (cap)');
   assert.equal(computeMaxWindows(32), 8, '32G -> 8 windows (capped, NOT 16)');
   assert.equal(computeMaxWindows(64), 8, '64G -> 8 windows (capped)');
+});
+test('orchestrate-sdk computeMaxSubagents / computeMaxTotalAgents: 克制使用按内存分级（含子代理预算）', () => {
+  // 每窗可并发子代理上限：低内存不许开，随内存递增封顶。
+  assert.equal(computeMaxSubagents(4), 0, '4G -> 0 subagent/window (only the window)');
+  assert.equal(computeMaxSubagents(8), 1, '8G -> 1 subagent/window');
+  assert.equal(computeMaxSubagents(12), 1, '12G -> 1 subagent/window');
+  assert.equal(computeMaxSubagents(16), 2, '16G -> 2 subagents/window');
+  assert.equal(computeMaxSubagents(24), 3, '24G -> 3 subagents/window');
+  assert.equal(computeMaxSubagents(32), 4, '32G -> 4 subagents/window');
+  assert.equal(computeMaxSubagents(64), 4, '64G -> 4 subagents/window (capped)');
+  // 全局 agent 上限 = 最大窗数 × (1 + 每窗子代理上限)，确保"窗+子代理"不叠加 OOM。
+  assert.equal(computeMaxTotalAgents(4), 2 * (1 + 0), '4G -> 2 agents total');
+  assert.equal(computeMaxTotalAgents(8), 4 * (1 + 1), '8G -> 4 windows x 2 = 8 agents total');
+  assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8 windows x 3 = 24 agents total');
+  assert.equal(computeMaxTotalAgents(32), 8 * (1 + 4), '32G -> 8 windows x 5 = 40 agents total');
 });
 test('runtime: launcher extracts the REAL ASCII block token even when boilerplate mentions the marker first (regression: empty $token broke auto-close)', () => {
   // Replicates the real --run-windows block prompt: the block body contains the 执行纪律 boilerplate
