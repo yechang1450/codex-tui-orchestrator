@@ -626,9 +626,14 @@ function safe(t) {
 }
 function blockBody(block) {
   const body = block.tasks.map((t, i) => `${i + 1}. ${t.prompt}`).join("\n");
+  // 防御：无论 block.type 为何，只要一个窗里塞了多个任务，就绝不能说“互相独立/并行”——多任务在同一窗内必然串行。
+  // 曾有独立型块携带两个有先后依赖的任务（写 s.txt → 读它追加 z.txt），却因 type 标成 independent 而被 blockBody
+  // 输出“互不依赖、并行执行”，误导窗内 agent 把有依赖的任务当独立处理、漏做第二步，导致落盘缺失但 status=done。
+  // 修正：>1 任务的块一律按串行说明，杜绝“并行”误导。
+  const multiTask = block.tasks.length > 1;
   return (
     body +
-    (block.type === "linked"
+    (block.type === "linked" || multiTask
       ? "\n上面任务共享同一资源/存在依赖，若并行会冲突，故必须串行：先做第1个，做完再做第2个，依次进行，绝不同时并行。全部完成再汇报。"
       : "\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。") +
     "\n\n【每个任务做完都必须现场自验】对每个改动：①读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；②跑一次回归/验证命令确认可用；③确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。" +
