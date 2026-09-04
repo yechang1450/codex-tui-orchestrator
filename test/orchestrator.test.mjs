@@ -515,6 +515,55 @@ while($true){Start-Sleep -Seconds 600}`);
   }
 });
 
+test('runtime: watchdog must NOT self-close on the injected prompt text that contains __ORCH_DONE__ <token> (premature-close regression)', async () => {
+  // The launcher's watchdog line `$done = ... $_.Contains('__ORCH_DONE__') -and $_.Contains($token)` previously
+  // matched ANY line containing both, including the *injected user prompt* (which literally teaches the agent
+  // to end with `__ORCH_DONE__ <token>`). That made the watchdog self-close right after the prompt was handed
+  // to the window, before the agent did any work -> task dropped. Fixed: the __ORCH_DONE__ branch must also
+  // require it be an agent_message / "role":"assistant" line.
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-prem-'));
+  const tok = 'P1-abc-000';
+  const { lp, pidf, pf, rf } = writeInteractiveLauncher('premature', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
+  const codexPidFile = path.join(ws, 'codex.pid');
+  const fakeCodex = path.join(ws, 'fake-codex.ps1');
+  const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
+  // Emulate a codex that writes ONLY the injected user prompt (role:user, contains __ORCH_DONE__ <tok> as
+  // instruction text) then hangs. This is exactly the rollout tail that used to false-trigger the watchdog.
+  writePs(fakeCodex, `$ErrorActionPreference='Continue'
+$dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$userLine='{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"请执行任务并在最后输出 __ORCH_DONE__ ${tok}"}]}}'
+Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $userLine -Encoding UTF8
+$PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
+while($true){Start-Sleep -Seconds 600}`);
+  let ps = fs.readFileSync(lp, 'utf8');
+  const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+  ps = ps.replace(/&\s*'codex'\s*@codexArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @codexArgs");
+  fs.writeFileSync(lp, ps, 'utf8');
+  const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
+  let codexPid = 0;
+  const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
+  try {
+    await waitFor(() => fs.existsSync(codexPidFile), 15000);
+    codexPid = readPidFile(codexPidFile);
+    assert.ok(codexPid > 0, 'fake codex PID must be written');
+    // Give the watchdog time to (incorrectly) detect the user-message __ORCH_DONE__ line.
+    const earlyExit = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(6000).then(() => 'still-running')]);
+    assert.equal(earlyExit, 'still-running', 'watchdog must NOT self-close just because the injected user prompt contains __ORCH_DONE__ <token>');
+    // The window must still be alive (agent didn't do work, so it must not be closed yet).
+    assert.equal(pidAliveCheck(codexPid), true, 'codex must still be alive because the task was NOT completed');
+  } finally {
+    for (const pid of [codexPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    try { child.kill(); } catch { /* ignore */ }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 test('runtime: minimal launcher smoke -> recursive kill frees & codex; result file exit 0; launcher exits 0 without force-kill', async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt-launch-'));
   const pidFile = path.join(d, 'launcher.pid');
