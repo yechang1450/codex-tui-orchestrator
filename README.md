@@ -164,6 +164,7 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | Timeout for the read-only LLM decompose/classification. |
 | `ORCH_DECOMPOSE_RETRIES` | `2` | Decompose LLM retries before the deterministic fallback is used. |
 | `ORCH_WAIT_MS` | `120000` | Max wait for a conflicting window to close. |
+| `ORCH_SUBAGENT_MAX_WAIT_MS` | `21600000` | **Hard cap** on waiting for a single subagent to return (default 6h). If a subagent hangs past it, it's treated as timed-out/incomplete and must be marked honestly before the window may finish; **never fake success on timeout**. |
 | `ORCH_WATCHDOG_MAX_MIN` | `poll ceiling + 10 min` | In-window auto-close watchdog horizon (min). |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | Read-buffer before a finished window auto-closes. |
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |
@@ -173,6 +174,8 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 ## Encoding & IME
 
 All text I/O is **explicit UTF-8**; launchers set `[Console]::OutputEncoding`/`$OutputEncoding = UTF-8` and read prompts with `-Encoding UTF8`. `.ps1` launchers are written **UTF-8 with BOM** (and `chcp 65001`), so Chinese never becomes mojibake on a Chinese-locale Windows (GBK/936).
+
+> **TUI render-overlap fix**: the in-window prompt markers (three-pass check, on-site self-verify) previously used `①②③`, whose ambiguous CJK width can overlap the adjacent glyph in Windows Terminal. They are now `1)`/`2)`/`3)` (pure ASCII width) to avoid that overlap.
 
 ## Dependencies
 

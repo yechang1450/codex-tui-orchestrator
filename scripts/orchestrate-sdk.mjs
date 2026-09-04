@@ -652,7 +652,7 @@ function blockBody(block) {
     (block.type === "linked" || multiTask
       ? "\n上面任务共享同一资源/存在依赖，若并行会冲突，故必须串行：先做第1个，做完再做第2个，依次进行，绝不同时并行。全部完成再汇报。"
       : "\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。") +
-    "\n\n【每个任务做完都必须现场自验】对每个改动：①读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；②跑一次回归/验证命令确认可用；③确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。" +
+    "\n\n【每个任务做完都必须现场自验】对每个改动：1) 读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；2) 跑一次回归/验证命令确认可用；3) 确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。" +
     "\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。"
   );
 }
@@ -992,6 +992,23 @@ function computeMaxSubagents(memGb) {
 }
 function computeMaxTotalAgents(memGb) {
   return computeMaxWindows(memGb) * (1 + computeMaxSubagents(memGb));
+}
+
+// 窗内 auth 提示词的确定性策略改写（纯函数，可单测）：
+//   1) 子代理等待上限：把「无超时上限」改为「ORCH_SUBAGENT_MAX_WAIT_MS 硬上限」，超时=未完成须如实标注，禁止虚报成功。
+//   2) TUI 渲染重叠修复：把「三遍检查」提示词里的 ①②③ 改成 1) 2) 3)（纯 ASCII 宽度），避免 Windows Terminal CJK 宽度歧义导致序号与文字重叠。
+export function applyAuthPromptPolicy(auth, subagentWaitMaxMs) {
+  const capMs = Number(subagentWaitMaxMs) || 21600000;
+  let s = String(auth || "");
+  s = s.replace(
+    "【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。",
+    "【子代理收尾 = 一环扣一环，但有 6 小时硬上限】子代理属于本 TUI 窗：必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**，未收齐前绝不提前收尾、绝不提前给结束码。**对单个子代理的最大等待时长 = $env:ORCH_SUBAGENT_MAX_WAIT_MS（默认 21600000ms = 6 小时）**——这是**硬上限**：超过即视为该子代理**超时/未完成**，须**如实标注**「子代理 X 已超过等待上限未返回」，再按本窗是否仍有其它未完成子代理决定能否收尾；**绝不因超时而虚报成功**。只有全部子代理要么返回、要么超时并如实标注后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。"
+  );
+  s = s.replace(
+    "随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。",
+    "随后按此顺序自查：1) 先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；2) 再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；3) 最后再检查一遍这个 TODO LIST 的问题（复查，确保 1) 2) 都改彻底）。"
+  );
+  return s;
 }
 
 // 硬性要求（用户明确，必须遵守）：对 orchestrator 自身的改动，必须先于并独立于所有 TUI 窗执行——
@@ -1949,6 +1966,10 @@ async function main() {
     const totalAgentMax = computeMaxTotalAgents(memGb);
     process.env.ORCH_SUBAGENT_MAX = String(subagentMax);
     process.env.ORCH_MAX_TOTAL_AGENTS = String(totalAgentMax);
+    // 子代理最大等待时长（默认 6 小时，与轮询总上限一致居中取舍）。窗内 agent 用它作为「等子代理回返」的上限：
+    // 超过即视为子代理超时/未完成，如实标注后允许本窗收尾，避免「子代理挂了父窗永远等下去」。可通过 ORCH_SUBAGENT_MAX_WAIT_MS 覆盖。
+    const subagentWaitMaxMs = Number(process.env.ORCH_SUBAGENT_MAX_WAIT_MS || 21600000);
+    process.env.ORCH_SUBAGENT_MAX_WAIT_MS = String(subagentWaitMaxMs);
     // 注入子代理共享任务目录，并确保存在（父/子都可读写）。绕开 spawn_agent message 正文偶发投递失败的断点。
     try { mkdirSync(SUBTASK_DIR, { recursive: true }); process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
     catch (e) { process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
@@ -1992,6 +2013,10 @@ async function main() {
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
     const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理任务正文走共享文件（硬性要求，绕过消息断点）】在决定使用子代理后、真正 spawn 之前，**必须先把该子代理要执行的完整任务原文，写成共享文件 `$env:ORCH_SUBTASK_DIR\\subtask-<本窗token>-<seq>.md`**（UTF-8 无 BOM；内容 = 该子代理唯一且完整的任务，含目标/路径/验收标准，无歧义）。然后 `spawn_agent` 时，message 里只写一句「你的唯一任务见文件 `<该文件路径>`，请先读取它再执行」；**子代理必须先用工具读取该文件获取完整任务**，再执行。**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。\n\n【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。**若开了子代理却未输出 SUBAGENTS_DONE，orchestrator 绝不关窗**（会持续等待，视为未完成）。\n\n【自验未落盘=未完成，禁止输出结束标记（硬约束）】本窗在输出结束标记（`__ORCH_DONE__`/`SUBAGENTS_DONE`）前，**必须逐一真实读回/检查它声称创建或修改的产物**，确认其真实存在于盘上且内容/编码正确。若**任一自验失败**（文件不存在/内容不符/未落盘），则**无论如何都禁止输出结束标记**——只能如实输出失败说明，让本窗不被当作成功收尾（orchestrator 会据此判为未完成）。只有在所有声明的产物都**真实落盘且自验通过**后，才允许输出结束标记。\n\n执行结束判定=本窗完成实际操作、**全部子代理已收尾**、并**现场自验全部产物真实落盘**后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
+    // 子代理等待上限：把「无超时上限」改为「6 小时硬上限（由 ORCH_SUBAGENT_MAX_WAIT_MS 控制）」，让窗内 agent 不会因子代理挂死而无限等下去。
+    // 仍保留「超时=未完成，禁止虚报」不变量：超时子代理须如实标注，绝不当作成功收尾。
+    // 复用导出的纯函数改写 auth 提示词：子代理 6 小时硬上限 + 三遍检查序号 ①②③ → 1) 2) 3)（修复 WT CJK 宽度重叠）。
+    const authWaitCapped = applyAuthPromptPolicy(auth, process.env.ORCH_SUBAGENT_MAX_WAIT_MS);
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.
@@ -2118,7 +2143,7 @@ async function main() {
           continue;
         }
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body = buildBlockPrompt(blockBody(r.b), tk) + auth;
+        const body = buildBlockPrompt(blockBody(r.b), tk) + authWaitCapped;                                          
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
         // 跨进程原子占位：复检后、真正 spawn 前先在独占锁内写入 pending=true（pid=0）记录。
         // 其它进程的 conflictByKeys 会看到这份新鲜占位，从而把“正在弹窗但尚未入册”的窗也视为占用。
@@ -2200,7 +2225,7 @@ async function main() {
         if (conflictByKeys(nkeys)) { console.log("  still locked " + r.key + "; not re-run yet."); continue; }
         console.log("  re-running previously-locked block [" + r.key + "] (conflict cleared)");
         const tk2 = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body2 = buildBlockPrompt(blockBody(r.b), tk2) + auth;
+        const body2 = buildBlockPrompt(blockBody(r.b), tk2) + authWaitCapped;                                        
         const la = writeInteractiveLauncher(r.key, body2, rid);
         const claim2 = { id: "claim-" + rid + "-" + r.key + "-" + Math.random().toString(36).slice(2, 8), title: r.title, keys: nkeys, pidFile: la.pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
         const claimBlocker2 = tryReserveWindow(claim2);
@@ -2325,7 +2350,7 @@ async function main() {
             if (!rec) continue;
             retryState.attempts[k] = (retryState.attempts[k] || 0) + 1;
             console.log("[orchestrator] RETRY unresolved block [" + k + "] (attempt " + retryState.attempts[k] + "/" + retryState.max + ")");
-            summary[k] = await retryBlock(rec, rid, auth, 1, closeDelayMs);
+            summary[k] = await retryBlock(rec, rid, authWaitCapped, 1, closeDelayMs);                            
           }
           zeroAliveSince = 0;
         }

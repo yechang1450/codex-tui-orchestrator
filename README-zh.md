@@ -165,6 +165,7 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | 只读 LLM 拆块超时（毫秒）。 |
 | `ORCH_DECOMPOSE_RETRIES` | `2` | LLM 拆块失败重试次数，重试耗尽后走确定性兜底单窗。 |
 | `ORCH_WAIT_MS` | `120000` | 等待冲突窗关闭的最长时间。 |
+| `ORCH_SUBAGENT_MAX_WAIT_MS` | `21600000` | 窗内「等单个子代理返回」的**硬上限**（默认 6 小时）。子代理挂死超此值即视为超时/未完成，须如实标注后本窗才允许收尾；**绝不因超时虚报成功**。 |
 | `ORCH_WATCHDOG_MAX_MIN` | `轮询上限 + 10 分钟` | 窗内 watchdog「完成即自关」观察上限（分钟）。 |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | 窗完成后自动关窗的读缓冲。 |
 | `ORCH_TUI` | `wt` | `wt`=Windows Terminal（最佳 CJK 输入法），`conhost`=经典控制台。 |
@@ -174,6 +175,8 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 ## 编码与输入法
 
 所有文本读写**显式 UTF-8**；启动器设 `[Console]::OutputEncoding`/`$OutputEncoding = UTF-8` 并用 `-Encoding UTF8` 读提示词。`.ps1` 启动器**UTF-8 带 BOM** + `chcp 65001`，防止中文在中文 Windows（默认 GBK/936）上乱码。
+
+> **TUI 渲染重叠修复**：窗内提示词（如「三遍检查」「现场自验」）原用 `①②③` 序号，在 Windows Terminal 的 CJK 宽度判定下会与相邻文字重叠。已统一改为 `1)`/`2)`/`3)`（纯 ASCII 宽度）避免重叠。
 
 ## 依赖
 

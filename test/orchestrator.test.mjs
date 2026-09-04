@@ -152,7 +152,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, applyAuthPromptPolicy } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -424,6 +424,23 @@ test('orchestrate-sdk computeMaxSubagents / computeMaxTotalAgents: 克制使用�
   assert.equal(computeMaxTotalAgents(8), 4 * (1 + 1), '8G -> 4 windows x 2 = 8 agents total');
   assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8 windows x 3 = 24 agents total');
   assert.equal(computeMaxTotalAgents(32), 8 * (1 + 4), '32G -> 8 windows x 5 = 40 agents total');
+});
+test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
+  // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
+  const oldSub = '【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。';
+  const oldPass = '随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。';
+  const out = applyAuthPromptPolicy(oldSub + oldPass, 21600000);
+  // 子代理 6 小时硬上限：旧文案被替换，出现 ORCH_SUBAGENT_MAX_WAIT_MS，且不再含「无超时上限」「绝不设超时上限」。
+  assert.ok(out.includes('ORCH_SUBAGENT_MAX_WAIT_MS'), 'must inject the subagent max-wait env var');
+  assert.ok(out.includes('但有 6 小时硬上限'), 'must flip the wording from 无超时上限 to 6小时硬上限');
+  assert.ok(!out.includes('无超时上限'), 'must not keep the old 无超时上限 wording');
+  assert.ok(!out.includes('绝不设超时上限'), 'must not keep the old 绝不设超时上限 wording');
+  // 三遍检查序号：①/②/③ 全被替换成 1)/2)/3)，不再保留圈号（避免 WT CJK 宽度重叠）。
+  assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'must drop the ①②③ circled digits');
+  assert.ok(out.includes('1) 先检查一遍') && out.includes('2) 再检查一遍') && out.includes('3) 最后再检查一遍'), 'must use ASCII-width 1)2)3)');
+  // 边缘：空输入或缺失子句不抛错。
+  assert.equal(applyAuthPromptPolicy('', 21600000), '');
+  assert.equal(applyAuthPromptPolicy('无相关子句', 21600000), '无相关子句');
 });
 test('runtime: launcher extracts the REAL ASCII block token even when boilerplate mentions the marker first (regression: empty $token broke auto-close)', () => {
   // Replicates the real --run-windows block prompt: the block body contains the 执行纪律 boilerplate
