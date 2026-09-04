@@ -128,7 +128,7 @@
 
 - 官方 Cookbook（Using Goals in Codex）："the Goal belongs to the current thread, not to global memory or project instructions."（Goal 属于当前线程，不属于全局记忆或项目指令。）
 - 官方 openai/codex **Issue #24607**："Codex goals are currently scoped to the current thread."（goal 目前作用于当前线程），并把"parent/orchestrator agent 给 spawned 子代理派发持久化 goal"列为**尚未实现的功能请求**。
-- 实测：主线程 `create_goal` 后 `get_goal` 能读到；但 spawned 子代理读到的却是**它自己线程**的空 goal（"goal is empty"）。所以子代理拿不到任务，**不是"不会用"，而是跨线程传 goal 官方尚未实现**。
+- 实测：**任意一个线程都能在自己线程里 `create_goal` 并 `get_goal` 读到、`update_goal` 标记完成**（本线程已实测闭环成功）——所以 goal 机制对"当前线程"本身是完整可用的。**真正做不到的是"父线程把 goal 指派/推送给另一个线程（spawned 子代理）"**：spawn 出的子代理是独立线程，默认 `get_goal` 读到的是它**自己线程**的空 goal（"goal is empty"）。所以"父代理给子代理设 goal"这一步**不是"不会用"，而是跨线程传 goal 官方尚未实现（openai/codex#24607）**；而"子代理在自己线程里自建 goal"理论上可行，但需要子代理先拿到任务指令（正文），而这正是 message 正文偶发断点要绕开的一环。
 
 因此本插件用「**共享任务文件 + 内置 spawn/wait**」作为确定可靠的载体：父/主窗口先把每个子代理的完整任务写成共享文件（`$ORCH_SUBTASK_DIR/subtask-<token>-<seq>.md`），`spawn_agent` 时 message 只指向该文件，子代理用读文件工具取到完整任务；父/主窗口再 `wait_agent` 等其返回。
 
