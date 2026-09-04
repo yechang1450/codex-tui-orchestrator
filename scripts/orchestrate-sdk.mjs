@@ -117,6 +117,19 @@ const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex"
 // 子代理共享任务文件目录（父/主窗口与子代理都真正可读，绕开 spawn_agent message 正文偶发投递失败的断点）。
 // 放在 orchestrator 稳定家目录下（ORCH_STATE_DIR），非 WORKSPACE 临时目录，避免被插件升级清掉/散落。
 const SUBTASK_DIR = process.env.ORCH_SUBTASK_DIR || path.join(STATE_DIR, "subtasks");
+//
+// 【为什么子代理任务正文走"共享文件"而不是"goal 机制"（决策记录，勿再走回头路）】
+// Codex 的 goal 机制（create_goal / get_goal / update_goal）是**线程级**状态：
+//   官方 Cookbook 明确指出 "the Goal belongs to the current thread, not to global memory or project instructions"；
+//   官方 openai/codex#24607 也写明 "Codex goals are currently scoped to the current thread"，
+//   并把 "parent/orchestrator agent 给 spawned 子代理派发持久化 goal" 列为**尚未实现的功能请求**。
+// 实测：主线程 create_goal 后 get_goal 能读到，但 spawn 出的子代理 get_goal 读到的是它**自己线程**的空 goal
+//   （"goal is empty"）。所以子代理拿不到任务，不是因为"不会用"，而是跨线程传 goal 在官方尚未实现。
+// 因此本插件采用"共享任务文件 + 内置 spawn/wait"作为确定可靠的载体：父/主窗口先写共享文件，
+//   spawn 时 message 只指向该文件，子代理用读文件工具取到完整任务；父/主窗口再 wait_agent 等其返回。
+// 路线图：待官方 openai/codex#24607 支持 spawn_agent 携带初始 goal / 父可查子 goal 状态后，
+//   再从"共享文件载体"迁移回"goal 载体"。
+//
 // 轮询总上限：默认 6 小时（ORCH_MAX_POLL_MS 可调）。用于「检测是否有默认时间限制会提前结束轮询」——
 // 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
 // ORCH_TIMEOUT_MS 仍可覆盖（比如测试时缩短）。

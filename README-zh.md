@@ -122,7 +122,19 @@
 9. **fail-safe 执行**：歧义 → execute；LLM 失败 → 串行兜底。
 10. **成本友好**：确定性快路径免 LLM；可行性不重复调；拆块缓存命中即复用。
 
-### 5. 初始环境检测
+### 5. 子代理任务载体：共享文件（而非 goal 机制）+ 路线图
+
+**为什么子代理任务正文走"共享文件"而不是"goal 机制"（决策记录）**：Codex 的 goal 机制（`create_goal` / `get_goal` / `update_goal`）是**线程级**状态。
+
+- 官方 Cookbook（Using Goals in Codex）："the Goal belongs to the current thread, not to global memory or project instructions."（Goal 属于当前线程，不属于全局记忆或项目指令。）
+- 官方 openai/codex **Issue #24607**："Codex goals are currently scoped to the current thread."（goal 目前作用于当前线程），并把"parent/orchestrator agent 给 spawned 子代理派发持久化 goal"列为**尚未实现的功能请求**。
+- 实测：主线程 `create_goal` 后 `get_goal` 能读到；但 spawned 子代理读到的却是**它自己线程**的空 goal（"goal is empty"）。所以子代理拿不到任务，**不是"不会用"，而是跨线程传 goal 官方尚未实现**。
+
+因此本插件用「**共享任务文件 + 内置 spawn/wait**」作为确定可靠的载体：父/主窗口先把每个子代理的完整任务写成共享文件（`$ORCH_SUBTASK_DIR/subtask-<token>-<seq>.md`），`spawn_agent` 时 message 只指向该文件，子代理用读文件工具取到完整任务；父/主窗口再 `wait_agent` 等其返回。
+
+**路线图**：待官方 openai/codex#24607 支持「spawn_agent 携带初始 goal」「父可查子 goal 状态」后，再从此「共享文件载体」迁移回「goal 载体」；届时子代理可拿到实时 goal 进度，而无需父代理仅凭最终落盘状态推断完成度。
+
+### 6. 初始环境检测
 
 真实执行前先验：codex CLI（探测/安装）+ **工作区磁盘空间**（`statfsSync`）。剩余空间低于 `ORCH_MIN_FREE_MB`（默认 12000MB≈12GB）告警；低于 `ORCH_MIN_FREE_HARD_MB`（默认 3600MB≈3.6GB）直接拒绝（fail-closed）——磁盘空间过低时连 launcher/temp 都写不了，与其半路失败不如一开始就拦。若 `ORCH_MIN_FREE_HARD_MB` 设得比 `ORCH_MIN_FREE_MB` 还高，硬下限会被钳制到告警阈值。
 

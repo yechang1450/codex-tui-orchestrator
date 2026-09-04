@@ -121,7 +121,19 @@ After `--run-windows`, the initiator MUST poll until all blocks are in the succe
 9. **Fail-safe execution** — ambiguous mode → execute; LLM failure → serial fallback.
 10. **Cost-friendly** — deterministic fast paths avoid the LLM; feasibility is not re-queried per block; decompose cache hits reuse.
 
-### 5. Initial environment check
+### 5. Subagent task carrier: shared file (not the goal mechanism) + roadmap
+
+**Why subagent task bodies ride a shared file rather than the "goal" mechanism (decision record)**: Codex's goal tools (`create_goal` / `get_goal` / `update_goal`) are **thread-scoped** state.
+
+- Official Cookbook ("Using Goals in Codex"): *"the Goal belongs to the current thread, not to global memory or project instructions."*
+- Official openai/codex **Issue #24607**: *"Codex goals are currently scoped to the current thread."* — and it lists "parent/orchestrator agent assigning persisted goals to spawned subagents" as a **not-yet-implemented feature request**.
+- Proven in practice: after `create_goal` on the parent thread, `get_goal` reads it; but a spawned subagent reads **its own** thread's empty goal ("goal is empty"). So a subagent not receiving the task is **not a usage mistake** — cross-thread goal passing is simply unimplemented upstream.
+
+So this plugin uses a **shared-task-file + built-in `spawn`/`wait`** carrier: the parent/primary window first writes each subagent's full task to a shared file (`$ORCH_SUBTASK_DIR/subtask-<token>-<seq>.md`), `spawn_agent`'s message only points at that file, the subagent reads the file to get the complete task, then the parent `wait_agent`-s for it to return.
+
+**Roadmap**: once upstream openai/codex#24607 supports "spawn_agent with an initial goal" and "parent queries child goal status", migrate from this shared-file carrier back to the goal carrier, so subagents can expose live goal progress instead of the parent inferring completion solely from final on-disk state.
+
+### 6. Initial environment check
 
 Before real work the orchestrator verifies: the codex CLI (detect/install) and **disk space** on the workspace drive via `statfsSync`. Free space below `ORCH_MIN_FREE_MB` (default 12000MB ≈12GB) warns; below `ORCH_MIN_FREE_HARD_MB` (default 3600MB ≈3.6GB) refuses (fail-closed) — a low disk cannot even write the launcher/temp files. If `ORCH_MIN_FREE_HARD_MB` is set above `ORCH_MIN_FREE_MB`, the hard floor is clamped to the warn threshold.
 
