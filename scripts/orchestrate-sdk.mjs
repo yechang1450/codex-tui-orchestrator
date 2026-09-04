@@ -1135,10 +1135,13 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "            # 加固：__ORCH_DONE__ 分支必须同时命中「agent/assistant 消息」，绝不能匹配到被注入的【任务/执行纪律提示词】——",
     "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
     "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
-    "            # 加固：__ORCH_DONE__ 分支必须同时命中「agent/assistant 消息」，绝不能匹配到被注入的【任务/执行纪律提示词】——",
-    "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
-    "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
-    "            $done = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
+            "            # 加固：__ORCH_DONE__ 分支必须同时命中「agent/assistant 消息」，绝不能匹配到被注入的【任务/执行纪律提示词】——",
+            "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
+            "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
+            "            # 加固：若本窗开了子代理，则必须等子代理也收尾——结束标记须带 'SUBAGENTS_DONE' 后缀才允许关窗；",
+            "            # 否则窗口会在 spawn_agent 后、子代理尚未返回前就触发 __ORCH_DONE__ 而提前关窗（丢子代理结果）。",
+            "            $spawnedAgent = ($tail | Where-Object { ($_ -match 'spawn_agent|\"name\":\"spawn' ) } | Measure-Object).Count -gt 0",
+            "            $done = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains('__ORCH_DONE__') -and $_.Contains($token) -and ($spawnedAgent -eq $false -or $_.Contains('SUBAGENTS_DONE')) } | Select-Object -Last 1)",
     "            if ($done) {",
     "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
     "                # 递归杀净 launcher 的全部后代（codex 树）：绝不强杀 launcher 自身；codex 已退出(无后代)则函数直接跳过。",
@@ -1969,7 +1972,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n执行结束判定=本窗完成实际操作并验证落盘后，**最后单独输出一行结束标记 `__ORCH_DONE__ <本窗token>`**（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
+    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理收尾要求（重要）】若本窗真实开启了任何子代理，则在输出结束标记前，**必须先用 wait_agent 等待全部子代理返回并拿到各自结果**，然后**最后一行输出 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`**（多了 SUBAGENTS_DONE 后缀）。未开子代理时输出 `__ORCH_DONE__ <本窗token>`（维持原样）。**若本窗开了子代理却未输出 SUBAGENTS_DONE，orchestrator 不会关窗**（会继续等待，视为尚未完成）。\n\n执行结束判定=本窗完成实际操作并验证落盘后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.

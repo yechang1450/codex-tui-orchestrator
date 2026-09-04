@@ -488,6 +488,24 @@ test('runtime: spawnWindowWithRetry warms up after popup so the parent never rac
   // 3) codexDescendantAlive helper must exist (the durable child detection used by warmup)
   assert.match(src, /function codexDescendantAlive/, 'codexDescendantAlive must exist');
 });
+test('runtime: watchdog requires SUBAGENTS_DONE when the window spawned a sub-agent (sub-agent-cutoff regression)', () => {
+  // A window that called spawn_agent must NOT be auto-closed on a bare "__ORCH_DONE__ <token>" — the sub-agent
+  // may not have returned yet. The watchdog must detect the spawn and require the "__ORCH_DONE__ <token> SUBAGENTS_DONE"
+  // suffix before closing. Otherwise a window drops sub-agent results ("done" before the sub-agent finished).
+  const { lp, pidf, pf } = writeInteractiveLauncher('subcut', 'task\n\n【本块唯一标识】S1-abc 完成', 'x');
+  try {
+    const body = fs.readFileSync(lp, 'utf8');
+    // 1) watchdog must detect a sub-agent spawn in the rollout
+    assert.match(body, /\$spawnedAgent = \(\$tail/, 'watchdog must detect spawn_agent in the rollout');
+    // 2) the done-detection must require SUBAGENTS_DONE when a sub-agent was spawned
+    assert.match(body, /\$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must require SUBAGENTS_DONE when sub-agents were spawned');
+    assert.match(body, /\$spawnedAgent -eq \$false -or \$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must only skip SUBAGENTS_DONE when NO sub-agent was spawned');
+    // 3) the TUI auth prompt (in SDK source) must instruct the window to wait_agent and append SUBAGENTS_DONE
+    const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+    assert.match(src, /wait_agent/, 'TUI prompt must tell the window to wait_agent for sub-agents');
+    assert.match(src, /SUBAGENTS_DONE/, 'TUI prompt must mention the SUBAGENTS_DONE ending suffix');
+  } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
+});
 
 test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> recreates it, writes .self-closed, exits 0', async () => {
   // Regression for the exact reported bug: a Codex TUI window finished (agent reported ORCH_DONE) but the
