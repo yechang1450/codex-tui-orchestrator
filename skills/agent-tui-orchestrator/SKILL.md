@@ -13,7 +13,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 ## 行为纪律（conduct，必守，优先级最高）
 1. **一轮全量交付**：每轮把全部可执行任务纳入同一个 `--run-windows`，一次性并发/串行拉起，禁止「逐个串行、挑几项、下轮再做」。
 2. **保轮询**：`--run-windows` 之后**必须**运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`；只有它返回 0 才能结束本轮（全部块 status ∈ 成功集）。非 0=仍有未成功→继续等/重试/如实上报，绝不提前收尾。
-3. **每窗自查 + 真实汇报**：每窗结束前必须完成读回/回归/无乱码自验，汇报以「【本块唯一标识】…完成」开头；自验不过=该窗未完成，禁止虚报。
+3. **每窗自查 + 只出识别码**：每窗结束前必须完成读回/回归/无乱码自验，最后**只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**；执行结束即 `done`（不等同于成功），是否达成 prompt 预期由主控关窗后核对真实落盘状态。
 4. **不得先问是否执行**：凡真实执行且用户已授权（出现「继续/全面推进/允许执行/同意」等），直接 `--run-windows`，严禁「要不要我弹窗/需要授权吗」类二次确认。
 5. **被动调用**：未显式 @agent-tui-orchestrator 的**真实执行**，也必须主动检测并路由到 `--run-windows`；只有只读/纯方案/纯解答留在主对话。
 6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
@@ -67,11 +67,11 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - 触发：所有读活窗/锁、写新窗口/锁、done-and-close 清理、`--status`。
 
 ### 窗口运行时
-- 写 `win-launch-*.ps1`（UTF-8+BOM、chcp 65001）→ spawn **交互式 Codex TUI 窗** → 窗口 agent 汇报**最后一行必须输出结束标记 `__ORCH_DONE__ <本窗token>`**；launcher 内置 watchdog **优先识别该结束符**（字符串匹配，含本窗 token 唯一，防误关其它窗）即写强标记并杀 codex → `exit 0` 自动关窗；未输出结束符时回退到"最后一条含本窗 token+完成 的 assistant 消息"。watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 可覆盖），长任务/父进程意外退出后仍能「完成即自关」。`Write-Result` 用 `Get-LastReport` 落本窗最后输出到 `win-<s>.result.json`。
+- 写 `win-launch-*.ps1`（UTF-8+BOM、chcp 65001）→ spawn **交互式 Codex TUI 窗** → 窗口 agent **只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**（不做长篇汇报）；launcher 内置 watchdog **只认该结束符**（且必须是 agent/assistant 消息，绝不匹配被注入的提示词行）即写 `.self-closed` 强标记并杀 codex 树 → `exit 0` 自动关窗；未输出结束符时回退到"最后一条含本窗 token 的 assistant 消息"。watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 可覆盖），长任务/父进程意外退出后仍能「执行结束即自关」。`Write-Result` 用 `Get-LastReport` 尽力落本窗最后输出到 `win-<s>.result.json`（有则记，无则标记需外部核对落盘）。
 - **弹窗检测（精准）**：spawn 后以「pid 文件存在 + launcher(Windows Terminal pane 宿主)进程存活」双重确认窗口真弹出；**同批多个窗并行弹窗 + 并行确认**（不逐窗串行等待），失败重试（上限 3），仍失败标记 `popup-failed` 并汇报。
-- **完成判定（不再因缺 token 二次执行）**：窗口回合结束(result 文件/`__DONE__`)且有最终输出且含「完成」或本窗 token → `done`；无输出/仅错误/中途消息 → 如实标 `failed` 且不重试（`poll-windows` 对 `failed` 返回 non-success 如实暴露），绝不再把失败当成功。
+- **完成判定（用户方案：done=做完了，不等同于成功）**：窗口执行结束（识别码 `.self-closed` / result 文件 / codex 退出）即 `done`；是否真的达成 prompt 预期，由主控关窗后去核对真实落盘状态，而非依赖窗内汇报文本。真正的失败由 `popup-failed`/`preflight-failed` 承担。
 - 触发：`--run-windows` / `--spawn`。
-- **窗口 prompt 规则**：必须要求「一次性完成全部改动→读回+node --check+无乱码→才输出以【本块唯一标识】…完成 开头的最终汇报」，**禁止中途输出未完状态**（否则 auto-close 会误关）。
+- **窗口 prompt 规则**：必须要求「一次性完成全部改动→读回+node --check+无乱码→才输出唯一一行 `__ORCH_DONE__ <本窗token>`；无需长篇汇报，仅在确实失败时补一句说明」，**禁止中途输出未完状态**（否则 auto-close 会误关）。
 
 ### 结果汇聚
 - `--run-windows` 之后，主对话必须运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`，仅当全部块成功集（done/ok/completed/done-retried/done-on-disk）+被正确拦截（preflight-failed/locked/unlocked）时返回 0；非 0=仍有未成功→继续等/重试/如实上报（全窗已关且 summary 已终态但含失败 → 立即返回 1，不空等到超时）。

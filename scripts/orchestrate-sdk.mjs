@@ -404,7 +404,7 @@ function extractTasks(raw) {
 // ---------------------------------------------------------------------------
 const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
 function buildBlockPrompt(body, tk) {
-  return String(body || "") + "\n\n【本块唯一标识】" + tk + "\n（最终汇报请以「【本块唯一标识】" + tk + " 完成」开头，并说明本块完成情况）\n";
+  return String(body || "") + "\n\n【本块唯一标识】" + tk + "\n（执行结束判定 = 本窗完成实际操作并现场验证后，最后单独输出一行结束标记 `__ORCH_DONE__ " + tk + "`。无需冗长汇报；主控会关窗后按本任务提示词去核对真实落盘状态。仅在确有失败/异常时简短说明。）\n";
 }
 function levelWaves(recs) {
   const keyByTitle = new Map();
@@ -849,17 +849,18 @@ async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
     let res = { done: false, text: "" };
     if (sf) res = await waitTaskComplete(sf, POLL_TIMEOUT_MS, rf, matchKey);
     else if (existsSync(rf)) { const c = readExitCode(rf); res = { done: true, text: "(launcher exited code " + (c === null ? "?" : c) + "; no session rollout matched)", exitCode: c }; }
+    // 执行结束判定（用户方案：done=做完了，不等同于成功）：res.done 即收，是否达标由主控核对真实落盘状态。
     let text = res.text || "";
-    if (!text || /no session rollout matched|no result captured/.test(text)) text = await waitForReportText(matchKey, rf, 60000);
-    // retry 完成判定同主循环：有真实汇报文本即收（exec 模式 stdout 汇报可靠）。
-    const own = !!(text && text.trim() && !/no session rollout matched|no result captured|launcher exited/.test(text));
-    if (own) {
-      console.log("  [retry " + rec.key + " att" + attempt + "] OWN completion CAPTURED -> closing");
+    if (!text || /no session rollout matched|no result captured|launcher exited/.test(text)) {
+      try { if (sf) text = extractResult(sf).text || ""; } catch { /* ignore */ }
+    }
+    if (res.done) {
+      console.log("  [retry " + rec.key + " att" + attempt + "] execution ended -> closing");
       await new Promise((x) => setTimeout(x, closeDelayMs));
       await closeWindow(pidf);
       cancelReservation(claim.id);
       for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
-      return { status: "done", exitCode: res.exitCode ?? null, result: text.trim().slice(0, 2000) };
+      return { status: "done", exitCode: res.exitCode ?? null, result: (text && text.trim() ? text.trim() : "(窗内 codex 已执行结束并自动关闭；请按任务提示词核对真实落盘状态)").slice(0, 2000) };
     }
     console.log("  !! [retry " + rec.key + " att" + attempt + "] not own completion (text=" + String(text).slice(0, 50) + ")");
     // 未捕获到完成汇报也一律收窗并取消占位，杜绝“重试窗留在屏幕上/重复弹同键窗”的泄漏。
@@ -1003,14 +1004,15 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "function Write-Result {",
     "  param([int]$code)",
     "  try {",
-    "    # 汇报 = 本窗口 rollout 的最后一条 assistant 输出（不要求 token/完成 字样）：窗口做完即落盘，缺 token 也能带出真实汇报。",
+    "    # 执行结束判定（用户方案：done=做完了，不等同于成功）：codex 已退出即视为本窗执行结束，写 result + .self-closed 完成标记。",
+    "    # 是否真的达成 prompt 预期，由主控关窗后去核对真实落盘状态；这里不因其未输出长篇汇报就判定未完成。",
     "    $dir = $env:ORCH_SDIR",
     "    $report = Get-LastReport -dir $dir -tok $token",
     "    $line = '__EXIT__=' + $code",
     "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
     "    Ensure-ResultDir",
     "    Set-Content -LiteralPath $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8",
-    "    if ($report -and $report.ToString().Trim()) { Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
+    "    Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ }",
     "  } catch { }",
     "}",
     "$p = (Get-Content -Raw -Encoding UTF8 '" + pfQ + "').Trim()",
@@ -1894,7 +1896,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）";
+    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。执行结束判定=本窗完成实际操作并验证落盘后，**最后单独输出一行结束标记 `__ORCH_DONE__ <本窗token>`**（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。只需此一行，无需长篇汇报；仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.
@@ -2036,39 +2038,19 @@ async function main() {
         summary[s.key] = { title: s.title, status: tagged, exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
         console.log("=== " + s.key + " " + s.title + " ===");
         if (res.done) {
-          // 自动关闭锚点 = 已抓到【本块自己的完成汇报】(自己的 matchToken + 完成)。抓不到就不算 done、不关窗，继续轮询。
+          // 执行结束判定（用户方案：done=做完了，不等同于成功）：窗口已执行结束（识别码/自关标记/codex 退出）即收。
+          // 是否真正达成 prompt 预期，由主控关窗后去核对真实落盘状态；这里不因未捕获到“汇报文本”就判定未完成。
+          // 汇报文本尽力带出（有则记，无则提示需外部核对落盘），status 一律 done。
           let text = res.text || "";
-          const placeholder = /no session rollout matched|no result captured/.test(text);
-          if (!text || placeholder) {
-            text = await waitForReportText(matchKey, resultFile, 60000);
+          if (!text || /no session rollout matched|no result captured|launcher exited/.test(text)) {
+            try { if (sessionFile) text = extractResult(sessionFile).text || ""; } catch { /* ignore */ }
           }
-          // 完成判定（用户方案）：窗口正常退出(resultFile 已落)且有最终汇报文本即收，不再要求 token/完成 字样，杜绝误判 uncaptured 二次执行。
-          const ownReport = !!(text && text.trim() && !/no session rollout matched|no result captured|launcher exited/.test(text));
-          if (ownReport) {
-            summary[s.key].result = text.trim().slice(0, 2000);
-            summary[s.key].status = (res.exitCode != null && res.exitCode !== 0) ? "failed" : "done";
-            console.log(trunc(text, 1600));
-            console.log("  own completion report CAPTURED -> closing [" + s.title + "] in " + closeDelayMs + "ms...");
-            await new Promise((r) => setTimeout(r, closeDelayMs));
-            await closeWindow(s.pidf);
-          } else {
-            // 用户方案：窗口回合已完成(task_complete/result)且有输出即视为完成（汇报=该窗口最后一条 assistant 输出），
-            // 不再因汇报措辞缺 token 而判定 uncaptured 去二次执行；窗口做完了就收，结束。
-            let lastText = text;
-            if (!lastText || /no session rollout|no result captured|launcher exited/.test(lastText)) {
-              try { if (sessionFile) lastText = extractResult(sessionFile).text || ""; } catch { /* ignore */ }
-            }
-            const hasText = !!(lastText && lastText.trim());
-            // 窗内 codex 为交互会话：跑完回合即退出并自关（结果文件/自关标记已在），即视为完成。
-            // 最终汇报文本可能未被解析进结果文件（agent 只做了落盘动作、未输出含 token 的收尾文本），
-            // 故无文本时也按 done 处理并注明需外部复核落盘；真正的失败由 popup-failed/preflight-failed 承担。
-            const isCompletion = hasText && (lastText.includes("完成") || !!(s.matchToken && lastText.includes(s.matchToken)) || lastText.includes(matchKey));
-            summary[s.key].result = (hasText ? lastText : ("（窗内 codex 已执行并自动关闭；退出码=" + (res.exitCode ?? "?") + "，未捕获最终汇报文本，请外部复核落盘）")).trim().slice(0, 2000);
-            summary[s.key].status = "done";
-            console.log("  window self-closed -> marked done (" + (isCompletion ? "report captured" : "no report; external verify") + ") -> closing [" + s.title + "]");
-            await new Promise((r) => setTimeout(r, closeDelayMs));
-            await closeWindow(s.pidf);
-          }
+          const hasText = !!(text && text.trim());
+          summary[s.key].result = (hasText ? text.trim() : ("（窗内 codex 已执行结束并自动关闭；退出码=" + (res.exitCode ?? "?") + "，未捕获汇报文本，请按任务提示词核对真实落盘状态）")).slice(0, 2000);
+          summary[s.key].status = "done";
+          console.log("  execution ended -> marked done -> closing [" + s.title + "]");
+          await new Promise((r) => setTimeout(r, closeDelayMs));
+          await closeWindow(s.pidf);
         } else {
           console.log("  timeout; window [" + s.title + "] still open (task may still be running).");
         }
@@ -2111,21 +2093,17 @@ async function main() {
         else if (existsSync(resultFile2)) { const c2 = readExitCode(resultFile2); res2 = { done: true, text: "(launcher exited code " + (c2 === null ? "?" : c2) + "; no session rollout matched)", exitCode: c2 }; }
         summary[r.key] = { title: r.title, status: res2.done ? "done" : "timeout", exitCode: res2.exitCode ?? null, result: (res2.text || "(no result captured)").trim().slice(0, 2000) };
         if (res2.done) {
+          // 执行结束判定（用户方案：done=做完了，不等同于成功）：res2.done 即收；是否达标由主控核对真实落盘状态。
           let t2 = res2.text || "";
-          if (!t2 || /no session rollout matched|no result captured/.test(t2)) { t2 = await waitForReportText(matchKey2, resultFile2, 60000); if (t2) summary[r.key].result = t2.trim().slice(0, 2000); }
-          if (t2 && !/no session rollout matched|no result captured/.test(t2)) {
-            summary[r.key].status = "done";
-            console.log("  [re-run " + r.key + "] report CAPTURED -> closing");
-            await new Promise((x) => setTimeout(x, closeDelayMs));
-            await closeWindow(la.pidf);
-            cancelReservation(claim2.id);
-          } else {
-            summary[r.key].status = (res2.exitCode && res2.exitCode !== 0) ? "failed" : "uncaptured";
-            console.log("  !! [re-run " + r.key + "] report not captured; status=" + summary[r.key].status + " (exitCode=" + (res2.exitCode ?? "?") + ")");
-            await new Promise((x) => setTimeout(x, closeDelayMs));
-            await closeWindow(la.pidf);
-            cancelReservation(claim2.id);
+          if (!t2 || /no session rollout matched|no result captured|launcher exited/.test(t2)) {
+            try { if (sf2) t2 = extractResult(sf2).text || ""; } catch { /* ignore */ }
           }
+          summary[r.key].result = (t2 && t2.trim() ? t2.trim() : ("（窗内 codex 已执行结束并自动关闭；请按任务提示词核对真实落盘状态）")).trim().slice(0, 2000);
+          summary[r.key].status = "done";
+          console.log("  [re-run " + r.key + "] execution ended -> closed");
+          await new Promise((x) => setTimeout(x, closeDelayMs));
+          await closeWindow(la.pidf);
+          cancelReservation(claim2.id);
         } else {
           console.log("  !! [re-run " + r.key + "] wait timeout; closing window to avoid leak.");
           await closeWindow(la.pidf);

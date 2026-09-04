@@ -231,12 +231,14 @@ test('orchestrate-sdk blockPrompt: run-windows block prompt embeds a real ASCII 
   const token = 'B1-abc123-4f2g9z'; // 真实非空 ASCII（r.key-rid-随机 base36）
   const auth = '\n\n（用户已明确、反复授权「同意推进，允许执行」……）\n执行完即可结束本窗、汇报。';
   const prompt = buildBlockPrompt(body, token) + '\n' + auth;
-  // 必须含【本块唯一标识】<token> 完成（token 为真实非空 ASCII）
+  // 必须含【本块唯一标识】<token>（真实非空 ASCII）——父进程用它在 rollout 里定位本窗会话
   assert.ok(prompt.includes('【本块唯一标识】' + token), 'prompt must embed the real token after the marker');
-  const m = prompt.match(/【本块唯一标识】([A-Za-z0-9_-]+) 完成/);
-  assert.ok(m, 'prompt must contain 【本块唯一标识】<token> 完成');
-  assert.equal(m[1], token, 'the token before 完成 must be the real block token');
-  // 不得出现裸『【本块唯一标识】 完成』（标识后紧跟空格+完成 = token 缺失，watchdog 会把“完成”当 token 再清洗成空而失配）
+  // 新契约（用户方案：done=做完了，不等同于成功）：结束信号 = 窗内最后输出 __ORCH_DONE__ <token>，不再要求「…完成」汇报
+  assert.ok(prompt.includes('__ORCH_DONE__ ' + token), 'prompt must instruct to emit the __ORCH_DONE__ <token> marker');
+  // 识别码后必须紧跟非空 token（缺 token 会失配）
+  assert.ok(/__ORCH_DONE__\s+[A-Za-z0-9_-]+/.test(prompt), 'marker must carry a non-empty token');
+  // 不得出现裸『__ORCH_DONE__』（后无 token）或『【本块唯一标识】 完成』
+  assert.doesNotMatch(prompt, /__ORCH_DONE__\s*$/m, 'marker must not dangle with no token');
   assert.doesNotMatch(prompt, /【本块唯一标识】\s+完成/);
 });
 
