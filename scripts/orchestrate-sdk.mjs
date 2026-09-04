@@ -55,9 +55,26 @@ import { fileURLToPath } from "node:url";
 // Config (env-first, portable)
 // ---------------------------------------------------------------------------
 // 通用工作区解析：env WORKSPACE_DIR 优先，否则当前目录。不依赖任何平台特定配置（可移植）。
+// 判据补充：编排器自身的插件安装/缓存目录绝不能被当成用户工作区——否则 launcher 产物（temp\win-launch-*、
+// temp\win-*.result.json*、window-*.pid）会建在会被插件版本升级/重装（cachebuster）整体清掉的路径下，
+// 运行中的窗随后写 .self-closed 时父目录已消失，正是「任务完成却报 [进程已退出，代码为 1] 且窗不自动关」的根因。
 function resolveWorkspace() {
+  // 显式指定的 WORKSPACE_DIR 始终优先、照用（用户/调用方说了算）。
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
-  return process.cwd();
+  const here = process.cwd();
+  // 编排器插件自身库：源码安装目录（plugins/agent-tui-orchestrator）与运行时缓存目录
+  // （plugins/cache/personal/agent-tui-orchestrator/<ver>）。两者都可能在升级/重装时被整目录清掉。
+  const h = path.resolve(here).replace(/[\\/]+$/, "");
+  const isPluginTree =
+    /(?:[\\/]plugins[\\/]cache[\\/]personal[\\/]agent-tui-orchestrator(?:[\\/]|$))/i.test(h) ||
+    /(?:[\\/]plugins[\\/]agent-tui-orchestrator(?:[\\/]|$))/i.test(h);
+  if (isPluginTree) {
+    // 拒绝把插件自身目录当工作区：落地到稳定运行目录（STATE_DIR 同级 family home），绝不被插件升级清掉。
+    const stable = path.join(os.homedir(), ".codex", "orchestrator");
+    console.warn("[orchestrator] WARN: resolved workspace '" + here + "' is the orchestrator plugin's own tree; ignoring it for launcher/temp artifacts and using stable '" + stable + "' instead.");
+    return stable;
+  }
+  return here;
 }
 const WORKSPACE = resolveWorkspace();
 let _codexPathCache;   // memoize: codex 路径检测只做一次（须在 CODEX 初始化前声明，避免 TDZ）
@@ -957,6 +974,11 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "Write-Host '  TASK RUNNING - closes automatically on completion'",
     "Write-Host '============================================='",
     "$resultFile = '" + rfQ + "'",
+    // 加固：结果/完成标记写入前先确保父目录存在。避免“launcher 产物目录在运行中被删除/被插件升级重装清掉”
+    // 后，Set-Content 因父目录不存在而抛 DirectoryNotFoundException，导致窗以 exit 1 退出且不自动关（常见根因）。
+    "function Ensure-ResultDir {",
+    "  try { $d = Split-Path -Parent $resultFile; if ($d -and -not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null } } catch { }",
+    "}",
     "function Get-LastReport {",
     "  param([string]$dir,[string]$tok)",
     "  $res = ''",
@@ -986,8 +1008,9 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    $report = Get-LastReport -dir $dir -tok $token",
     "    $line = '__EXIT__=' + $code",
     "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
+    "    Ensure-ResultDir",
     "    Set-Content -LiteralPath $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8",
-    "    if ($report -and $report.ToString().Trim()) { try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
+    "    if ($report -and $report.ToString().Trim()) { Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
     "  } catch { }",
     "}",
     "$p = (Get-Content -Raw -Encoding UTF8 '" + pfQ + "').Trim()",
@@ -1002,6 +1025,10 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "$watch = Start-Job -ScriptBlock {",
     "  param($token, $rootPid, $resultFile)",
     "  if ([string]::IsNullOrWhiteSpace($token)) { return }",
+    "  # 独立 runspace：本 job 看不到主作用域的 Ensure-ResultDir，需在此自行复刻（与主作用域实现一致）。",
+    "  function Ensure-ResultDir {",
+    "    try { $d = Split-Path -Parent $resultFile; if ($d -and -not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null } } catch { }",
+    "  }",
     "  function Stop-LauncherDescendants {",
     "    param([int]$root)",
     ...psKillDescendantsLines().map((ln) => "    " + ln),
@@ -1030,7 +1057,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "      if ($n -gt 0) { $sawChild = $true }",
     "      # 加固：陈旧/旧块 result 文件可能在 codex 尚未生成后代时误触发提前退出；故仅当确曾观测到本窗 codex",
     "      # 后代（$sawChild）且现已杀净时才结束，并补写 .self-closed 完成标记，避免“任务完成但窗未自动关”。",
-    "      if ($n -eq 0 -and $sawChild) { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII; exit 0 }",
+    "      if ($n -eq 0 -and $sawChild) { Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }; exit 0 }",
     "    }",
     "    try {",
     "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }",
@@ -1041,9 +1068,9 @@ function writeInteractiveLauncher(title, prompt, sfx) {
             "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
             "            # 自动关闭设计 = watchdog 检测到【本块 agent 的完成汇报】(agent_message/assistant 行含本块 token 且含 完成) 才关窗。",
             "            # 计划/中间消息不带“完成”，不会被误关；仅真正的完成汇报触发。稳定~1.5s 后关，确保父进程已抓到汇报。",
-            "            $done = ($tail | Where-Object { $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
+    "            $done = ($tail | Where-Object { $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
     "            if ($done) {",
-    "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
+    "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
     "                # 递归杀净 launcher 的全部后代（codex 树）：绝不强杀 launcher 自身；codex 已退出(无后代)则函数直接跳过。",
     "                Kill-LauncherTree $rootPid",
     "                exit 0",
@@ -1051,7 +1078,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
             "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') } | Select-Object -Last 1)",
     "            if ($report) {",
     "                # 命中即收窗：rollout 中最后一条含本窗 token+完成 的 assistant 消息即最终汇报（模板要求最终汇报以 token 开头、禁止中途输出未完状态），出现即写强标记并结束，无需等 1.5s 稳定。",
-    "                Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII",
+    "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
     "                # 同上：递归杀净 launcher 的全部后代（codex 树），绝不强杀 launcher 自身，codex 已退出则自动跳过。",
     "                Kill-LauncherTree $rootPid",
     "                exit 0",
@@ -1107,7 +1134,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     // 拿到最终汇报（$rep）或 watchdog 已确认完成（$wdDone）都归零，确保窗必关、绝不留常驻 codex。
     "if ($rep -or $wdDone) { $code = 0 }",
     "if ($attempt -gt 0) { $code = 0 }",
-    "if ($rep -or $wdDone) { try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
+    "if ($rep -or $wdDone) { Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
     "Write-Result $code",
     // Always exit 0: Windows Terminal auto-closes the pane on exit code 0 (closeOnExit:graceful).
     // A non-zero exit keeps the pane open ("process exited, code X") which is the stuck-window bug.

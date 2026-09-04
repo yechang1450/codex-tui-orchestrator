@@ -455,6 +455,66 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
   assert.ok(idxFallback < idxForceKill, 'force-kill must be guarded by the fallback branch (real exception only)');
 });
 
+test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> recreates it, writes .self-closed, exits 0', async () => {
+  // Regression for the exact reported bug: a Codex TUI window finished (agent reported ORCH_DONE) but the
+  // launcher wrote win-<s>.result.json.self-closed into a temp dir that no longer existed (removed when the
+  // plugin was cachebuster-upgraded from 0.2.1 -> 0.2.2). Set-Content then threw DirectoryNotFoundException
+  // and the pane stuck at "[进程已退出，代码为 1]". We simulate that by deleting the launcher's result-file
+  // parent dir right before the watchdog would fire, and assert the launcher recreates it and exits 0.
+  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-vanish-'));
+  const tok = 'V1-abc-789';
+  const { lp, pidf, pf, rf } = writeInteractiveLauncher('vanish', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
+  const codexPidFile = path.join(ws, 'codex.pid');
+  const grandPidFile = path.join(ws, 'grand.pid');
+  const fakeCodex = path.join(ws, 'fake-codex.ps1');
+  const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
+  writePs(fakeCodex, `$ErrorActionPreference='Continue'
+$dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$token='${tok}'
+$report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
+Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $report -Encoding UTF8
+$PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
+$psi=New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName='powershell.exe'; $psi.Arguments='-NoProfile -Command "Start-Sleep -Seconds 600"'; $psi.UseShellExecute=$false
+$grand=[System.Diagnostics.Process]::Start($psi)
+$grand.Id | Set-Content -LiteralPath '${grandPidFile}' -Encoding UTF8
+$grand.WaitForExit()
+while($true){Start-Sleep -Seconds 600}`);
+  // Patch the generated launcher so "codex" is our fake process (never self-exits), and inject a pre-codex
+  // step that DELETES the result-file parent dir to simulate the plugin-upgrade wipe of the temp folder.
+  let ps = fs.readFileSync(lp, 'utf8');
+  const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+  ps = ps.replace(/&\s*'codex'\s*@codexArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @codexArgs");
+  // Inject before the `& codex` invocation: remove the dir that holds $resultFile (the vanished temp dir).
+  ps = ps.replace(/& 'C:\/Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe'/g, "Remove-Item -LiteralPath (Split-Path -Parent $resultFile) -Recurse -Force -ErrorAction SilentlyContinue; & 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'");
+  fs.writeFileSync(lp, ps, 'utf8');
+  const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
+  let codexPid = 0, grandPid = 0;
+  const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
+  try {
+    await waitFor(() => fs.existsSync(codexPidFile) && fs.existsSync(grandPidFile), 15000);
+    codexPid = readPidFile(codexPidFile); grandPid = readPidFile(grandPidFile);
+    assert.ok(codexPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
+    const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
+    assert.notEqual(exitCode, 'timeout', 'launcher must exit on its own (no permanently-alive codex window)');
+    assert.equal(exitCode, 0, 'launcher must end with exit 0 even when its result dir was wiped mid-run');
+    assert.equal(pidAliveCheck(codexPid), false, 'codex process must be reaped');
+    assert.equal(pidAliveCheck(grandPid), false, 'codex grandchild must be reaped');
+    assert.equal(fs.existsSync(rf), true, 'result file must be written after dir vanished (Ensure-ResultDir recreated it)');
+    assert.equal(fs.existsSync(rf + '.self-closed'), true, 'watchdog/launcher must recreate the dir and write .self-closed');
+  } finally {
+    for (const pid of [codexPid, grandPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    try { child.kill(); } catch { /* ignore */ }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 test('runtime: minimal launcher smoke -> recursive kill frees & codex; result file exit 0; launcher exits 0 without force-kill', async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt-launch-'));
   const pidFile = path.join(d, 'launcher.pid');
