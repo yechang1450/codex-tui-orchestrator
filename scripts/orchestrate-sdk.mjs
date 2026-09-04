@@ -114,6 +114,9 @@ const AGENT_ARGS = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPA
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
+// 子代理共享任务文件目录（父/主窗口与子代理都真正可读，绕开 spawn_agent message 正文偶发投递失败的断点）。
+// 放在 orchestrator 稳定家目录下（ORCH_STATE_DIR），非 WORKSPACE 临时目录，避免被插件升级清掉/散落。
+const SUBTASK_DIR = process.env.ORCH_SUBTASK_DIR || path.join(STATE_DIR, "subtasks");
 // 轮询总上限：默认 6 小时（ORCH_MAX_POLL_MS 可调）。用于「检测是否有默认时间限制会提前结束轮询」——
 // 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
 // ORCH_TIMEOUT_MS 仍可覆盖（比如测试时缩短）。
@@ -1933,6 +1936,9 @@ async function main() {
     const totalAgentMax = computeMaxTotalAgents(memGb);
     process.env.ORCH_SUBAGENT_MAX = String(subagentMax);
     process.env.ORCH_MAX_TOTAL_AGENTS = String(totalAgentMax);
+    // 注入子代理共享任务目录，并确保存在（父/子都可读写）。绕开 spawn_agent message 正文偶发投递失败的断点。
+    try { mkdirSync(SUBTASK_DIR, { recursive: true }); process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
+    catch (e) { process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
     console.log("[orchestrator] superpowers plugin: " + (sp.available ? "USABLE -> 参与后续流程 (并发分析+并发干活强强联合)" : "NOT USABLE -> 照旧 (" + sp.reason + ")"));
     console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " superpowers=" + (sp.available ? "on" : "off") + " maxWindows=" + computeMaxWindows(memGb) + " subagent/window=" + subagentMax + " totalAgents=" + totalAgentMax + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
@@ -1972,7 +1978,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。**若开了子代理却未输出 SUBAGENTS_DONE，orchestrator 绝不关窗**（会持续等待，视为未完成）。\n\n【自验未落盘=未完成，禁止输出结束标记（硬约束）】本窗在输出结束标记（`__ORCH_DONE__`/`SUBAGENTS_DONE`）前，**必须逐一真实读回/检查它声称创建或修改的产物**，确认其真实存在于盘上且内容/编码正确。若**任一自验失败**（文件不存在/内容不符/未落盘），则**无论如何都禁止输出结束标记**——只能如实输出失败说明，让本窗不被当作成功收尾（orchestrator 会据此判为未完成）。只有在所有声明的产物都**真实落盘且自验通过**后，才允许输出结束标记。\n\n执行结束判定=本窗完成实际操作、**全部子代理已收尾**、并**现场自验全部产物真实落盘**后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
+    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理任务正文走共享文件（硬性要求，绕过消息断点）】在决定使用子代理后、真正 spawn 之前，**必须先把该子代理要执行的完整任务原文，写成共享文件 `$env:ORCH_SUBTASK_DIR\\subtask-<本窗token>-<seq>.md`**（UTF-8 无 BOM；内容 = 该子代理唯一且完整的任务，含目标/路径/验收标准，无歧义）。然后 `spawn_agent` 时，message 里只写一句「你的唯一任务见文件 `<该文件路径>`，请先读取它再执行」；**子代理必须先用工具读取该文件获取完整任务**，再执行。**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。\n\n【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。**若开了子代理却未输出 SUBAGENTS_DONE，orchestrator 绝不关窗**（会持续等待，视为未完成）。\n\n【自验未落盘=未完成，禁止输出结束标记（硬约束）】本窗在输出结束标记（`__ORCH_DONE__`/`SUBAGENTS_DONE`）前，**必须逐一真实读回/检查它声称创建或修改的产物**，确认其真实存在于盘上且内容/编码正确。若**任一自验失败**（文件不存在/内容不符/未落盘），则**无论如何都禁止输出结束标记**——只能如实输出失败说明，让本窗不被当作成功收尾（orchestrator 会据此判为未完成）。只有在所有声明的产物都**真实落盘且自验通过**后，才允许输出结束标记。\n\n执行结束判定=本窗完成实际操作、**全部子代理已收尾**、并**现场自验全部产物真实落盘**后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.

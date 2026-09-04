@@ -523,6 +523,16 @@ test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to
   assert.match(src, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
   assert.match(src, /真实落盘且自验通过/, 'TUI prompt must require the product to really land + self-check');
 });
+test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass broken message body channel)', () => {
+  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  // 1) must define a stable subtask dir under the orchestrator home
+  assert.match(src, /SUBTASK_DIR/, 'orchestrator must define SUBTASK_DIR');
+  assert.match(src, /ORCH_SUBTASK_DIR/, 'orchestrator must inject ORCH_SUBTASK_DIR env');
+  // 2) TUI prompt must require the sub-agent task body to be written to a shared file before spawn
+  assert.match(src, /子代理任务正文走共享文件/, 'TUI prompt must instruct shared-file task body for sub-agents');
+  assert.match(src, /ORCH_SUBTASK_DIR/, 'TUI prompt must reference ORCH_SUBTASK_DIR for the shared task file');
+  assert.match(src, /请先读取它再执行/, 'TUI prompt must tell the sub-agent to read the shared task file first');
+});
 
 test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> recreates it, writes .self-closed, exits 0', async () => {
   // Regression for the exact reported bug: a Codex TUI window finished (agent reported ORCH_DONE) but the
