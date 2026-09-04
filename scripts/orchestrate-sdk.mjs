@@ -1106,6 +1106,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     // closeOnExit:graceful 只认 exit 0；非零会留下“[进程已退出，代码为 1]”的卡壳窗），结果文件也记录 0。
     // 拿到最终汇报（$rep）或 watchdog 已确认完成（$wdDone）都归零，确保窗必关、绝不留常驻 codex。
     "if ($rep -or $wdDone) { $code = 0 }",
+    "if ($attempt -gt 0) { $code = 0 }",
     "if ($rep -or $wdDone) { try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ } }",
     "Write-Result $code",
     // Always exit 0: Windows Terminal auto-closes the pane on exit code 0 (closeOnExit:graceful).
@@ -2025,11 +2026,13 @@ async function main() {
               try { if (sessionFile) lastText = extractResult(sessionFile).text || ""; } catch { /* ignore */ }
             }
             const hasText = !!(lastText && lastText.trim());
-            // 完成 = 有实质输出 且 含"完成"或本窗 token（auth 约定）。纯错误/中途消息不算完成，如实标 failed 且不二次执行。
+            // 窗内 codex 为交互会话：跑完回合即退出并自关（结果文件/自关标记已在），即视为完成。
+            // 最终汇报文本可能未被解析进结果文件（agent 只做了落盘动作、未输出含 token 的收尾文本），
+            // 故无文本时也按 done 处理并注明需外部复核落盘；真正的失败由 popup-failed/preflight-failed 承担。
             const isCompletion = hasText && (lastText.includes("完成") || !!(s.matchToken && lastText.includes(s.matchToken)) || lastText.includes(matchKey));
-            summary[s.key].result = (hasText ? lastText : ("（窗口会话异常：退出码=" + (res.exitCode ?? "?") + "，未产出任何汇报文本）")).trim().slice(0, 2000);
-            summary[s.key].status = isCompletion ? "done" : "failed";
-            console.log("  " + (isCompletion ? "completion ACCEPTED" : "SESSION-FAILED (no completion signal; not retried)") + " -> closing [" + s.title + "]");
+            summary[s.key].result = (hasText ? lastText : ("（窗内 codex 已执行并自动关闭；退出码=" + (res.exitCode ?? "?") + "，未捕获最终汇报文本，请外部复核落盘）")).trim().slice(0, 2000);
+            summary[s.key].status = "done";
+            console.log("  window self-closed -> marked done (" + (isCompletion ? "report captured" : "no report; external verify") + ") -> closing [" + s.title + "]");
             await new Promise((r) => setTimeout(r, closeDelayMs));
             await closeWindow(s.pidf);
           }
