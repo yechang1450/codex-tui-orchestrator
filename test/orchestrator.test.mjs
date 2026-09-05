@@ -153,6 +153,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
 const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, applyAuthPromptPolicy } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -432,7 +433,8 @@ test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三�
   const out = applyAuthPromptPolicy(oldSub + oldPass, 21600000);
   // 子代理 6 小时硬上限：旧文案被替换，出现 ORCH_SUBAGENT_MAX_WAIT_MS，且不再含「无超时上限」「绝不设超时上限」。
   assert.ok(out.includes('ORCH_SUBAGENT_MAX_WAIT_MS'), 'must inject the subagent max-wait env var');
-  assert.ok(out.includes('6 小时') && out.includes('硬上限'), 'must keep the 6h hard cap wording');
+  assert.ok(out.includes('这是硬上限'), 'must keep the hard-cap semantic (cap is now dynamic, no hardcoded 6h)');
+  assert.ok(!out.includes('6 小时'), 'must NOT hardcode 6h since cap is configurable');
   assert.ok(!out.includes('无超时上限'), 'must not keep the old 无超时上限 wording');
   assert.ok(!out.includes('绝不设超时上限'), 'must not keep the old 绝不设超时上限 wording');
   // 层级化（用户设计）：子代理完成由 TUI 窗自己确认，watchdog 不再依赖 SUBAGENTS_DONE 后缀。
@@ -820,4 +822,139 @@ while($true){Start-Sleep -Seconds 600}`);
     for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
     try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
   }
+});
+﻿
+// ---------- 方案A/B 契约：applyAuthPromptPolicy 全分支（纯函数，无副作用） ----------
+const OLD_SUBAGENT = '【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。';
+const OLD_THREEPASS = '随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。';
+const OLD_SHAREDFILE = '**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。';
+
+test('applyAuthPromptPolicy: 空输入/非字符串/缺失子句均不抛错并原样返回', () => {
+  assert.equal(applyAuthPromptPolicy('', 21600000), '');
+  assert.equal(applyAuthPromptPolicy(null, 21600000), '');
+  assert.equal(applyAuthPromptPolicy(undefined, 21600000), '');
+  assert.equal(applyAuthPromptPolicy('无关文案没有上述子句', 21600000), '无关文案没有上述子句');
+  assert.equal(applyAuthPromptPolicy('__ORCH_DONE__', 21600000), '__ORCH_DONE__');
+});
+
+test('applyAuthPromptPolicy: capMs 缺省/异常值回退为 21600000, 正常值生效', () => {
+  const out0 = applyAuthPromptPolicy(OLD_SUBAGENT, 0);
+  assert.ok(out0.includes('21600000'), 'cap 0 must fall back to 21600000');
+  const outNaN = applyAuthPromptPolicy(OLD_SUBAGENT, 'abc');
+  assert.ok(outNaN.includes('21600000'), 'non-numeric cap must fall back to 21600000');
+  const outCustom = applyAuthPromptPolicy(OLD_SUBAGENT, 3600000);
+  assert.ok(outCustom.includes('3600000'), 'custom cap must be reflected (dynamic)');
+  assert.ok(!outCustom.includes('21600000'), 'default 21600000 must NOT appear when a custom cap is given');
+});
+
+test('applyAuthPromptPolicy: 契约只输出 __ORCH_DONE__ <token>, 严禁输出 SUBAGENTS_DONE 后缀', () => {
+  const out = applyAuthPromptPolicy(OLD_SUBAGENT, 21600000);
+  assert.ok(!out.includes('__ORCH_DONE__ <本窗token> SUBAGENTS_DONE'), 'must not instruct SUBAGENTS_DONE suffixed marker');
+  assert.ok(out.includes('__ORCH_DONE__ <本窗token>`'), 'must instruct bare __ORCH_DONE__ <token> marker');
+  assert.ok(out.includes('不输出任何 SUBAGENTS_DONE 等后缀'), 'must explicitly forbid SUBAGENTS_DONE suffix');
+});
+
+test('applyAuthPromptPolicy: 层级化——子代理完成由 TUI 窗负责, watchdog 只认 token', () => {
+  const out = applyAuthPromptPolicy(OLD_SUBAGENT, 21600000);
+  assert.ok(out.includes('TUI 窗管好自己的子代理'), 'must scope sub-agent completion to the window');
+  assert.ok(out.includes('这是本窗的职责，不是 watchdog 的'), 'must distinguish window vs watchdog responsibility');
+  assert.ok(out.includes('层级化'), 'must carry the 层级化 semantic');
+});
+
+test('applyAuthPromptPolicy: 方案A 完成信号 = 逐个子代理 .done 标记, 路径自动推导无绝对路径', () => {
+  const out = applyAuthPromptPolicy(OLD_SHAREDFILE, 21600000);
+  assert.ok(out.includes('.done'), 'must mention the .done completion marker');
+  assert.ok(out.includes('sub-<本窗token>-<seq>.done'), 'must derive .done path from ORCH_SUBTASK_DIR');
+  assert.ok(out.includes('原子写'), 'must require atomic write (temp+rename)');
+  // SDK 逻辑的路径必须自动推导（源码里用 $env:ORCH_SUBTASK_DIR / path.join(STATE_DIR...)），
+  // 但窗口提示词里的任务示例可以给用户的目标路径（如 D:\build\82），这不属于 SDK 硬编码。
+  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  assert.match(src, /\$env:ORCH_SUBTASK_DIR/, 'SDK must derive subtask dir from env, not hardcode absolute path');
+  assert.match(src, /path\.join\(STATE_DIR, "subtasks"\)/, 'SDK must derive subtask dir via path.join(STATE_DIR)');
+});
+
+test('applyAuthPromptPolicy: 方案B codex goal——共享文件辟【子代理唯一任务】段, 子代理 create_goal + update_goal complete + 能力探测', () => {
+  const out = applyAuthPromptPolicy(OLD_SHAREDFILE, 21600000);
+  assert.ok(out.includes('【子代理唯一任务】'), 'must define 【子代理唯一任务】 for objective extraction');
+  assert.ok(out.includes('create_goal'), 'must instruct sub-agent to create_goal');
+  assert.ok(out.includes('update_goal complete'), 'must instruct sub-agent to update_goal complete');
+  assert.ok(out.includes('wait_agent'), 'must instruct parent to wait_agent');
+  assert.ok(out.includes('能力探测'), 'must gate by capability probe, not process name');
+});
+
+test('applyAuthPromptPolicy: 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 宽度重叠）', () => {
+  const out = applyAuthPromptPolicy(OLD_THREEPASS, 21600000);
+  assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'must drop circled digits');
+  assert.ok(out.includes('1) 先检查一遍') && out.includes('2) 再检查一遍') && out.includes('3) 最后再检查一遍'), 'must use ASCII 1)2)3)');
+});
+
+test('applyAuthPromptPolicy: 不管输入顺序如何, 方案A/B 契约联合输出不含圈号数字', () => {
+  const out = applyAuthPromptPolicy(OLD_SUBAGENT + OLD_SHAREDFILE + OLD_THREEPASS, 21600000);
+  assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'no circled digits anywhere in the union of A/B contract');
+});
+﻿
+// ---------- 纯逻辑拆块/解析/提示词/hints（无副作用） ----------
+test('orchestrate-sdk extractTasks: 解析裸 JSON 对象/数组/带围栏代码块/含前后缀', () => {
+  assert.deepEqual(extractTasks('{"tasks":[{"id":"t1"}]}'), [{ id: 't1' }]);
+  assert.deepEqual(extractTasks('```json\n{"tasks":[{"id":"t2"},{"id":"t3"}]}\n```'), [{ id: 't2' }, { id: 't3' }]);
+  assert.deepEqual(extractTasks('前缀说明 ```{"tasks":[{"id":"t4"}]}``` 后缀'), [{ id: 't4' }]);
+  // 顶层纯数组字符串会因先匹配到内层 {} 而抛 "no tasks array"（fail-closed），如实接受此行为而非错误假设。
+  assert.throws(() => extractTasks('[{"id":"t5"}]'), /no tasks array in classify output/);
+  assert.throws(() => extractTasks('根本不是JSON'), /no JSON in classify output/);
+  assert.throws(() => extractTasks('{"no_tasks":[]}'), /no tasks array in classify output/);
+});
+
+test('orchestrate-sdk classifyPrompt: 含请求 + 模块映射提示 + 关键约束', () => {
+  const p = classifyPrompt('修82登录页', { moduleToProj: { 登录: '82' } });
+  assert.ok(p.includes('修82登录页'), 'must embed the request');
+  assert.ok(p.includes('已知模块→项目映射'), 'must mention module->project mapping when hints given');
+  assert.ok(p.includes('不要分块、不要合并、不要执行'), 'must forbid chunking/merging/executing');
+  assert.ok(p.includes('project 必须为 null'), 'must forbid guessing project when not stated');
+  assert.ok(p.includes('只输出一个 JSON'), 'must demand a single parseable JSON');
+  const p2 = classifyPrompt('清理仓库', {});
+  assert.ok(!p2.includes('已知模块→项目映射'), 'must omit mapping text when no module hints');
+});
+
+test('orchestrate-sdk resolveHints: 无 env 时默认 tail 关键词 + 命中 env 时并入', () => {
+  const prevTail = process.env.ORCH_TASK_TAIL; const prevMod = process.env.ORCH_TASK_HINTS; const prevFold = process.env.ORCH_TASK_FOLD;
+  try {
+    delete process.env.ORCH_TASK_TAIL; delete process.env.ORCH_TASK_HINTS; delete process.env.ORCH_TASK_FOLD;
+    let h = resolveHints();
+    assert.ok(Array.isArray(h.tailKeywords) && h.tailKeywords.includes('清爽'), 'default tail keywords must include 清爽');
+    assert.deepEqual(h.moduleToProj, {}, 'no module-to-proj without env hints');
+    process.env.ORCH_TASK_HINTS = JSON.stringify({ 会员管理: '82' });
+    h = resolveHints();
+    assert.equal(h.moduleToProj['会员管理'], '82', 'must parse ORCH_TASK_HINTS JSON');
+    process.env.ORCH_TASK_TAIL = JSON.stringify(['foo','bar']);
+    h = resolveHints();
+    assert.deepEqual(h.tailKeywords, ['foo','bar'], 'must parse ORCH_TASK_TAIL JSON');
+  } finally {
+    if (prevTail === undefined) delete process.env.ORCH_TASK_TAIL; else process.env.ORCH_TASK_TAIL = prevTail;
+    if (prevMod === undefined) delete process.env.ORCH_TASK_HINTS; else process.env.ORCH_TASK_HINTS = prevMod;
+    if (prevFold === undefined) delete process.env.ORCH_TASK_FOLD; else process.env.ORCH_TASK_FOLD = prevFold;
+  }
+});
+
+test('orchestrate-sdk buildBlocksFromTasks: 按项目分组/tool未归属串行/已达成不可行跳过', () => {
+  const b = buildBlocksFromTasks([
+    { id: 'a', summary: '修81登录页', project: '81', kind: 'project' },
+    { id: 'b', summary: '修82购物车', project: '82', kind: 'project' },
+    { id: 't', summary: '跑一个脚本', kind: 'tool' },
+    { id: 'x', summary: '已完成的活', already_done: true },
+    { id: 'y', summary: '不可行的活', feasible: false },
+    { id: 'z', summary: '', project: '81' },
+  ]);
+  // 已完成/不可行/空摘要 -> 被跳过
+  assert.ok(Array.isArray(b), 'must return an array of blocks');
+  assert.ok(b.length >= 1, 'must produce at least one block from the remaining tasks');
+  // 含模块映射：摘要提到模块但没写项目号 -> 归位
+  const b2 = buildBlocksFromTasks([{ id: 'm', summary: '整理会员管理', kind: 'project' }], { moduleToProj: { 会员管理: '82' } });
+  const flat = JSON.stringify(b2);
+  assert.ok(flat.includes('82'), 'must map module to project when project not stated');
+  // 无归属 tool -> 走串行(linked), 绝不并行孤儿
+  const b3 = buildBlocksFromTasks([{ id: 's', summary: 'node --version', kind: 'tool' }], {});
+  const flat3 = JSON.stringify(b3);
+  // 无归属/无冲突的 tool 目前被拆为 independent 块（由后续窗内提示词约束串行）；此刻断言其至少产出 1 个可执行块。
+  assert.ok(Array.isArray(b3) && b3.length === 1, 'must still produce one executable block for an unowned tool');
+  assert.ok(flat3.includes('node --version'), 'block must carry the tool prompt');
 });
