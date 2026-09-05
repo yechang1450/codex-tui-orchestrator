@@ -417,13 +417,13 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
 test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 1000) concurrency, no cap', () => {
-  assert.equal(computeMaxWindows(2), 2, '2G -> round(2.048) -> 2 (caller refuses <4G)');
-  assert.equal(computeMaxWindows(4), 4, '4G -> round(4.096) -> 4 windows');
-  assert.equal(computeMaxWindows(8), 8, '8G -> round(8.192) -> 8 windows');
-  assert.equal(computeMaxWindows(12), 12, '12G -> round(12.288) -> 12 windows');
-  assert.equal(computeMaxWindows(16), 16, '16G -> round(16.384) -> 16 windows');
-  assert.equal(computeMaxWindows(32), 33, '32G -> round(32.768) -> 33 windows');
-  assert.equal(computeMaxWindows(64), 66, '64G -> round(65.536) -> 66 windows');
+  assert.equal(computeMaxWindows(2), 1, '2G -> round(1.024) -> 1 (caller refuses <4G)');
+  assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2 windows');
+  assert.equal(computeMaxWindows(8), 4, '8G -> round(4.096) -> 4 windows');
+  assert.equal(computeMaxWindows(12), 6, '12G -> round(6.144) -> 6 windows');
+  assert.equal(computeMaxWindows(16), 8, '16G -> round(8.192) -> 8 windows');
+  assert.equal(computeMaxWindows(32), 16, '32G -> round(16.384) -> 16 windows');
+  assert.equal(computeMaxWindows(64), 33, '64G -> round(32.768) -> 33 windows');
 });
 test('orchestrate-sdk applyAuthPromptPolicy: 不注入子代理指令 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
   // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
@@ -977,12 +977,12 @@ test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不�
 });
 
 test('computeMaxWindows: 内存上限/下限边界', () => {
-  assert.equal(computeMaxWindows(2), 2, '2G -> round(2.048) -> 2');
-  assert.equal(computeMaxWindows(3.9), 4, '3.9G -> round(3.9936) -> 4');
-  assert.equal(computeMaxWindows(4), 4, '4G -> round(4.096) -> 4');
-  assert.equal(computeMaxWindows(7), 7, '7G -> round(7.168) -> 7');
-  assert.equal(computeMaxWindows(16), 16, '16G -> round(16.384) -> 16');
-  assert.equal(computeMaxWindows(64), 66, '64G -> round(65.536) -> 66');
+  assert.equal(computeMaxWindows(2), 1, '2G -> round(1.024) -> 1');
+  assert.equal(computeMaxWindows(3.9), 2, '3.9G -> round(1.9968) -> 2');
+  assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2');
+  assert.equal(computeMaxWindows(7), 4, '7G -> round(3.584) -> 4');
+  assert.equal(computeMaxWindows(16), 8, '16G -> round(8.192) -> 8');
+  assert.equal(computeMaxWindows(64), 33, '64G -> round(32.768) -> 33');
   assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
 });
 
