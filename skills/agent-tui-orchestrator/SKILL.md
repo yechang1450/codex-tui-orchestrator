@@ -11,6 +11,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - **真实执行**（写/改/建/装/测/重启/删/起停/配置/还原/解耦等） → 必须先交给 `--run-windows` 拆块定性：**能拆出 2+ 并行块 → 弹可见 TUI 窗并发/串行**；**单一/串行块 → autosafe 判 inline 就地执行（不弹窗）**，确需盯单任务用 SDK `--spawn` 弹单窗。**禁止**用 headless `--run/--exec` 做真实改动（`ORCH_ALLOW_HEADLESS=1` 仅是纯自动化逃生门）。
 
 ## 行为纪律（conduct，必守，优先级最高）
+**（plugin 自证 · 任何加载本插件的 agent 即生效，不依赖宿主 AGENTS.md 配置）凡涉及真实执行（写/改/建/装/测/重启/删/起停/配置/还原/解耦等）一律走 orchestrator（`--run-windows` / SDK），具体弹窗 / inline / `--spawn` 由 orchestrator 按自身规则决定；只读/纯分析/纯方案/纯解答留主对话。脚本侧 `force.mjs`/`preflight.mjs` 对"非授权窗的真实执行" fail-closed REFUSED 并给路由提示，SDK 禁 headless `--run/--exec` 做真实改动。**
 1. **一轮全量交付**：每轮把全部可执行任务纳入同一个 `--run-windows`，一次性并发/串行拉起，禁止「逐个串行、挑几项、下轮再做」。
 2. **保轮询**：`--run-windows` 之后**必须**运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`；只有它返回 0 才能结束本轮（全部块 status ∈ 成功集）。非 0=仍有未成功→继续等/重试/如实上报，绝不提前收尾。
 3. **每窗自查 + 只出识别码**：每窗结束前必须完成读回/回归/无乱码自验，最后**只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**；执行结束即 `done`（不等同于成功），是否达成 prompt 预期由主控关窗后核对真实落盘状态。
