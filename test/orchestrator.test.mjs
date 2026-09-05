@@ -483,7 +483,7 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  const idxGrace = src.indexOf('const deadline = Date.now() + 15000');
+  const idxGrace = src.indexOf('const deadline = Date.now() + 60000');
   const idxFallback = src.indexOf('force-killing (fallback)');
   const idxForceKill = src.indexOf('spawnSync("taskkill", ["/PID", String(p), "/T", "/F"]');
   assert.ok(idxGrace > -1, 'closeWindowByPid must poll/grace before any launcher force-kill');

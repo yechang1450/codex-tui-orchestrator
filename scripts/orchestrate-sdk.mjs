@@ -1530,7 +1530,7 @@ async function closeWindowByPid(pid) {
     killedCount = Number(String(r.stdout || "").trim().split(/\r?\n/).pop()) || 0;
   } catch { /* ignore */ }
   // Poll for the launcher to exit on its own; the launcher runs `exit 0` right after `& codex` returns.
-  const deadline = Date.now() + 15000;
+  const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 500));
     if (!pidAliveCheck(p)) return true; // launcher gone -> exit 0 + WT closed
