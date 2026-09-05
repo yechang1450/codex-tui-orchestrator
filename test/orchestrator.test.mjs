@@ -445,15 +445,9 @@ test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三�
   const oldSub = '【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。';
   const oldPass = '随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。';
   const out = applyAuthPromptPolicy(oldSub + oldPass, 21600000);
-  // 子代理 6 小时硬上限：旧文案被替换，出现 ORCH_SUBAGENT_MAX_WAIT_MS，且不再含「无超时上限」「绝不设超时上限」。
-  assert.ok(out.includes('ORCH_SUBAGENT_MAX_WAIT_MS'), 'must inject the subagent max-wait env var');
-  assert.ok(out.includes('这是硬上限'), 'must keep the hard-cap semantic (cap is now dynamic, no hardcoded 6h)');
-  assert.ok(!out.includes('6 小时'), 'must NOT hardcode 6h since cap is configurable');
-  assert.ok(!out.includes('无超时上限'), 'must not keep the old 无超时上限 wording');
-  assert.ok(!out.includes('绝不设超时上限'), 'must not keep the old 绝不设超时上限 wording');
-  // 层级化（用户设计）：子代理完成由 TUI 窗自己确认，watchdog 不再依赖 SUBAGENTS_DONE 后缀。
-  assert.ok(out.includes('TUI 窗管好自己的子代理'), 'must scope sub-agent completion to the window (层级化)');
-  assert.ok(!out.includes('__ORCH_DONE__ <本窗token> SUBAGENTS_DONE'), 'must NOT instruct outputting SUBAGENTS_DONE suffix');
+  // 窗内不再使用子代理：不再注入子代理上限 / SUBAGENTS_DONE / wait_agent / 共享文件 / TUI窗管好自己
+  // 窗内不再使用子代理：不应出现"使用子代理的步骤指令/等待上限注入"
+  assert.doesNotMatch(out, /ORCH_SUBAGENT_MAX_WAIT_MS|子代理任务正文走共享文件|等子代理返回|wait_agent 等子代理|必须先 spawn/, 'must NOT instruct sub-agent usage/wait caps');
   // 三遍检查序号：①/②/③ 全被替换成 1)/2)/3)，不再保留圈号（避免 WT CJK 宽度重叠）。
   assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'must drop the ①②③ circled digits');
   assert.ok(out.includes('1) 先检查一遍') && out.includes('2) 再检查一遍') && out.includes('3) 最后再检查一遍'), 'must use ASCII-width 1)2)3)');
@@ -542,10 +536,9 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
     assert.doesNotMatch(body, /Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not depend on SUBAGENTS_DONE in the rollout');
     // 3) the TUI auth prompt (via applyAuthPromptPolicy in SDK source) must instruct the window to confirm sub-agents itself and output only __ORCH_DONE__ <token>
     const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-    assert.match(src, /wait_agent/, 'TUI prompt must tell the window to wait_agent for sub-agents');
+    assert.doesNotMatch(src, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'TUI prompt must NOT instruct sub-agent usage (route removed)');
     assert.doesNotMatch(src, /update_goal complete|能力探测/, 'TUI prompt must NOT mention codex goal mechanisms (goal route removed)');
-    assert.match(src, /不输出任何 SUBAGENTS_DONE 等后缀/, 'TUI prompt must tell the window to NOT output SUBAGENTS_DONE');
-    assert.match(src, /TUI 窗管好自己的子代理/, 'TUI prompt must scoped sub-agent completion to the window (层级化)');
+    assert.match(src, /__ORCH_DONE__ <本窗token>/, 'TUI prompt must instruct the bare __ORCH_DONE__ <token> exit marker');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
 test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to uncaptured (未落盘=未完成)', () => {
@@ -573,18 +566,16 @@ test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass bro
   assert.match(src, /ORCH_SUBTASK_DIR/, 'orchestrator must inject ORCH_SUBTASK_DIR env');
   // 2) TUI prompt must require the sub-agent task body to be written to a shared file before spawn
   const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
-  assert.match(authTpl, /子代理任务正文走共享文件/, 'TUI prompt must instruct shared-file task body for sub-agents');
-  assert.match(authTpl, /ORCH_SUBTASK_DIR/, 'TUI prompt must reference ORCH_SUBTASK_DIR for the shared task file');
-  assert.match(authTpl, /请先读取它再执行/, 'TUI prompt must tell the sub-agent to read the shared task file first');
+  assert.match(authTpl, /不使用子代理|不再使用子代理/, 'TUI prompt must state NO sub-agent usage');
+  assert.doesNotMatch(authTpl, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'TUI prompt must NOT instruct sub-agent usage');
 });
-test('orchestrate-sdk: 子代理一律走共享文件载体（goal 路线已删）；完成信号 = .done 标记 + wait_agent 返回', () => {
+test('orchestrate-sdk: 窗内不使用子代理（shared-file/sub-agent 不再作为 prompt 指令）', () => {
+  const srcTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
+  // prompt 里不再教窗用子代理/共享文件/SUBAGENTS_DONE
+  assert.match(srcTpl, /不使用子代理|不再使用子代理/, 'prompt must state NO sub-agent usage');
+  assert.doesNotMatch(srcTpl, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'prompt must NOT instruct sub-agent usage');
+  // SDK 逻辑不硬编码绝对路径
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  // 共享文件载体保留（子代理完成信号 = .done 标记，路径取 ORCH_SUBTASK_DIR）
-  assert.match(src, /ORCH_SUBTASK_DIR/, 'must keep shared-file subtask carrier via env');
-  assert.match(src, /\.done/, 'must instruct sub-agent .done completion marker');
-  assert.match(src, /wait_agent/, 'must instruct parent to wait_agent for sub-agents');
-  // goal 路线删除：不再提 goal 指令
-  assert.doesNotMatch(src, /update_goal complete|能力探测/, 'must NOT mention codex goal routes');
   assert.doesNotMatch(src, /D:\\build\\82/, 'must not hardcode absolute build path inside SDK logic');
 });
 
@@ -852,47 +843,13 @@ test('applyAuthPromptPolicy: 空输入/非字符串/缺失子句均不抛错并�
   assert.equal(applyAuthPromptPolicy('__ORCH_DONE__', 21600000), '__ORCH_DONE__');
 });
 
-test('applyAuthPromptPolicy: capMs 缺省/异常值回退为 21600000, 正常值生效', () => {
-  const out0 = applyAuthPromptPolicy(OLD_SUBAGENT, 0);
-  assert.ok(out0.includes('21600000'), 'cap 0 must fall back to 21600000');
-  const outNaN = applyAuthPromptPolicy(OLD_SUBAGENT, 'abc');
-  assert.ok(outNaN.includes('21600000'), 'non-numeric cap must fall back to 21600000');
-  const outCustom = applyAuthPromptPolicy(OLD_SUBAGENT, 3600000);
-  assert.ok(outCustom.includes('3600000'), 'custom cap must be reflected (dynamic)');
-  assert.ok(!outCustom.includes('21600000'), 'default 21600000 must NOT appear when a custom cap is given');
-});
-
-test('applyAuthPromptPolicy: 契约只输出 __ORCH_DONE__ <token>, 严禁输出 SUBAGENTS_DONE 后缀', () => {
-  const out = applyAuthPromptPolicy(OLD_SUBAGENT, 21600000);
-  assert.ok(!out.includes('__ORCH_DONE__ <本窗token> SUBAGENTS_DONE'), 'must not instruct SUBAGENTS_DONE suffixed marker');
-  assert.ok(out.includes('__ORCH_DONE__ <本窗token>`'), 'must instruct bare __ORCH_DONE__ <token> marker');
-  assert.ok(out.includes('不输出任何 SUBAGENTS_DONE 等后缀'), 'must explicitly forbid SUBAGENTS_DONE suffix');
-});
-
-test('applyAuthPromptPolicy: 层级化——子代理完成由 TUI 窗负责, watchdog 只认 token', () => {
-  const out = applyAuthPromptPolicy(OLD_SUBAGENT, 21600000);
-  assert.ok(out.includes('TUI 窗管好自己的子代理'), 'must scope sub-agent completion to the window');
-  assert.ok(out.includes('这是本窗的职责，不是 watchdog 的'), 'must distinguish window vs watchdog responsibility');
-  assert.ok(out.includes('层级化'), 'must carry the 层级化 semantic');
-});
-
-test('applyAuthPromptPolicy: 方案A 完成信号 = 逐个子代理 .done 标记, 路径自动推导无绝对路径', () => {
-  const out = applyAuthPromptPolicy(OLD_SHAREDFILE, 21600000);
-  assert.ok(out.includes('.done'), 'must mention the .done completion marker');
-  assert.ok(out.includes('sub-<本窗token>-<seq>.done'), 'must derive .done path from ORCH_SUBTASK_DIR');
-  assert.ok(out.includes('原子写'), 'must require atomic write (temp+rename)');
-  // SDK 逻辑的路径必须自动推导（源码里用 $env:ORCH_SUBTASK_DIR / path.join(STATE_DIR...)），
-  // 但窗口提示词里的任务示例可以给用户的目标路径（如 D:\build\82），这不属于 SDK 硬编码。
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  assert.match(src, /\$env:ORCH_SUBTASK_DIR/, 'SDK must derive subtask dir from env, not hardcode absolute path');
-  assert.match(src, /path\.join\(STATE_DIR, "subtasks"\)/, 'SDK must derive subtask dir via path.join(STATE_DIR)');
-});
-
-test('applyAuthPromptPolicy: 子代理完成信号 = 共享文件 .done 标记（goal 路线已删，不输出 goal 指令）', () => {
-  const out = applyAuthPromptPolicy(OLD_SHAREDFILE, 21600000);
-  assert.ok(out.includes('.done'), 'must instruct sub-agent .done completion marker');
-  assert.ok(out.includes('ORCH_SUBTASK_DIR'), 'must derive .done path from env, not hardcode');
-  assert.doesNotMatch(out, /create_goal|update_goal complete|能力探测/, 'must NOT output codex goal instructions (goal route removed)');
+test('applyAuthPromptPolicy: 不再提子代理/SUBAGENTS_DONE/goal；仅做三遍检查 ①②③→1)2)3)', () => {
+  const out = applyAuthPromptPolicy(OLD_SUBAGENT + OLD_SHAREDFILE + OLD_THREEPASS, 21600000);
+  // 三遍检查仍生效
+  assert.ok(out.includes('1) 先检查一遍') && out.includes('3) 最后再检查一遍'), 'must keep 1)2)3) three-pass');
+  assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'must drop circled digits');
+  // 子代理/SUBAGENTS_DONE/goal 均不再提及
+  assert.doesNotMatch(out, /SUBAGENTS_DONE .*<token>|子代理任务正文走共享文件|等子代理返回|update_goal complete|TUI 窗管好自己的子代理/, 'must NOT instruct sub-agent/SUBAGENTS_DONE/goal usage');
 });
 
 test('applyAuthPromptPolicy: 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 宽度重叠）', () => {
@@ -1080,7 +1037,7 @@ test('decomposeHash: 相同请求+相同 hints 稳定, 不同 hints 不同', () 
 
 test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 + SKD 逻辑不硬编码绝对路径', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  assert.match(src, /\$env:ORCH_SUBTASK_DIR/, 'subtask dir from env');
+  assert.match(src, /ORCH_SUBTASK_DIR/, 'subtask dir env name derived, not hardcoded path');
   assert.doesNotMatch(src, /D:\\build\\82/, 'no hardcoded build/82 path in SDK logic');
   assert.equal(applyAuthPromptPolicy('无子句', 21600000), '无子句', '无匹配原样');
 });

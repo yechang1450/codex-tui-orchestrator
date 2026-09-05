@@ -160,20 +160,14 @@ const AGENT_ARGS = AGENT_ARGS_LIST.map((aa) => "'" + String(aa).replace(/'/g, "'
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(CODEX_HOME, "orchestrator");
-// 子代理共享任务文件目录（父/主窗口与子代理都真正可读，绕开 spawn_agent message 正文偶发投递失败的断点）。
+// 兼容保留：子代理相关目录（本插件当前不再使用子代理；该目录仅作兼容，不用于启用子代理）。
 // 放在 orchestrator 稳定家目录下（ORCH_STATE_DIR），非 WORKSPACE 临时目录，避免被插件升级清掉/散落。
 const SUBTASK_DIR = process.env.ORCH_SUBTASK_DIR || path.join(STATE_DIR, "subtasks");
 //
-// 【子代理任务正文载体：共享文件（唯一，goal 路线已删除）】
-// 废弃说明（勿再走回头路）：codex 的 goal 机制（为线程级状态）本身无法承担「父给子代理派发任务」，
-//   官方明确 "Codex goals are currently scoped to the current thread"，"parent 给 spawned 子代理派发持久化 goal" 尚未实现；
-//   且实测该环境 spawn 出的子代理 get_goal 读到的是它**自己线程**的空 goal（"goal is empty"），拿不到父的任务。
-// 因此 goal 路线已删除；子代理任务正文一律走"共享任务文件 + 内置 spawn/wait"：
-//   父/主窗口先写共享文件，spawn 时 message 只指向该文件（仅一句话），子代理用读文件工具取到完整任务再执行；
-//   父/主窗口再 wait_agent 等其返回，并以 `.done` 标记作为完成的可观测信号。
-// 已知限制：该环境窗内 spawn_agent 的【消息正文】投递不可靠（NEW_TASK 信封可达，但正文子代理读不到），
-//   且协作线程上限可能拒绝再 spawn、子代理可能自 spawn 不收敛——故"窗内子代理"不作为可靠并行主机制；
-//   可靠并行 = 多 TUI 窗（独立块并行），任务完成判定 = 窗内最终落盘产物。
+// 【窗内不使用子代理（用户明确）】orchestrator 发起的每个 TUI 窗【不再使用子代理】：所有工作由该窗自己直接完成。
+//   可靠并行 = 多 TUI 窗（独立块并行）；任务完成判定 = 窗内最终落盘产物。历史：曾尝试
+//   codex goal 机制与"共享任务文件 + spawn/wait"（均为线程级/消息正文投递在此环境不可靠），均已弃用。
+//   （保留 SUBTASK_DIR 仅作兼容，不用于启用子代理。）
 //
 // 轮询总上限：默认 6 小时（ORCH_MAX_POLL_MS 可调）。用于「检测是否有默认时间限制会提前结束轮询」——
 // 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
@@ -1041,24 +1035,13 @@ function computeMaxTotalAgents(memGb) {
 }
 
 // 窗内 auth 提示词的确定性策略改写（纯函数，可单测）：
-//   1) 子代理等待上限：把「无超时上限」改为「ORCH_SUBAGENT_MAX_WAIT_MS 硬上限」，超时=未完成须如实标注，禁止虚报成功。
-//   2) TUI 渲染重叠修复：把「三遍检查」提示词里的 ①②③ 改成 1) 2) 3)（纯 ASCII 宽度），避免 Windows Terminal CJK 宽度歧义导致序号与文字重叠。
+//   TUI 渲染重叠修复：把「三遍检查」提示词里的 ①②③ 改成 1) 2) 3)（纯 ASCII 宽度），避免 Windows Terminal CJK 宽度歧义导致序号与文字重叠。
+//   说明：窗内不再使用子代理（用户明确：orchestrator 发起的 TUI 窗不再使用子代理），故不再替换子代理相关子句。
 export function applyAuthPromptPolicy(auth, subagentWaitMaxMs) {
-  const capMs = Number(subagentWaitMaxMs) || 21600000;
   let s = String(auth || "");
-  s = s.replace(
-    "【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。",
-    "【子代理收尾 = 一环扣一环（层级化：TUI 窗管好自己的子代理）】子代理属于本 TUI 窗：**你必须负责确认自己 spawn 的全部子代理都干活完成之后，才允许输出结束标记**——这是本窗的职责，不是 watchdog 的。**对单个子代理的最大等待时长 = $env:ORCH_SUBAGENT_MAX_WAIT_MS（当前 = " + capMs + "ms），这是硬上限**：超时即视为该子代理**超时/未完成**，须**如实标注**「子代理 X 已超过等待上限未返回」，绝不因超时而虚报成功。**确认全部子代理完成的方式（统一走共享文件 .done 标记）**：逐个检查你在共享目录 `$env:ORCH_SUBTASK_DIR` 下为每个子代理约定的 `.done` 标记文件都真实存在且内容正确（并用 `wait_agent` 等它返回拿到结果兜底）。**只有（自己活干完）且（确认全部子代理都干活完成）之后，才输出最后一行 `__ORCH_DONE__ <本窗token>`**——**只输出这一行，不输出任何 SUBAGENTS_DONE 等后缀**；watchdog 看到这一行即认为本窗（连同其子代理）全部收尾并关窗。"
-  );
   s = s.replace(
     "随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。",
     "随后按此顺序自查：1) 先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；2) 再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；3) 最后再检查一遍这个 TODO LIST 的问题（复查，确保 1) 2) 都改彻底）。"
-  );
-  // 子代理完成标记：共享任务文件里约定每个子代理独立的 .done 标记（路径用 $env:ORCH_SUBTASK_DIR 自动推导，绝不硬编码）；
-  // 父窗以「读回 .done 标记真实存在」作为该子代理完成的可观测信号（不用 codex goal 机制）。
-  s = s.replace(
-    "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。",
-    "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。**关于完成标记（共享文件·通用保底）**：在该共享任务文件里为子代理约定一个 `.done` 标记路径，例如 `$env:ORCH_SUBTASK_DIR\\sub-<本窗token>-<seq>.done`（路径用 `$env:ORCH_SUBTASK_DIR` 自动推导，不要写死绝对路径），并写明「子代理干完必须写该标记文件（原子写：临时文件+改名）」。父窗在判定自己收尾前，须逐个检查每个子代理的 `.done` 标记真实存在。"
   );
   return s;
 }
@@ -1231,8 +1214,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
             "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
             "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
             "            # 层级化：watchdog(爷爷)只认 TUI 窗(儿子)是否完成任务——只要 TUI 窗输出 __ORCH_DONE__ <token> 就认为收尾。",
-            "            # TUI 窗是否已在输出前确认全部子代理(孙子)干活完成，由 TUI 窗自己负责（读回 .done 标记 / wait_agent 返回）；",
-            "            # watchdog 不再要求 SUBAGENTS_DONE 后缀（一律只输出 __ORCH_DONE__ <token>）。",
+            "            # watchdog 只认 TUI 窗(儿子)输出 __ORCH_DONE__ <token> 即收尾；不再有任何 SUBAGENTS_DONE 后缀。",
             "            $done = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
     "            if ($done) {",
     "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
@@ -2112,7 +2094,7 @@ async function main() {
     // 超过即视为子代理超时/未完成，如实标注后允许本窗收尾，避免「子代理挂了父窗永远等下去」。可通过 ORCH_SUBAGENT_MAX_WAIT_MS 覆盖。
     const subagentWaitMaxMs = Number(process.env.ORCH_SUBAGENT_MAX_WAIT_MS || 21600000);
     process.env.ORCH_SUBAGENT_MAX_WAIT_MS = String(subagentWaitMaxMs);
-    // 注入子代理共享任务目录，并确保存在（父/子都可读写）。绕开 spawn_agent message 正文偶发投递失败的断点。
+    // 兼容：确保共享任务目录存在并注入 env（当前不使用子代理；保留以免引用处报错）。
     try { mkdirSync(SUBTASK_DIR, { recursive: true }); process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
     catch (e) { process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
     console.log("[orchestrator] superpowers plugin: " + (sp.available ? "USABLE -> 参与后续流程 (并发分析+并发干活强强联合)" : "NOT USABLE -> 照旧 (" + sp.reason + ")"));
