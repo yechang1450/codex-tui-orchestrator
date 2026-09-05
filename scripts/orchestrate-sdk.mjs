@@ -1444,7 +1444,12 @@ async function waitForReportText(matchKey, exitMarkerFile, timeoutMs) {
 // subtree, never the launcher, then poll for the launcher to exit on its own (exit 0). If it is
 // genuinely stuck we fall back to a force-kill (last resort / never an orphan) and report it.
 function readPidFile(pidf) {
-  try { return Number(String(readFileSync(pidf, "utf8")).trim()) || 0; } catch { return 0; }
+  try {
+    const p = Number(String(readFileSync(pidf, "utf8")).trim());
+    // 与 force.mjs 的 pidOf 一致：只认 1..4194304 的合理 PID，超出/非正数一律视为无效（0），
+    // 防止异常大/负值被当成活进程（process.kill 对大 pid 也可能因平台行为产生困惑）。
+    return Number.isFinite(p) && p >= 1 && p <= 4194304 ? p : 0;
+  } catch { return 0; }
 }
 function pidAliveCheck(pid) {
   const p = Number(pid);

@@ -310,6 +310,17 @@ test('runtime: readPidFile parses pid file', () => {
     assert.equal(readPidFile(path.join(d, 'missing.pid')), 0);
     fs.writeFileSync(pf, 'abc', 'utf8');
     assert.equal(readPidFile(pf), 0);
+    // 上限校验（与 force.mjs pidOf 对齐）：超大/负/0 都视为无效 0, 仅 1..4194304 合法。
+    fs.writeFileSync(pf, '999999999', 'utf8');
+    assert.equal(readPidFile(pf), 0, '超大 pid -> 0');
+    fs.writeFileSync(pf, '-5', 'utf8');
+    assert.equal(readPidFile(pf), 0, '负 pid -> 0');
+    fs.writeFileSync(pf, '0', 'utf8');
+    assert.equal(readPidFile(pf), 0, 'pid 0 -> 0');
+    fs.writeFileSync(pf, '4194304', 'utf8');
+    assert.equal(readPidFile(pf), 4194304, '最大合法 pid 保留');
+    fs.writeFileSync(pf, '4194305', 'utf8');
+    assert.equal(readPidFile(pf), 0, '超出上限 pid -> 0');
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 test('runtime: pidAliveCheck', () => {
@@ -998,4 +1009,78 @@ test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', (
     assert.doesNotMatch(body, /AGENT_ARGS\.split\(" "\)/, 'launcher must NOT split AGENT_ARGS by space (would split space-containing values)');
     assert.ok(body.includes("@('--cd'"), 'launcher must start codexArgs with @(--cd...) array literal');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } } }
+});
+﻿
+// ---------- 深挖边界：extractResult / computeMax / levelWaves / decomposeHash / applyAuthPromptPolicy ----------
+test('extractResult: 忽略非 JSON 行/坏行, 取最后一条 assistant 文本, 空文件安全', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-er-'));
+  try {
+    const f = path.join(d, 'r.jsonl');
+    fs.writeFileSync(f, '不是JSON\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'A' }] } }) + '\n垃圾行\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'B' }] } }), 'utf8');
+    assert.equal(extractResult(f).text, 'B', '取最后一条, 忽略坏行');
+    fs.writeFileSync(f, '', 'utf8');
+    assert.equal(extractResult(f).text, '', '空文件');
+    assert.deepEqual(extractResult(path.join(d, 'none.jsonl')), { done: true, text: '' }, '缺失文件');
+    fs.writeFileSync(f, JSON.stringify({ payload: { type: 'agent_message', message: '直接消息' } }), 'utf8');
+    assert.equal(extractResult(f).text, '直接消息');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不抛错', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rr-'));
+  try {
+    const rf = path.join(d, 'r.json');
+    fs.writeFileSync(rf, 'not json at all', 'utf8');
+    assert.equal(readReportFromResult(rf, 'tok'), '', '坏 JSON');
+    fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 1 }), 'utf8');
+    assert.equal(readReportFromResult(rf, 'tok'), '', '无 REPORT');
+    assert.equal(readReportFromResult(path.join(d, 'none.json'), 'tok'), '', '缺失文件');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('computeMaxWindows: 内存上限/下限边界', () => {
+  assert.equal(computeMaxWindows(2), 1, '2G -> 1');
+  assert.equal(computeMaxWindows(3.9), 1, '3.9G -> 1(floor)');
+  assert.equal(computeMaxWindows(4), 2, '4G -> 2');
+  assert.equal(computeMaxWindows(7), 3, '7G -> 3');
+  assert.equal(computeMaxWindows(16), 8, '16G -> 8(cap)');
+  assert.equal(computeMaxWindows(64), 8, '64G -> 8(cap)');
+  assert.equal(computeMaxWindows(0), 0, '0 -> 0');
+});
+
+test('computeMaxSubagents / computeMaxTotalAgents 边界', () => {
+  assert.equal(computeMaxSubagents(4), 0, '4G -> 0');
+  assert.equal(computeMaxSubagents(7.9), 0, '7.9G -> 0');
+  assert.equal(computeMaxSubagents(8), 1, '8G -> 1');
+  assert.equal(computeMaxSubagents(16), 2, '16G -> 2');
+  assert.equal(computeMaxSubagents(32), 4, '32G -> 4(cap)');
+  assert.equal(computeMaxTotalAgents(8), 4 * (1 + 1), '8G -> 4窗x2');
+  assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8窗x3');
+});
+
+test('levelWaves: 循环依赖/无依赖/空输入', () => {
+  const cyc = [
+    { key: 'B1', title: 'B1', b: {}, dependsOn: ['B3'] },
+    { key: 'B2', title: 'B2', b: {}, dependsOn: ['B1'] },
+    { key: 'B3', title: 'B3', b: {}, dependsOn: ['B2'] },
+  ];
+  assert.ok(Array.isArray(levelWaves(cyc)), '环依赖不抛错');
+  assert.equal(levelWaves([]).length, 0, '空输入');
+  const ind = [{ key: 'B1', title: 'B1', b: {}, dependsOn: [] }, { key: 'B2', title: 'B2', b: {}, dependsOn: [] }];
+  assert.equal(levelWaves(ind).length, 1, '无依赖全并行一波');
+});
+
+test('decomposeHash: 相同请求+相同 hints 稳定, 不同 hints 不同', () => {
+  const a = { moduleToProj: { 会员: '82' }, foldRules: {}, tailKeywords: [] };
+  const b = { moduleToProj: { 会员: '82' }, foldRules: { 清理: ['82'] }, tailKeywords: [] };
+  assert.equal(decomposeHash('修会员', a), decomposeHash('修会员', a), '相同->相同');
+  assert.notEqual(decomposeHash('修会员', a), decomposeHash('修会员', b), '不同 hints->不同');
+  assert.equal(decomposeHash('', {}), decomposeHash('', {}), '空请求稳定');
+});
+
+test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 + SKD 逻辑不硬编码绝对路径', () => {
+  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  assert.match(src, /\$env:ORCH_SUBTASK_DIR/, 'subtask dir from env');
+  assert.doesNotMatch(src, /D:\\build\\82/, 'no hardcoded build/82 path in SDK logic');
+  assert.equal(applyAuthPromptPolicy('无子句', 21600000), '无子句', '无匹配原样');
 });
