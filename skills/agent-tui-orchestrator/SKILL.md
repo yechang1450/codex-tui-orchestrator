@@ -20,7 +20,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完。
 8. **留痕**：真实执行后须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
-9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / agent-tui-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。
+9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / agent-tui-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。同时**不得改变底层设计**——「按并发冲突拆 linked/independent 块、实现无冲突同步并发」是根本，不能改为其它并发模型。
 10. **TUI 窗 = codex CLI，默认 `deepseek-v4-flash` / `max`**：orchestrator 弹出的窗走 codex CLI，默认模型 `deepseek-v4-flash`、推理力度 `max`（`ORCH_MODEL`/`ORCH_EFFORT` 可覆盖）；只有 codex GUI 主机才用 config.toml 的 `deepseek-v4-flash-vision-exp` / `high`，二者勿混淆。
 11. **每窗先做 TODO LIST（固化，硬性）**：每个被弹出的 TUI 窗在动手之前，**必须先**产出**从头到尾完整又完善、有头有尾的 TODO LIST**——头=目标+前置/环境盘点，中=每步含动作+产物+验证点+依赖顺序，尾=收尾现场自验+清理残留+结束标志；**且最后一项必须就是「输出结束标记 `__ORCH_DONE__ <本窗token>`」**。并用 `scripts/todo-list.mjs --check <清单> --strict` 校验：全部 PASS 才允许执行；任一 FAIL 先补齐再校验。仅做完「校验通过 + 三遍检查」后才动手（window prompt 已内联固化这条，不依赖任何 personal skill）。
 12. **窗内不使用子代理（硬性）**：orchestrator 发起的每个 TUI 窗**不再使用子代理**（`spawn_agent`/共享任务文件/等子代理/`SUBAGENTS_DONE` 后缀一律不用）。所有工作由该窗自己直接完成；任务过大需拆分时用**更多 TUI 窗并行**。可靠并行 = 多窗，任务完成判定 = 窗内最终落盘产物。（codex GUI 是否用子代理与本插件无关。）
