@@ -157,6 +157,11 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | 变量 | 默认 | 含义 |
 |-----|------|------|
 | `WORKSPACE_DIR` | `process.cwd()` | 工作目录（自动探测，从不硬编码）。 |
+| `CODEX_HOME` | `~/.codex` | 权威 Codex 家目录。**跨用户/跨设备/跨宿主**适配点：所有 `.codex` 路径都由它推导，绝不硬编码 `C:\Users\<user>\.codex`。 |
+| `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | 稳定运行/状态目录（registry、锁、子代理共享文件）。**不能**放在会被插件升级清掉的目录。 |
+| `ORCH_SESSION_DIR` | `$CODEX_HOME/sessions` | 会话 rollout 目录。 |
+| `ORCH_SUPERPOWERS_CACHE_DIR` | 自动探测 | 覆盖 superpowers 插件缓存路径（不同宿主/市场布局）。 |
+| `ORCH_AGENT` | `codex` | 选 agent：`codex`\|`claude`\|`gemini`\|`opencode`\|`aichat`；对应 CLI 未装则自动回退 `codex`。 |
 | `CODEX_EXE` | 自动检测 | `codex` CLI 路径。 |
 | `PYTHON` | `python` | 预制到弹窗 PATH 的 Python。 |
 | `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | 线程用模型。 |
@@ -171,6 +176,14 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `ORCH_TUI` | `wt` | `wt`=Windows Terminal（最佳 CJK 输入法），`conhost`=经典控制台。 |
 | `ORCH_MIN_FREE_MB` | `12000` | 工作区所在盘剩余空间（MB）低于此值则告警（≈12GB）。 |
 | `ORCH_MIN_FREE_HARD_MB` | `3600` | 硬下限（MB），低于此值直接拒绝执行（fail-closed，≈3.6GB）；若设得比 `ORCH_MIN_FREE_MB` 高则钳到告警阈值。 |
+
+### 通用化（跨设备 / 跨 agent / 跨用户适配）
+
+本插件已做**通用化设计**：宿主只需注入 `CODEX_HOME`（及可选 `ORCH_STATE_DIR`/`ORCH_SESSION_DIR`/`ORCH_AGENT`），同一份代码即可在**任意用户的 Windows 设备**与**任意主流 agent** 上运行，无需改源码。
+- **不同用户/设备**：所有 `.codex` 路径来自 `CODEX_HOME`（非 `C:\Users\<user>\.codex`）；agent 缓存与临时产物落在稳定家目录，绝不在会被插件升级清掉的插件脚本目录。
+- **不同 agent**：`agent.mjs` 内置 `codex/claude/gemini/opencode/aichat` 表，探测对应 CLI，`ORCH_AGENT` 选择；launcher/Watchdog 对它们都用通用结束标记 `__ORCH_DONE__ <token>` 收尾。
+- **不同用户**：只读能力探测（superpowers/config/CLI）失败一律降级不报错；无权限写（如 hosts）输出可复制的提权指令而非硬写。
+- **跨平台窗口**：优先 Windows Terminal（`wt`），不可用回退 `conhost`（`cmd /c start`）。
 
 ## 编码与输入法
 

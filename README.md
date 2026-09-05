@@ -156,6 +156,11 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `WORKSPACE_DIR` | `process.cwd()` | Working dir threads/windows operate in (auto-detected; never hardcoded). |
+| `CODEX_HOME` | `~/.codex` | Authoritative Codex home dir. **Cross-user / cross-device / cross-host** adaptation point: every `.codex` path is derived from it (never hardcoded `C:\Users\<user>\.codex`). |
+| `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | Stable runtime/state dir (registry, locks, subtask files). Must NOT live in a dir wiped on plugin upgrade. |
+| `ORCH_SESSION_DIR` | `$CODEX_HOME/sessions` | Session rollout dir. |
+| `ORCH_SUPERPOWERS_CACHE_DIR` | auto-detect | Override superpowers plugin cache path (different host/market layouts). |
+| `ORCH_AGENT` | `codex` | Which agent to run: `codex`\|`claude`\|`gemini`\|`opencode`\|`aichat`. Falls back to `codex` automatically if the requested CLI is absent. |
 | `CODEX_EXE` | auto-detect | Path to the `codex` CLI. |
 | `PYTHON` | `python` | Python to prepend to the spawned window's PATH. |
 | `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | Model the threads use. |
@@ -170,6 +175,14 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |
 | `ORCH_MIN_FREE_MB` | `12000` | Workspace drive free space (MB) below which a warning is emitted before running (≈12GB). |
 | `ORCH_MIN_FREE_HARD_MB` | `3600` | Hard floor (MB) below which the orchestrator refuses to run (fail-closed, ≈3.6GB); clamped to `ORCH_MIN_FREE_MB` if set higher. |
+
+### Generalization (cross-device / cross-agent / cross-user)
+
+The orchestrator is **generalized**: a host only needs to inject `CODEX_HOME` (plus optional `ORCH_STATE_DIR` / `ORCH_SESSION_DIR` / `ORCH_AGENT`) and the *same* code runs on any user's Windows device and any mainstream agent — no source change required.
+- **Different users/devices**: all `.codex` paths come from `CODEX_HOME` (not `C:\Users\<user>\.codex`); agent cache + transient artifacts live in a stable home dir, never in a plugin dir wiped by cachebuster.
+- **Different agents**: `agent.mjs` ships a table for `codex`/`claude`/`gemini`/`opencode`/`aichat`, probes each CLI, `ORCH_AGENT` selects it; the launcher/watchdog closes on the generic end marker `__ORCH_DONE__ <token>` for all of them.
+- **Different users**: read-only capability probes (superpowers/config/CLI) degrade silently instead of erroring; unauthorised writes (e.g. hosts) emit a copyable elevation command rather than hard-writing.
+- **Cross-platform windows**: prefers Windows Terminal (`wt`), falls back to `conhost` (`cmd /c start`).
 
 ## Encoding & IME
 

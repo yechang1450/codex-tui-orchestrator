@@ -23,10 +23,20 @@
  *
  * Configuration (all optional, env-first with sensible defaults):
  *   WORKSPACE_DIR  (default: process.cwd())  — auto-detected workspace root for the user.
+ *   CODEX_HOME     (default: ~/.codex)        — 权威 Codex 家目录；跨用户/设备/宿主适配点。
+ *   ORCH_STATE_DIR (default: $CODEX_HOME/orchestrator) — 本插件的稳定运行/状态目录（registry/锁/subtasks 等）。
+ *   ORCH_SESSION_DIR (default: $CODEX_HOME/sessions)   — 会话 rollout 目录。
+ *   ORCH_SUPERPOWERS_CACHE_DIR (optional)      — 覆盖 superpowers 插件缓存目录（不同宿主/市场路径适配）。
+ *   ORCH_AGENT     (default: codex)            — 选 agent：codex|claude|gemini|opencode|aichat；未装对应 CLI 自动回退 codex。
  *   CODEX_EXE      (default: auto-detect from PATH or a common user install).
  *   PYTHON         (default: `python`; prepended to the spawned window PATH).
  *   ORCH_MODEL     (default: deepseek-v4-flash-vision-exp)
  *   ORCH_EFFORT    (default: high)
+ *
+ * 通用化设计：本插件对【不同 Windows 设备 / 不同用户名 / 不同 agent】自适应——
+ *   ① 所有敏感路径都走 CODEX_HOME|ORCH_STATE_DIR|ORCH_SESSION_DIR（可用环境变量覆盖），绝不硬编码 "C:\Users\<user>\.codex"；
+ *   ② agent 通过 ORCH_AGENT + CLAUDE/GEMINI/OPENCODE/AICHAT 探测覆盖主流 agent（未装对应 CLI 自动回退 codex）；
+ *   ③ 任何外部宿主（GUI/CLI/别的 agent）只需在进程环境注入上述可变配置即可运行，无需改本插件源码。
  *
  * Encoding: every text read/write is explicit UTF-8. The window launcher sets
  *   [Console]::OutputEncoding/$OutputEncoding = UTF-8 and reads prompts with -Encoding UTF8,
@@ -54,6 +64,15 @@ import { fileURLToPath } from "node:url";
 // ---------------------------------------------------------------------------
 // Config (env-first, portable)
 // ---------------------------------------------------------------------------
+// 通用化：仅把 ~/.codex 当作【缺省回退】，真正权威是 CODEX_HOME 环境变量。
+// 这样同一份 orchestrator 可以跑在【不同用户 / 不同设备 / 不同 agent】上——
+// 只要外部（用户/调用方/宿主 agent）设置了 CODEX_HOME（或 ORCH_STATE_DIR / ORCH_SESSION_DIR 等），
+// 就不再依赖 hard-coded 的 "C:\Users\<user>\.codex"，避免跨用户/跨宿主失效。
+function resolveCodexHome() {
+  if (process.env.CODEX_HOME && process.env.CODEX_HOME.trim()) return process.env.CODEX_HOME.trim().replace(/[\\/]+$/, "");
+  return path.join(os.homedir(), ".codex");
+}
+const CODEX_HOME = resolveCodexHome();
 // 通用工作区解析：env WORKSPACE_DIR 优先，否则当前目录。不依赖任何平台特定配置（可移植）。
 // 判据补充：编排器自身的插件安装/缓存目录绝不能被当成用户工作区——否则 launcher 产物（temp\win-launch-*、
 // temp\win-*.result.json*、window-*.pid）会建在会被插件版本升级/重装（cachebuster）整体清掉的路径下，
@@ -70,12 +89,30 @@ function resolveWorkspace() {
     /(?:[\\/]plugins[\\/]agent-tui-orchestrator(?:[\\/]|$))/i.test(h);
   if (isPluginTree) {
     // 拒绝把插件自身目录当工作区：落地到稳定运行目录（STATE_DIR 同级 family home），绝不被插件升级清掉。
-    const stable = path.join(os.homedir(), ".codex", "orchestrator");
+    const stable = path.join(CODEX_HOME, "orchestrator");
     console.warn("[orchestrator] WARN: resolved workspace '" + here + "' is the orchestrator plugin's own tree; ignoring it for launcher/temp artifacts and using stable '" + stable + "' instead.");
     return stable;
   }
   return here;
 }
+
+// 子代理/窗内公共授权模板加载：把超长 auth 从 SDK 源码下沉到独立模板文件（UTF-8 无 BOM），
+// 运行时读回作为每个窗 prompt 的【公共前缀】，保持字节级一致以命中缓存；读失败回退一段防御文本。
+// 用 import.meta.url 自动推导脚本同目录，绝不硬编码绝对路径；读出的内容必须以 UTF-8 无 BOM 落盘。
+function readAuthPrompt() {
+  try {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const pf = path.join(here, "agent-auth-prompt.txt");
+    if (existsSync(pf)) {
+      const b = readFileSync(pf);
+      // 剥 BOM（若编辑器加了 BOM，则按 UTF-8 无 BOM 约定剥除，保证与历史 auth 字节一致）
+      const txt = (b[0]===0xEF && b[1]===0xBB && b[2]===0xBF) ? b.subarray(3).toString("utf8") : b.toString("utf8");
+      if (txt && txt.trim()) return txt;
+    }
+  } catch (e) { /* fall through */ }
+  return "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等为由暂停或询问。执行结束再输出结束标记。）";
+}
+
 const WORKSPACE = resolveWorkspace();
 let _codexPathCache;   // memoize: codex 路径检测只做一次（须在 CODEX 初始化前声明，避免 TDZ）
 const CODEX = process.env.CODEX_EXE || defaultCodexPath();
@@ -122,7 +159,7 @@ const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WO
 const AGENT_ARGS = AGENT_ARGS_LIST.map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
-const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
+const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(CODEX_HOME, "orchestrator");
 // 子代理共享任务文件目录（父/主窗口与子代理都真正可读，绕开 spawn_agent message 正文偶发投递失败的断点）。
 // 放在 orchestrator 稳定家目录下（ORCH_STATE_DIR），非 WORKSPACE 临时目录，避免被插件升级清掉/散落。
 const SUBTASK_DIR = process.env.ORCH_SUBTASK_DIR || path.join(STATE_DIR, "subtasks");
@@ -728,10 +765,11 @@ function ensureCodexCli() {
 // 若未检测到 -> 一切照旧（不因缺少它而降级/报错）。只读探测，绝不安装/改动 Superpowers。
 // 判定标准：插件缓存目录存在 + 其 using-superpowers SKILL.md 存在 + 该插件在 config.toml 被启用。
 // ---------------------------------------------------------------------------
-const SUPERPOWERS_CACHE_DIR = path.join(os.homedir(), ".codex", "plugins", "cache", "openai-api-curated", "superpowers");
+// 通用化：superpowers 缓存目录默认在 CODEX_HOME 下；允许外部用 ORCH_SUPERPOWERS_CACHE_DIR 覆盖，适配不同宿主/插件市场。
+const SUPERPOWERS_CACHE_DIR = process.env.ORCH_SUPERPOWERS_CACHE_DIR || path.join(CODEX_HOME, "plugins", "cache", "openai-api-curated", "superpowers");
 function configPluginEnabled(name) {
   try {
-    const cfg = readFileSync(path.join(os.homedir(), ".codex", "config.toml"), "utf8");
+    const cfg = readFileSync(path.join(CODEX_HOME, "config.toml"), "utf8");
     return cfg.includes('plugins."' + name + '"') && /\[plugins\."[^"]+"\]\s*\r?\nenabled\s*=\s*true/.test(cfg);
   } catch { return false; }
 }
@@ -789,7 +827,7 @@ function checkDiskSpace(opts = {}) {
 function ensureProjectTrust(dir) {
   if (!dir) return;
   try {
-    const cfg = path.join(os.homedir(), ".codex", "config.toml");
+    const cfg = path.join(CODEX_HOME, "config.toml");
     if (!existsSync(cfg)) return;
     let txt = readFileSync(cfg, "utf8");
     const lit = String(dir).replace(/'/g, "''");
@@ -980,10 +1018,10 @@ function psKillDescendantsLines() {
   ];
 }
 
-// 内存 → 最大并发 TUI 窗数：n GB 内存 -> n/2 台并发，上限 8 台（16GB 设备即封顶，超大内存不再叠加窗口，
+// 内存 → 最大并发 TUI 窗数：n GB 内存 -> floor(n/2 + 1) 台并发，上限 8 台（16GB 设备即封顶，超大内存不再叠加窗口，
 // 避免内存超载/OOM）；下限由调用方以 <2 判定为不支持。为可测试而独立成函数。
 function computeMaxWindows(memGb) {
-  const n = Math.floor(memGb / 2);
+  const n = Math.floor(memGb / 2 + 1);
   return Math.min(n, 8);
 }
 // ---------------------------------------------------------------------------
@@ -1031,9 +1069,16 @@ export function applyAuthPromptPolicy(auth, subagentWaitMaxMs) {
 // 故 --run-windows 检测到这类请求一律返回 inline（由发起对话就地改完再另发窗）。
 function isOrchestratorSelfMod(text) {
   const t = String(text || "");
-  const target = /agent-tui-orchestrator|orchestrate-sdk\.mjs|scripts\/orchestrate|orchestration.*(source|script)/i.test(t);
-  if (!target) return false;
-  return /(修复|修改|改|升级|加固|优化|调整|重构|补|fix|edit|update|build)/i.test(t);
+  // 通用化（不假设特定 agent/语言）：识别「改/修/升级 编排器自身 源码/脚本/进程/skill」这类自引用意图。
+  // 覆盖英文 + 中文关键词，并对编排器自身的通用称谓（orchestrator/编排/调度/TUI 窗/skill）都命中；
+  // 命中只是「可能改自己」的信号，进一步由调用方决定是否返回 inline（宁可多识、不误把改自己的活交给窗）。
+  const selfRef =
+    /agent-tui-orchestrator|orchestrator|orchestrate|编排|调度器|调度窗|TUI 窗|TUI窗|并发编排/i.test(t) ||
+    /scripts\/?orchestrate|orchestrate-sdk\.mjs|\.codex.*\/?orchestrat/i.test(t);
+  if (!selfRef) return false;
+  const modifyIntent =
+    /(修复|修改|改|升级|加固|优化|调整|重构|补|加固|收紧|fix|edit|update|build|harden|refactor|improve|rework)/i.test(t);
+  return modifyIntent;
 }
 
 function writeInteractiveLauncher(title, prompt, sfx) {
@@ -1072,7 +1117,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "$env:TERM = 'xterm-256color'",
     "$env:Path = '" + PY_Q + ";' + $env:Path",
     "$env:ORCH_WINDOW = '1'",
-    "if ($env:ORCH_SESSION_DIR) { $env:ORCH_SDIR = $env:ORCH_SESSION_DIR } else { $env:ORCH_SDIR = Join-Path $env:USERPROFILE '.codex\\sessions' }",
+    "if ($env:ORCH_SDIR) { $env:ORCH_SDIR = $env:ORCH_SDIR } elseif ($env:ORCH_SESSION_DIR) { $env:ORCH_SDIR = $env:ORCH_SESSION_DIR } elseif ($env:CODEX_HOME) { $env:ORCH_SDIR = Join-Path $env:CODEX_HOME 'sessions' } else { $env:ORCH_SDIR = Join-Path $env:USERPROFILE '.codex\\sessions' }",
     "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8",
     "$OutputEncoding = [System.Text.Encoding]::UTF8",
     // Align BOTH console code pages to UTF-8: on a Chinese-locale Windows the default INPUT code page
@@ -1275,7 +1320,8 @@ function writeInteractiveLauncher(title, prompt, sfx) {
 // ---- session-rollout discovery + task_complete detection (for interactive auto-close) ----
 function sessionDir() {
   // 默认 codex 会话目录；ORCH_SESSION_DIR 可指向其它 agent 的会话目录（agent 通用化）。
-  return process.env.ORCH_SESSION_DIR || path.join(process.env.USERPROFILE || "", ".codex", "sessions");
+  // 通用化：优先 CODEX_HOME（可被环境变量覆盖），而非硬编码 USERPROFILE\.codex。
+  return process.env.ORCH_SESSION_DIR || path.join(CODEX_HOME, "sessions");
 }
 function listRollouts(dir) {
   const res = [];
@@ -1396,6 +1442,33 @@ function extractResult(file) {
     } catch { /* ignore */ }
   }
   return { done: true, text: last };
+}
+// 真实 token 观测：从 codex rollout(JSONL) 里累积 usage，为 plugin-eval 的 "measure real token usage" 提供确凿数字。
+// 纯函数、只读尾部窗口(内存 O(1))、容错：字段名兼容 input_tokens/prompt_tokens、output_tokens/completion_tokens、
+// cached_tokens/cached_input_tokens、total_tokens；从每条含 usage 的 JSON 里取该对象。所有 token 值为缺省 0。
+function extractUsage(file) {
+  const u = { input_tokens: 0, output_tokens: 0, cached_tokens: 0, total_tokens: 0 };
+  let full;
+  try { full = readTail(file, 262144); } catch { return u; }
+  if (full === null) return u;
+  const pickNum = (o, ...keys) => { for (const k of keys) { if (o && typeof o[k] === "number" && o[k] > 0) return o[k]; } return 0; };
+  for (const line of full.split("\n")) {
+    const l = line.trim();
+    if (!l) continue;
+    try {
+      const o = JSON.parse(l);
+      const p = o && o.payload ? o.payload : o;
+      // usage 可能直接在对象上，或在 payload.response/usage 里
+      const ug = (o && o.usage) || (p && p.usage) || (p && p.response && p.response.usage) || null;
+      if (ug && typeof ug === "object") {
+        u.input_tokens += pickNum(ug, "input_tokens", "prompt_tokens", "input");
+        u.output_tokens += pickNum(ug, "output_tokens", "completion_tokens", "output");
+        u.cached_tokens += pickNum(ug, "cached_tokens", "cached_input_tokens", "cached");
+        u.total_tokens += pickNum(ug, "total_tokens", "total");
+      }
+    } catch { /* ignore */ }
+  }
+  return u;
 }
 // 确定性结果文件：读 launcher 写入的 __REPORT__（本块自己的完成汇报），含本块 token+完成 才返回；否则 ""。
 function readReportFromResult(resultFile, token) {
@@ -1590,13 +1663,27 @@ const RESERVE_TTL_MS = Math.max(30000, Number(process.env.ORCH_RESERVE_TTL_MS ||
 function freshPending(w) {
   return !!(w && w.pending === true && Number(w.reservedAt || 0) > Date.now() - RESERVE_TTL_MS);
 }
+// ---- 测试注入点（仅测试用，生产缺省走真实实现；避免单测触发真实 tasklist/文件锁）----
+// hooks: { db, alive, lock, now }。db=注册表 json 路径；alive=windowAlive 替代；lock=withRegistryLock 替代；now=Date.now 替代。
+let __orchHooks = null;
+function testDb() { return (__orchHooks && __orchHooks.db) ? String(__orchHooks.db) : WIN_REG; }
+function testAlive() { return (__orchHooks && __orchHooks.alive) ? __orchHooks.alive : (w) => windowAlive(w); }
+function testNow() { return (__orchHooks && __orchHooks.now) ? __orchHooks.now : Date.now; }
+function testFresh(w) {
+  return !!(w && w.pending === true && Number(w.reservedAt || 0) > testNow()() - RESERVE_TTL_MS);
+}
+function testLock(fn) { return (__orchHooks && __orchHooks.lock) ? __orchHooks.lock(fn) : withRegistryLock(fn); }
+function testUpdateWindows(mutator) {
+  return testLock(() => { const w = loadJson(testDb(), []); saveJson(testDb(), mutator(w)); });
+}
+function __setOrchHooks(h) { __orchHooks = h || null; }
 function tryReserveWindow(rec) {
   let conflictTitle = null;
-  withRegistryLock(() => {
-    const ws = loadJson(WIN_REG, []);
-    const cleaned = ws.filter((w) => !(w && w.pending === true && !freshPending(w))); // 顺手回收死占位
+  testLock(() => {
+    const ws = loadJson(testDb(), []);
+    const cleaned = ws.filter((w) => !(w && w.pending === true && !testFresh(w))); // 顺手回收死占位
     for (const w of cleaned) {
-      if (windowAlive(w) || freshPending(w)) {
+      if (testAlive()(w) || testFresh(w)) {
         const wk = Array.isArray(w.keys) ? w.keys.map(String) : (w.title ? ["__" + w.title] : []);
         if (keysOverlap(Array.isArray(rec.keys) ? rec.keys.map(String) : [], wk)) {
           conflictTitle = w.title || "?";
@@ -1606,18 +1693,18 @@ function tryReserveWindow(rec) {
     }
     if (!conflictTitle) {
       cleaned.push(rec);
-      saveJson(WIN_REG, cleaned);
+      saveJson(testDb(), cleaned);
     } else if (cleaned.length !== ws.length) {
-      saveJson(WIN_REG, cleaned); // 只清死占位也落盘，避免堆积
+      saveJson(testDb(), cleaned); // 只清死占位也落盘，避免堆积
     }
   });
   return conflictTitle;
 }
 function commitReservation(id, pid) {
-  updateWindows((ws) => ws.map((w) => w.id === id ? { ...w, pid: Number(pid) || w.pid, pending: false, reservedAt: Date.now() } : w));
+  testUpdateWindows((ws) => ws.map((w) => w.id === id ? { ...w, pid: Number(pid) || w.pid, pending: false, reservedAt: testNow()() } : w));
 }
 function cancelReservation(id) {
-  updateWindows((ws) => ws.filter((w) => w.id !== id));
+  testUpdateWindows((ws) => ws.filter((w) => w.id !== id));
 }
 // The launcher writes its codex-exit marker to `win-<s>.result.json` (same dir as the pidfile).
 function resultFileOf(pidf) {
@@ -2067,7 +2154,7 @@ async function main() {
     const lockedBacklog = []; // 被锁块：冲突释放后自动重跑，不静默丢弃
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
-    const auth = "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。\n\n【执行前先做 TODO LIST，三遍检查后再动手】在本窗动手干任何改活/建活之前，必须先基于任务提示词，做出**从头到尾完整又完善的 TODO LIST**（逐条列明动作、产物、验证点）。随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。**只有做完这「三遍检查并修复」之后，才允许真正开始执行。**\n\n【sub agent 自主决策 + 克制使用上限】本窗**可自主决定是否使用子代理**来拆分、加速或隔离部分工作：仅当存在**相互独立、无共享可变状态、可并行**的子任务，或单一任务过大/上下文会爆时，才使用子代理；子代理只承接 TODO LIST 中**已明确、无歧义**的任务片段且有清晰边界；使用子代理时必须一次性给出完整上下文与验收标准，不能依赖猜测。若任务简单/串行/强依赖，则**不要**使用子代理（避免过度拆分与上下文浪费）。**硬性克制使用上限：本窗可并发的子代理数 ≤ $env:ORCH_SUBAGENT_MAX（由内存定，越界即拒绝并改为串行或在本窗内直接做），且任何时刻全局 agent 进程数（本窗+全部子代理）不得超过 $env:ORCH_MAX_TOTAL_AGENTS。**\n\n【子代理任务正文走共享文件（硬性要求，绕过消息断点）】在决定使用子代理后、真正 spawn 之前，**必须先把该子代理要执行的完整任务原文，写成共享文件 `$env:ORCH_SUBTASK_DIR\\subtask-<本窗token>-<seq>.md`**（UTF-8 无 BOM；内容 = 该子代理唯一且完整的任务，含目标/路径/验收标准，无歧义）。然后 `spawn_agent` 时，message 里只写一句「你的唯一任务见文件 `<该文件路径>`，请先读取它再执行」；**子代理必须先用工具读取该文件获取完整任务**，再执行。**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。\n\n【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。**若开了子代理却未输出 SUBAGENTS_DONE，orchestrator 绝不关窗**（会持续等待，视为未完成）。\n\n【自验未落盘=未完成，禁止输出结束标记（硬约束）】本窗在输出结束标记（`__ORCH_DONE__`/`SUBAGENTS_DONE`）前，**必须逐一真实读回/检查它声称创建或修改的产物**，确认其真实存在于盘上且内容/编码正确。若**任一自验失败**（文件不存在/内容不符/未落盘），则**无论如何都禁止输出结束标记**——只能如实输出失败说明，让本窗不被当作成功收尾（orchestrator 会据此判为未完成）。只有在所有声明的产物都**真实落盘且自验通过**后，才允许输出结束标记。\n\n执行结束判定=本窗完成实际操作、**全部子代理已收尾**、并**现场自验全部产物真实落盘**后，**最后单独输出一行结束标记**（见上，按是否开子代理决定后缀）。无需长篇汇报（TODO LIST 与三遍检查可简短说明要点），仅在确实失败/异常时补一句说明。主控会在关窗后按任务提示词去核对真实落盘状态。禁止虚报成功。）";
+    const auth = readAuthPrompt();
     // 子代理等待上限：把「无超时上限」改为「6 小时硬上限（由 ORCH_SUBAGENT_MAX_WAIT_MS 控制）」，让窗内 agent 不会因子代理挂死而无限等下去。
     // 仍保留「超时=未完成，禁止虚报」不变量：超时子代理须如实标注，绝不当作成功收尾。
     // 复用导出的纯函数改写 auth 提示词：子代理 6 小时硬上限 + 三遍检查序号 ①②③ → 1) 2) 3)（修复 WT CJK 宽度重叠）。
@@ -2250,6 +2337,8 @@ async function main() {
         }
         const tagged = res.done ? "done" : "timeout";
         summary[s.key] = { title: s.title, status: tagged, exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
+        // 真实 token 观测：从本窗 rollout 提取真实 usage（input/output/cached/total），供 plugin-eval 把评分钉在事实上。
+        try { if (sessionFile) summary[s.key].usage = extractUsage(sessionFile); } catch { /* ignore */ }
         console.log("=== " + s.key + " " + s.title + " ===");
         if (res.done) {
           // 执行结束判定（用户方案：done=做完了，不等同于成功）：窗口已执行结束（识别码/自关标记/codex 退出）即收。
@@ -2524,4 +2613,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, blockKeys, keysOverlap };
+export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, blockKeys, keysOverlap, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome };

@@ -106,3 +106,23 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - Node 22+、Codex CLI、Windows Terminal/console。
 - 编码：所有文本读写显式 UTF-8（`.ps1` 带 BOM），禁 GBK 乱码。
 - 执行后 auto-memory / memory-boost / auto-git 留痕。
+
+## 通用化 / 跨设备 / 跨 agent / 跨用户适配
+
+本 orchestrator 对所有路径与宿主做了**通用化设计**：只要外部（宿主/用户/调用方）在进程环境注入可配置项，就能在**不同 Windows 设备、不同用户名、不同 agent** 上运行，而无需改本插件源码：
+
+### 可配置环境变量（env-first，均有合理缺省）
+- `CODEX_HOME`：权威 Codex 家目录（缺省 `~/.codex`）。跨用户/设备最关键：非默认安装、Docker、托管 CI 等通过它指向真实家目录。
+- `ORCH_STATE_DIR`：本插件的稳定运行/状态目录（registry、锁、子代理共享文件），缺省 `$CODEX_HOME/orchestrator`。**不能**放在会被插件升级/重装清掉的目录。
+- `ORCH_SESSION_DIR`：会话 rollout 目录，缺省 `$CODEX_HOME/sessions`。
+- `ORCH_SUPERPOWERS_CACHE_DIR`：覆盖 superpowers 插件缓存路径（不同宿主/市场安装位置），缺省自动探测 `$CODEX_HOME/plugins/cache/.../superpowers`。
+- `ORCH_AGENT`：选 agent：`codex|claude|gemini|opencode|aichat`。缺省 `codex`；若请求的 agent CLI 未安装，自动回退 `codex`，不报错。
+- `CODEX_EXE` / `ORCH_MODEL` / `ORCH_EFFORT`：覆盖 CLI 路径与模型/努力度（跨宿主可注入不同模型）。
+
+### 兼容点
+- **不同 Windows 设备/用户名**：所有 `.codex` 路径经 `CODEX_HOME` 推导（不再硬编码 `C:\Users\<user>\.codex`）；agent 缓存文件、临时产物落在稳定家目录（`ORCH_STATE_DIR`/`$CODEX_HOME/orchestrator`），绝不在会被插件升级/重装清掉的插件脚本目录。
+- **不同 agent**：`agent.mjs` 内置 codex/claude/gemini/opencode/aichat 描述表，探测对应 CLI，`ORCH_AGENT` 选择；launcher/Watchdog 按各 agent 通用结束标记 `__ORCH_DONE__ <token>` 收尾（对 codex 用 `@openai/codex-sdk`，其余按 CLI 启动参数）。
+- **不同用户**：只读能力探测（superpowers/config/CLI）失败一律降级而不报错；读取 config 失败回退；无权限写 hosts 等场景输出可复制的提权指令，不硬写。
+- **跨平台窗口**：优先 Windows Terminal（`wt.exe`），不可用则回退 `conhost`（`cmd /c start`）。
+
+> 一句话：**宿主只需注入 `CODEX_HOME`（及可选 `ORCH_STATE_DIR`/`ORCH_SESSION_DIR`/`ORCH_AGENT`），即可让同一份 orchestrator 适配任意用户的 Windows 设备与任意主流 agent**，无需改代码。

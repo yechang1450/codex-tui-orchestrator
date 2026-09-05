@@ -3,12 +3,18 @@
 //      识别当前 agent（默认 codex）、探测其 CLI 是否可用，并把解析到的 agent 专属
 //      配置缓存到本地 `scripts/.agent-cache.json`（越用越快，避免重复探测）。
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CACHE_FILE = path.join(__dirname, '.agent-cache.json');
+// 通用化：agent 配置缓存放到稳定家目录（ORCH_STATE_DIR / CODEX_HOME），绝不落到插件脚本目录
+// （插件目录会被 cachebuster 升级/重装整体清掉，且多用户/多设备下插件目录可能只读）。
+// 优先 ORCH_STATE_DIR，其次 CODEX_HOME/orchestrator，最后回退 ~/.codex/orchestrator。
+const CACHE_DIR = process.env.ORCH_STATE_DIR
+  || (process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'orchestrator') : path.join(os.homedir(), '.codex', 'orchestrator'));
+const CACHE_FILE = path.join(CACHE_DIR, '.agent-cache.json');
 
 // agent 描述表：native=true 走内置（codex 用 @openai/codex-sdk）；其余为占位，
 // 未安装对应 CLI 时 detect 返回 false -> 不可用，编排器自动只用可用项（不报错）。
@@ -24,7 +30,7 @@ function readCache() {
   try { return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch { return {}; }
 }
 function writeCache(c) {
-  try { fs.writeFileSync(CACHE_FILE, JSON.stringify(c, null, 2) + '\n', 'utf8'); } catch {}
+  try { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(CACHE_FILE, JSON.stringify(c, null, 2) + '\n', 'utf8'); } catch {}
 }
 
 function binAvailable(bin) {

@@ -152,7 +152,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, applyAuthPromptPolicy } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
@@ -416,12 +416,12 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk computeMaxWindows: n GB -> n/2 concurrency, capped at 8 windows', () => {
-  assert.equal(computeMaxWindows(2), 1, '2G -> floor(1) -> 1 (caller refuses <2)');
-  assert.equal(computeMaxWindows(4), 2, '4G -> 2 windows');
-  assert.equal(computeMaxWindows(8), 4, '8G -> 4 windows');
-  assert.equal(computeMaxWindows(12), 6, '12G -> 6 windows');
-  assert.equal(computeMaxWindows(16), 8, '16G -> 8 windows (cap)');
+test('orchestrate-sdk computeMaxWindows: n GB -> floor(n/2 + 1) concurrency, capped at 8 windows', () => {
+  assert.equal(computeMaxWindows(2), 2, '2G -> floor(2) -> 2 (caller refuses <2)');
+  assert.equal(computeMaxWindows(4), 3, '4G -> floor(3) -> 3 windows');
+  assert.equal(computeMaxWindows(8), 5, '8G -> floor(5) -> 5 windows');
+  assert.equal(computeMaxWindows(12), 7, '12G -> floor(7) -> 7 windows');
+  assert.equal(computeMaxWindows(16), 8, '16G -> floor(9) -> 8 windows (cap)');
   assert.equal(computeMaxWindows(32), 8, '32G -> 8 windows (capped, NOT 16)');
   assert.equal(computeMaxWindows(64), 8, '64G -> 8 windows (capped)');
 });
@@ -435,8 +435,8 @@ test('orchestrate-sdk computeMaxSubagents / computeMaxTotalAgents: 克制使用�
   assert.equal(computeMaxSubagents(32), 4, '32G -> 4 subagents/window');
   assert.equal(computeMaxSubagents(64), 4, '64G -> 4 subagents/window (capped)');
   // 全局 agent 上限 = 最大窗数 × (1 + 每窗子代理上限)，确保"窗+子代理"不叠加 OOM。
-  assert.equal(computeMaxTotalAgents(4), 2 * (1 + 0), '4G -> 2 agents total');
-  assert.equal(computeMaxTotalAgents(8), 4 * (1 + 1), '8G -> 4 windows x 2 = 8 agents total');
+  assert.equal(computeMaxTotalAgents(4), 3 * (1 + 0), '4G -> 3 windows x 1 = 3 agents total');
+  assert.equal(computeMaxTotalAgents(8), 5 * (1 + 1), '8G -> 5 windows x 2 = 10 agents total');
   assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8 windows x 3 = 24 agents total');
   assert.equal(computeMaxTotalAgents(32), 8 * (1 + 4), '32G -> 8 windows x 5 = 40 agents total');
 });
@@ -540,7 +540,7 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
     assert.doesNotMatch(body, /\$spawnedAgent -eq \$false -or \$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not require SUBAGENTS_DONE suffix');
     // 2) the done-detection must NOT be gated on a SUBAGENTS_DONE marker
     assert.doesNotMatch(body, /Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not depend on SUBAGENTS_DONE in the rollout');
-    // 3) the TUI auth prompt (in SDK source) must instruct the window to confirm sub-agents itself and output only __ORCH_DONE__ <token>
+    // 3) the TUI auth prompt (via applyAuthPromptPolicy in SDK source) must instruct the window to confirm sub-agents itself and output only __ORCH_DONE__ <token>
     const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
     assert.match(src, /wait_agent/, 'TUI prompt must tell the window to wait_agent for sub-agents');
     assert.match(src, /update_goal complete/, 'TUI prompt must mention update_goal complete (codex goal path)');
@@ -562,8 +562,9 @@ test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to
   // 3) the aggregation done-path must invoke the landing recheck
   assert.match(src, /assertProductLanding\(s\.key, recsByKey\.get\(s\.key\), s, summary\[s\.key\]\)/, 'aggregation must call assertProductLanding on each done block');
   // 4) TUI prompt must forbid emitting the done marker if a declared product is not actually on disk
-  assert.match(src, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
-  assert.match(src, /真实落盘且自验通过/, 'TUI prompt must require the product to really land + self-check');
+  const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
+  assert.match(authTpl, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
+  assert.match(authTpl, /真实落盘且自验通过/, 'TUI prompt must require the product to really land + self-check');
 });
 test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass broken message body channel)', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
@@ -571,9 +572,10 @@ test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass bro
   assert.match(src, /SUBTASK_DIR/, 'orchestrator must define SUBTASK_DIR');
   assert.match(src, /ORCH_SUBTASK_DIR/, 'orchestrator must inject ORCH_SUBTASK_DIR env');
   // 2) TUI prompt must require the sub-agent task body to be written to a shared file before spawn
-  assert.match(src, /子代理任务正文走共享文件/, 'TUI prompt must instruct shared-file task body for sub-agents');
-  assert.match(src, /ORCH_SUBTASK_DIR/, 'TUI prompt must reference ORCH_SUBTASK_DIR for the shared task file');
-  assert.match(src, /请先读取它再执行/, 'TUI prompt must tell the sub-agent to read the shared task file first');
+  const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
+  assert.match(authTpl, /子代理任务正文走共享文件/, 'TUI prompt must instruct shared-file task body for sub-agents');
+  assert.match(authTpl, /ORCH_SUBTASK_DIR/, 'TUI prompt must reference ORCH_SUBTASK_DIR for the shared task file');
+  assert.match(authTpl, /请先读取它再执行/, 'TUI prompt must tell the sub-agent to read the shared task file first');
 });
 test('orchestrate-sdk: codex goal sub-agent (方案B) — 共享文件辟【子代理唯一任务】段, 子代理提取 objective 自建 goal, 能力探测后才叠加', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
@@ -1040,13 +1042,13 @@ test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不�
 });
 
 test('computeMaxWindows: 内存上限/下限边界', () => {
-  assert.equal(computeMaxWindows(2), 1, '2G -> 1');
-  assert.equal(computeMaxWindows(3.9), 1, '3.9G -> 1(floor)');
-  assert.equal(computeMaxWindows(4), 2, '4G -> 2');
-  assert.equal(computeMaxWindows(7), 3, '7G -> 3');
+  assert.equal(computeMaxWindows(2), 2, '2G -> 2');
+  assert.equal(computeMaxWindows(3.9), 2, '3.9G -> 2(floor(2.95))');
+  assert.equal(computeMaxWindows(4), 3, '4G -> 3');
+  assert.equal(computeMaxWindows(7), 4, '7G -> 4');
   assert.equal(computeMaxWindows(16), 8, '16G -> 8(cap)');
   assert.equal(computeMaxWindows(64), 8, '64G -> 8(cap)');
-  assert.equal(computeMaxWindows(0), 0, '0 -> 0');
+  assert.equal(computeMaxWindows(0), 1, '0 -> 1 (floor(1))');
 });
 
 test('computeMaxSubagents / computeMaxTotalAgents 边界', () => {
@@ -1055,7 +1057,7 @@ test('computeMaxSubagents / computeMaxTotalAgents 边界', () => {
   assert.equal(computeMaxSubagents(8), 1, '8G -> 1');
   assert.equal(computeMaxSubagents(16), 2, '16G -> 2');
   assert.equal(computeMaxSubagents(32), 4, '32G -> 4(cap)');
-  assert.equal(computeMaxTotalAgents(8), 4 * (1 + 1), '8G -> 4窗x2');
+  assert.equal(computeMaxTotalAgents(8), 5 * (1 + 1), '8G -> 5窗x2');
   assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8窗x3');
 });
 
@@ -1134,4 +1136,117 @@ test('keysOverlap: Set 优化后语义与原 O(A*B) 等价(数组/非数组/空/
   assert.equal(keysOverlap(undefined, ['x']), false, 'undefined a safe');
   // 数字键字符串化归一
   assert.equal(keysOverlap([123], ['123']), true, 'numeric-key stringified match');
+});
+
+test('registry tryReserveWindow/commitReservation/cancelReservation: 冲突判定/死占位回收/提交/取消（注入 temp db + 假 alive/now）', async () => {
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = fs.mkdtempSync(path2.join(os.tmpdir(), 'orch-reg-'));
+  const db = path2.join(root, 'windows.json');
+  // 固定时间轴，便于测 TTL 过期
+  let fakeNow = 1_000_000;
+  const aliveMap = new Map(); // id -> bool (与 pidFile 无关，纯假存活)
+  const alive = (w) => { const k = String(w.id); return aliveMap.has(k) ? aliveMap.get(k) : true; };
+  const lock = (fn) => fn(); // 同步直接执行，无文件锁（单测单进程）
+  __setOrchHooks({ db, alive, lock, now: () => fakeNow });
+  try {
+    // 1) 无冲突：首次占位成功，写入并返回 null
+    assert.equal(tryReserveWindow({ id: 'W1', title: 'T1', keys: ['file:D:/a'], pending: true, pid: 0, reservedAt: fakeNow }), null, 'no conflict -> null');
+    let ws = JSON.parse(fs.readFileSync(db, 'utf8'));
+    assert.equal(ws.length, 1, 'one record inserted');
+    assert.equal(ws[0].id, 'W1', 'W1 present');
+
+    // 2) 冲突：同 keys 的新占位被拒，返回既有 title
+    const conflict = tryReserveWindow({ id: 'W2', title: 'T2', keys: ['file:D:/a'], pending: true, pid: 0, reservedAt: fakeNow });
+    assert.equal(conflict, 'T1', 'conflict title returned');
+    ws = JSON.parse(fs.readFileSync(db, 'utf8'));
+    assert.equal(ws.length, 1, 'conflict did not add a record');
+
+    // 3) 死占位回收：把 W1 设成 pending 且 reservedAt 早于 TTL（过期），且假 alive=false → 新占位应接管
+    fakeNow += 300_000; // 超过 RESERVE_TTL_MS(120s)
+    aliveMap.set('W1', false); // W1 已死（无 pidFile 且标记非活）
+    const re = tryReserveWindow({ id: 'W3', title: 'T3', keys: ['file:D:/a'], pending: true, pid: 0, reservedAt: fakeNow });
+    // W1 若 freshPending=false 且 alive=false → 不构成冲突，W3 接管
+    ws = JSON.parse(fs.readFileSync(db, 'utf8'));
+    assert.equal(ws.some((w) => w.id === 'W3'), true, 'W3 took over after expired dead reservation');
+    assert.equal(ws.some((w) => w.id === 'W1'), false, 'W1 (dead pending reservation) was reclaimed/removed');
+
+    // 4) commitReservation：把 pending 占位改成真实 pid
+    commitReservation('W3', 12345);
+    ws = JSON.parse(fs.readFileSync(db, 'utf8'));
+    const w3 = ws.find((w) => w.id === 'W3');
+    assert.equal(w3.pending, false, 'commit clears pending');
+    assert.equal(w3.pid, 12345, 'commit sets pid');
+
+    // 5) cancelReservation：移除记录
+    cancelReservation('W1');
+    ws = JSON.parse(fs.readFileSync(db, 'utf8'));
+    assert.equal(ws.some((w) => w.id === 'W1'), false, 'cancel removes W1');
+    assert.equal(ws.some((w) => w.id === 'W3'), true, 'W3 retained after cancel of W1');
+
+    // 6) 无 keys 时按 title 兜底冲突键（__title）
+    __setOrchHooks({ db, alive, lock, now: () => fakeNow });
+    tryReserveWindow({ id: 'W4', title: 'Solo', keys: [], pending: true, pid: 0, reservedAt: fakeNow });
+    const conflict2 = tryReserveWindow({ id: 'W5', title: 'Another', keys: [], pending: true, pid: 0, reservedAt: fakeNow });
+    assert.equal(conflict2, null, 'no-keys records use __<title> default keys, do not collide on empty');
+  } finally {
+    __setOrchHooks(null);
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+test('extractUsage: 从 rollout JSONL 累积真实 token usage（input/prompt、output/completion、cached、total，容错字段名）', async () => {
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = fs.mkdtempSync(path2.join(os.tmpdir(), 'orch-usage-'));
+  const f = path2.join(root, 'rollout.jsonl');
+  // 三行：response_item assistant 带 usage(input_tokens/output_tokens/cached)，payload usage(prompt_tokens/completion_tokens)，纯 response usage(total_tokens)
+  const lines = [
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ text: 'hi' }] }, usage: { input_tokens: 100, output_tokens: 50, cached_tokens: 30, total_tokens: 150 } }),
+    JSON.stringify({ payload: { type: 'agent_message', message: 'done', usage: { prompt_tokens: 7, completion_tokens: 3, total_tokens: 10 } } }),
+    JSON.stringify({ payload: { response: { usage: { input_tokens: 2, output_tokens: 1, total_tokens: 3 } } } }),
+    'not-json-line',
+    '',
+  ];
+  fs.writeFileSync(f, lines.join('\n'), 'utf8');
+  try {
+    const u = extractUsage(f);
+    assert.equal(u.input_tokens, 109, 'input_tokens accumulated (100+7+2)');
+    assert.equal(u.output_tokens, 54, 'output_tokens accumulated (50+3+1)');
+    assert.equal(u.cached_tokens, 30, 'cached_tokens accumulated (30)');
+    assert.equal(u.total_tokens, 163, 'total_tokens accumulated (150+10+3)');
+  } finally {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+  // 缺失文件安全
+  const missing = extractUsage(path2.join(root, 'nope.jsonl'));
+  assert.equal(missing.input_tokens, 0, 'missing file -> zeros');
+  assert.equal(missing.output_tokens, 0, 'missing file -> zeros');
+});
+
+test('resolveCodexHome: 环境变量优先，未设回退 homedir/.codex（跨用户/通用化）', () => {
+  const old = process.env.CODEX_HOME;
+  try {
+    process.env.CODEX_HOME = 'D:\\custom-codex';
+    assert.equal(resolveCodexHome(), 'D:\\custom-codex', 'CODEX_HOME takes precedence');
+    delete process.env.CODEX_HOME;
+    const h = resolveCodexHome();
+    assert.ok(h.endsWith('\\.codex') || h.endsWith('/.codex'), 'falls back to home/.codex when unset');
+  } finally {
+    if (old === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = old;
+  }
+});
+
+test('isOrchestratorSelfMod: 通用化识别自引用(编排/调度/TUI窗/源码, 中英文)，不误判普通页面修复', () => {
+  // 自引用命中：中英文均可
+  assert.equal(isOrchestratorSelfMod('修复 agent-tui-orchestrator 的编排逻辑'), true, 'en self-ref');
+  assert.equal(isOrchestratorSelfMod('优化调度窗的关窗逻辑'), true, 'zh 调度窗 self-ref');
+  assert.equal(isOrchestratorSelfMod('改 orchestrate-sdk.mjs 的源码'), true, 'sdk path self-ref');
+  assert.equal(isOrchestratorSelfMod('加固 orchestrator 的并发稳定性'), true, 'orchestrator hardening');
+  // 不命中：普通业务修改，与编排无关
+  assert.equal(isOrchestratorSelfMod('修复登录页的错位布局'), false, '普通页面修复不误判');
+  assert.equal(isOrchestratorSelfMod('给数据库加索引'), false, '普通业务不误判');
+  assert.equal(isOrchestratorSelfMod('优化前端构建缓存'), false, '前端优化不误判');
 });
