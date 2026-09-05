@@ -416,14 +416,14 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk computeMaxWindows: n GB -> floor(n/2 + 1) concurrency, capped at 8 windows', () => {
-  assert.equal(computeMaxWindows(2), 2, '2G -> floor(2) -> 2 (caller refuses <2)');
-  assert.equal(computeMaxWindows(4), 3, '4G -> floor(3) -> 3 windows');
-  assert.equal(computeMaxWindows(8), 5, '8G -> floor(5) -> 5 windows');
-  assert.equal(computeMaxWindows(12), 7, '12G -> floor(7) -> 7 windows');
-  assert.equal(computeMaxWindows(16), 8, '16G -> floor(9) -> 8 windows (cap)');
-  assert.equal(computeMaxWindows(32), 8, '32G -> 8 windows (capped, NOT 16)');
-  assert.equal(computeMaxWindows(64), 8, '64G -> 8 windows (capped)');
+test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 1000) concurrency, no cap', () => {
+  assert.equal(computeMaxWindows(2), 2, '2G -> round(2.048) -> 2 (caller refuses <4G)');
+  assert.equal(computeMaxWindows(4), 4, '4G -> round(4.096) -> 4 windows');
+  assert.equal(computeMaxWindows(8), 8, '8G -> round(8.192) -> 8 windows');
+  assert.equal(computeMaxWindows(12), 12, '12G -> round(12.288) -> 12 windows');
+  assert.equal(computeMaxWindows(16), 16, '16G -> round(16.384) -> 16 windows');
+  assert.equal(computeMaxWindows(32), 33, '32G -> round(32.768) -> 33 windows');
+  assert.equal(computeMaxWindows(64), 66, '64G -> round(65.536) -> 66 windows');
 });
 test('orchestrate-sdk computeMaxSubagents / computeMaxTotalAgents: 克制使用按内存分级（含子代理预算）', () => {
   // 每窗可并发子代理上限：低内存不许开，随内存递增封顶。
@@ -435,10 +435,10 @@ test('orchestrate-sdk computeMaxSubagents / computeMaxTotalAgents: 克制使用�
   assert.equal(computeMaxSubagents(32), 4, '32G -> 4 subagents/window');
   assert.equal(computeMaxSubagents(64), 4, '64G -> 4 subagents/window (capped)');
   // 全局 agent 上限 = 最大窗数 × (1 + 每窗子代理上限)，确保"窗+子代理"不叠加 OOM。
-  assert.equal(computeMaxTotalAgents(4), 3 * (1 + 0), '4G -> 3 windows x 1 = 3 agents total');
-  assert.equal(computeMaxTotalAgents(8), 5 * (1 + 1), '8G -> 5 windows x 2 = 10 agents total');
-  assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8 windows x 3 = 24 agents total');
-  assert.equal(computeMaxTotalAgents(32), 8 * (1 + 4), '32G -> 8 windows x 5 = 40 agents total');
+  assert.equal(computeMaxTotalAgents(4), 4 * (1 + 0), '4G -> 4 windows x 1 = 4 agents total');
+  assert.equal(computeMaxTotalAgents(8), 8 * (1 + 1), '8G -> 8 windows x 2 = 16 agents total');
+  assert.equal(computeMaxTotalAgents(16), 16 * (1 + 2), '16G -> 16 windows x 3 = 48 agents total');
+  assert.equal(computeMaxTotalAgents(32), 33 * (1 + 4), '32G -> 33 windows x 5 = 165 agents total');
 });
 test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
   // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
@@ -996,13 +996,13 @@ test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不�
 });
 
 test('computeMaxWindows: 内存上限/下限边界', () => {
-  assert.equal(computeMaxWindows(2), 2, '2G -> 2');
-  assert.equal(computeMaxWindows(3.9), 2, '3.9G -> 2(floor(2.95))');
-  assert.equal(computeMaxWindows(4), 3, '4G -> 3');
-  assert.equal(computeMaxWindows(7), 4, '7G -> 4');
-  assert.equal(computeMaxWindows(16), 8, '16G -> 8(cap)');
-  assert.equal(computeMaxWindows(64), 8, '64G -> 8(cap)');
-  assert.equal(computeMaxWindows(0), 1, '0 -> 1 (floor(1))');
+  assert.equal(computeMaxWindows(2), 2, '2G -> round(2.048) -> 2');
+  assert.equal(computeMaxWindows(3.9), 4, '3.9G -> round(3.9936) -> 4');
+  assert.equal(computeMaxWindows(4), 4, '4G -> round(4.096) -> 4');
+  assert.equal(computeMaxWindows(7), 7, '7G -> round(7.168) -> 7');
+  assert.equal(computeMaxWindows(16), 16, '16G -> round(16.384) -> 16');
+  assert.equal(computeMaxWindows(64), 66, '64G -> round(65.536) -> 66');
+  assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
 });
 
 test('computeMaxSubagents / computeMaxTotalAgents 边界', () => {
@@ -1011,8 +1011,8 @@ test('computeMaxSubagents / computeMaxTotalAgents 边界', () => {
   assert.equal(computeMaxSubagents(8), 1, '8G -> 1');
   assert.equal(computeMaxSubagents(16), 2, '16G -> 2');
   assert.equal(computeMaxSubagents(32), 4, '32G -> 4(cap)');
-  assert.equal(computeMaxTotalAgents(8), 5 * (1 + 1), '8G -> 5窗x2');
-  assert.equal(computeMaxTotalAgents(16), 8 * (1 + 2), '16G -> 8窗x3');
+  assert.equal(computeMaxTotalAgents(8), 8 * (1 + 1), '8G -> 8窗x2');
+  assert.equal(computeMaxTotalAgents(16), 16 * (1 + 2), '16G -> 16窗x3');
 });
 
 test('levelWaves: 循环依赖/无依赖/空输入', () => {
