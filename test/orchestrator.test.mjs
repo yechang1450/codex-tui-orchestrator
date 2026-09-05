@@ -543,7 +543,7 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
     // 3) the TUI auth prompt (via applyAuthPromptPolicy in SDK source) must instruct the window to confirm sub-agents itself and output only __ORCH_DONE__ <token>
     const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
     assert.match(src, /wait_agent/, 'TUI prompt must tell the window to wait_agent for sub-agents');
-    assert.match(src, /update_goal complete/, 'TUI prompt must mention update_goal complete (codex goal path)');
+    assert.doesNotMatch(src, /update_goal complete|能力探测/, 'TUI prompt must NOT mention codex goal mechanisms (goal route removed)');
     assert.match(src, /不输出任何 SUBAGENTS_DONE 等后缀/, 'TUI prompt must tell the window to NOT output SUBAGENTS_DONE');
     assert.match(src, /TUI 窗管好自己的子代理/, 'TUI prompt must scoped sub-agent completion to the window (层级化)');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
@@ -577,15 +577,14 @@ test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass bro
   assert.match(authTpl, /ORCH_SUBTASK_DIR/, 'TUI prompt must reference ORCH_SUBTASK_DIR for the shared task file');
   assert.match(authTpl, /请先读取它再执行/, 'TUI prompt must tell the sub-agent to read the shared task file first');
 });
-test('orchestrate-sdk: codex goal sub-agent (方案B) — 共享文件辟【子代理唯一任务】段, 子代理提取 objective 自建 goal, 能力探测后才叠加', () => {
+test('orchestrate-sdk: 子代理一律走共享文件载体（goal 路线已删）；完成信号 = .done 标记 + wait_agent 返回', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  assert.match(src, /【子代理唯一任务】/, 'shared task file must define a 【子代理唯一任务】 section for objective extraction');
-  assert.match(src, /create_goal/, 'TUI prompt must mention create_goal for codex goal sub-agents');
-  assert.match(src, /update_goal complete/, 'TUI prompt must mention update_goal complete for codex goal sub-agents');
-  assert.match(src, /wait_agent/, 'TUI prompt must mention wait_agent to wait for codex goal sub-agents');
-  assert.match(src, /能力探测/, 'TUI prompt must gate codex-goal by capability probe, not process name');
-  assert.match(src, /能调 `create_goal`/, 'TUI prompt must require the sub-agent to be able to call create_goal before using goal');
-  assert.match(src, /完成判定仍须以方案A的[\s\S]*?标记或 wait_agent 返回/, 'TUI prompt must keep completion carried by observable signals');
+  // 共享文件载体保留（子代理完成信号 = .done 标记，路径取 ORCH_SUBTASK_DIR）
+  assert.match(src, /ORCH_SUBTASK_DIR/, 'must keep shared-file subtask carrier via env');
+  assert.match(src, /\.done/, 'must instruct sub-agent .done completion marker');
+  assert.match(src, /wait_agent/, 'must instruct parent to wait_agent for sub-agents');
+  // goal 路线删除：不再提 goal 指令
+  assert.doesNotMatch(src, /update_goal complete|能力探测/, 'must NOT mention codex goal routes');
   assert.doesNotMatch(src, /D:\\build\\82/, 'must not hardcode absolute build path inside SDK logic');
 });
 
@@ -889,13 +888,11 @@ test('applyAuthPromptPolicy: 方案A 完成信号 = 逐个子代理 .done 标记
   assert.match(src, /path\.join\(STATE_DIR, "subtasks"\)/, 'SDK must derive subtask dir via path.join(STATE_DIR)');
 });
 
-test('applyAuthPromptPolicy: 方案B codex goal——共享文件辟【子代理唯一任务】段, 子代理 create_goal + update_goal complete + 能力探测', () => {
+test('applyAuthPromptPolicy: 子代理完成信号 = 共享文件 .done 标记（goal 路线已删，不输出 goal 指令）', () => {
   const out = applyAuthPromptPolicy(OLD_SHAREDFILE, 21600000);
-  assert.ok(out.includes('【子代理唯一任务】'), 'must define 【子代理唯一任务】 for objective extraction');
-  assert.ok(out.includes('create_goal'), 'must instruct sub-agent to create_goal');
-  assert.ok(out.includes('update_goal complete'), 'must instruct sub-agent to update_goal complete');
-  assert.ok(out.includes('wait_agent'), 'must instruct parent to wait_agent');
-  assert.ok(out.includes('能力探测'), 'must gate by capability probe, not process name');
+  assert.ok(out.includes('.done'), 'must instruct sub-agent .done completion marker');
+  assert.ok(out.includes('ORCH_SUBTASK_DIR'), 'must derive .done path from env, not hardcode');
+  assert.doesNotMatch(out, /create_goal|update_goal complete|能力探测/, 'must NOT output codex goal instructions (goal route removed)');
 });
 
 test('applyAuthPromptPolicy: 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 宽度重叠）', () => {
@@ -904,7 +901,7 @@ test('applyAuthPromptPolicy: 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK �
   assert.ok(out.includes('1) 先检查一遍') && out.includes('2) 再检查一遍') && out.includes('3) 最后再检查一遍'), 'must use ASCII 1)2)3)');
 });
 
-test('applyAuthPromptPolicy: 不管输入顺序如何, 方案A/B 契约联合输出不含圈号数字', () => {
+test('applyAuthPromptPolicy: 不管输入顺序如何, 契约联合输出不含圈号数字', () => {
   const out = applyAuthPromptPolicy(OLD_SUBAGENT + OLD_SHAREDFILE + OLD_THREEPASS, 21600000);
   assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'no circled digits anywhere in the union of A/B contract');
 });

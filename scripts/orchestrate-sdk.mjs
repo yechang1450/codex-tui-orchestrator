@@ -164,17 +164,16 @@ const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(CODEX_HOME, "orchestra
 // 放在 orchestrator 稳定家目录下（ORCH_STATE_DIR），非 WORKSPACE 临时目录，避免被插件升级清掉/散落。
 const SUBTASK_DIR = process.env.ORCH_SUBTASK_DIR || path.join(STATE_DIR, "subtasks");
 //
-// 【为什么子代理任务正文走"共享文件"而不是"goal 机制"（决策记录，勿再走回头路）】
-// Codex 的 goal 机制（create_goal / get_goal / update_goal）是**线程级**状态：
-//   官方 Cookbook 明确指出 "the Goal belongs to the current thread, not to global memory or project instructions"；
-//   官方 openai/codex#24607 也写明 "Codex goals are currently scoped to the current thread"，
-//   并把 "parent/orchestrator agent 给 spawned 子代理派发持久化 goal" 列为**尚未实现的功能请求**。
-// 实测：主线程 create_goal 后 get_goal 能读到，但 spawn 出的子代理 get_goal 读到的是它**自己线程**的空 goal
-//   （"goal is empty"）。所以子代理拿不到任务，不是因为"不会用"，而是跨线程传 goal 在官方尚未实现。
-// 因此本插件采用"共享任务文件 + 内置 spawn/wait"作为确定可靠的载体：父/主窗口先写共享文件，
-//   spawn 时 message 只指向该文件，子代理用读文件工具取到完整任务；父/主窗口再 wait_agent 等其返回。
-// 路线图：待官方 openai/codex#24607 支持 spawn_agent 携带初始 goal / 父可查子 goal 状态后，
-//   再从"共享文件载体"迁移回"goal 载体"。
+// 【子代理任务正文载体：共享文件（唯一，goal 路线已删除）】
+// 废弃说明（勿再走回头路）：codex 的 goal 机制（为线程级状态）本身无法承担「父给子代理派发任务」，
+//   官方明确 "Codex goals are currently scoped to the current thread"，"parent 给 spawned 子代理派发持久化 goal" 尚未实现；
+//   且实测该环境 spawn 出的子代理 get_goal 读到的是它**自己线程**的空 goal（"goal is empty"），拿不到父的任务。
+// 因此 goal 路线已删除；子代理任务正文一律走"共享任务文件 + 内置 spawn/wait"：
+//   父/主窗口先写共享文件，spawn 时 message 只指向该文件（仅一句话），子代理用读文件工具取到完整任务再执行；
+//   父/主窗口再 wait_agent 等其返回，并以 `.done` 标记作为完成的可观测信号。
+// 已知限制：该环境窗内 spawn_agent 的【消息正文】投递不可靠（NEW_TASK 信封可达，但正文子代理读不到），
+//   且协作线程上限可能拒绝再 spawn、子代理可能自 spawn 不收敛——故"窗内子代理"不作为可靠并行主机制；
+//   可靠并行 = 多 TUI 窗（独立块并行），任务完成判定 = 窗内最终落盘产物。
 //
 // 轮询总上限：默认 6 小时（ORCH_MAX_POLL_MS 可调）。用于「检测是否有默认时间限制会提前结束轮询」——
 // 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
@@ -1049,16 +1048,17 @@ export function applyAuthPromptPolicy(auth, subagentWaitMaxMs) {
   let s = String(auth || "");
   s = s.replace(
     "【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。",
-    "【子代理收尾 = 一环扣一环（层级化：TUI 窗管好自己的子代理）】子代理属于本 TUI 窗：**你必须负责确认自己 spawn 的全部子代理都干活完成之后，才允许输出结束标记**——这是本窗的职责，不是 watchdog 的。**对单个子代理的最大等待时长 = $env:ORCH_SUBAGENT_MAX_WAIT_MS（当前 = " + capMs + "ms），这是硬上限**：超时即视为该子代理**超时/未完成**，须**如实标注**「子代理 X 已超过等待上限未返回」，绝不因超时而虚报成功。**确认全部子代理完成的方式（二者选其一，按你当前是否在用 codex goal 机制）**：1) 通用方式（方案A）：逐个检查你在共享目录 `$env:ORCH_SUBTASK_DIR` 下为每个子代理约定的 `.done` 标记文件都真实存在且内容正确；2) codex goal 方式（方案B）：对每个子代理用 `wait_agent` 等它返回并拿到结果，且确认它已 `update_goal complete`。**只有（自己活干完）且（按上述任一种方式确认全部子代理都干活完成）之后，才输出最后一行 `__ORCH_DONE__ <本窗token>`**——**只输出这一行，不输出任何 SUBAGENTS_DONE 等后缀**；watchdog 看到这一行即认为本窗（连同其子代理）全部收尾并关窗。"
+    "【子代理收尾 = 一环扣一环（层级化：TUI 窗管好自己的子代理）】子代理属于本 TUI 窗：**你必须负责确认自己 spawn 的全部子代理都干活完成之后，才允许输出结束标记**——这是本窗的职责，不是 watchdog 的。**对单个子代理的最大等待时长 = $env:ORCH_SUBAGENT_MAX_WAIT_MS（当前 = " + capMs + "ms），这是硬上限**：超时即视为该子代理**超时/未完成**，须**如实标注**「子代理 X 已超过等待上限未返回」，绝不因超时而虚报成功。**确认全部子代理完成的方式（统一走共享文件 .done 标记）**：逐个检查你在共享目录 `$env:ORCH_SUBTASK_DIR` 下为每个子代理约定的 `.done` 标记文件都真实存在且内容正确（并用 `wait_agent` 等它返回拿到结果兜底）。**只有（自己活干完）且（确认全部子代理都干活完成）之后，才输出最后一行 `__ORCH_DONE__ <本窗token>`**——**只输出这一行，不输出任何 SUBAGENTS_DONE 等后缀**；watchdog 看到这一行即认为本窗（连同其子代理）全部收尾并关窗。"
   );
   s = s.replace(
     "随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。",
     "随后按此顺序自查：1) 先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；2) 再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；3) 最后再检查一遍这个 TODO LIST 的问题（复查，确保 1) 2) 都改彻底）。"
   );
-  // 方案A：给共享任务文件追加「每个子代理独立 .done 完成标记」约定——路径同样用 $env:ORCH_SUBTASK_DIR 自动推导，绝不硬编码。
+  // 子代理完成标记：共享任务文件里约定每个子代理独立的 .done 标记（路径用 $env:ORCH_SUBTASK_DIR 自动推导，绝不硬编码）；
+  // 父窗以「读回 .done 标记真实存在」作为该子代理完成的可观测信号（不用 codex goal 机制）。
   s = s.replace(
     "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。",
-    "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。**关于完成标记（方案A·通用保底）**：在该共享任务文件里为子代理约定一个 `.done` 标记路径，例如 `$env:ORCH_SUBTASK_DIR\\sub-<本窗token>-<seq>.done`（路径用 `$env:ORCH_SUBTASK_DIR` 自动推导，不要写死绝对路径），并写明「子代理干完必须写该标记文件（原子写：临时文件+改名）」。父窗在判定自己收尾前，须逐个检查每个子代理的 `.done` 标记真实存在。\n\n**关于 codex goal 专项（方案B·能力探测后叠加）**：若该子代理环境确实支持 codex goal 工具（能调 `create_goal`/`get_goal`/`update_goal`，须能力探测确认而非只看进程名），则在共享任务文件里**单独辟一段 `【子代理唯一任务】`**，用一句话、可验收的客观目标写成（供子代理提取作 `create_goal` 的 objective），例如「修复 D:\\build\\82\\frontend\\登录页错位布局，确保无滚动条」。子代理读到后：先用文件工具读共享文件 → 从 `【子代理唯一任务】` 段提取 objective → `create_goal`（在自己线程里建 goal）→ 干活 + 自验 → 干完 `update_goal complete`。父窗则用 `wait_agent` 等子代理返回并拿到结果 + 确认它已 `update_goal complete`，才把该子代理计为完成。**注意：goal 只是子代理的「内在自觉」，不承担跨线程传任务，也不作为父端读不到的完成依据——完成判定仍须以方案A的 `.done` 标记或 wait_agent 返回这些父端可观测信号为准。**"
+    "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。**关于完成标记（共享文件·通用保底）**：在该共享任务文件里为子代理约定一个 `.done` 标记路径，例如 `$env:ORCH_SUBTASK_DIR\\sub-<本窗token>-<seq>.done`（路径用 `$env:ORCH_SUBTASK_DIR` 自动推导，不要写死绝对路径），并写明「子代理干完必须写该标记文件（原子写：临时文件+改名）」。父窗在判定自己收尾前，须逐个检查每个子代理的 `.done` 标记真实存在。"
   );
   return s;
 }
@@ -1231,8 +1231,8 @@ function writeInteractiveLauncher(title, prompt, sfx) {
             "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
             "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
             "            # 层级化：watchdog(爷爷)只认 TUI 窗(儿子)是否完成任务——只要 TUI 窗输出 __ORCH_DONE__ <token> 就认为收尾。",
-            "            # TUI 窗是否已在输出前用 goal 的 wait_agent + update_goal complete 确认全部子代理(孙子)干活，由 TUI 窗自己负责，",
-            "            # watchdog 不再要求 SUBAGENTS_DONE 后缀（方案A/B 均只输出 __ORCH_DONE__ <token>，不再输出该后缀）。",
+            "            # TUI 窗是否已在输出前确认全部子代理(孙子)干活完成，由 TUI 窗自己负责（读回 .done 标记 / wait_agent 返回）；",
+            "            # watchdog 不再要求 SUBAGENTS_DONE 后缀（一律只输出 __ORCH_DONE__ <token>）。",
             "            $done = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
     "            if ($done) {",
     "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
