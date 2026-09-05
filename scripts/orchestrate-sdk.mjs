@@ -1785,6 +1785,25 @@ async function waitClear(keys, timeoutMs) {
   }
   return false;
 }
+// 兜底：从任务文本推断"具体目标文件"作为额外冲突键。LLM 漏给 conflict_hints / depends_on 时，
+// 共享同一目标文件的独立块仍会被识别为冲突并合并为一个串行块（依赖/同目标任务绝不并行竞态）。
+// 只提取"像具体文件"的绝对路径（含扩展名），避免把裸目录(D:\temp)当目标造成过度串行、伤并发。
+function inferTargetKeys(text) {
+  const keys = new Set();
+  const s = String(text || "");
+  const isFileLike = (p) => /[A-Za-z0-9_\-.]+\.[A-Za-z0-9]{1,5}$/.test(p);
+  // Windows 绝对盘符路径
+  for (const m of s.matchAll(/[A-Za-z]:[\\/][^\s"'`,;)]+/g)) {
+    const p = m[0].replace(/[\\/]+$/, "");
+    if (isFileLike(p)) keys.add("file:" + p);
+  }
+  // Unix 风格绝对路径
+  for (const m of s.matchAll(/(?<![A-Za-z:])\/[^\s"'`,;)]+/g)) {
+    const p = m[0].replace(/[\\/]+$/, "");
+    if (isFileLike(p)) keys.add("file:" + p);
+  }
+  return [...keys];
+}
 // Over-merge guard (code-level, not relying on the model):
 //   - any `independent` block carrying multiple tasks -> split into one block per task.
 //   - any two blocks that share a conflictKey (would conflict if parallel) -> merge into ONE linked block.
@@ -1803,10 +1822,17 @@ function normalizePlan(plan) {
       blocks.push({ type, title: b.title, dependsOn, conflictKeys: b.conflictKeys || [], tasks });
     }
   }
+  // 确定性依赖/同目标兜底：给每个块补上"任务文本里提到的具体目标文件"键，命中即与同目标块串行。
+  for (const b of blocks) {
+    const inferred = new Set(Array.isArray(b.conflictKeys) ? b.conflictKeys.map(String) : []);
+    for (const t of (b.tasks || [])) for (const k of inferTargetKeys(t.prompt || t.title || "")) inferred.add(k);
+    if (inferred.size) b.conflictKeys = Array.from(inferred);
+  }
   const merged = [];
   for (const b of blocks) {
     const hit = merged.find((m) => m !== b && keysOverlap(blockKeys(m), blockKeys(b)));
     if (hit) {
+      // 同目标/冲突块合并为一个串行块（前一个写完，后一个才执行）
       if (hit.type !== b.type) hit.type = "linked";
       hit.tasks.push(...b.tasks);
       hit.conflictKeys = Array.from(new Set([...(hit.conflictKeys || []), ...(b.conflictKeys || [])]));
