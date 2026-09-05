@@ -104,13 +104,22 @@ function appendModelEffortArgs(arr) {
   if (EFFORT && String(EFFORT).trim() && !/\s/.test(String(EFFORT))) out.push("-c", "model_reasoning_effort=" + String(EFFORT));
   return out;
 }
+// 生成 PowerShell 数组字面量 @('a','b',...)——每个参数独立元素, 含空格/单引号的值也保持为一个参数,
+// 绝不拆裂。用于 & codex @codexArgs 安全传参（替代 AGENT_ARGS.split(" ") 会裂开含空格路径的旧式拼接）。
+export function buildPsArrayLit(args) {
+  const a = Array.isArray(args) ? args : [];
+  if (!a.length) return "@()";
+  return "@(" + a.map((x) => "'" + String(x).replace(/'/g, "''") + "'").join(",") + ")";
+}
 const AGENT_ARGS_EXEC = (() => {
   const raw = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX });
   const cleaned = [];
   for (let i = 0; i < raw.length; i++) { if (raw[i] === "-a") { i++; continue; } cleaned.push(raw[i]); }
   return ["exec", ...appendModelEffortArgs(cleaned)].map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 })();
-const AGENT_ARGS = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX })).map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
+const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }));
+// AGENT_ARGS 保留给老式拼接（AGENT_ARGS_EXEC / 兜底），主 launcher 改用 buildPsArrayLit 生成的数组字面量。
+const AGENT_ARGS = AGENT_ARGS_LIST.map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 const TMP = path.join(WORKSPACE, "temp");
 // plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
@@ -1222,7 +1231,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "} -ArgumentList $token, $PID, $resultFile",
     "$code = 1",
     "try {",
-    "  $codexArgs = @(" + AGENT_ARGS.split(" ").join(", ") + ", $p)",
+    "  $codexArgs = " + buildPsArrayLit(AGENT_ARGS_LIST) + " + $p",
     "  # 会话级容错：codex 若异常退出(无最终汇报)则在同一窗内自动重跑一次，避免并发时 provider/会话瞬时失败造成无输出；不重复弹窗、不二次执行。",
     "  $attempt = 0",
     "  $rep = ''",
@@ -2483,4 +2492,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents };
+export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, blockKeys, keysOverlap };

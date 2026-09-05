@@ -154,6 +154,8 @@ test('force.mjs CLI --enable arms enforcement', () => {
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
 const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, applyAuthPromptPolicy } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -957,4 +959,43 @@ test('orchestrate-sdk buildBlocksFromTasks: 按项目分组/tool未归属串行/
   // 无归属/无冲突的 tool 目前被拆为 independent 块（由后续窗内提示词约束串行）；此刻断言其至少产出 1 个可执行块。
   assert.ok(Array.isArray(b3) && b3.length === 1, 'must still produce one executable block for an unowned tool');
   assert.ok(flat3.includes('node --version'), 'block must carry the tool prompt');
+});
+﻿
+// ---------- buildPsArrayLit / blockKeys / keysOverlap 边界 ----------
+test('buildPsArrayLit: 生成 PowerShell 数组字面量, 含空格/单引号值保持单元素', () => {
+  assert.equal(buildPsArrayLit(['--cd', 'D:/my project', '-a', 'never']), "@('--cd','D:/my project','-a','never')");
+  assert.equal(buildPsArrayLit([]), "@()");
+  assert.equal(buildPsArrayLit(["a'b", "x y"]), "@('a''b','x y')");
+  assert.equal(buildPsArrayLit(null), "@()");
+  assert.equal(buildPsArrayLit(123), "@()"); // 非数组回退空
+});
+
+test('buildPsArrayLit: 不含空格时与旧式 split 拼接等价（不回归）', () => {
+  const arr = ['--cd', 'D:/tmp', '-m', 'deepseek-v4-flash'];
+  // PowerShell @('--cd','D:/tmp','-m','deepseek-v4-flash') 每个元素独立 -> 对应 & codex @args
+  assert.equal(buildPsArrayLit(arr), "@('--cd','D:/tmp','-m','deepseek-v4-flash')");
+});
+
+test('blockKeys: 无 conflictKeys 时回退到 __<title>, 不返回空数组', () => {
+  assert.deepEqual(blockKeys({ title: '修复81', conflictKeys: [] }), ['__修复81']);
+  assert.deepEqual(blockKeys({ title: '修复81' }), ['__修复81']);
+  assert.deepEqual(blockKeys({ title: 'x', conflictKeys: ['dir:A'] }), ['dir:A']);
+  assert.deepEqual(blockKeys({ title: 'x', conflictKeys: null }), ['__x']);
+});
+
+test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', () => {
+  assert.equal(keysOverlap(['file:D:/temp/a'], ['file:D:/temp/a']), true);
+  assert.equal(keysOverlap(['file:D:/temp/a'], ['file:D:/temp/b']), false);
+  assert.equal(keysOverlap([], ['file:D:/temp/a']), false);
+  assert.equal(keysOverlap(['file:D:/temp/a'], []), false);
+});
+﻿test('runtime: launcher $codexArgs 用 buildPsArrayLit 数组字面量而非 AGENT_ARGS.split(" ")（含空格路径不再裂开）', () => {
+  const { lp, pidf, pf } = writeInteractiveLauncher('psfix', 'PROMPT', 'fx');
+  try {
+    const body = fs.readFileSync(lp, 'utf8');
+    // 必须用数组字面量方式（每参数独立元素），不能再用会裂开含空格路径的 split(" ") 字符串拼接
+    assert.ok(body.includes('$codexArgs = @('), 'launcher must build codexArgs as a PowerShell array literal');
+    assert.doesNotMatch(body, /AGENT_ARGS\.split\(" "\)/, 'launcher must NOT split AGENT_ARGS by space (would split space-containing values)');
+    assert.ok(body.includes("@('--cd'"), 'launcher must start codexArgs with @(--cd...) array literal');
+  } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } } }
 });
