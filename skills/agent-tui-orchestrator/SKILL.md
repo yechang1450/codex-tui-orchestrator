@@ -105,7 +105,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 ## 依赖
 - Node 22+、Codex CLI、Windows Terminal/console。
 - 编码：所有文本读写显式 UTF-8（`.ps1` 带 BOM），禁 GBK 乱码。
-- 执行后 auto-memory / memory-boost / auto-git 留痕。
+- 执行后 auto-memory（当日记忆档统一到 `D:\memory\YYYY-MM-DD.md`）+ git-commit（本地版本留痕，不 push）构成双留痕。
 
 ## 通用化 / 跨设备 / 跨 agent / 跨用户适配
 
