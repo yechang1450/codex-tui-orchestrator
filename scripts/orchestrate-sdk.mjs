@@ -836,14 +836,18 @@ function spawnVisibleWindow(lp, title) {
   // TUI keeps accepting Microsoft 拼音/日语 IME switches (fixes "偶发失效"). Codex
   // runs the same launcher (UTF-8 + chcp 65001), just hosted in a WT ConPTY.
   if (TUI_MODE === "wt" && WT_EXE && wtAvailable()) {
-    const p = spawn(WT_EXE, ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], {
+    // 唯一窗口名 -> 供"物理关窗"兜底精确定位（见 physicallyCloseWindow），绝不误动它窗/用户窗口。
+    const bn = path.basename(String(lp || ""));
+    const winS = bn.replace(/^win-launch-/, "").replace(/\.ps1$/, "");
+    const windowName = "win-" + (winS || "x");
+    const p = spawn(WT_EXE, ["-w", windowName, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], {
       detached: true,
       stdio: "ignore",
       windowsHide: false,
       shell: false,
     });
     p.unref();
-    console.log("spawned visible codex TUI (Windows Terminal): " + title);
+    console.log("spawned visible codex TUI (Windows Terminal): " + title + " (window=" + windowName + ")");
     return;
   }
   // conhost fallback: cmd /c start "" powershell -File <launcher>  ->  NEW visible console.
@@ -1558,6 +1562,21 @@ async function closeWindowByPid(pid) {
   console.log("  !! launcher " + p + " did not exit after killing its codex child; leaving it to self-exit 0 (no force-kill, avoids code-1 pane).");
   return false;
 }
+// 物理关窗兜底：任何情况都不留停留窗。按窗口名找到承载本窗的 WindowsTerminal 实例并 taskkill /T /F，连窗格
+// (launcher + codex 树) 一起物理关闭；窗口已不存在则空操作。只匹配本窗唯一窗口名，绝不误动它窗/用户窗口。
+function physicallyCloseWindow(pidf) {
+  try {
+    if (!pidf) return;
+    const lp = path.join(path.dirname(pidf), path.basename(pidf).replace(/^window-/, "win-launch-").replace(/\.pid$/, ".ps1"));
+    const bn = path.basename(lp);
+    const s = bn.replace(/^win-launch-/, "").replace(/\.ps1$/, "");
+    if (!s) return;
+    const windowName = "win-" + s;
+    const esc = String(windowName).replace(/'/g, "''");
+    spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+      "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'WindowsTerminal.exe' -and $_.CommandLine -like '*" + esc + "*' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null }"], { windowsHide: true, stdio: "ignore", timeout: 8000 });
+  } catch { /* ignore */ }
+}
 // 多路定位 launcher：pidFile -> registry pid -> 按 win-launch 脚本路径扫描进程；pidFile 被外部清理时依然能关窗。
 async function closeWindowRobust(w) {
   const pidf = w && w.pidFile;
@@ -1575,12 +1594,14 @@ async function closeWindowRobust(w) {
   if (!pid) return false;
   if (pidf) { try { writeFileSync(pidf + ".self-closed", "1", "ascii"); } catch { /* ignore */ } }
   await closeWindowByPid(pid);
+  physicallyCloseWindow(pidf);
   return true;
 }
 async function closeWindow(pidf) {
   if (!pidf || !existsSync(pidf)) return;
   try { writeFileSync(pidf + ".self-closed", "1", "ascii"); } catch { /* ignore */ }
   await closeWindowByPid(readPidFile(pidf));
+  physicallyCloseWindow(pidf);
 }
 // ---------------------------------------------------------------------------
 // Running-window registry + conflict locking (stability)
