@@ -1077,6 +1077,9 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   const PY_Q = String(PY || "").replace(/'/g, "''");
   const body = [
     "$ErrorActionPreference = 'Continue'",
+    // 根治：最外层 trap 兜底——任何未捕获的 terminating error 都恒 exit 0，绝不让 launcher 以非 0 退出，
+    // 否则 Windows Terminal 会留下「[已退出进程，代码为 1]」且不自动关的卡壳窗。
+    "trap { exit 0 }",
     `$PID | Set-Content -Path '${pidfQ}' -Encoding UTF8`,
     "$env:TERM = 'xterm-256color'",
     "$env:Path = '" + PY_Q + ";' + $env:Path",
@@ -1542,11 +1545,10 @@ async function closeWindowByPid(pid) {
     return false;
   }
   // Last resort (genuine exception only): the launcher did NOT honor `exit 0` within the grace window.
-  // This only ever happens when the launcher is truly stuck (rare) — normal completion always reaches
-  // `exit 0` and exits on its own, so we never hit this path. We force-kill so we never leak a window,
-  // and we report it explicitly instead of pretending the window closed cleanly.
-  console.log("  !! launcher " + p + " did not exit after killing its codex child; force-killing (fallback).");
-  try { spawnSync("taskkill", ["/PID", String(p), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" }); } catch { /* ignore */ }
+  // 根治：绝不 taskkill launcher 本体——它只会以 exit 1 亡，Windows Terminal 留下「[已退出进程，代码为 1]」
+  // 且不自动关的卡壳窗。既然 codex 后代已杀净、launcher 模板带 trap{exit 0} 恒以 0 收尾，就把它留给它自己
+  // exit 0（窗格随之干净关闭），仅如实记录，绝不制造 code-1 残窗。
+  console.log("  !! launcher " + p + " did not exit after killing its codex child; leaving it to self-exit 0 (no force-kill, avoids code-1 pane).");
   return false;
 }
 // 多路定位 launcher：pidFile -> registry pid -> 按 win-launch 脚本路径扫描进程；pidFile 被外部清理时依然能关窗。
