@@ -476,6 +476,11 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     assert.match(body, /Kill-LauncherTree \$rootPid/, 'watchdog must call Kill-LauncherTree on completion');
     // 5) 加固：watchdog 已自关 或 codex 已退出且无后代 才收窗；结果文件存在但 codex 仍存活时继续杀净（拒绝常驻 codex）
     assert.match(body, /if \(Test-Path -LiteralPath \(\$resultFile \+ '\.self-closed'\)\) \{ \$wdDone = \$true; break \}/, 'launcher must not retry after watchdog self-closed');
+    // 6) 加固（本轮新增）：rollout 达到 task_complete（但既无 __ORCH_DONE__ 也无『完成』汇报，如 selftest/纯只读窗）
+    //    时，watchdog 也立即写 .self-closed + 杀净 codex 并 exit 0——避免落到依赖 $sawChild 的陈旧 result 分支，
+    //    拖到 orchestrator 的 15s 兜底才收窗（慢/易卡）。且开了子代理时须等 SUBAGENTS_DONE，防止提前关窗丢子代理。
+    assert.ok(body.includes("$tcDone = (($tail | Where-Object { $_ -match 'task_complete' }) -and ($tail | Where-Object { $_.Contains($token) }))"), 'watchdog must detect task_complete in its own rollout (token-scoped)');
+    assert.ok(body.includes("if ($tcDone -and ($spawnedAgent -eq $false -or ($tail | Where-Object { $_.Contains('SUBAGENTS_DONE') }))) {"), 'watchdog task_complete branch must wait for SUBAGENTS_DONE when subagents were spawned');
     assert.doesNotMatch(body, /if \(Test-Path -LiteralPath \$resultFile\) \{ exit 0 \}/, 'watchdog must not exit on a stale result file while codex is alive');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
