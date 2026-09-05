@@ -951,7 +951,7 @@ async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
     const matchKey = "【本块唯一标识】" + tk;
     const sf = await waitForSessionFile(matchKey, 90000, rf);
     let res = { done: false, text: "" };
-    if (sf) res = await waitTaskComplete(sf, POLL_TIMEOUT_MS, rf, matchKey);
+    if (sf) res = await waitTaskComplete(sf, POLL_TIMEOUT_MS, rf, matchKey, pidf);
     else if (existsSync(rf)) { const c = readExitCode(rf); res = { done: true, text: "(launcher exited code " + (c === null ? "?" : c) + "; no session rollout matched)", exitCode: c }; }
     // 执行结束判定（用户方案：done=做完了，不等同于成功）：res.done 即收，是否达标由主控核对真实落盘状态。
     let text = res.text || "";
@@ -1359,6 +1359,10 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
     // 根治 run 卡死：窗（launcher 进程）已死 = 该块执行结束。用户方案=完成与否由主控关窗后按任务 prompt
     // 核对真实落盘（零报告原则），父进程绝不因"窗未写 result 汇报 / rollout 无 task_complete"而无限等待。
     if (pidf) {
+      if (!existsSync(pidf)) {
+        // pid 文件已被清理 = 窗生命周期已结束（正常关窗/被收尾清理），视为该块执行结束。
+        return { done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
+      }
       const lp = readPidFile(pidf);
       if (lp > 0 && !pidAliveCheck(lp)) {
         return { done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
@@ -2385,7 +2389,7 @@ async function main() {
         const matchKey2 = "【本块唯一标识】" + tk2, resultFile2 = la.rf;
         const sf2 = await waitForSessionFile(matchKey2, 90000, resultFile2);
         let res2 = { done: false, text: "" };
-        if (sf2) res2 = await waitTaskComplete(sf2, POLL_TIMEOUT_MS, resultFile2, matchKey2);
+        if (sf2) res2 = await waitTaskComplete(sf2, POLL_TIMEOUT_MS, resultFile2, matchKey2, la.pidf);
         else if (existsSync(resultFile2)) { const c2 = readExitCode(resultFile2); res2 = { done: true, text: "(launcher exited code " + (c2 === null ? "?" : c2) + "; no session rollout matched)", exitCode: c2 }; }
         summary[r.key] = { title: r.title, status: res2.done ? "done" : "timeout", exitCode: res2.exitCode ?? null, result: (res2.text || "(no result captured)").trim().slice(0, 2000) };
         if (res2.done) {
