@@ -432,9 +432,12 @@ test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三�
   const out = applyAuthPromptPolicy(oldSub + oldPass, 21600000);
   // 子代理 6 小时硬上限：旧文案被替换，出现 ORCH_SUBAGENT_MAX_WAIT_MS，且不再含「无超时上限」「绝不设超时上限」。
   assert.ok(out.includes('ORCH_SUBAGENT_MAX_WAIT_MS'), 'must inject the subagent max-wait env var');
-  assert.ok(out.includes('但有 6 小时硬上限'), 'must flip the wording from 无超时上限 to 6小时硬上限');
+  assert.ok(out.includes('6 小时') && out.includes('硬上限'), 'must keep the 6h hard cap wording');
   assert.ok(!out.includes('无超时上限'), 'must not keep the old 无超时上限 wording');
   assert.ok(!out.includes('绝不设超时上限'), 'must not keep the old 绝不设超时上限 wording');
+  // 层级化（用户设计）：子代理完成由 TUI 窗自己确认，watchdog 不再依赖 SUBAGENTS_DONE 后缀。
+  assert.ok(out.includes('TUI 窗管好自己的子代理'), 'must scope sub-agent completion to the window (层级化)');
+  assert.ok(!out.includes('__ORCH_DONE__ <本窗token> SUBAGENTS_DONE'), 'must NOT instruct outputting SUBAGENTS_DONE suffix');
   // 三遍检查序号：①/②/③ 全被替换成 1)/2)/3)，不再保留圈号（避免 WT CJK 宽度重叠）。
   assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'must drop the ①②③ circled digits');
   assert.ok(out.includes('1) 先检查一遍') && out.includes('2) 再检查一遍') && out.includes('3) 最后再检查一遍'), 'must use ASCII-width 1)2)3)');
@@ -478,9 +481,9 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     assert.match(body, /if \(Test-Path -LiteralPath \(\$resultFile \+ '\.self-closed'\)\) \{ \$wdDone = \$true; break \}/, 'launcher must not retry after watchdog self-closed');
     // 6) 加固（本轮新增）：rollout 达到 task_complete（但既无 __ORCH_DONE__ 也无『完成』汇报，如 selftest/纯只读窗）
     //    时，watchdog 也立即写 .self-closed + 杀净 codex 并 exit 0——避免落到依赖 $sawChild 的陈旧 result 分支，
-    //    拖到 orchestrator 的 15s 兜底才收窗（慢/易卡）。且开了子代理时须等 SUBAGENTS_DONE，防止提前关窗丢子代理。
+    //    拖到 orchestrator 的 15s 兜底才收窗（慢/易卡）。层级化：watchdog 只认 __ORCH_DONE__ <token>，不再依赖 SUBAGENTS_DONE。
     assert.ok(body.includes("$tcDone = (($tail | Where-Object { $_ -match 'task_complete' }) -and ($tail | Where-Object { $_.Contains($token) }))"), 'watchdog must detect task_complete in its own rollout (token-scoped)');
-    assert.ok(body.includes("if ($tcDone -and ($spawnedAgent -eq $false -or ($tail | Where-Object { $_.Contains('SUBAGENTS_DONE') }))) {"), 'watchdog task_complete branch must wait for SUBAGENTS_DONE when subagents were spawned');
+    assert.ok(body.includes("if ($tcDone) {"), 'watchdog task_complete branch must close on task_complete alone (no SUBAGENTS_DONE dependency)');
     assert.doesNotMatch(body, /if \(Test-Path -LiteralPath \$resultFile\) \{ exit 0 \}/, 'watchdog must not exit on a stale result file while codex is alive');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
@@ -510,22 +513,23 @@ test('runtime: spawnWindowWithRetry warms up after popup so the parent never rac
   // 3) codexDescendantAlive helper must exist (the durable child detection used by warmup)
   assert.match(src, /function codexDescendantAlive/, 'codexDescendantAlive must exist');
 });
-test('runtime: watchdog requires SUBAGENTS_DONE when the window spawned a sub-agent (sub-agent-cutoff regression)', () => {
-  // A window that called spawn_agent must NOT be auto-closed on a bare "__ORCH_DONE__ <token>" — the sub-agent
-  // may not have returned yet. The watchdog must detect the spawn and require the "__ORCH_DONE__ <token> SUBAGENTS_DONE"
-  // suffix before closing. Otherwise a window drops sub-agent results ("done" before the sub-agent finished).
+test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent completion is the TUI window\'s own job (层级化)', () => {
+  // 层级化（用户设计）：watchdog(爷爷)只认 TUI 窗(儿子)输出 __ORCH_DONE__ <token> 即关窗；
+  // 子代理(孙子)是否完成由 TUI 窗自己在输出前确认——watchdog 不再要求 SUBAGENTS_DONE 后缀。
   const { lp, pidf, pf } = writeInteractiveLauncher('subcut', 'task\n\n【本块唯一标识】S1-abc 完成', 'x');
   try {
     const body = fs.readFileSync(lp, 'utf8');
-    // 1) watchdog must detect a sub-agent spawn in the rollout
-    assert.match(body, /\$spawnedAgent = \(\$tail/, 'watchdog must detect spawn_agent in the rollout');
-    // 2) the done-detection must require SUBAGENTS_DONE when a sub-agent was spawned
-    assert.match(body, /\$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must require SUBAGENTS_DONE when sub-agents were spawned');
-    assert.match(body, /\$spawnedAgent -eq \$false -or \$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must only skip SUBAGENTS_DONE when NO sub-agent was spawned');
-    // 3) the TUI auth prompt (in SDK source) must instruct the window to wait_agent and append SUBAGENTS_DONE
+    // 1) watchdog done-detection must match __ORCH_DONE__ <token> without requiring SUBAGENTS_DONE
+    assert.ok(body.includes("$_.Contains('__ORCH_DONE__') -and $_.Contains($token)"), 'watchdog must close on __ORCH_DONE__ <token> alone');
+    assert.doesNotMatch(body, /\$spawnedAgent -eq \$false -or \$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not require SUBAGENTS_DONE suffix');
+    // 2) the done-detection must NOT be gated on a SUBAGENTS_DONE marker
+    assert.doesNotMatch(body, /Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not depend on SUBAGENTS_DONE in the rollout');
+    // 3) the TUI auth prompt (in SDK source) must instruct the window to confirm sub-agents itself and output only __ORCH_DONE__ <token>
     const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
     assert.match(src, /wait_agent/, 'TUI prompt must tell the window to wait_agent for sub-agents');
-    assert.match(src, /SUBAGENTS_DONE/, 'TUI prompt must mention the SUBAGENTS_DONE ending suffix');
+    assert.match(src, /update_goal complete/, 'TUI prompt must mention update_goal complete (codex goal path)');
+    assert.match(src, /不输出任何 SUBAGENTS_DONE 等后缀/, 'TUI prompt must tell the window to NOT output SUBAGENTS_DONE');
+    assert.match(src, /TUI 窗管好自己的子代理/, 'TUI prompt must scoped sub-agent completion to the window (层级化)');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
 test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to uncaptured (未落盘=未完成)', () => {
