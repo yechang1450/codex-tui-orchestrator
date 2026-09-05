@@ -122,19 +122,7 @@
 9. **fail-safe 执行**：歧义 → execute；LLM 失败 → 串行兜底。
 10. **成本友好**：确定性快路径免 LLM；可行性不重复调；拆块缓存命中即复用。
 
-### 5. 子代理任务载体：共享文件（而非 goal 机制）+ 路线图
-
-**为什么子代理任务正文走"共享文件"而不是"goal 机制"（决策记录）**：Codex 的 goal 机制（`create_goal` / `get_goal` / `update_goal`）是**线程级**状态。
-
-- 官方 Cookbook（Using Goals in Codex）："the Goal belongs to the current thread, not to global memory or project instructions."（Goal 属于当前线程，不属于全局记忆或项目指令。）
-- 官方 openai/codex **Issue #24607**："Codex goals are currently scoped to the current thread."（goal 目前作用于当前线程），并把"parent/orchestrator agent 给 spawned 子代理派发持久化 goal"列为**尚未实现的功能请求**。
-- 实测：**任意一个线程都能在自己线程里 `create_goal` 并 `get_goal` 读到、`update_goal` 标记完成**（本线程已实测闭环成功）——所以 goal 机制对"当前线程"本身是完整可用的。**真正做不到的是"父线程把 goal 指派/推送给另一个线程（spawned 子代理）"**：spawn 出的子代理是独立线程，默认 `get_goal` 读到的是它**自己线程**的空 goal（"goal is empty"）。所以"父代理给子代理设 goal"这一步**不是"不会用"，而是跨线程传 goal 官方尚未实现（openai/codex#24607）**；而"子代理在自己线程里自建 goal"理论上可行，但需要子代理先拿到任务指令（正文），而这正是 message 正文偶发断点要绕开的一环。
-
-因此本插件用「**共享任务文件 + 内置 spawn/wait**」作为确定可靠的载体：父/主窗口先把每个子代理的完整任务写成共享文件（`$ORCH_SUBTASK_DIR/subtask-<token>-<seq>.md`），`spawn_agent` 时 message 只指向该文件，子代理用读文件工具取到完整任务；父/主窗口再 `wait_agent` 等其返回。
-
-**路线图**：待官方 openai/codex#24607 支持「spawn_agent 携带初始 goal」「父可查子 goal 状态」后，再从此「共享文件载体」迁移回「goal 载体」；届时子代理可拿到实时 goal 进度，而无需父代理仅凭最终落盘状态推断完成度。
-
-### 6. 初始环境检测
+### 5. 初始环境检测
 
 真实执行前先验：codex CLI（探测/安装）+ **工作区磁盘空间**（`statfsSync`）。剩余空间低于 `ORCH_MIN_FREE_MB`（默认 12000MB≈12GB）告警；低于 `ORCH_MIN_FREE_HARD_MB`（默认 3600MB≈3.6GB）直接拒绝（fail-closed）——磁盘空间过低时连 launcher/temp 都写不了，与其半路失败不如一开始就拦。若 `ORCH_MIN_FREE_HARD_MB` 设得比 `ORCH_MIN_FREE_MB` 还高，硬下限会被钳制到告警阈值。
 
@@ -158,7 +146,7 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 |-----|------|------|
 | `WORKSPACE_DIR` | `process.cwd()` | 工作目录（自动探测，从不硬编码）。 |
 | `CODEX_HOME` | `~/.codex` | 权威 Codex 家目录。**跨用户/跨设备/跨宿主**适配点：所有 `.codex` 路径都由它推导，绝不硬编码 `C:\Users\<user>\.codex`。 |
-| `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | 稳定运行/状态目录（registry、锁、子代理共享文件）。**不能**放在会被插件升级清掉的目录。 |
+| `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | 稳定运行/状态目录（registry、锁）。**不能**放在会被插件升级清掉的目录。 |
 | `ORCH_SESSION_DIR` | `$CODEX_HOME/sessions` | 会话 rollout 目录。 |
 | `ORCH_SUPERPOWERS_CACHE_DIR` | 自动探测 | 覆盖 superpowers 插件缓存路径（不同宿主/市场布局）。 |
 | `ORCH_AGENT` | `codex` | 选 agent：`codex`\|`claude`\|`gemini`\|`opencode`\|`aichat`；对应 CLI 未装则自动回退 `codex`。 |
@@ -170,7 +158,6 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | 只读 LLM 拆块超时（毫秒）。 |
 | `ORCH_DECOMPOSE_RETRIES` | `2` | LLM 拆块失败重试次数，重试耗尽后走确定性兜底单窗。 |
 | `ORCH_WAIT_MS` | `120000` | 等待冲突窗关闭的最长时间。 |
-| `ORCH_SUBAGENT_MAX_WAIT_MS` | `21600000` | 窗内「等单个子代理返回」的**硬上限**（默认 6 小时）。子代理挂死超此值即视为超时/未完成，须如实标注后本窗才允许收尾；**绝不因超时虚报成功**。 |
 | `ORCH_WATCHDOG_MAX_MIN` | `轮询上限 + 10 分钟` | 窗内 watchdog「完成即自关」观察上限（分钟）。 |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | 窗完成后自动关窗的读缓冲。 |
 | `ORCH_TUI` | `wt` | `wt`=Windows Terminal（最佳 CJK 输入法），`conhost`=经典控制台。 |

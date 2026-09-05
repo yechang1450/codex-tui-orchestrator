@@ -152,7 +152,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
@@ -425,26 +425,11 @@ test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 1000) concurre
   assert.equal(computeMaxWindows(32), 33, '32G -> round(32.768) -> 33 windows');
   assert.equal(computeMaxWindows(64), 66, '64G -> round(65.536) -> 66 windows');
 });
-test('orchestrate-sdk computeMaxSubagents / computeMaxTotalAgents: 克制使用按内存分级（含子代理预算）', () => {
-  // 每窗可并发子代理上限：低内存不许开，随内存递增封顶。
-  assert.equal(computeMaxSubagents(4), 0, '4G -> 0 subagent/window (only the window)');
-  assert.equal(computeMaxSubagents(8), 1, '8G -> 1 subagent/window');
-  assert.equal(computeMaxSubagents(12), 1, '12G -> 1 subagent/window');
-  assert.equal(computeMaxSubagents(16), 2, '16G -> 2 subagents/window');
-  assert.equal(computeMaxSubagents(24), 3, '24G -> 3 subagents/window');
-  assert.equal(computeMaxSubagents(32), 4, '32G -> 4 subagents/window');
-  assert.equal(computeMaxSubagents(64), 4, '64G -> 4 subagents/window (capped)');
-  // 全局 agent 上限 = 最大窗数 × (1 + 每窗子代理上限)，确保"窗+子代理"不叠加 OOM。
-  assert.equal(computeMaxTotalAgents(4), 4 * (1 + 0), '4G -> 4 windows x 1 = 4 agents total');
-  assert.equal(computeMaxTotalAgents(8), 8 * (1 + 1), '8G -> 8 windows x 2 = 16 agents total');
-  assert.equal(computeMaxTotalAgents(16), 16 * (1 + 2), '16G -> 16 windows x 3 = 48 agents total');
-  assert.equal(computeMaxTotalAgents(32), 33 * (1 + 4), '32G -> 33 windows x 5 = 165 agents total');
-});
-test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
+test('orchestrate-sdk applyAuthPromptPolicy: 不注入子代理指令 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
   // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
   const oldSub = '【子代理收尾 = 一环扣一环（最重要，无超时上限）】子代理属于本 TUI 窗：**只要还开了任何一个子代理且它没返回，本 TUI 窗就没有执行结束，永远不能给结束码、不能关窗**。必须用 wait_agent/持续等待，等到**全部子代理都返回并拿到各自结果**；未收齐前绝不收尾。**对子代理绝不设超时上限**——就像发起对话「子代理没完就不结束轮询」一样，TUI 窗也「子代理没完就不给结束码」。只有全部子代理返回后，才输出最后一行 `__ORCH_DONE__ <本窗token> SUBAGENTS_DONE`（开了子代理时）；未开子代理时输出 `__ORCH_DONE__ <本窗token>`。';
   const oldPass = '随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。';
-  const out = applyAuthPromptPolicy(oldSub + oldPass, 21600000);
+  const out = applyAuthPromptPolicy(oldSub + oldPass);
   // 窗内不再使用子代理：不再注入子代理上限 / SUBAGENTS_DONE / wait_agent / 共享文件 / TUI窗管好自己
   // 窗内不再使用子代理：不应出现"使用子代理的步骤指令/等待上限注入"
   assert.doesNotMatch(out, /ORCH_SUBAGENT_MAX_WAIT_MS|子代理任务正文走共享文件|等子代理返回|wait_agent 等子代理|必须先 spawn/, 'must NOT instruct sub-agent usage/wait caps');
@@ -452,8 +437,8 @@ test('orchestrate-sdk applyAuthPromptPolicy: 子代理 6 小时硬上限 + 三�
   assert.ok(!out.includes('①') && !out.includes('②') && !out.includes('③'), 'must drop the ①②③ circled digits');
   assert.ok(out.includes('1) 先检查一遍') && out.includes('2) 再检查一遍') && out.includes('3) 最后再检查一遍'), 'must use ASCII-width 1)2)3)');
   // 边缘：空输入或缺失子句不抛错。
-  assert.equal(applyAuthPromptPolicy('', 21600000), '');
-  assert.equal(applyAuthPromptPolicy('无相关子句', 21600000), '无相关子句');
+  assert.equal(applyAuthPromptPolicy(''), '');
+  assert.equal(applyAuthPromptPolicy('无相关子句'), '无相关子句');
 });
 test('runtime: launcher extracts the REAL ASCII block token even when boilerplate mentions the marker first (regression: empty $token broke auto-close)', () => {
   // Replicates the real --run-windows block prompt: the block body contains the 执行纪律 boilerplate
@@ -559,12 +544,10 @@ test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to
   assert.match(authTpl, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
   assert.match(authTpl, /真实落盘且自验通过/, 'TUI prompt must require the product to really land + self-check');
 });
-test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass broken message body channel)', () => {
+test('orchestrate-sdk: 无子代理共享文件载体（SUBTASK_DIR/ORCH_SUBTASK_DIR 应清除）', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  // 1) must define a stable subtask dir under the orchestrator home
-  assert.match(src, /SUBTASK_DIR/, 'orchestrator must define SUBTASK_DIR');
-  assert.match(src, /ORCH_SUBTASK_DIR/, 'orchestrator must inject ORCH_SUBTASK_DIR env');
-  // 2) TUI prompt must require the sub-agent task body to be written to a shared file before spawn
+  // 已删除子代理共享文件载体：源码不应再有 SUBTASK_DIR / ORCH_SUBTASK_DIR。
+  assert.doesNotMatch(src, /SUBTASK_DIR|ORCH_SUBTASK_DIR/, 'shared-file sub-agent carrier must be removed');
   const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
   assert.match(authTpl, /不使用子代理|不再使用子代理/, 'TUI prompt must state NO sub-agent usage');
   assert.doesNotMatch(authTpl, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'TUI prompt must NOT instruct sub-agent usage');
@@ -1005,16 +988,6 @@ test('computeMaxWindows: 内存上限/下限边界', () => {
   assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
 });
 
-test('computeMaxSubagents / computeMaxTotalAgents 边界', () => {
-  assert.equal(computeMaxSubagents(4), 0, '4G -> 0');
-  assert.equal(computeMaxSubagents(7.9), 0, '7.9G -> 0');
-  assert.equal(computeMaxSubagents(8), 1, '8G -> 1');
-  assert.equal(computeMaxSubagents(16), 2, '16G -> 2');
-  assert.equal(computeMaxSubagents(32), 4, '32G -> 4(cap)');
-  assert.equal(computeMaxTotalAgents(8), 8 * (1 + 1), '8G -> 8窗x2');
-  assert.equal(computeMaxTotalAgents(16), 16 * (1 + 2), '16G -> 16窗x3');
-});
-
 test('levelWaves: 循环依赖/无依赖/空输入', () => {
   const cyc = [
     { key: 'B1', title: 'B1', b: {}, dependsOn: ['B3'] },
@@ -1035,11 +1008,11 @@ test('decomposeHash: 相同请求+相同 hints 稳定, 不同 hints 不同', () 
   assert.equal(decomposeHash('', {}), decomposeHash('', {}), '空请求稳定');
 });
 
-test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 + SKD 逻辑不硬编码绝对路径', () => {
+test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 + SDK 逻辑不硬编码绝对路径', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  assert.match(src, /ORCH_SUBTASK_DIR/, 'subtask dir env name derived, not hardcoded path');
+  assert.doesNotMatch(src, /ORCH_SUBTASK_DIR/, 'subtask dir must be removed (no shared-file carrier)');
   assert.doesNotMatch(src, /D:\\build\\82/, 'no hardcoded build/82 path in SDK logic');
-  assert.equal(applyAuthPromptPolicy('无子句', 21600000), '无子句', '无匹配原样');
+  assert.equal(applyAuthPromptPolicy('无子句'), '无子句', '无匹配原样');
 });
 ﻿
 // ---------- 算法优化回归：readTail / extractResult tail / keysOverlap Set ----------

@@ -121,19 +121,7 @@ After `--run-windows`, the initiator MUST poll until all blocks are in the succe
 9. **Fail-safe execution** — ambiguous mode → execute; LLM failure → serial fallback.
 10. **Cost-friendly** — deterministic fast paths avoid the LLM; feasibility is not re-queried per block; decompose cache hits reuse.
 
-### 5. Subagent task carrier: shared file (not the goal mechanism) + roadmap
-
-**Why subagent task bodies ride a shared file rather than the "goal" mechanism (decision record)**: Codex's goal tools (`create_goal` / `get_goal` / `update_goal`) are **thread-scoped** state.
-
-- Official Cookbook ("Using Goals in Codex"): *"the Goal belongs to the current thread, not to global memory or project instructions."*
-- Official openai/codex **Issue #24607**: *"Codex goals are currently scoped to the current thread."* — and it lists "parent/orchestrator agent assigning persisted goals to spawned subagents" as a **not-yet-implemented feature request**.
-- Proven in practice: **any thread can `create_goal` on itself and `get_goal`/`update_goal` it** (this thread did the full round-trip successfully) — so the goal mechanism is fully usable *within* a thread. What is genuinely impossible is **a parent pushing/assigning a goal onto another (spawned) thread**: a spawned subagent is its own thread and by default `get_goal`s **its own** empty goal ("goal is empty"). So "parent sets a goal for a subagent" is **not a usage mistake** — cross-thread goal passing is simply unimplemented upstream (openai/codex#24607). A subagent creating a goal on its *own* thread is theoretically possible, but it still needs the task instructions (the message body), which is exactly the message-body breakage the shared-file carrier avoids.
-
-So this plugin uses a **shared-task-file + built-in `spawn`/`wait`** carrier: the parent/primary window first writes each subagent's full task to a shared file (`$ORCH_SUBTASK_DIR/subtask-<token>-<seq>.md`), `spawn_agent`'s message only points at that file, the subagent reads the file to get the complete task, then the parent `wait_agent`-s for it to return.
-
-**Roadmap**: once upstream openai/codex#24607 supports "spawn_agent with an initial goal" and "parent queries child goal status", migrate from this shared-file carrier back to the goal carrier, so subagents can expose live goal progress instead of the parent inferring completion solely from final on-disk state.
-
-### 6. Initial environment check
+### 5. Initial environment check
 
 Before real work the orchestrator verifies: the codex CLI (detect/install) and **disk space** on the workspace drive via `statfsSync`. Free space below `ORCH_MIN_FREE_MB` (default 12000MB ≈12GB) warns; below `ORCH_MIN_FREE_HARD_MB` (default 3600MB ≈3.6GB) refuses (fail-closed) — a low disk cannot even write the launcher/temp files. If `ORCH_MIN_FREE_HARD_MB` is set above `ORCH_MIN_FREE_MB`, the hard floor is clamped to the warn threshold.
 
@@ -157,7 +145,7 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 |-----|---------|---------|
 | `WORKSPACE_DIR` | `process.cwd()` | Working dir threads/windows operate in (auto-detected; never hardcoded). |
 | `CODEX_HOME` | `~/.codex` | Authoritative Codex home dir. **Cross-user / cross-device / cross-host** adaptation point: every `.codex` path is derived from it (never hardcoded `C:\Users\<user>\.codex`). |
-| `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | Stable runtime/state dir (registry, locks, subtask files). Must NOT live in a dir wiped on plugin upgrade. |
+| `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | Stable runtime/state dir (registry, locks). Must NOT live in a dir wiped on plugin upgrade. |
 | `ORCH_SESSION_DIR` | `$CODEX_HOME/sessions` | Session rollout dir. |
 | `ORCH_SUPERPOWERS_CACHE_DIR` | auto-detect | Override superpowers plugin cache path (different host/market layouts). |
 | `ORCH_AGENT` | `codex` | Which agent to run: `codex`\|`claude`\|`gemini`\|`opencode`\|`aichat`. Falls back to `codex` automatically if the requested CLI is absent. |
@@ -169,7 +157,6 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | Timeout for the read-only LLM decompose/classification. |
 | `ORCH_DECOMPOSE_RETRIES` | `2` | Decompose LLM retries before the deterministic fallback is used. |
 | `ORCH_WAIT_MS` | `120000` | Max wait for a conflicting window to close. |
-| `ORCH_SUBAGENT_MAX_WAIT_MS` | `21600000` | **Hard cap** on waiting for a single subagent to return (default 6h). If a subagent hangs past it, it's treated as timed-out/incomplete and must be marked honestly before the window may finish; **never fake success on timeout**. |
 | `ORCH_WATCHDOG_MAX_MIN` | `poll ceiling + 10 min` | In-window auto-close watchdog horizon (min). |
 | `ORCH_CLOSE_DELAY_MS` | `1000` | Read-buffer before a finished window auto-closes. |
 | `ORCH_TUI` | `wt` | `wt` = Windows Terminal (best CJK IME), `conhost` = classic console. |

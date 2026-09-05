@@ -24,7 +24,7 @@
  * Configuration (all optional, env-first with sensible defaults):
  *   WORKSPACE_DIR  (default: process.cwd())  — auto-detected workspace root for the user.
  *   CODEX_HOME     (default: ~/.codex)        — 权威 Codex 家目录；跨用户/设备/宿主适配点。
- *   ORCH_STATE_DIR (default: $CODEX_HOME/orchestrator) — 本插件的稳定运行/状态目录（registry/锁/subtasks 等）。
+ *   ORCH_STATE_DIR (default: $CODEX_HOME/orchestrator) — 本插件的稳定运行/状态目录（registry/锁 等）。
  *   ORCH_SESSION_DIR (default: $CODEX_HOME/sessions)   — 会话 rollout 目录。
  *   ORCH_SUPERPOWERS_CACHE_DIR (optional)      — 覆盖 superpowers 插件缓存目录（不同宿主/市场路径适配）。
  *   ORCH_AGENT     (default: codex)            — 选 agent：codex|claude|gemini|opencode|aichat；未装对应 CLI 自动回退 codex。
@@ -162,12 +162,10 @@ const TMP = path.join(WORKSPACE, "temp");
 const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(CODEX_HOME, "orchestrator");
 // 兼容保留：子代理相关目录（本插件当前不再使用子代理；该目录仅作兼容，不用于启用子代理）。
 // 放在 orchestrator 稳定家目录下（ORCH_STATE_DIR），非 WORKSPACE 临时目录，避免被插件升级清掉/散落。
-const SUBTASK_DIR = process.env.ORCH_SUBTASK_DIR || path.join(STATE_DIR, "subtasks");
 //
 // 【窗内不使用子代理（用户明确）】orchestrator 发起的每个 TUI 窗【不再使用子代理】：所有工作由该窗自己直接完成。
 //   可靠并行 = 多 TUI 窗（独立块并行）；任务完成判定 = 窗内最终落盘产物。历史：曾尝试
 //   codex goal 机制与"共享任务文件 + spawn/wait"（均为线程级/消息正文投递在此环境不可靠），均已弃用。
-//   （保留 SUBTASK_DIR 仅作兼容，不用于启用子代理。）
 //
 // 轮询总上限：默认 6 小时（ORCH_MAX_POLL_MS 可调）。用于「检测是否有默认时间限制会提前结束轮询」——
 // 在这里显式兜底为 6 小时，绝不让任何更短的默认值把还没跑完的 TUI 窗提前判成超时。
@@ -1017,26 +1015,10 @@ function computeMaxWindows(memGb) {
   return Math.round((memGb * 1024) / 1000);
 }
 // ---------------------------------------------------------------------------
-// 「克制使用」：对子代理按内存分级设上限（用户要求优化，不同内存设不同最大值）。
-// 思路：每个 TUI 窗本身已占一份模型推理/rollout；窗内再开子代理 = 每多一个 agent 进程就多一份内存。
-// 故按内存给出 ①每窗可并发的子代理上限（每窗一个 Codex 会话，子代理共享它但各占一条流）
-// ②全局 agent 上限 = 最大窗数 × (1 + 每窗子代理上限)。两值都随内存递增、封顶，避免"窗+子代理"叠加 OOM。
-// 内存阈值：<8G 只能开窗、不许开子代理；8-12 每窗≤1；12-16 每窗≤1；16-24 每窗≤2；24-32 每窗≤3；≥32 每窗≤4。
-function computeMaxSubagents(memGb) {
-  if (memGb < 8) return 0;
-  if (memGb < 16) return 1;
-  if (memGb < 24) return 2;
-  if (memGb < 32) return 3;
-  return 4;
-}
-function computeMaxTotalAgents(memGb) {
-  return computeMaxWindows(memGb) * (1 + computeMaxSubagents(memGb));
-}
-
 // 窗内 auth 提示词的确定性策略改写（纯函数，可单测）：
 //   TUI 渲染重叠修复：把「三遍检查」提示词里的 ①②③ 改成 1) 2) 3)（纯 ASCII 宽度），避免 Windows Terminal CJK 宽度歧义导致序号与文字重叠。
 //   说明：窗内不再使用子代理（用户明确：orchestrator 发起的 TUI 窗不再使用子代理），故不再替换子代理相关子句。
-export function applyAuthPromptPolicy(auth, subagentWaitMaxMs) {
+export function applyAuthPromptPolicy(auth) {
   let s = String(auth || "");
   s = s.replace(
     "随后按此顺序自查：①先检查一遍这个 TODO LIST 是否完整/是否有遗漏或错误，发现问题就修复；②再检查一遍这个 TODO LIST 的**逻辑问题**（先后依赖、因果、边界、是否会冲突/漏步），发现问题就修复；③最后再检查一遍这个 TODO LIST 的问题（复查，确保①②都改彻底）。",
@@ -2084,20 +2066,8 @@ async function main() {
     const sp = detectSuperpowers();
     process.env.ORCH_SUPERPOWERS = sp.available ? "1" : "0";
     process.env.ORCH_SUPERPOWERS_REASON = sp.reason || "";
-    // 「克制使用」：按内存给每窗可并发子代理上限 + 全局 agent 上限，注入 env 让窗内 agent 遵守。
-    const subagentMax = computeMaxSubagents(memGb);
-    const totalAgentMax = computeMaxTotalAgents(memGb);
-    process.env.ORCH_SUBAGENT_MAX = String(subagentMax);
-    process.env.ORCH_MAX_TOTAL_AGENTS = String(totalAgentMax);
-    // 子代理最大等待时长（默认 6 小时，与轮询总上限一致居中取舍）。窗内 agent 用它作为「等子代理回返」的上限：
-    // 超过即视为子代理超时/未完成，如实标注后允许本窗收尾，避免「子代理挂了父窗永远等下去」。可通过 ORCH_SUBAGENT_MAX_WAIT_MS 覆盖。
-    const subagentWaitMaxMs = Number(process.env.ORCH_SUBAGENT_MAX_WAIT_MS || 21600000);
-    process.env.ORCH_SUBAGENT_MAX_WAIT_MS = String(subagentWaitMaxMs);
-    // 兼容：确保共享任务目录存在并注入 env（当前不使用子代理；保留以免引用处报错）。
-    try { mkdirSync(SUBTASK_DIR, { recursive: true }); process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
-    catch (e) { process.env.ORCH_SUBTASK_DIR = SUBTASK_DIR; }
     console.log("[orchestrator] superpowers plugin: " + (sp.available ? "USABLE -> 参与后续流程 (并发分析+并发干活强强联合)" : "NOT USABLE -> 照旧 (" + sp.reason + ")"));
-    console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " superpowers=" + (sp.available ? "on" : "off") + " maxWindows=" + computeMaxWindows(memGb) + " subagent/window=" + subagentMax + " totalAgents=" + totalAgentMax + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
+    console.log("[orchestrator] env: codex=" + codexCli + " workspace=" + WORKSPACE + " tui=" + (wtAvailable() ? "wt" : "conhost") + " superpowers=" + (sp.available ? "on" : "off") + " maxWindows=" + computeMaxWindows(memGb) + " pollCeiling=" + Math.round(POLL_TIMEOUT_MS / 60000) + "min");
     cleanStaleTransients();
     await cleanStaleWindows();
     const request = process.argv.slice(3).join(" ");
@@ -2136,10 +2106,8 @@ async function main() {
     const waitMs = Number(process.env.ORCH_WAIT_MS || 120000); // max time to wait for a conflict to clear
     const closeDelayMs = Number(process.env.ORCH_CLOSE_DELAY_MS || 1000); // window auto-closes ~1s after the task completes
     const auth = readAuthPrompt();
-    // 子代理等待上限：把「无超时上限」改为「6 小时硬上限（由 ORCH_SUBAGENT_MAX_WAIT_MS 控制）」，让窗内 agent 不会因子代理挂死而无限等下去。
-    // 仍保留「超时=未完成，禁止虚报」不变量：超时子代理须如实标注，绝不当作成功收尾。
-    // 复用导出的纯函数改写 auth 提示词：子代理 6 小时硬上限 + 三遍检查序号 ①②③ → 1) 2) 3)（修复 WT CJK 宽度重叠）。
-    const authWaitCapped = applyAuthPromptPolicy(auth, process.env.ORCH_SUBAGENT_MAX_WAIT_MS);
+    // 复用导出的纯函数改写 auth 提示词：三遍检查序号 ①②③ → 1) 2) 3)（修复 WT CJK 宽度重叠）。
+    const authWaitCapped = applyAuthPromptPolicy(auth);
     // ---- wave-based scheduling with dependency serialization (D①) ----
     // A block with `dependsOn: [<title>,...]` must WAIT until every prerequisite (by title) has finished.
     // We level blocks into waves: a block joins the earliest wave where all its dependsOn are in earlier waves.
@@ -2594,4 +2562,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, computeMaxSubagents, computeMaxTotalAgents, blockKeys, keysOverlap, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome };
+export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, blockKeys, keysOverlap, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome };
