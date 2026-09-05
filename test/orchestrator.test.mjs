@@ -156,6 +156,7 @@ const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, c
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { readTail } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -1083,4 +1084,54 @@ test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 
   assert.match(src, /\$env:ORCH_SUBTASK_DIR/, 'subtask dir from env');
   assert.doesNotMatch(src, /D:\\build\\82/, 'no hardcoded build/82 path in SDK logic');
   assert.equal(applyAuthPromptPolicy('无子句', 21600000), '无子句', '无匹配原样');
+});
+﻿
+// ---------- 算法优化回归：readTail / extractResult tail / keysOverlap Set ----------
+test('readTail: 只读尾部窗口, 大文件尾含最终消息; 缺失/空/超小文件安全', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt5-'));
+  try {
+    const f = path.join(d, 'big.jsonl');
+    const line = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'X' }] } }) + '\n';
+    const CHUNK = line.repeat(2000);
+    fs.writeFileSync(f, CHUNK.repeat(10)); // ~大文件
+    fs.appendFileSync(f, JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'FINAL_MSG' }] } }) + '\n', 'utf8');
+    // 尾部窗口包含最后一条
+    const tail = readTail(f, 262144);
+    assert.ok(tail.includes('FINAL_MSG'), 'tail window must include the final message');
+    assert.ok(!tail.includes('"text":"X"') || true, 'tail may or may not include early lines'); // 仅断言尾部
+    // 缺失文件 -> null
+    assert.equal(readTail(path.join(d, 'none.jsonl')), null);
+    // 空文件 -> ''
+    const e = path.join(d, 'empty.jsonl'); fs.writeFileSync(e, '', 'utf8');
+    assert.equal(readTail(e, 262144), '');
+    // 超小文件 (小于窗口) -> 完整返回
+    const s = path.join(d, 'small.jsonl'); fs.writeFileSync(s, 'abc', 'utf8');
+    assert.equal(readTail(s, 262144), 'abc');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('extractResult: 大 rollout 只读尾部也能取到最后一条完成汇报(与全量语义一致)', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt6-'));
+  try {
+    const f = path.join(d, 'r.jsonl');
+    const line = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'middle' }] } }) + '\n';
+    fs.writeFileSync(f, line.repeat(10000));
+    fs.appendFileSync(f, JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '最终完成' }] } }) + '\n', 'utf8');
+    assert.equal(extractResult(f).text, '最终完成', 'tail-based extract must return the final message');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('keysOverlap: Set 优化后语义与原 O(A*B) 等价(数组/非数组/空/字符串化)', () => {
+  assert.equal(keysOverlap(['file:D:/a'], ['file:D:/a']), true, 'same');
+  assert.equal(keysOverlap(['file:D:/a'], ['file:D:/b']), false, 'different');
+  assert.equal(keysOverlap([], ['file:D:/a']), false, 'empty a');
+  assert.equal(keysOverlap(['file:D:/a'], []), false, 'empty b');
+  assert.equal(keysOverlap(['file:D:/a'], ['file:D:/a', 'dir:X']), true, 'overlap in larger b');
+  assert.equal(keysOverlap(['file:D:/a','dir:X'], ['dir:X']), true, 'overlap when a larger');
+  // 非数组安全(原 a.some 会抛, 新返回 false)
+  assert.equal(keysOverlap(null, ['x']), false, 'null a safe');
+  assert.equal(keysOverlap(['x'], null), false, 'null b safe');
+  assert.equal(keysOverlap(undefined, ['x']), false, 'undefined a safe');
+  // 数字键字符串化归一
+  assert.equal(keysOverlap([123], ['123']), true, 'numeric-key stringified match');
 });

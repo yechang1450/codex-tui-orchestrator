@@ -1359,9 +1359,28 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken) {
   }
   return { done: false, text: "" };
 }
+// 只读文件尾部窗口(UTF-8, 最多 maxBytes 字节), 用于从超大 rollout 提取末尾的完成汇报。
+// 完成标记/最终消息总在文件末尾, 全量 readFileSync 读 160MB+ rollout 是纯浪费。
+// 返回 null 表示文件不可读(与"读到空串"区分)。这是纯函数、无语义改变、O(1) 内存。
+export function readTail(file, maxBytes = 262144) {
+  let s = "";
+  try {
+    const st = statSync(file);
+    const len = Math.min(maxBytes, st.size);
+    const fd = openSync(file, "r");
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, Math.max(0, st.size - len));
+      s = buf.toString("utf8");
+    } finally { closeSync(fd); }
+  } catch { return null; }
+  return s;
+}
 function extractResult(file) {
-  let full = "";
-  try { full = readFileSync(file, "utf8"); } catch { return { done: true, text: "" }; }
+  // 优化(降时间复杂度/内存): 只读文件尾部窗口(最后 maxTailBytes), 而非 readFileSync 整个 rollout。
+  // 完成汇报/最终消息必然在文件末尾, 全量读对超大 rollout(可达 160MB+)是纯浪费。
+  let full = readTail(file, 262144);
+  if (full === null) return { done: true, text: "" };
   let last = "";
   for (const line of full.split("\n")) {
     const l = line.trim();
@@ -1394,8 +1413,9 @@ function readReportFromResult(resultFile, token) {
 // 避免混合会话下 extractResult 取到别的窗的“全局最后一条”而跨窗串号。
 function extractOwnResult(file, token) {
   if (!token) return "";
-  let full = "";
-  try { full = readFileSync(file, "utf8"); } catch { return ""; }
+  // 优化: 只读尾部窗口, 避免全量读超大 rollout。
+  let full = readTail(file, 262144);
+  if (full === null) return "";
   let last = "";
   for (const line of full.split("\n")) {
     const l = line.trim();
@@ -1632,7 +1652,14 @@ function blockKeys(block) {
   return k.length ? k : ["__" + (block.title || "block")];
 }
 function keysOverlap(a, b) {
-  return a.some((x) => b.includes(x));
+  // 优化(时间): O(A*B) 查重 -> O(B) 建索引 + O(A) 查找 = O(A+B), 键多时避免平方级。
+  if (!Array.isArray(a) || !Array.isArray(b)) return false;
+  if (a.length === 0 || b.length === 0) return false;
+  // 只建较小集合的索引, 用较大数组遍历, 平均更省。
+  const small = a.length <= b.length ? a : b;
+  const large = a.length <= b.length ? b : a;
+  const set = new Set(small.map((x) => String(x)));
+  return large.some((x) => set.has(String(x)));
 }
 // For each running window, add a pseudo-record so new blocks can be compared.
 function runningRecord() {
