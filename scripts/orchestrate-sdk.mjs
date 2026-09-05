@@ -648,12 +648,12 @@ function blockBody(block) {
   // 修正：>1 任务的块一律按串行说明，杜绝“并行”误导。
   const multiTask = block.tasks.length > 1;
   return (
-    body +
     (block.type === "linked" || multiTask
       ? "\n上面任务共享同一资源/存在依赖，若并行会冲突，故必须串行：先做第1个，做完再做第2个，依次进行，绝不同时并行。全部完成再汇报。"
       : "\n上面任务之间互相独立、互不依赖：并行执行，互不等待。全部完成后汇总结果。") +
     "\n\n【每个任务做完都必须现场自验】对每个改动：1) 读回创建/修改的文件，确认内容与编码（UTF-8 无 BOM）；2) 跑一次回归/验证命令确认可用；3) 确认无残留临时文件、无中文乱码。**自验不过=该任务未完成**，如实说明失败点与现场，禁止以“做完了”掩盖。" +
-    "\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。"
+    "\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。" +
+    "\n\n" + body
   );
 }
 // ---- "原型/可行性检测"前置门禁（硬约束，已内嵌本 SDK，不依赖外部技能文件）----
@@ -888,7 +888,7 @@ async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token) {
 async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
   for (let attempt = 1; attempt <= maxRetry; attempt++) {
     const tk = rec.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-    const body = buildBlockPrompt(blockBody(rec.b), tk) + auth;
+    const body = auth + buildBlockPrompt(blockBody(rec.b), tk);
     const { lp, pidf, pf, rf } = writeInteractiveLauncher(rec.key, body, rid);
     // 重试窗同样走原子占位：让其它编排进程能看见/锁定它，也保证本窗满足 enforcement 的“活注册窗”判定。
     const claim = { id: "claim-" + rid + "-" + rec.key + "-" + Math.random().toString(36).slice(2, 8), title: rec.title, keys: rec.keys, pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
@@ -2152,7 +2152,7 @@ async function main() {
           continue;
         }
         const tk = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body = buildBlockPrompt(blockBody(r.b), tk) + authWaitCapped;                                          
+        const body = authWaitCapped + buildBlockPrompt(blockBody(r.b), tk);                                         
         const { lp, pidf, pf, rf } = writeInteractiveLauncher(r.key, body, rid);
         // 跨进程原子占位：复检后、真正 spawn 前先在独占锁内写入 pending=true（pid=0）记录。
         // 其它进程的 conflictByKeys 会看到这份新鲜占位，从而把“正在弹窗但尚未入册”的窗也视为占用。
@@ -2234,7 +2234,7 @@ async function main() {
         if (conflictByKeys(nkeys)) { console.log("  still locked " + r.key + "; not re-run yet."); continue; }
         console.log("  re-running previously-locked block [" + r.key + "] (conflict cleared)");
         const tk2 = r.key + "-" + rid + "-" + Math.random().toString(36).slice(2, 8);
-        const body2 = buildBlockPrompt(blockBody(r.b), tk2) + authWaitCapped;                                        
+        const body2 = authWaitCapped + buildBlockPrompt(blockBody(r.b), tk2);                                       
         const la = writeInteractiveLauncher(r.key, body2, rid);
         const claim2 = { id: "claim-" + rid + "-" + r.key + "-" + Math.random().toString(36).slice(2, 8), title: r.title, keys: nkeys, pidFile: la.pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
         const claimBlocker2 = tryReserveWindow(claim2);
