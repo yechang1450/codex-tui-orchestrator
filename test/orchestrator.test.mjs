@@ -416,7 +416,7 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 1000) concurrency, no cap', () => {
+test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 2000) concurrency, no cap', () => {
   assert.equal(computeMaxWindows(2), 1, '2G -> round(1.024) -> 1 (caller refuses <4G)');
   assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2 windows');
   assert.equal(computeMaxWindows(8), 4, '8G -> round(4.096) -> 4 windows');
@@ -540,7 +540,7 @@ test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to
   // 4) TUI prompt must forbid emitting the done marker if a declared product is not actually on disk
   const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
   assert.match(authTpl, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
-  assert.match(authTpl, /真实落盘且自验通过/, 'TUI prompt must require the product to really land + self-check');
+  assert.match(authTpl, /逐一真实读回|确认真实存在.*盘上|内容\/编码正确/, 'TUI prompt must require the product to really land + self-check');
 });
 test('orchestrate-sdk: 无子代理共享文件载体（SUBTASK_DIR/ORCH_SUBTASK_DIR 应清除）', () => {
   const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');

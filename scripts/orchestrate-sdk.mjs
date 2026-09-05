@@ -457,7 +457,7 @@ function extractTasks(raw) {
 // ---------------------------------------------------------------------------
 const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
 function buildBlockPrompt(body, tk) {
-  return String(body || "") + "\n\n【本块唯一标识】" + tk + "\n（执行结束判定 = 本窗完成实际操作并现场验证后，最后单独输出一行结束标记 `__ORCH_DONE__ " + tk + "`。无需冗长汇报；主控会关窗后按本任务提示词去核对真实落盘状态。仅在确有失败/异常时简短说明。）\n";
+  return String(body || "") + "\n\n【本块唯一标识】" + tk + "\n（执行结束判定 = 本窗完成实际操作并现场验证后，**最后只输出一行结束标记 `__ORCH_DONE__ " + tk + "`**，不做任何汇报/多余输出；输出后等待被 watchdog 关闭。主控会关窗后按本任务提示词核对真实落盘状态。）\n";
 }
 function levelWaves(recs) {
   const keyByTitle = new Map();
@@ -1353,9 +1353,17 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
 // agent's final message. Returns { done, text, exitCode }. Also treats the launcher's exit marker as a
 // completion signal (codex exited, whatever the code): a non-zero exit WITH task_complete is a done
 // turn, and a launcher exit WITHOUT task_complete is still a reclaimable (already-closing) window.
-async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken) {
+async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pidf) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    // 根治 run 卡死：窗（launcher 进程）已死 = 该块执行结束。用户方案=完成与否由主控关窗后按任务 prompt
+    // 核对真实落盘（零报告原则），父进程绝不因"窗未写 result 汇报 / rollout 无 task_complete"而无限等待。
+    if (pidf) {
+      const lp = readPidFile(pidf);
+      if (lp > 0 && !pidAliveCheck(lp)) {
+        return { done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
+      }
+    }
     if (exitMarkerFile && existsSync(exitMarkerFile)) {
       const rep = readReportFromResult(exitMarkerFile, matchToken);
       if (rep) return { done: true, text: rep, exitCode: readExitCode(exitMarkerFile) };
@@ -1363,6 +1371,10 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken) {
       const base = matchToken ? { text: extractOwnResult(file, matchToken) } : extractResult(file);
       if (base.text) return { done: true, text: base.text, exitCode: code };
       return { done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code };
+    }
+    if (exitMarkerFile && existsSync(exitMarkerFile + ".self-closed")) {
+      // watchdog 已写自关标记 = 窗收尾并关闭；即时视为执行结束（无汇报文本，主控按落盘核对）。
+      return { done: true, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
     }
     let tail = "";
     try {
@@ -1977,7 +1989,7 @@ async function main() {
     const sessionFile = await waitForSessionFile(matchToken, 120000, rf);
     let res = { done: false, text: "" };
     if (sessionFile) {
-      res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, rf, matchToken);
+      res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, rf, matchToken, pidf);
     } else if (existsSync(rf)) {
       res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     }
@@ -2041,7 +2053,7 @@ async function main() {
     console.log("selftest window spawned (pidfile=" + pidf + "), waiting for task_complete...");
     let res = { done: false, text: "" };
     const sessionFile = await waitForSessionFile(matchToken, 120000, rf);
-    if (sessionFile) res = await waitTaskComplete(sessionFile, 180000, rf, matchToken);
+    if (sessionFile) res = await waitTaskComplete(sessionFile, 180000, rf, matchToken, pidf);
     else if (existsSync(rf)) res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     const tComplete = Date.now();
     console.log("=== selftest-close result ===");
@@ -2303,7 +2315,7 @@ async function main() {
         const sessionFile = await waitForSessionFile(matchKey, 90000, resultFile);
         let res = { done: false, text: "" };
         if (sessionFile) {
-          res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile, s.matchToken);
+          res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile, s.matchToken, s.pidf);
         } else if (existsSync(resultFile) || existsSync(resultFile + ".self-closed")) {
           // 完成信号=窗内自关（.self-closed）或 result 已落盘（codex 已退出/Write-Result 完成）：立即回收。
           // 优先读本块自己的完成汇报；尚未写出时交给下游 waitForReportText 短暂等报告落盘。
