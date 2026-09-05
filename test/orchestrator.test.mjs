@@ -559,6 +559,17 @@ test('orchestrate-sdk: sub-agent task body must go via a shared file (bypass bro
   assert.match(src, /ORCH_SUBTASK_DIR/, 'TUI prompt must reference ORCH_SUBTASK_DIR for the shared task file');
   assert.match(src, /请先读取它再执行/, 'TUI prompt must tell the sub-agent to read the shared task file first');
 });
+test('orchestrate-sdk: codex goal sub-agent (方案B) — 共享文件辟【子代理唯一任务】段, 子代理提取 objective 自建 goal, 能力探测后才叠加', () => {
+  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  assert.match(src, /【子代理唯一任务】/, 'shared task file must define a 【子代理唯一任务】 section for objective extraction');
+  assert.match(src, /create_goal/, 'TUI prompt must mention create_goal for codex goal sub-agents');
+  assert.match(src, /update_goal complete/, 'TUI prompt must mention update_goal complete for codex goal sub-agents');
+  assert.match(src, /wait_agent/, 'TUI prompt must mention wait_agent to wait for codex goal sub-agents');
+  assert.match(src, /能力探测/, 'TUI prompt must gate codex-goal by capability probe, not process name');
+  assert.match(src, /能调 `create_goal`/, 'TUI prompt must require the sub-agent to be able to call create_goal before using goal');
+  assert.match(src, /完成判定仍须以方案A的[\s\S]*?标记或 wait_agent 返回/, 'TUI prompt must keep completion carried by observable signals');
+  assert.doesNotMatch(src, /D:\\build\\82/, 'must not hardcode absolute build path inside SDK logic');
+});
 
 test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> recreates it, writes .self-closed, exits 0', async () => {
   // Regression for the exact reported bug: a Codex TUI window finished (agent reported ORCH_DONE) but the

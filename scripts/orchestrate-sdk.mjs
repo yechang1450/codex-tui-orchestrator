@@ -1011,7 +1011,7 @@ export function applyAuthPromptPolicy(auth, subagentWaitMaxMs) {
   // 方案A：给共享任务文件追加「每个子代理独立 .done 完成标记」约定——路径同样用 $env:ORCH_SUBTASK_DIR 自动推导，绝不硬编码。
   s = s.replace(
     "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。",
-    "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。**关于完成标记（方案A·通用保底）**：在该共享任务文件里为子代理约定一个 `.done` 标记路径，例如 `$env:ORCH_SUBTASK_DIR\\sub-<本窗token>-<seq>.done`（路径用 `$env:ORCH_SUBTASK_DIR` 自动推导，不要写死绝对路径），并写明「子代理干完必须写该标记文件（原子写：临时文件+改名）」。父窗在判定自己收尾前，须逐个检查每个子代理的 `.done` 标记真实存在。"
+    "**绝不允许**用空/缺失 message 或「只描述不落文件」的方式 spawn 子代理。**关于完成标记（方案A·通用保底）**：在该共享任务文件里为子代理约定一个 `.done` 标记路径，例如 `$env:ORCH_SUBTASK_DIR\\sub-<本窗token>-<seq>.done`（路径用 `$env:ORCH_SUBTASK_DIR` 自动推导，不要写死绝对路径），并写明「子代理干完必须写该标记文件（原子写：临时文件+改名）」。父窗在判定自己收尾前，须逐个检查每个子代理的 `.done` 标记真实存在。\n\n**关于 codex goal 专项（方案B·能力探测后叠加）**：若该子代理环境确实支持 codex goal 工具（能调 `create_goal`/`get_goal`/`update_goal`，须能力探测确认而非只看进程名），则在共享任务文件里**单独辟一段 `【子代理唯一任务】`**，用一句话、可验收的客观目标写成（供子代理提取作 `create_goal` 的 objective），例如「修复 D:\\build\\82\\frontend\\登录页错位布局，确保无滚动条」。子代理读到后：先用文件工具读共享文件 → 从 `【子代理唯一任务】` 段提取 objective → `create_goal`（在自己线程里建 goal）→ 干活 + 自验 → 干完 `update_goal complete`。父窗则用 `wait_agent` 等子代理返回并拿到结果 + 确认它已 `update_goal complete`，才把该子代理计为完成。**注意：goal 只是子代理的「内在自觉」，不承担跨线程传任务，也不作为父端读不到的完成依据——完成判定仍须以方案A的 `.done` 标记或 wait_agent 返回这些父端可观测信号为准。**"
   );
   return s;
 }
