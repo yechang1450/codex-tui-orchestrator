@@ -200,12 +200,12 @@ const POLL_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || process.env.ORCH_M
 // 窗内 watchdog 的观察上限随父进程轮询上限走（默认 = 轮询上限 + 10 分钟，可用 ORCH_WATCHDOG_MAX_MIN 覆盖）。
 // 原因：watchdog 若固定 45 分钟，长任务在父进程意外退出后会失去“完成即自关”的后盾，遗留孤儿窗。
 process.env.ORCH_WATCHDOG_MAX_MIN = process.env.ORCH_WATCHDOG_MAX_MIN || String(Math.max(45, Math.ceil(POLL_TIMEOUT_MS / 60000) + 10));
-// Terminal hosting the visible Codex TUI window.
+// Terminal hosting the visible agent TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
 //              "微软拼音输入偶发失效"). Requires wt.exe (WindowsApps).
 //   conhost -> classic console (reliable window, but IME is limited for TUI apps).
 // Default = Windows Terminal. ORCH_TUI=wt is confirmed EXPLICITLY below (the env var
-// defaults to "wt"), so the visible Codex TUI window is hosted in Windows Terminal
+// defaults to "wt"), so the visible agent TUI window is hosted in Windows Terminal
 // whenever wt.exe is present; conhost is only the runtime fallback when wt.exe is missing.
 const WT_EXE =
   process.platform === "win32"
@@ -891,7 +891,7 @@ function spawnVisibleWindow(lp, title) {
 // 失败重试（上限 maxRetry，默认 3），仍失败返回 false（由调用方标记 popup-failed 并汇报）。
 function windowGenuinelyPopped(pidf, token) {
   // 弹窗精准判定 = pid 文件存在 + launcher 进程真实存活（launcher 是 Windows Terminal pane 宿主进程，存活即窗口已弹出）。
-  // 不把 codex 子进程作为必选证据：codex 冷启动(模型 provider)可能很慢，若等它会把"已弹出"误判为未弹出而重复弹窗；codex 未起由回收超时兜底。
+  // 不把 agent 子进程作为必选证据：agent 冷启动(模型 provider)可能很慢，若等它会把"已弹出"误判为未弹出而重复弹窗；agent 未起由回收超时兜底。
   if (!pidf || !existsSync(pidf)) return false;
   const pid = readPidFile(pidf);
   if (!pid) return false;
@@ -906,11 +906,11 @@ async function confirmWindowPopped(pidf, token) {
   }
   return false;
 }
-// 加固②：检测「launcher 下是否已出现 codex 子进程」。windowGenuinelyPopped 只证明 launcher(WT pane 宿主)活着，
+// 加固②：检测「launcher 下是否已出现 agent 子进程」。windowGenuinelyPopped 只证明 launcher(WT pane 宿主)活着，
 // 但 codex TUI 冷启动(模型 provider)可能仍很慢——若父进程立刻去等 session rollout，会因 rollout 还没建而误判
-// "no session rollout matched"。此函数在弹窗确认后继续短等 codex 子进程出现，让父进程的会话匹配不会起跑太早。
+// "no session rollout matched"。此函数在弹窗确认后继续短等 agent 子进程出现，让父进程的会话匹配不会起跑太早。
 // 只读探测，绝不弹出/关闭；失败也不强制 (只是再等，绝不误判未弹出而重复弹窗)。
-function codexDescendantAlive(pidf) {
+function agentDescendantAlive(pidf) {
   try {
     const pid = readPidFile(pidf);
     if (!pid) return false;
@@ -921,11 +921,11 @@ function codexDescendantAlive(pidf) {
   } catch { return false; }
 }
 async function warmupWindow(pidf, token) {
-  // 通用冷启动错峰：已确认 launcher 存活后，再短等 codex 子进程出现（避免父进程过早去等 session rollout 而漏匹配）。
+  // 通用冷启动错峰：已确认 launcher 存活后，再短等 agent 子进程出现（避免父进程过早去等 session rollout 而漏匹配）。
   // 不特判任何 agent 的子进程形态（对 codex/claude/gemini/opencode 等主流 agent 通用）；失败只继续等，绝不误判未弹出。
   const codexWarm = Date.now() + 15000;
   while (Date.now() < codexWarm) {
-    if (codexDescendantAlive(pidf)) break;
+    if (agentDescendantAlive(pidf)) break;
     await new Promise((r) => setTimeout(r, 400));
   }
   await new Promise((r) => setTimeout(r, 800));
@@ -941,7 +941,7 @@ async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token) {
       await new Promise((r) => setTimeout(r, 500));
     }
     if (ok) {
-      // 加固②：弹窗确认后再等 codex 子进程真正拉起（冷启动），确保父进程随后去等 session rollout 时不会起跑太早。
+      // 加固②：弹窗确认后再等 agent 子进程真正拉起（冷启动），确保父进程随后去等 session rollout 时不会起跑太早。
       await warmupWindow(pidf, token);
       if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+codex child) for [" + title + "]");
       return true;
@@ -1083,8 +1083,8 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   const pidf = path.join(TMP, `window-${s}.pid`);
   const rf = path.join(TMP, `win-${s}.result.json`);
   // 加固：生成新窗启动脚本时清掉本块路径上可能残留的旧 result / .self-closed 标记，避免窗内 watchdog 把
-  // “旧块已完成的残留标记”误当成“本窗 codex 已退出”，从而提前 exit 0 不再杀 codex，造成“窗口任务完成但
-  // codex 仍存活、窗未自动关”的常驻窗。仅删本块自己的 result 产物，绝不触碰其它窗/活窗。
+  // “旧块已完成的残留标记”误当成“本窗 agent 已退出”，从而提前 exit 0 不再杀 codex，造成“窗口任务完成但
+  // agent 仍存活、窗未自动关”的常驻窗。仅删本块自己的 result 产物，绝不触碰其它窗/活窗。
   try { if (existsSync(rf)) rmSync(rf, { force: true }); } catch { /* ignore */ }
   try { if (existsSync(rf + ".self-closed")) rmSync(rf + ".self-closed", { force: true }); } catch { /* ignore */ }
   writeFileSync(pf, prompt, "utf8");
@@ -1155,7 +1155,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "function Write-Result {",
     "  param([int]$code)",
     "  try {",
-    "    # 执行结束判定（用户方案：done=做完了，不等同于成功）：codex 已退出即视为本窗执行结束，写 result + .self-closed 完成标记。",
+    "    # 执行结束判定（用户方案：done=做完了，不等同于成功）：agent 已退出即视为本窗执行结束，写 result + .self-closed 完成标记。",
     "    # 是否真的达成 prompt 预期，由主控关窗后去核对真实落盘状态；这里不因其未输出长篇汇报就判定未完成。",
     "    $dir = $env:ORCH_SDIR",
     "    $report = Get-LastReport -dir $dir -tok $token",
@@ -1232,7 +1232,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
             "            $done = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
     "            if ($done) {",
     "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
-    "                # 递归杀净 launcher 的全部后代（codex 树）：绝不强杀 launcher 自身；codex 已退出(无后代)则函数直接跳过。",
+    "                # 递归杀净 launcher 的全部后代（agent 树）：绝不强杀 launcher 自身；agent 已退出(无后代)则函数直接跳过。",
     "                Kill-LauncherTree $rootPid",
     "                exit 0",
     "            }",
@@ -1240,7 +1240,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "            if ($report) {",
     "                # 命中即收窗：rollout 中最后一条含本窗 token+完成 的 assistant 消息即最终汇报（模板要求最终汇报以 token 开头、禁止中途输出未完状态），出现即写强标记并结束，无需等 1.5s 稳定。",
     "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
-    "                # 同上：递归杀净 launcher 的全部后代（codex 树），绝不强杀 launcher 自身，codex 已退出则自动跳过。",
+    "                # 同上：递归杀净 launcher 的全部后代（agent 树），绝不强杀 launcher 自身，agent 已退出则自动跳过。",
     "                Kill-LauncherTree $rootPid",
     "                exit 0",
     "            }",
@@ -1270,7 +1270,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    Start-Sleep -Milliseconds 500",
     "  }",
     "  # 兜底（明显问题：卡死/无进展/异常未正常汇报）：watchdog 到达 deadline 仍未见 __ORCH_DONE__/task_complete，",
-    "  # 视为异常窗口——写完成标记 + 杀净 codex 后代，让 `& codex` 返回、launcher 恒 exit 0 干净关窗；",
+    "  # 视为异常窗口——写完成标记 + 杀净 agent 后代，让 `& codex` 返回、launcher 恒 exit 0 干净关窗；",
     "  # 是否真达成 prompt 预期由主控关窗后按盘面复核（此处只保证不挂死、不残留 code-1/常驻窗）。",
     "  Ensure-ResultDir",
     "  try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
@@ -1297,7 +1297,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    $rep = Get-LastReport -dir $rdir -tok $token",
     "    if ($rep) { break }",
     "    # 加固：watchdog 已自关（已写入 .self-closed 完成标记）就意味着完成汇报已被确认，此时绝不再重跑，",
-    "    # 避免 codex 重新生成一个失去 watchdog 背书的常驻 TUI（正是“窗口任务完成但 codex 仍存活、窗未自动关”的根因）。",
+    "    # 避免 agent 重新生成一个失去 watchdog 背书的常驻 TUI（正是“窗口任务完成但 agent 仍存活、窗未自动关”的根因）。",
     "    if (Test-Path -LiteralPath ($resultFile + '.self-closed')) { $wdDone = $true; break }",
     "    if ($code -eq 0) { break }",
     "    Write-Host ('  [launcher] codex session exited (code=' + $code + ', no report); retry ' + $attempt + '/2 ...')",
@@ -1305,7 +1305,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "} catch {",
     "  $code = 1",
     "}",
-    // 任务完成判定：只要本窗最终汇报已捕获（$rep 非空），watchdog 会为快速关窗而强杀 codex 子进程使
+    // 任务完成判定：只要本窗最终汇报已捕获（$rep 非空），watchdog 会为快速关窗而强杀 agent 子进程使
     // $LASTEXITCODE=1，但那不等于失败。此时统一按完成处理并以 exit 0 干净关闭（Windows Terminal
     // closeOnExit:graceful 只认 exit 0；非零会留下“[进程已退出，代码为 1]”的卡壳窗），结果文件也记录 0。
     // 拿到最终汇报（$rep）或 watchdog 已确认完成（$wdDone）都归零，确保窗必关、绝不留常驻 codex。
@@ -1592,20 +1592,20 @@ async function closeWindowByPid(pid) {
     if (!pidAliveCheck(p)) return true; // launcher gone -> exit 0 + WT closed
   }
   if (killedCount === 0) {
-    // codex 已退出 / 无后代可杀：launcher 应自行 Write-Result + exit 0。绝不在此时强杀 launcher，
+    // agent 已退出 / 无后代可杀：launcher 应自行 Write-Result + exit 0。绝不在此时强杀 launcher，
     // 否则 Windows Terminal 会留下 "[已退出进程，代码为 1]" 的误报窗。
     console.log("  !! launcher " + p + " still alive but has no codex descendants (codex already exited); skipping force-kill and leaving it to exit 0 on its own.");
     return false;
   }
   // Last resort (genuine exception only): the launcher did NOT honor `exit 0` within the grace window.
   // 根治：绝不 taskkill launcher 本体——它只会以 exit 1 亡，Windows Terminal 留下「[已退出进程，代码为 1]」
-  // 且不自动关的卡壳窗。既然 codex 后代已杀净、launcher 模板带 trap{exit 0} 恒以 0 收尾，就把它留给它自己
+  // 且不自动关的卡壳窗。既然 agent 后代已杀净、launcher 模板带 trap{exit 0} 恒以 0 收尾，就把它留给它自己
   // exit 0（窗格随之干净关闭），仅如实记录，绝不制造 code-1 残窗。
   console.log("  !! launcher " + p + " did not exit after killing its codex child; leaving it to self-exit 0 (no force-kill, avoids code-1 pane).");
   return false;
 }
 // 物理关窗兜底：任何情况都不留停留窗。按窗口名找到承载本窗的 WindowsTerminal 实例并 taskkill /T /F，连窗格
-// (launcher + codex 树) 一起物理关闭；窗口已不存在则空操作。只匹配本窗唯一窗口名，绝不误动它窗/用户窗口。
+// (launcher + agent 树) 一起物理关闭；窗口已不存在则空操作。只匹配本窗唯一窗口名，绝不误动它窗/用户窗口。
 function physicallyCloseWindow(pidf) {
   try {
     if (!pidf) return;
@@ -1911,7 +1911,7 @@ function staleTransientFiles() {
   return res;
 }
 async function cleanStaleWindows() {
-  // 兜底：上次若被中断/异常退出，会遗留 orchestrator 窗口(win-launch-*.ps1 launcher + 其 codex 子进程)。
+  // 兜底：上次若被中断/异常退出，会遗留 orchestrator 窗口(win-launch-*.ps1 launcher + 其 agent 子进程)。
   // 下次启动时按 orchestrator 自己的命名(win-launch-)识别历史残留，用优雅关窗关闭(杀 codex -> launcher exit0 -> WT pane 自动关)。
   // 安全边界：只清理「没有活着 pid 文件 / 未被 registry 追踪 / 当前没有 pending 占位」的 launcher——
   // 绝不误杀同一或另一编排批次仍在运行的窗口（活窗应走冲突锁，而不是被“陈旧清理”干掉）。
@@ -2363,7 +2363,7 @@ async function main() {
       flushRegistry();
       allSpawned.push(...spawnedWave);
       if (!spawnedWave.length) continue;
-      // 等待本波所有窗完成（会话 rollout 出现 task_complete，或 launcher 的 result 标记出现=codex 已退出），
+      // 等待本波所有窗完成（会话 rollout 出现 task_complete，或 launcher 的 result 标记出现=agent 已退出），
       // 抓最终消息，再自动关窗；完成后再开下一波。
       await Promise.all(spawnedWave.map(async (s) => {
         const matchKey = s.matchToken || s.prompt.slice(0, 40);
@@ -2373,7 +2373,7 @@ async function main() {
         if (sessionFile) {
           res = await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, resultFile, s.matchToken, s.pidf);
         } else if (existsSync(resultFile) || existsSync(resultFile + ".self-closed")) {
-          // 完成信号=窗内自关（.self-closed）或 result 已落盘（codex 已退出/Write-Result 完成）：立即回收。
+          // 完成信号=窗内自关（.self-closed）或 result 已落盘（agent 已退出/Write-Result 完成）：立即回收。
           // 优先读本块自己的完成汇报；尚未写出时交给下游 waitForReportText 短暂等报告落盘。
           const code = readExitCode(resultFile);
           let text = readReportFromResult(resultFile, s.matchToken);

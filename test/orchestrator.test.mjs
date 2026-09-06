@@ -519,8 +519,8 @@ test('runtime: spawnWindowWithRetry warms up after popup so the parent never rac
   const idxWarmup = src.indexOf('await warmupWindow(pidf, token);');
   assert.ok(idxConfirmed > -1 && idxWarmup > -1, 'spawnWindowWithRetry must confirm popup then warm up');
   assert.ok(idxWarmup > idxConfirmed, 'warmup must run AFTER the popup is confirmed');
-  // 3) codexDescendantAlive helper must exist (the durable child detection used by warmup)
-  assert.match(src, /function codexDescendantAlive/, 'codexDescendantAlive must exist');
+  // 3) agentDescendantAlive helper must exist (the durable child detection used by warmup)
+  assert.match(src, /function agentDescendantAlive/, 'agentDescendantAlive must exist');
 });
 test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent completion is the TUI window\'s own job (层级化)', () => {
   // 层级化（用户设计）：watchdog(爷爷)只认 TUI 窗(儿子)输出 __ORCH_DONE__ <token> 即关窗；
