@@ -114,6 +114,11 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 
 本 orchestrator 对所有路径与宿主做了**通用化设计**：只要外部（宿主/用户/调用方）在进程环境注入可配置项，就能在**不同 Windows 设备、不同用户名、不同 agent** 上运行，而无需改本插件源码：
 
+> **支持层级（作者实测 vs 名义）**：
+> - **名义上**：orchestrator 会尽可能**自适应适配任意主流编码 agent**（探测其 CLI、注入其专属 env、按通用结束标记 `__ORCH_DONE__ <token>` 收窗）；且对提供自家 LLM 的厂商 agent（Claude→Anthropic、Qwen→阿里巴巴、ZCode→智谱 GLM 等），优先让它用**自家厂商模型**（能用同一家 LLM 尽量用同一家，更照顾各自 agent）。
+> - **100% 确定适配**：仅限**作者（yechang1450）实际用过**的 agent。当前确认支持 = **`codex`、`pi`、`openclaw`**。表中其余 agent 均为**占位**（可探测，未装则回退 `codex`），并非已实测。
+> - 环境检测时，orchestrator 会按 `ORCH_AGENT` 探测对应 CLI 是否可用：可用 → 用该 agent 拉起 TUI 窗；不可用 → 自动回退 `codex`，不报错。
+
 ### 可配置环境变量（env-first，均有合理缺省）
 - `CODEX_HOME`：权威 Codex 家目录（缺省 `~/.codex`）。跨用户/设备最关键：非默认安装、Docker、托管 CI 等通过它指向真实家目录。
 - `ORCH_STATE_DIR`：本插件的稳定运行/状态目录（registry、锁等），缺省 `$CODEX_HOME/orchestrator`。**不能**放在会被插件升级/重装清掉的目录。

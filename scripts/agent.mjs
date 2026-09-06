@@ -26,16 +26,16 @@ function cacheFile() { return path.join(cacheDir(), '.agent-cache.json'); }
 // （已移除易混的 gemini(与 google LLM 同名、2026 有迁移 Antigravity) 与 aichat(仅终端聊天工具、非编码 agent)。
 //  workbudy/codebuddy=腾讯、openclaw=agent gateway 等非纯 CLI 编码 agent，暂不作为可检测项。）
 export const AGENTS = {
-  codex: { id: 'codex', label: 'Codex CLI', detectBin: ['codex'], modelEnv: 'ORCH_MODEL', effortEnv: 'ORCH_EFFORT', completionMarker: '__ORCH_DONE__', native: true },
+  codex: { id: 'codex', label: 'Codex CLI', detectBin: ['codex'], modelEnv: 'ORCH_MODEL', effortEnv: 'ORCH_EFFORT', completionMarker: '__ORCH_DONE__', native: true, verified: true },
   claude: { id: 'claude', label: 'Claude Code', detectBin: ['claude'], modelEnv: 'ANTHROPIC_MODEL', effortEnv: 'ORCH_CLAUD_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
   opencode: { id: 'opencode', label: 'OpenCode', detectBin: ['opencode'], modelEnv: 'OPENCODE_MODEL', effortEnv: 'ORCH_OPENCODE_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
   cursor: { id: 'cursor', label: 'Cursor CLI', detectBin: ['cursor-agent', 'cursor'], modelEnv: 'CURSOR_MODEL', effortEnv: 'ORCH_CURSOR_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
   qwen: { id: 'qwen', label: 'Qwen Code', detectBin: ['qwen'], modelEnv: 'QWEN_MODEL', effortEnv: 'ORCH_QWEN_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
-  pi: { id: 'pi', label: 'Pi (pi-coding-agent)', detectBin: ['pi'], modelEnv: 'PI_MODEL', effortEnv: 'ORCH_PI_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  pi: { id: 'pi', label: 'Pi (pi-coding-agent)', detectBin: ['pi'], modelEnv: 'PI_MODEL', effortEnv: 'ORCH_PI_EFFORT', completionMarker: '__ORCH_DONE__', native: false, verified: true },
   zcode: { id: 'zcode', label: 'ZCode CLI', detectBin: ['zcode-cli', 'zcode'], modelEnv: 'ZCODE_MODEL', effortEnv: 'ORCH_ZCODE_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
   aider: { id: 'aider', label: 'Aider', detectBin: ['aider'], modelEnv: 'AIDER_MODEL', effortEnv: 'ORCH_AIDER_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
   codebuddy: { id: 'codebuddy', label: 'CodeBuddy (WorkBuddy)', detectBin: ['codebuddy'], modelEnv: 'CODEBUDDY_MODEL', effortEnv: 'ORCH_CODEBUDDY_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
-  openclaw: { id: 'openclaw', label: 'OpenClaw (gateway)', detectBin: ['openclaw'], modelEnv: 'OPENCLAW_MODEL', effortEnv: 'ORCH_OPENCLAW_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  openclaw: { id: 'openclaw', label: 'OpenClaw (gateway)', detectBin: ['openclaw'], modelEnv: 'OPENCLAW_MODEL', effortEnv: 'ORCH_OPENCLAW_EFFORT', completionMarker: '__ORCH_DONE__', native: false, verified: true },
 };
 
 function readCache() {
@@ -47,9 +47,17 @@ function writeCache(c) {
 
 function binAvailable(bin) {
   if (!bin) return false;
+  // 探测 agent CLI 是否可用：Windows 上 .ps1/.cmd shim（如 pi、openclaw）需经 shell 才能执行。
+  // 先 shell:false（原始可执行/直调），失败后按平台回退 shell:true（仅 win32），不破坏非 Windows 通用性。
   try {
-    const r = spawnSync(bin, ['--version'], { shell: false, encoding: 'utf8', timeout: 8000, windowsHide: true });
-    return !r.error && r.status === 0;
+    const attempt = (shell) => spawnSync(bin, ['--version'], { shell, encoding: 'utf8', timeout: 8000, windowsHide: true });
+    const r0 = attempt(false);
+    if (!r0.error && r0.status === 0) return true;
+    if (process.platform === 'win32') {
+      const r1 = attempt(true);
+      if (!r1.error && r1.status === 0) return true;
+    }
+    return false;
   } catch { return false; }
 }
 

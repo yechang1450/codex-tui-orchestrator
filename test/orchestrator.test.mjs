@@ -1022,6 +1022,9 @@ test('通用化: 主流 agent 探测/回退 codex + agentCacheFile 随 ORCH_STAT
       // 解析到 codex 时 launchArgs 首参必须为 --cd（确保不会拿 codex 用别的 agent 参数）
       if (r.agent === 'codex') assert.equal(launchArgs(r.config, { cwd: 'W' })[0], '--cd', a + ' 回退后按 codex 拼参数');
     }
+    // 作者实测过的 agent 标 verified=true（100%确认支持）；未实测的为占位（verified 缺省 falsy）
+    for (const id of ['codex', 'pi', 'openclaw']) assert.equal(AGENTS[id].verified, true, id + ' 应标记为作者实测(verified=true)');
+    for (const id of ['claude', 'cursor', 'qwen', 'zcode', 'aider', 'opencode', 'codebuddy']) assert.ok(!AGENTS[id].verified, id + ' 未实测应为占位(无 verified)');
     process.env.ORCH_AGENT = 'codex';
     assert.equal(resolveAgent().agent, 'codex', 'codex 本体');
     delete process.env.ORCH_STATE_DIR;

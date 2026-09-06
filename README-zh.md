@@ -167,6 +167,8 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 ### 通用化（跨设备 / 跨 agent / 跨用户适配）
 
 本插件已做**通用化设计**：宿主只需注入 `CODEX_HOME`（及可选 `ORCH_STATE_DIR`/`ORCH_SESSION_DIR`/`ORCH_AGENT`），同一份代码即可在**任意用户的 Windows 设备**与**任意主流 agent** 上运行，无需改源码。
+
+> **支持层级（作者实测 vs 名义）**：orchestrator **名义上**会尽可能自适应适配任意主流编码 agent（探测其 CLI、注入其专属 env、按通用结束标记 `__ORCH_DONE__ <token>` 收窗）。但 **100% 确定适配** 仅限**作者（yechang1450）实际用过**的 agent。当前确认支持：**`codex`、`pi`、`openclaw`**。表中其余 agent 均为**占位**（可探测，未装则回退 `codex`），并非已实测。对提供自家 LLM 的厂商 agent（Claude→Anthropic、Qwen→阿里巴巴、ZCode→智谱 GLM 等），orchestrator 会**优先让它用自家厂商的模型**（能用同一家 LLM 尽量用同一家，更照顾各自 agent）。
 - **不同用户/设备**：所有 `.codex` 路径来自 `CODEX_HOME`（非 `C:\Users\<user>\.codex`）；agent 缓存与临时产物落在稳定家目录，绝不在会被插件升级清掉的插件脚本目录。
 - **不同 agent**：`agent.mjs` 内置 `codex/claude/opencode/cursor/qwen/pi/zcode/aider/codebuddy/openclaw` 表，探测对应 CLI，`ORCH_AGENT` 选择；launcher/Watchdog 对它们都用通用结束标记 `__ORCH_DONE__ <token>` 收尾。
 - **不同用户**：只读能力探测（superpowers/config/CLI）失败一律降级不报错；无权限写（如 hosts）输出可复制的提权指令而非硬写。
