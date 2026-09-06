@@ -58,7 +58,7 @@ const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-test-'));
 process.env.WORKSPACE_DIR = wsDir;
 const stDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-force-state-"));
 process.env.ORCH_STATE_DIR = stDir;
-const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG, STATE_DIR } = await import(importUrl(path.join(scripts, 'agent-tui-orchestrator-force.mjs')));
+const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG, STATE_DIR } = await import(importUrl(path.join(scripts, 'codex-TUI-orchestrator-force.mjs')));
 test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
   // fresh workspace -> not armed, no windows
   assert.equal(armed(), false);
@@ -92,17 +92,17 @@ test('force.mjs CLI --status/--assert read/--assert write', () => {
     // 否则子进程会误判为“已授权窗活窗=0”，让本应 read-only ok 的 --assert read 变成 REFUSED。
     delete env.ORCH_WINDOW;
     // --status on empty workspace: armed=false, 0 windows
-    const st = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--status'], { env });
+    const st = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--status'], { env });
     assert.equal(st.code, 0);
     assert.match(st.out, /armed|ARMED|enabled/);
     // --assert read on not-armed -> exit 0 (ok)
-    const ar = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'read'], { env });
+    const ar = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'read'], { env });
     assert.equal(ar.code, 0);
     // --assert write on not-armed -> "ok: orchestrator not armed" exit 0
-    const aw = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'write'], { env });
+    const aw = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'write'], { env });
     assert.equal(aw.code, 0);
     // --verify on not-armed -> exit 0 (verification not applicable)
-    const v = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--verify', path.join(cliDir, 'nope.txt')], { env });
+    const v = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--verify', path.join(cliDir, 'nope.txt')], { env });
     assert.equal(v.code, 0);
   } finally {
     fs.rmSync(cliDir, { recursive: true, force: true });
@@ -120,16 +120,16 @@ test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATIO
     // arm enforcement
     fs.writeFileSync(path.join(tmpDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
     // --assert read when armed + no window -> read-only ok (exit 0)
-    const ar = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'read'], { env });
+    const ar = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'read'], { env });
     assert.equal(ar.code, 0);
     // --assert exec when armed + no window -> REFUSED (exit 1)
-    const ae = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--assert', 'exec'], { env });
+    const ae = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'exec'], { env });
     assert.equal(ae.code, 1);
     assert.match(ae.out, /REFUSED/i);
     // --verify a file when armed + no window -> VIOLATION (exit 1)
     const target = path.join(cliDir, 'file.txt');
     fs.writeFileSync(target, 'x', 'utf8');
-    const v = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--verify', target], { env });
+    const v = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--verify', target], { env });
     assert.equal(v.code, 1);
     assert.match(v.out, /VIOLATION/i);
   } finally {
@@ -142,7 +142,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
   try {
     const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
     delete env.ORCH_WINDOW;
-    const en = runNode(path.join(scripts, 'agent-tui-orchestrator-force.mjs'), ['--enable'], { env });
+    const en = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--enable'], { env });
     assert.equal(en.code, 0);
     const flag = path.join(cliDir, 'state', '.orchestrator-enabled');
     assert.equal(fs.existsSync(flag), true);
@@ -461,7 +461,7 @@ test('runtime: launcher extracts the REAL ASCII block token even when boilerplat
   // 「【本块唯一标识】…完成」开头 BEFORE the injected unique token. The old regex matched that
   // boilerplate first and stripped it to an empty $token => watchdog auto-close never fired.
   const body = '1. 修复TUI窗任务成功后仍报「已退出进程代码为1」且无法自动关窗的问题。\n上面任务之间互相独立：并行执行。\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。\n\n【本块唯一标识】B1-abc123-4f2g9z\n（最终汇报请以「【本块唯一标识】B1-abc123-4f2g9z 完成」开头，并说明本块完成情况）';
-  const auth = '\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
+  const auth = '\n\n（已获授权推进并执行。本窗为 codex-TUI-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
   const { lp, pidf, pf } = writeInteractiveLauncher('t', body + auth, 'x');
   try {
     const ps = fs.readFileSync(lp, 'utf8');
@@ -1218,7 +1218,7 @@ test('resolveCodexHome: 环境变量优先，未设回退 homedir/.codex（跨�
 
 test('isOrchestratorSelfMod: 通用化识别自引用(编排/调度/TUI窗/源码, 中英文)，不误判普通页面修复', () => {
   // 自引用命中：中英文均可
-  assert.equal(isOrchestratorSelfMod('修复 agent-tui-orchestrator 的编排逻辑'), true, 'en self-ref');
+  assert.equal(isOrchestratorSelfMod('修复 codex-TUI-orchestrator 的编排逻辑'), true, 'en self-ref');
   assert.equal(isOrchestratorSelfMod('优化调度窗的关窗逻辑'), true, 'zh 调度窗 self-ref');
   assert.equal(isOrchestratorSelfMod('改 orchestrate-sdk.mjs 的源码'), true, 'sdk path self-ref');
   assert.equal(isOrchestratorSelfMod('加固 orchestrator 的并发稳定性'), true, 'orchestrator hardening');

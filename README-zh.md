@@ -1,14 +1,14 @@
-# agent-tui-orchestrator
+# codex-TUI-orchestrator
 
 > 作者：**Yang Wenchàng**
 
 把多部分请求按「并发冲突」拆成 **安全并行块**，并通过 **真实可见的 Codex TUI 窗** 执行——独立任务并发、会破坏的串行。
 
-> 命名说明：插件 id、`name` 字段、目录、GitHub 仓库、显示名均为小写连字符 `agent-tui-orchestrator`，符合 Codex 插件清单规范。
+> 命名说明：插件 id、`name` 字段、目录、GitHub 仓库、显示名均为小写连字符 `codex-TUI-orchestrator`，符合 Codex 插件清单规范。
 
 ## 能力结构（多合一）
 
-插件只暴露 **一个 skill**（`skills/agent-tui-orchestrator/SKILL.md`），拆块分类、冲突锁、依赖排序、原型门禁（确定性）、注册表、窗口运行时、结果汇聚、执行门禁、拆块缓存、清洁、归因验证 **11 项能力全部内嵌其中**，恒启用、无开关；可调参数只有 `ORCH_*` 环境变量。
+插件只暴露 **一个 skill**（`skills/codex-TUI-orchestrator/SKILL.md`），拆块分类、冲突锁、依赖排序、原型门禁（确定性）、注册表、窗口运行时、结果汇聚、执行门禁、拆块缓存、清洁、归因验证 **11 项能力全部内嵌其中**，恒启用、无开关；可调参数只有 `ORCH_*` 环境变量。
 
 ## 实现思路（从请求到落地，完整生命周期）
 

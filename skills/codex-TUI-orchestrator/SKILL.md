@@ -1,8 +1,8 @@
 ---
-name: agent-tui-orchestrator
+name: codex-TUI-orchestrator
 description: 把多部分请求按并发冲突拆成 linked/independent 块，通过可见自动关闭的 Codex TUI 窗真实并发执行（独立并行、联动串行）；纯只读/分析自动 inline 不弹窗。Use when a request contains several real, executable steps that should run concurrently without conflict; read-only analysis stays inline.
 ---
-# Agent TUI Orchestrator（多合一 · 单 skill 承载全部能力）
+# Codex TUI Orchestrator（多合一 · 单 skill 承载全部能力）
 
 引擎在 `scripts/orchestrate-sdk.mjs`；本 skill 是**唯一入口**，把全部编排能力（拆块分类 / 冲突锁 / 依赖排序 / 原型门禁 / 注册表 / 窗口运行时 / 结果汇聚 / 执行门禁 / 拆块缓存 / 清洁 / 归因验证）**内嵌为一套**，全部恒启用、无用户可关闭的开关。
 
@@ -16,11 +16,11 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 2. **保轮询**：`--run-windows` 之后**必须**运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`；只有它返回 0 才能结束本轮（全部块 status ∈ 成功集）。非 0=仍有未成功→继续等/重试/如实上报，绝不提前收尾。
 3. **每窗自查 + 只出识别码**：每窗结束前必须完成读回/回归/无乱码自验，最后**只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**；执行结束即 `done`（不等同于成功），是否达成 prompt 预期由主控关窗后核对真实落盘状态。
 4. **不得先问是否执行**：凡真实执行且用户已授权（出现「继续/全面推进/允许执行/同意」等），直接 `--run-windows`，严禁「要不要我弹窗/需要授权吗」类二次确认。
-5. **被动调用**：未显式 @agent-tui-orchestrator 的**真实执行**，也必须主动检测并路由到 `--run-windows`；只有只读/纯方案/纯解答留在主对话。
+5. **被动调用**：未显式 @codex-TUI-orchestrator 的**真实执行**，也必须主动检测并路由到 `--run-windows`；只有只读/纯方案/纯解答留在主对话。
 6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完。
 8. **留痕**：真实执行后须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
-9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / agent-tui-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。同时**不得改变底层设计**——「按并发冲突拆 linked/independent 块、实现无冲突同步并发」是根本，不能改为其它并发模型。
+9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / codex-TUI-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。同时**不得改变底层设计**——「按并发冲突拆 linked/independent 块、实现无冲突同步并发」是根本，不能改为其它并发模型。
 10. **TUI 窗 = codex CLI，model 自动取主对话同款 / 默认 effort `xhigh`**：orchestrator 弹出的窗走 codex CLI，其 `model` 在环境检测阶段**自动读取 config.toml 主对话 model**（`ORCH_MODEL` 可覆盖；config.toml 读不到或没有该字段时回退 `deepseek-v4-flash`）；推理力度**默认 `xhigh`**（`ORCH_EFFORT` 可覆盖）。不再是"默认写死某型号"，而是跟随发起对话。
 11. **每窗先做 TODO LIST（固化，硬性）**：每个被弹出的 TUI 窗在动手之前，**必须先**产出**从头到尾完整又完善、有头有尾的 TODO LIST**——头=目标+前置/环境盘点，中=每步含动作+产物+验证点+依赖顺序，尾=收尾现场自验+清理残留+结束标志；**且最后一项必须就是「输出结束标记 `__ORCH_DONE__ <本窗token>`」**。并用 `scripts/todo-list.mjs --check <清单> --strict` 校验：全部 PASS 才允许执行；任一 FAIL 先补齐再校验。仅做完「校验通过 + 三遍检查」后才动手（window prompt 已内联固化这条，不依赖任何 personal skill）。
 12. **窗内不使用子代理（硬性）**：orchestrator 发起的每个 TUI 窗**不再使用子代理**（`spawn_agent`/共享任务文件/等子代理/`SUBAGENTS_DONE` 后缀一律不用）。所有工作由该窗自己直接完成；任务过大需拆分时用**更多 TUI 窗并行**。可靠并行 = 多窗，任务完成判定 = 窗内最终落盘产物。（codex GUI 是否用子代理与本插件无关。）
@@ -81,7 +81,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - 触发：每次 `--run-windows` 之后。
 
 ### 执行门禁
-- `armEnforcement()` 写 `.orchestrator-enabled`；`--assert <kind>` 只在**被授权的窗口**（`ORCH_WINDOW=1`）里放行；headless `--run/--exec` 需 `ORCH_ALLOW_HEADLESS=1`；`agent-tui-orchestrator-preflight.mjs` 未 armed 时按 kind fail-closed（真实 kinds REFUSED+exit1，只读放行）。
+- `armEnforcement()` 写 `.orchestrator-enabled`；`--assert <kind>` 只在**被授权的窗口**（`ORCH_WINDOW=1`）里放行；headless `--run/--exec` 需 `ORCH_ALLOW_HEADLESS=1`；`codex-TUI-orchestrator-preflight.mjs` 未 armed 时按 kind fail-closed（真实 kinds REFUSED+exit1，只读放行）。
 - 触发：每次真实执行发起前。
 
 ### 拆块缓存
@@ -94,7 +94,7 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 
 ### 归因验证
 - 判断某个改动文件是否可归因到**窗内受权写入**：剥离 `file:/dir:/port:/service:` 前缀后做路径感知匹配。
-- 触发：`agent-tui-orchestrator-force.mjs --verify <file>`。
+- 触发：`codex-TUI-orchestrator-force.mjs --verify <file>`。
 
 ## 引擎调用（从 `scripts/` 运行）
 - `node orchestrate-sdk.mjs --run-windows "<request>"` → 批量真实执行（独立并行/联动串行，自动关窗，结果进 `temp/win-summary.json`）。
@@ -102,8 +102,8 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 - `node orchestrate-sdk.mjs --plan "<request>"` → 只拆块打印（只读）。
 - `node orchestrate-sdk.mjs --status [--readonly]` → 活窗/锁。
 - `node orchestrate-sdk.mjs --clear-cache` → 清拆块缓存。
-- `node scripts/agent-tui-orchestrator-force.mjs --status|--assert <kind>|--enable|--disable|--verify <file>` → 执行门禁与归因。
-- `node scripts/agent-tui-orchestrator-preflight.mjs <kind>` → 未 armed 时按 kind fail-closed 的独立门禁。
+- `node scripts/codex-TUI-orchestrator-force.mjs --status|--assert <kind>|--enable|--disable|--verify <file>` → 执行门禁与归因。
+- `node scripts/codex-TUI-orchestrator-preflight.mjs <kind>` → 未 armed 时按 kind fail-closed 的独立门禁。
 
 ## 依赖
 - Node 22+、Codex CLI、Windows Terminal/console。

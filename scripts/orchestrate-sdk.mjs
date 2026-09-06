@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * agent-tui-orchestrator — split a multi-part request into safe parallel blocks.
+ * codex-TUI-orchestrator — split a multi-part request into safe parallel blocks.
  *
  * Classification axis is "would running two tasks AT THE SAME TIME break something?"
  *   - YES  -> linked  -> ONE block, strictly serialized (a queue), one window/thread.
@@ -81,12 +81,12 @@ function resolveWorkspace() {
   // 显式指定的 WORKSPACE_DIR 始终优先、照用（用户/调用方说了算）。
   if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
   const here = process.cwd();
-  // 编排器插件自身库：源码安装目录（plugins/agent-tui-orchestrator）与运行时缓存目录
-  // （plugins/cache/personal/agent-tui-orchestrator/<ver>）。两者都可能在升级/重装时被整目录清掉。
+  // 编排器插件自身库：源码安装目录（plugins/codex-TUI-orchestrator）与运行时缓存目录
+  // （plugins/cache/personal/codex-TUI-orchestrator/<ver>）。两者都可能在升级/重装时被整目录清掉。
   const h = path.resolve(here).replace(/[\\/]+$/, "");
   const isPluginTree =
-    /(?:[\\/]plugins[\\/]cache[\\/]personal[\\/]agent-tui-orchestrator(?:[\\/]|$))/i.test(h) ||
-    /(?:[\\/]plugins[\\/]agent-tui-orchestrator(?:[\\/]|$))/i.test(h);
+    /(?:[\\/]plugins[\\/]cache[\\/]personal[\\/]codex-TUI-orchestrator(?:[\\/]|$))/i.test(h) ||
+    /(?:[\\/]plugins[\\/]codex-TUI-orchestrator(?:[\\/]|$))/i.test(h);
   if (isPluginTree) {
     // 拒绝把插件自身目录当工作区：落地到稳定运行目录（STATE_DIR 同级 family home），绝不被插件升级清掉。
     const stable = path.join(CODEX_HOME, "orchestrator");
@@ -110,7 +110,7 @@ function readAuthPrompt() {
       if (txt && txt.trim()) return txt;
     }
   } catch (e) { /* fall through */ }
-  return "\n\n（已获授权推进并执行。本窗为 agent-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等为由暂停或询问。执行结束再输出结束标记。）";
+  return "\n\n（已获授权推进并执行。本窗为 codex-TUI-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等为由暂停或询问。执行结束再输出结束标记。）";
 }
 
 const WORKSPACE = resolveWorkspace();
@@ -741,7 +741,7 @@ async function runPrototypeGate(title, prompt) {
 }
 // Enforcement: once the orchestrator is engaged, mark that real executions are gated. The
 // sanction engine is --run-windows (a real, visible, interactive TUI window). headless --run/--exec
-// is additionally hard-gated inside this file (needs ORCH_ALLOW_HEADLESS=1). agent-tui-orchestrator-force.mjs reads
+// is additionally hard-gated inside this file (needs ORCH_ALLOW_HEADLESS=1). codex-TUI-orchestrator-force.mjs reads
 // this marker: from a NON-window context it refuses real-execution kinds and tells the caller to
 // route through --run-windows. A sanctioned window sets $env:ORCH_WINDOW=1 (in its launcher)
 // so it passes the guard.
@@ -1067,7 +1067,7 @@ function isOrchestratorSelfMod(text) {
   // 覆盖英文 + 中文关键词，并对编排器自身的通用称谓（orchestrator/编排/调度/TUI 窗/skill）都命中；
   // 命中只是「可能改自己」的信号，进一步由调用方决定是否返回 inline（宁可多识、不误把改自己的活交给窗）。
   const selfRef =
-    /agent-tui-orchestrator|orchestrator|orchestrate|编排|调度器|调度窗|TUI 窗|TUI窗|并发编排/i.test(t) ||
+    /codex-TUI-orchestrator|orchestrator|orchestrate|编排|调度器|调度窗|TUI 窗|TUI窗|并发编排/i.test(t) ||
     /scripts\/?orchestrate|orchestrate-sdk\.mjs|\.codex.*\/?orchestrat/i.test(t);
   if (!selfRef) return false;
   const modifyIntent =
@@ -2087,7 +2087,7 @@ async function main() {
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
     const prompt =
-      "这是 agent-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
+      "这是 codex-TUI-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
       "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     const claim = { id: "claim-" + rid + "-selftest", title: "selftest-close", keys: ["selftest:" + rid], pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
@@ -2606,7 +2606,7 @@ async function main() {
     // REAL work is --run-windows (a real visible TUI window). Opt-in via ORCH_ALLOW_HEADLESS=1 only
     // for pure, windowless automation that the user has explicitly sanctioned.
     if (process.env.ORCH_ALLOW_HEADLESS !== "1") {
-      console.error("[orchestrator] REFUSED: headless --run/--exec is disabled by agent-tui-orchestrator enforcement. Real work must go through --run-windows (a real, visible, interactive TUI window). Set ORCH_ALLOW_HEADLESS=1 only for pure automation you explicitly want windowless.");
+      console.error("[orchestrator] REFUSED: headless --run/--exec is disabled by codex-TUI-orchestrator enforcement. Real work must go through --run-windows (a real, visible, interactive TUI window). Set ORCH_ALLOW_HEADLESS=1 only for pure automation you explicitly want windowless.");
       process.exitCode = 1;
       return;
     }

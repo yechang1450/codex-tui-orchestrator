@@ -1,5 +1,5 @@
 {
-    "name":  "agent-tui-orchestrator",
+    "name":  "codex-TUI-orchestrator",
     "private":  true,
     "version":  "0.2.0",
     "dependencies":  {
