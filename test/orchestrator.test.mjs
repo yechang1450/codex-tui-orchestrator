@@ -585,17 +585,17 @@ test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> 
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-vanish-'));
   const tok = 'V1-abc-789';
   const { lp, pidf, pf, rf } = writeInteractiveLauncher('vanish', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
-  const codexPidFile = path.join(ws, 'codex.pid');
+  const agentPidFile = path.join(ws, 'codex.pid');
   const grandPidFile = path.join(ws, 'grand.pid');
-  const fakeCodex = path.join(ws, 'fake-codex.ps1');
+  const fakeAgent = path.join(ws, 'fake-agent.ps1');
   const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
-  writePs(fakeCodex, `$ErrorActionPreference='Continue'
+  writePs(fakeAgent, `$ErrorActionPreference='Continue'
 $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $token='${tok}'
 $report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
 Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $report -Encoding UTF8
-$PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
+$PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 $psi=New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName='powershell.exe'; $psi.Arguments='-NoProfile -Command "Start-Sleep -Seconds 600"'; $psi.UseShellExecute=$false
 $grand=[System.Diagnostics.Process]::Start($psi)
@@ -606,7 +606,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // step that DELETES the result-file parent dir to simulate the plugin-upgrade wipe of the temp folder.
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @agentArgs");
+  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   // Inject before the `& codex` invocation: remove the dir that holds $resultFile (the vanished temp dir).
   ps = ps.replace(/& 'C:\/Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe'/g, "Remove-Item -LiteralPath (Split-Path -Parent $resultFile) -Recurse -Force -ErrorAction SilentlyContinue; & 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'");
   fs.writeFileSync(lp, ps, 'utf8');
@@ -615,23 +615,23 @@ while($true){Start-Sleep -Seconds 600}`);
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
-  let codexPid = 0, grandPid = 0;
+  let agentPid = 0, grandPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => fs.existsSync(codexPidFile) && fs.existsSync(grandPidFile), 15000);
-    codexPid = readPidFile(codexPidFile); grandPid = readPidFile(grandPidFile);
-    assert.ok(codexPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
+    await waitFor(() => fs.existsSync(agentPidFile) && fs.existsSync(grandPidFile), 15000);
+    agentPid = readPidFile(agentPidFile); grandPid = readPidFile(grandPidFile);
+    assert.ok(agentPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
     const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
     assert.notEqual(exitCode, 'timeout', 'launcher must exit on its own (no permanently-alive codex window)');
     assert.equal(exitCode, 0, 'launcher must end with exit 0 even when its result dir was wiped mid-run');
-    assert.equal(pidAliveCheck(codexPid), false, 'codex process must be reaped');
+    assert.equal(pidAliveCheck(agentPid), false, 'codex process must be reaped');
     assert.equal(pidAliveCheck(grandPid), false, 'codex grandchild must be reaped');
     assert.equal(fs.existsSync(rf), true, 'result file must be written after dir vanished (Ensure-ResultDir recreated it)');
     assert.equal(fs.existsSync(rf + '.self-closed'), true, 'watchdog/launcher must recreate the dir and write .self-closed');
   } finally {
-    for (const pid of [codexPid, grandPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    for (const pid of [agentPid, grandPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
     try { child.kill(); } catch { /* ignore */ }
-    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', agentPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
     try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });
@@ -645,42 +645,42 @@ test('runtime: watchdog must NOT self-close on the injected prompt text that con
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-prem-'));
   const tok = 'P1-abc-000';
   const { lp, pidf, pf, rf } = writeInteractiveLauncher('premature', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
-  const codexPidFile = path.join(ws, 'codex.pid');
-  const fakeCodex = path.join(ws, 'fake-codex.ps1');
+  const agentPidFile = path.join(ws, 'codex.pid');
+  const fakeAgent = path.join(ws, 'fake-agent.ps1');
   const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
   // Emulate a codex that writes ONLY the injected user prompt (role:user, contains __ORCH_DONE__ <tok> as
   // instruction text) then hangs. This is exactly the rollout tail that used to false-trigger the watchdog.
-  writePs(fakeCodex, `$ErrorActionPreference='Continue'
+  writePs(fakeAgent, `$ErrorActionPreference='Continue'
 $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $userLine='{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"请执行任务并在最后输出 __ORCH_DONE__ ${tok}"}]}}'
 Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $userLine -Encoding UTF8
-$PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
+$PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 while($true){Start-Sleep -Seconds 600}`);
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @agentArgs");
+  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
-  let codexPid = 0;
+  let agentPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => fs.existsSync(codexPidFile), 15000);
-    codexPid = readPidFile(codexPidFile);
-    assert.ok(codexPid > 0, 'fake codex PID must be written');
+    await waitFor(() => fs.existsSync(agentPidFile), 15000);
+    agentPid = readPidFile(agentPidFile);
+    assert.ok(agentPid > 0, 'fake codex PID must be written');
     // Give the watchdog time to (incorrectly) detect the user-message __ORCH_DONE__ line.
     const earlyExit = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(6000).then(() => 'still-running')]);
     assert.equal(earlyExit, 'still-running', 'watchdog must NOT self-close just because the injected user prompt contains __ORCH_DONE__ <token>');
     // The window must still be alive (agent didn't do work, so it must not be closed yet).
-    assert.equal(pidAliveCheck(codexPid), true, 'codex must still be alive because the task was NOT completed');
+    assert.equal(pidAliveCheck(agentPid), true, 'codex must still be alive because the task was NOT completed');
   } finally {
-    for (const pid of [codexPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    for (const pid of [agentPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
     try { child.kill(); } catch { /* ignore */ }
-    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', agentPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
     try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });
@@ -688,15 +688,15 @@ while($true){Start-Sleep -Seconds 600}`);
 test('runtime: minimal launcher smoke -> recursive kill frees & codex; result file exit 0; launcher exits 0 without force-kill', async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt-launch-'));
   const pidFile = path.join(d, 'launcher.pid');
-  const codexPidFile = path.join(d, 'codex.pid');
+  const agentPidFile = path.join(d, 'codex.pid');
   const grandPidFile = path.join(d, 'grand.pid');
   const resultFile = path.join(d, 'win.result.json');
   const normalFile = path.join(d, 'normal-exit.txt');
   const report = 'FINAL-REPORT-CAPTURED-RT1';
-  const codexPs = path.join(d, 'fake-codex.ps1');
+  const agentPs = path.join(d, 'fake-agent.ps1');
   const launcherPs = path.join(d, 'fake-launcher.ps1');
   const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
-  writePs(codexPs, `param([string]$grandPidFile)
+  writePs(agentPs, `param([string]$grandPidFile)
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = 'powershell.exe'
 $psi.Arguments = '-NoProfile -Command "Start-Sleep -Seconds 300"'
@@ -705,14 +705,14 @@ $grand = [System.Diagnostics.Process]::Start($psi)
 if ($grandPidFile) { $grand.Id | Set-Content -LiteralPath $grandPidFile -Encoding UTF8 }
 $grand.WaitForExit()
 exit 1`);
-  writePs(launcherPs, `param([string]$pidFile,[string]$codexPidFile,[string]$grandPidFile,[string]$codexPs1,[string]$resultFile,[string]$normalFile,[string]$report)
+  writePs(launcherPs, `param([string]$pidFile,[string]$agentPidFile,[string]$grandPidFile,[string]$agentPs1,[string]$resultFile,[string]$normalFile,[string]$report)
 $PID | Set-Content -LiteralPath $pidFile -Encoding UTF8
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = 'powershell.exe'
-$psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $codexPs1 + '" "' + $grandPidFile + '"'
+$psi.Arguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $agentPs1 + '" "' + $grandPidFile + '"'
 $psi.UseShellExecute = $false
 $codex = [System.Diagnostics.Process]::Start($psi)
-$codex.Id | Set-Content -LiteralPath $codexPidFile -Encoding UTF8
+$codex.Id | Set-Content -LiteralPath $agentPidFile -Encoding UTF8
 $codex.WaitForExit()
 $code = $codex.ExitCode
 if ($report) { $code = 0 }
@@ -720,7 +720,7 @@ $json = '{"__EXIT__":' + $code + ',"__DONE__":true,"__REPORT__":' + (ConvertTo-J
 Set-Content -LiteralPath $resultFile -Value ($json + "\`r\`n__EXIT__=" + $code) -Encoding UTF8
 Set-Content -LiteralPath $normalFile -Value 'NORMAL_EXIT' -Encoding UTF8
 exit 0`);
-  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcherPs, pidFile, codexPidFile, grandPidFile, codexPs, resultFile, normalFile, report], { windowsHide: true, stdio: 'ignore' });
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcherPs, pidFile, agentPidFile, grandPidFile, agentPs, resultFile, normalFile, report], { windowsHide: true, stdio: 'ignore' });
   const launcherExit = new Promise((resolve, reject) => {
     child.once('error', reject);
     child.once('exit', (code, signal) => resolve({ code, signal }));
@@ -735,13 +735,13 @@ exit 0`);
     throw new Error('timed out waiting for runtime launcher smoke: ' + String(what));
   };
   try {
-    await waitFor(() => fs.existsSync(pidFile) && fs.existsSync(codexPidFile) && fs.existsSync(grandPidFile), 15000);
+    await waitFor(() => fs.existsSync(pidFile) && fs.existsSync(agentPidFile) && fs.existsSync(grandPidFile), 15000);
     const launcherPid = readPidFile(pidFile);
-    const codexPid = readPidFile(codexPidFile);
+    const agentPid = readPidFile(agentPidFile);
     const grandPid = readPidFile(grandPidFile);
-    assert.ok(launcherPid > 0 && codexPid > 0 && grandPid > 0, 'fake launcher/codex/grandchild PIDs must be written');
+    assert.ok(launcherPid > 0 && agentPid > 0 && grandPid > 0, 'fake launcher/codex/grandchild PIDs must be written');
     assert.equal(pidAliveCheck(launcherPid), true, 'fake launcher must be alive before graceful close');
-    assert.equal(pidAliveCheck(codexPid), true, 'fake codex must be alive before graceful close');
+    assert.equal(pidAliveCheck(agentPid), true, 'fake codex must be alive before graceful close');
     assert.equal(pidAliveCheck(grandPid), true, 'grandchild must be alive before graceful close');
     const closed = await closeWindowByPid(launcherPid);
     assert.equal(closed, true, 'closeWindowByPid must report the launcher closed gracefully');
@@ -751,7 +751,7 @@ exit 0`);
     ]);
     assert.equal(exitRes.code, 0, 'launcher process must end with exit code 0 (no force-kill code-1 pane)');
     assert.equal(pidAliveCheck(launcherPid), false, 'launcher must be gone');
-    assert.equal(pidAliveCheck(codexPid), false, 'codex process must be gone');
+    assert.equal(pidAliveCheck(agentPid), false, 'codex process must be gone');
     assert.equal(pidAliveCheck(grandPid), false, 'codex grandchild must be gone (recursive descendant kill)');
     const resultRaw = fs.readFileSync(resultFile, 'utf8');
     assert.ok(resultRaw.includes(report), 'result file must capture the final report');
@@ -759,7 +759,7 @@ exit 0`);
     assert.match(resultRaw, /__EXIT__=0/, 'result file must carry the __EXIT__=0 line');
     assert.equal(fs.existsSync(normalFile), true, 'launcher must reach its own normal-exit tail (not force-killed)');
   } finally {
-    for (const f of [pidFile, codexPidFile, grandPidFile]) {
+    for (const f of [pidFile, agentPidFile, grandPidFile]) {
       const id = readPidFile(f);
       if (id > 0 && pidAliveCheck(id)) {
         try { spawnSync('taskkill', ['/PID', String(id), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ }
@@ -776,17 +776,17 @@ test('runtime: watchdog self-close reaps codex even when a stale result file pre
   const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-watchdog-'));
   const tok = 'W1-abc-123';
   const { lp, pidf, pf, rf } = writeInteractiveLauncher('wdguard', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
-  const codexPidFile = path.join(ws, 'codex.pid');
+  const agentPidFile = path.join(ws, 'codex.pid');
   const grandPidFile = path.join(ws, 'grand.pid');
-  const fakeCodex = path.join(ws, 'fake-codex.ps1');
+  const fakeAgent = path.join(ws, 'fake-agent.ps1');
   const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
-  writePs(fakeCodex, `$ErrorActionPreference='Continue'
+  writePs(fakeAgent, `$ErrorActionPreference='Continue'
 $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $token='${tok}'
 $report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
 Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $report -Encoding UTF8
-$PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
+$PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 $psi=New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName='powershell.exe'; $psi.Arguments='-NoProfile -Command "Start-Sleep -Seconds 600"'; $psi.UseShellExecute=$false
 $grand=[System.Diagnostics.Process]::Start($psi)
@@ -796,7 +796,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // Patch the generated launcher so the "codex" is our fake interactive process (never self-exits).
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @agentArgs");
+  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   // Simulate a STALE result from a prior window sharing this block path BEFORE the launcher runs.
   fs.writeFileSync(rf, '{"__EXIT__":0,"__DONE__":true,"__REPORT__":"STALE prior run"}', 'utf8');
@@ -805,24 +805,24 @@ while($true){Start-Sleep -Seconds 600}`);
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
-  let codexPid = 0, grandPid = 0;
+  let agentPid = 0, grandPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => fs.existsSync(codexPidFile) && fs.existsSync(grandPidFile), 15000);
-    codexPid = readPidFile(codexPidFile); grandPid = readPidFile(grandPidFile);
-    assert.ok(codexPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
+    await waitFor(() => fs.existsSync(agentPidFile) && fs.existsSync(grandPidFile), 15000);
+    agentPid = readPidFile(agentPidFile); grandPid = readPidFile(grandPidFile);
+    assert.ok(agentPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
     // Watchdog must fire even with a stale result file -> kill codex -> launcher exits 0.
     const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
     assert.notEqual(exitCode, 'timeout', 'launcher must exit on its own (no permanently-alive codex window)');
     assert.equal(exitCode, 0, 'launcher must end with exit 0 so the Windows Terminal pane auto-closes');
-    assert.equal(pidAliveCheck(codexPid), false, 'codex process must be killed even when a stale result pre-exists');
+    assert.equal(pidAliveCheck(agentPid), false, 'codex process must be killed even when a stale result pre-exists');
     assert.equal(pidAliveCheck(grandPid), false, 'codex grandchild must be reaped');
     assert.equal(fs.existsSync(rf), true, 'result file must be written (Write-Result ran)');
     assert.equal(fs.existsSync(rf + '.self-closed'), true, 'watchdog must have self-closed after detecting completion');
   } finally {
-    for (const pid of [codexPid, grandPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    for (const pid of [agentPid, grandPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
     try { child.kill(); } catch { /* ignore */ }
-    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', codexPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', agentPidFile, grandPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
     try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });

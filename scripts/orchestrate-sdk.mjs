@@ -923,8 +923,8 @@ function agentDescendantAlive(pidf) {
 async function warmupWindow(pidf, token) {
   // 通用冷启动错峰：已确认 launcher 存活后，再短等 agent 子进程出现（避免父进程过早去等 session rollout 而漏匹配）。
   // 不特判任何 agent 的子进程形态（对 codex/claude/gemini/opencode 等主流 agent 通用）；失败只继续等，绝不误判未弹出。
-  const codexWarm = Date.now() + 15000;
-  while (Date.now() < codexWarm) {
+  const agentWarm = Date.now() + 15000;
+  while (Date.now() < agentWarm) {
     if (agentDescendantAlive(pidf)) break;
     await new Promise((r) => setTimeout(r, 400));
   }
@@ -2079,7 +2079,7 @@ async function main() {
     // Verification helper for the graceful auto-close fix: open ONE real interactive window with a
     // trivial prompt, wait for task_complete in its rollout, then let the launcher's own watchdog
     // self-close it (~1s) and confirm the launcher actually exits 0 (=> the pane auto-closes, no
-    // stuck "[exit code 1]" pane, and no orphan codex is left behind). closeWindow() is only a
+    // stuck "[exit code 1]" pane, and no orphan agent is left behind). closeWindow() is only a
     // fallback if the launcher is still alive after the timeout. Run by the authorized window for the
     // required "弹一个窗确认约 1 秒后自动关、无残留进程".
     armEnforcement();
@@ -2134,14 +2134,14 @@ async function main() {
     const elapsedAfterDetectMs = tClosed - tComplete;
     // Settle briefly so a just-exiting watchdog job can't count as an orphan.
     await new Promise((r) => setTimeout(r, 1500));
-    let orphanCodex = false;
+    let orphanAgent = false;
     try {
       const spid = Number(pid); const kids = spawnSync("powershell.exe", ["-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + (Number.isFinite(spid) ? spid : -1) + "\" | Measure-Object | Select-Object -ExpandProperty Count"], { windowsHide: true, encoding: "utf8" });
-      orphanCodex = Number(String(kids.stdout || "0").trim()) > 0;
+      orphanAgent = Number(String(kids.stdout || "0").trim()) > 0;
     } catch { /* ignore */ }
     console.log("launcherPid=" + pid + " launcherStillAlive=" + launcherAlive + " (expect false => pane auto-closed)");
     console.log("elapsedAfterDetectMs=" + elapsedAfterDetectMs + " (orchestrator-detect -> launcher gone; launcher watchdog itself polls every 500ms, expect ~1s from task_complete)");
-    console.log("orphanChildren=" + orphanCodex + " (expect false => no orphan codex)");
+    console.log("orphanChildren=" + orphanAgent + " (expect false => no orphan agent)");
     console.log("=== selftest-close done ===");
     cancelReservation(claim.id);
     for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
