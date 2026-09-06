@@ -149,11 +149,11 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 | `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | 稳定运行/状态目录（registry、锁）。**不能**放在会被插件升级清掉的目录。 |
 | `ORCH_SESSION_DIR` | `$CODEX_HOME/sessions` | 会话 rollout 目录。 |
 | `ORCH_SUPERPOWERS_CACHE_DIR` | 自动探测 | 覆盖 superpowers 插件缓存路径（不同宿主/市场布局）。 |
-| `ORCH_AGENT` | `codex` | 选 agent：`codex`\|`claude`\|`gemini`\|`opencode`\|`aichat`；对应 CLI 未装则自动回退 `codex`。 |
+| `ORCH_AGENT` | `codex` | 选 agent：`codex`\|`claude`\|`opencode`\|`cursor`\|`qwen`\|`pi`\|`zcode`\|`aider`\|`codebuddy`\|`openclaw`；对应 CLI 未装则自动回退 `codex`。 |
 | `CODEX_EXE` | 自动检测 | `codex` CLI 路径。 |
 | `PYTHON` | `python` | 预制到弹窗 PATH 的 Python。 |
-| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | 线程用模型。 |
-| `ORCH_EFFORT` | `high` | 推理档位（low/high/max，通用）。 |
+| `ORCH_MODEL` | `auto (config.toml)` | 线程用模型；自动读取宿主 config.toml 的 `model`（主对话模型），读不到则回退 `deepseek-v4-flash`。 |
+| `ORCH_EFFORT` | `xhigh` | 推理档位，默认 `xhigh`（low/medium/high/xhigh/max，通用）。 |
 | `ORCH_TIMEOUT_MS` | `21600000` | 等全部窗完成的总时长上限（默认 6 小时）。 |
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | 只读 LLM 拆块超时（毫秒）。 |
 | `ORCH_DECOMPOSE_RETRIES` | `2` | LLM 拆块失败重试次数，重试耗尽后走确定性兜底单窗。 |
@@ -168,7 +168,7 @@ node orchestrate-sdk.mjs --spawn "My Task" "./temp/my-task.md"
 
 本插件已做**通用化设计**：宿主只需注入 `CODEX_HOME`（及可选 `ORCH_STATE_DIR`/`ORCH_SESSION_DIR`/`ORCH_AGENT`），同一份代码即可在**任意用户的 Windows 设备**与**任意主流 agent** 上运行，无需改源码。
 - **不同用户/设备**：所有 `.codex` 路径来自 `CODEX_HOME`（非 `C:\Users\<user>\.codex`）；agent 缓存与临时产物落在稳定家目录，绝不在会被插件升级清掉的插件脚本目录。
-- **不同 agent**：`agent.mjs` 内置 `codex/claude/gemini/opencode/aichat` 表，探测对应 CLI，`ORCH_AGENT` 选择；launcher/Watchdog 对它们都用通用结束标记 `__ORCH_DONE__ <token>` 收尾。
+- **不同 agent**：`agent.mjs` 内置 `codex/claude/opencode/cursor/qwen/pi/zcode/aider/codebuddy/openclaw` 表，探测对应 CLI，`ORCH_AGENT` 选择；launcher/Watchdog 对它们都用通用结束标记 `__ORCH_DONE__ <token>` 收尾。
 - **不同用户**：只读能力探测（superpowers/config/CLI）失败一律降级不报错；无权限写（如 hosts）输出可复制的提权指令而非硬写。
 - **跨平台窗口**：优先 Windows Terminal（`wt`），不可用回退 `conhost`（`cmd /c start`）。
 

@@ -148,11 +148,11 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 | `ORCH_STATE_DIR` | `$CODEX_HOME/orchestrator` | Stable runtime/state dir (registry, locks). Must NOT live in a dir wiped on plugin upgrade. |
 | `ORCH_SESSION_DIR` | `$CODEX_HOME/sessions` | Session rollout dir. |
 | `ORCH_SUPERPOWERS_CACHE_DIR` | auto-detect | Override superpowers plugin cache path (different host/market layouts). |
-| `ORCH_AGENT` | `codex` | Which agent to run: `codex`\|`claude`\|`gemini`\|`opencode`\|`aichat`. Falls back to `codex` automatically if the requested CLI is absent. |
+| `ORCH_AGENT` | `codex` | Which agent to run: `codex`\|`claude`\|`opencode`\|`cursor`\|`qwen`\|`pi`\|`zcode`\|`aider`\|`codebuddy`\|`openclaw`. Falls back to `codex` automatically if the requested CLI is absent. |
 | `CODEX_EXE` | auto-detect | Path to the `codex` CLI. |
 | `PYTHON` | `python` | Python to prepend to the spawned window's PATH. |
-| `ORCH_MODEL` | `deepseek-v4-flash-vision-exp` | Model the threads use. |
-| `ORCH_EFFORT` | `high` | Reasoning effort (low/high/max, portable). |
+| `ORCH_MODEL` | `auto (config.toml)` | Model the threads use; auto-reads the host's config.toml `model` (main conversation model), falling back to `deepseek-v4-flash`. |
+| `ORCH_EFFORT` | `xhigh` | Reasoning effort, default `xhigh` (low/medium/high/xhigh/max, portable). |
 | `ORCH_TIMEOUT_MS` | `21600000` | Total wait for ALL windows to finish before the aggregator stops (6h default). |
 | `ORCH_DECOMPOSE_TIMEOUT_MS` | `60000` | Timeout for the read-only LLM decompose/classification. |
 | `ORCH_DECOMPOSE_RETRIES` | `2` | Decompose LLM retries before the deterministic fallback is used. |
@@ -167,7 +167,7 @@ Identical requests are cached **indefinitely** (`orchestrator-decompose-cache.js
 
 The orchestrator is **generalized**: a host only needs to inject `CODEX_HOME` (plus optional `ORCH_STATE_DIR` / `ORCH_SESSION_DIR` / `ORCH_AGENT`) and the *same* code runs on any user's Windows device and any mainstream agent — no source change required.
 - **Different users/devices**: all `.codex` paths come from `CODEX_HOME` (not `C:\Users\<user>\.codex`); agent cache + transient artifacts live in a stable home dir, never in a plugin dir wiped by cachebuster.
-- **Different agents**: `agent.mjs` ships a table for `codex`/`claude`/`gemini`/`opencode`/`aichat`, probes each CLI, `ORCH_AGENT` selects it; the launcher/watchdog closes on the generic end marker `__ORCH_DONE__ <token>` for all of them.
+- **Different agents**: `agent.mjs` ships a table for `codex`/`claude`/`opencode`/`cursor`/`qwen`/`pi`/`zcode`/`aider`/`codebuddy`/`openclaw`, probes each CLI, `ORCH_AGENT` selects it; the launcher/watchdog closes on the generic end marker `__ORCH_DONE__ <token>` for all of them.
 - **Different users**: read-only capability probes (superpowers/config/CLI) degrade silently instead of erroring; unauthorised writes (e.g. hosts) emit a copyable elevation command rather than hard-writing.
 - **Cross-platform windows**: prefers Windows Terminal (`wt`), falls back to `conhost` (`cmd /c start`).
 
@@ -205,7 +205,7 @@ The plugin exposes **one skill** (`skills/agent-tui-orchestrator/SKILL.md`) that
 | Hygiene | use-and-discard temp cleanup (incl. `.self-closed` markers; live windows protected) |
 | Verify | `--verify` conflict-key attribution |
 
-Tunable knobs are environment variables only (`ORCH_*`); none of them disables a capability. Model/effort default to `deepseek-v4-flash-vision-exp` / `high` (`ORCH_MODEL`/`ORCH_EFFORT` override).
+Tunable knobs are environment variables only (`ORCH_*`); none of them disables a capability. Model auto-reads the host's config.toml `model` (main conversation model) and effort defaults to `xhigh` (`ORCH_MODEL`/`ORCH_EFFORT` override).
 
 ## Disclaimer
 
