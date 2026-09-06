@@ -4,26 +4,26 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 ---
 # Codex TUI Orchestrator（多合一 · 单 skill 承载全部能力）
 
-引擎在 `scripts/orchestrate-sdk.mjs`；本 skill 是**唯一入口**，把全部编排能力（拆块分类 / 冲突锁 / 依赖排序 / 原型门禁 / 注册表 / 窗口运行时 / 结果汇聚 / 执行门禁 / 拆块缓存 / 清洁 / 归因验证）**内嵌为一套**，全部恒启用、无用户可关闭的开关。
+引擎在插件根目录的 `scripts/orchestrate-sdk.mjs`；本 skill 是**唯一入口**，把全部编排能力（拆块分类 / 冲突锁 / 依赖排序 / 原型门禁 / 注册表 / 窗口运行时 / 结果汇聚 / 执行门禁 / 拆块缓存 / 清洁 / 归因验证）**内嵌为一套**，适用时由宿主权限与用户请求约束。
 
 ## 何时弹窗 / 何时 inline
 - **只读 / 纯分析 / 纯方案 / 纯解答** → 留在主对话内联，**不弹窗**。`--run-windows` 入口已有确定性只读门禁（命中只读词且无真实动作词→直接 inline、exit 0）。
 - **真实执行**（写/改/建/装/测/重启/删/起停/配置/还原/解耦等） → 必须先交给 `--run-windows` 拆块定性：**能拆出 2+ 并行块 → 弹可见 TUI 窗并发/串行**；**单一/串行块 → autosafe 判 inline 就地执行（不弹窗）**，确需盯单任务用 SDK `--spawn` 弹单窗。**禁止**用 headless `--run/--exec` 做真实改动（`ORCH_ALLOW_HEADLESS=1` 仅是纯自动化逃生门）。
 
-## 行为纪律（conduct，必守，优先级最高）
-**（plugin 自证 · 任何加载本插件的 agent 即生效，不依赖宿主 AGENTS.md 配置）凡涉及真实执行（写/改/建/装/测/重启/删/起停/配置/还原/解耦等）一律走 orchestrator（`--run-windows` / SDK），具体弹窗 / inline / `--spawn` 由 orchestrator 按自身规则决定；只读/纯分析/纯方案/纯解答留主对话。脚本侧 `force.mjs`/`preflight.mjs` 对"非授权窗的真实执行" fail-closed REFUSED 并给路由提示，SDK 禁 headless `--run/--exec` 做真实改动。**
+## 使用纪律（遵守宿主规则与用户授权）
+仅在请求适合多窗编排时使用本技能，不接管其它任务。只读分析留在主对话；修改编排器自身必须 inline。技能不能扩大授权、绕过审批或覆盖宿主规则。
 1. **一轮全量交付**：每轮把全部可执行任务纳入同一个 `--run-windows`，一次性并发/串行拉起，禁止「逐个串行、挑几项、下轮再做」。
 2. **保轮询**：`--run-windows` 之后**必须**运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`；只有它返回 0 才能结束本轮（全部块 status ∈ 成功集）。非 0=仍有未成功→继续等/重试/如实上报，绝不提前收尾。
 3. **每窗自查 + 只出识别码**：每窗结束前必须完成读回/回归/无乱码自验，最后**只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**；执行结束即 `done`（不等同于成功），是否达成 prompt 预期由主控关窗后核对真实落盘状态。
 4. **不得先问是否执行**：凡真实执行且用户已授权（出现「继续/全面推进/允许执行/同意」等），直接 `--run-windows`，严禁「要不要我弹窗/需要授权吗」类二次确认。
-5. **被动调用**：未显式 @codex-TUI-orchestrator 的**真实执行**，也必须主动检测并路由到 `--run-windows`；只有只读/纯方案/纯解答留在主对话。
+5. **适用范围**：仅处理用户指定或明显适合并行拆分的多部分任务；不要强制把所有单文件改动也路由到编排器。
 6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
 7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完。
-8. **留痕**：真实执行后须调用 codex 侧 auto-memory（每轮）+ auto-git（git add -A 全 workspace）。
+8. **留痕**：遵循工作区既有约定，仅使用当地已安装且适用的技能；不假定任意宿主都有个人技能。
 9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / codex-TUI-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。同时**不得改变底层设计**——「按并发冲突拆 linked/independent 块、实现无冲突同步并发」是根本，不能改为其它并发模型。
-10. **TUI 窗 = codex CLI，model 自动取主对话同款 / 默认 effort `xhigh`**：orchestrator 弹出的窗走 codex CLI，其 `model` 在环境检测阶段**自动读取 config.toml 主对话 model**（`ORCH_MODEL` 可覆盖；config.toml 读不到或没有该字段时回退 `deepseek-v4-flash`）；推理力度**默认 `xhigh`**（`ORCH_EFFORT` 可覆盖）。不再是"默认写死某型号"，而是跟随发起对话。
-11. **每窗先做 TODO LIST（固化，硬性）**：每个被弹出的 TUI 窗在动手之前，**必须先**产出**从头到尾完整又完善、有头有尾的 TODO LIST**——头=目标+前置/环境盘点，中=每步含动作+产物+验证点+依赖顺序，尾=收尾现场自验+清理残留+结束标志；**且最后一项必须就是「输出结束标记 `__ORCH_DONE__ <本窗token>`」**。并用 `scripts/todo-list.mjs --check <清单> --strict` 校验：全部 PASS 才允许执行；任一 FAIL 先补齐再校验。仅做完「校验通过 + 三遍检查」后才动手（window prompt 已内联固化这条，不依赖任何 personal skill）。
-12. **窗内不使用子代理（硬性）**：orchestrator 发起的每个 TUI 窗**不再使用子代理**（`spawn_agent`/共享任务文件/等子代理/`SUBAGENTS_DONE` 后缀一律不用）。所有工作由该窗自己直接完成；任务过大需拆分时用**更多 TUI 窗并行**。可靠并行 = 多窗，任务完成判定 = 窗内最终落盘产物。（codex GUI 是否用子代理与本插件无关。）
+10. **TUI 窗使用已核验的 Codex 原生 CLI**：不自动安装，不回退其它宿主。模型配置由 CLI 自身读取；主控若有会话级覆盖，显式传 ORCH_MODEL/ORCH_EFFORT。沙箱和审批由调用方显式传 ORCH_SANDBOX/ORCH_APPROVAL，否则使用 workspace-write/on-request；不自动改写目录信任。
+11. **窗内先检查再执行**：在上下文列 TODO LIST（目标、依赖、动作、验证、收尾）；不强制另建清单文件。不得先写后查，失败或缺少授权时如实报告。
+12. **窗内不使用子代理（硬性）**：orchestrator 发起的每个 TUI 窗**不再使用子代理**（`spawn_agent`/共享任务文件/等子代理/`SUBAGENTS_DONE` 后缀一律不用）。所有工作由该窗自己直接完成；任务需重新拆分时由主控调度，窗内不得递归开窗。可靠并行 = 多窗，任务完成判定 = 窗内最终落盘产物。（codex GUI 是否用子代理与本插件无关。）
 
 ## 内嵌能力（11 项，全部恒启用、无开关）
 | 能力 | 职责 |
@@ -108,29 +108,28 @@ description: 把多部分请求按并发冲突拆成 linked/independent 块，�
 ## 依赖
 - Node 22+、Codex CLI、Windows Terminal/console。
 - 编码：所有文本读写显式 UTF-8（`.ps1` 带 BOM），禁 GBK 乱码。
-- 执行后 auto-memory（当日记忆档统一到 `D:\memory\YYYY-MM-DD.md`）+ git-commit（本地版本留痕，不 push）构成双留痕。
+- 留痕由宿主工作区约定决定，不硬编码个人目录或不存在的技能。
 
 ## 通用化 / 跨设备 / 跨 agent / 跨用户适配
 
-本 orchestrator 对所有路径与宿主做了**通用化设计**：只要外部（宿主/用户/调用方）在进程环境注入可配置项，就能在**不同 Windows 设备、不同用户名、不同 agent** 上运行，而无需改本插件源码：
+本插件支持不同 Windows 用户与设备的 Codex 环境；其它宿主接入使用独立 open-tui-orchestrator 项目，目前仅完成 Codex 适配。
 
-> **支持层级（作者实测 vs 名义）**：
-> - **名义上**：orchestrator 会尽可能**自适应适配任意主流编码 agent**（探测其 CLI、注入其专属 env、按通用结束标记 `__ORCH_DONE__ <token>` 收窗）；且对提供自家 LLM 的厂商 agent（Claude→Anthropic、Qwen→阿里巴巴、ZCode→智谱 GLM 等），优先让它用**自家厂商模型**（能用同一家 LLM 尽量用同一家，更照顾各自 agent）。
-> - **100% 确定适配**：仅限**作者（yechang1450）实际用过**的 agent。当前确认支持 = **`codex`、`pi`、`openclaw`**。表中其余 agent 均为**占位**（可探测，未装则回退 `codex`），并非已实测。
-> - 环境检测时，orchestrator 会按 `ORCH_AGENT` 探测对应 CLI 是否可用：可用 → 用该 agent 拉起 TUI 窗；不可用 → 自动回退 `codex`，不报错。
+> **支持边界**：
+> - 当前专用插件只支持 Codex CLI；通用 Node 入口位于 open-tui-orchestrator，首期也只实现 Codex adapter（宿主 CLI 的参数与运行协议适配层）。
+> - 未知宿主、未实现 adapter 或缺少 CLI：fail-closed（明确报错并停止），不自动安装，绝不回退 Codex。
 
 ### 可配置环境变量（env-first，均有合理缺省）
 - `CODEX_HOME`：权威 Codex 家目录（缺省 `~/.codex`）。跨用户/设备最关键：非默认安装、Docker、托管 CI 等通过它指向真实家目录。
 - `ORCH_STATE_DIR`：本插件的稳定运行/状态目录（registry、锁等），缺省 `$CODEX_HOME/orchestrator`。**不能**放在会被插件升级/重装清掉的目录。
 - `ORCH_SESSION_DIR`：会话 rollout 目录，缺省 `$CODEX_HOME/sessions`。
 - `ORCH_SUPERPOWERS_CACHE_DIR`：覆盖 superpowers 插件缓存路径（不同宿主/市场安装位置），缺省自动探测 `$CODEX_HOME/plugins/cache/.../superpowers`。
-- `ORCH_AGENT`：选 agent：`codex|claude|opencode|cursor|qwen|pi|zcode|aider|codebuddy|openclaw`。缺省 `codex`；若请求的 agent CLI 未安装，自动回退 `codex`，不报错。
+- `ORCH_AGENT`：专用插件只接受 codex；通用入口由调用方显式指定宿主，或由 CODEX_THREAD_ID/CODEX_SESSION_ID 识别 Codex。
 - `CODEX_EXE` / `ORCH_MODEL` / `ORCH_EFFORT`：覆盖 CLI 路径与模型/努力度（跨宿主可注入不同模型）。
 
 ### 兼容点
-- **不同 Windows 设备/用户名**：所有 `.codex` 路径经 `CODEX_HOME` 推导（不再硬编码 `C:\Users\<user>\.codex`）；agent 缓存文件、临时产物落在稳定家目录（`ORCH_STATE_DIR`/`$CODEX_HOME/orchestrator`），绝不在会被插件升级/重装清掉的插件脚本目录。
-- **不同 agent**：`agent.mjs` 内置 codex/claude/opencode/cursor/qwen/pi/zcode/aider/codebuddy/openclaw 描述表，探测对应 CLI，`ORCH_AGENT` 选择；launcher/Watchdog 按各 agent 通用结束标记 `__ORCH_DONE__ <token>` 收尾（对 codex 用 `@openai/codex-sdk`，其余按 CLI 启动参数）。
-- **不同用户**：只读能力探测（superpowers/config/CLI）失败一律降级而不报错；读取 config 失败回退；无权限写 hosts 等场景输出可复制的提权指令，不硬写。
+- **不同 Windows 设备/用户名**：所有 `.codex` 路径经 `CODEX_HOME` 推导（不再硬编码 `C:\Users\<user>\.codex`）；注册表落在稳定家目录（`ORCH_STATE_DIR`/`$CODEX_HOME/orchestrator`），绝不在会被插件升级/重装清掉的插件脚本目录。
+- **不同 agent**：需要各自已安装 CLI 和已实现的适配器；当前只开放 Codex。不能用 Codex SDK 或参数冒充其它宿主。
+- **不同用户**：路径从环境解析。CLI 核验失败必须报错；不得修改用户信任设置或隐式扩大授权。
 - **跨平台窗口**：优先 Windows Terminal（`wt.exe`），不可用则回退 `conhost`（`cmd /c start`）。
 
-> 一句话：**宿主只需注入 `CODEX_HOME`（及可选 `ORCH_STATE_DIR`/`ORCH_SESSION_DIR`/`ORCH_AGENT`），即可让同一份 orchestrator 适配任意用户的 Windows 设备与任意主流 agent**，无需改代码。
+> 通用入口不等于全部宿主已接通；只声明经过实现与验证的支持范围。

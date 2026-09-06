@@ -606,7 +606,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // step that DELETES the result-file parent dir to simulate the plugin-upgrade wipe of the temp folder.
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
+  ps = ps.replace(/&\s*'[^']+'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   // Inject before the `& codex` invocation: remove the dir that holds $resultFile (the vanished temp dir).
   ps = ps.replace(/& 'C:\/Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe'/g, "Remove-Item -LiteralPath (Split-Path -Parent $resultFile) -Recurse -Force -ErrorAction SilentlyContinue; & 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'");
   fs.writeFileSync(lp, ps, 'utf8');
@@ -659,7 +659,7 @@ $PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 while($true){Start-Sleep -Seconds 600}`);
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
+  ps = ps.replace(/&\s*'[^']+'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
@@ -796,7 +796,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // Patch the generated launcher so the "codex" is our fake interactive process (never self-exits).
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
+  ps = ps.replace(/&\s*'[^']+'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   // Simulate a STALE result from a prior window sharing this block path BEFORE the launcher runs.
   fs.writeFileSync(rf, '{"__EXIT__":0,"__DONE__":true,"__REPORT__":"STALE prior run"}', 'utf8');
@@ -1001,40 +1001,16 @@ test('computeMaxWindows: 内存上限/下限边界', () => {
   assert.equal(computeMaxWindows(64), 33, '64G -> round(32.768) -> 33');
   assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
 });
-test('通用化: 主流 agent 探测/回退 codex + agentCacheFile 随 ORCH_STATE_DIR/CODEX_HOME 动态', async () => {
-  const tmp = path.join(os.tmpdir(), 'orch-agcache-' + Math.random().toString(36).slice(2));
-  const prevState = process.env.ORCH_STATE_DIR, prevHome = process.env.CODEX_HOME, prevAgent = process.env.ORCH_AGENT;
-  process.env.ORCH_STATE_DIR = tmp;
+test('dedicated entry rejects non-Codex hosts without fallback', async () => {
+  const { resolveAgent } = await import(importUrl(path.join(scripts, 'agent.mjs')));
+  const prev = process.env.ORCH_AGENT;
   try {
-    const ag = await import(importUrl(path.join(scripts, 'agent.mjs')));
-    const { AGENTS, resolveAgent, launchArgs, agentCacheFile } = ag;
-    for (const id of ['codex', 'claude', 'opencode', 'cursor', 'qwen', 'pi', 'zcode', 'aider', 'codebuddy', 'openclaw']) assert.ok(AGENTS[id], id + ' 应在 AGENTS');
-    assert.ok(agentCacheFile().startsWith(tmp), 'agentCacheFile 应随 ORCH_STATE_DIR');
     process.env.ORCH_AGENT = 'unknown';
-    assert.equal(resolveAgent().agent, 'codex', 'unknown -> 回退 codex');
-    assert.equal(launchArgs(resolveAgent().config, { cwd: 'W' })[0], '--cd', '回退后按 codex 拼参数');
-    for (const a of Object.keys(AGENTS)) {
-      if (a === 'codex') continue;
-      process.env.ORCH_AGENT = a;
-      const r = resolveAgent();
-      // 已装 -> 解析为自身；未装 -> 回退 codex。二者都合法（探测/回退兼容）。
-      assert.ok(r.agent === a || r.agent === 'codex', a + ' 应解析为自身或回退 codex');
-      // 解析到 codex 时 launchArgs 首参必须为 --cd（确保不会拿 codex 用别的 agent 参数）
-      if (r.agent === 'codex') assert.equal(launchArgs(r.config, { cwd: 'W' })[0], '--cd', a + ' 回退后按 codex 拼参数');
-    }
-    // 作者实测过的 agent 标 verified=true（100%确认支持）；未实测的为占位（verified 缺省 falsy）
-    for (const id of ['codex', 'pi', 'openclaw']) assert.equal(AGENTS[id].verified, true, id + ' 应标记为作者实测(verified=true)');
-    for (const id of ['claude', 'cursor', 'qwen', 'zcode', 'aider', 'opencode', 'codebuddy']) assert.ok(!AGENTS[id].verified, id + ' 未实测应为占位(无 verified)');
+    assert.throws(() => resolveAgent(), /codex/i);
     process.env.ORCH_AGENT = 'codex';
-    assert.equal(resolveAgent().agent, 'codex', 'codex 本体');
-    delete process.env.ORCH_STATE_DIR;
-    process.env.CODEX_HOME = 'C:/other-user/.codex';
-    assert.ok(agentCacheFile().replace(/\\/g, '/').startsWith('C:/other-user/.codex'), 'agentCacheFile 应随 CODEX_HOME');
+    assert.equal(resolveAgent().agent, 'codex');
   } finally {
-    if (prevState === undefined) delete process.env.ORCH_STATE_DIR; else process.env.ORCH_STATE_DIR = prevState;
-    if (prevHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prevHome;
-    if (prevAgent === undefined) delete process.env.ORCH_AGENT; else process.env.ORCH_AGENT = prevAgent;
-    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+    if (prev === undefined) delete process.env.ORCH_AGENT; else process.env.ORCH_AGENT = prev;
   }
 });
 

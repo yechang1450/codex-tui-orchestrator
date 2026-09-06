@@ -27,15 +27,15 @@
  *   ORCH_STATE_DIR (default: $CODEX_HOME/orchestrator) — 本插件的稳定运行/状态目录（registry/锁 等）。
  *   ORCH_SESSION_DIR (default: $CODEX_HOME/sessions)   — 会话 rollout 目录。
  *   ORCH_SUPERPOWERS_CACHE_DIR (optional)      — 覆盖 superpowers 插件缓存目录（不同宿主/市场路径适配）。
- *   ORCH_AGENT     (default: codex)            — 选 agent：codex|claude|opencode|cursor|qwen|pi|zcode|aider|codebuddy|openclaw；未装对应 CLI 自动回退 codex。
+ *   ORCH_AGENT     — host identity; only Codex adapter is implemented. No fallback.
  *   CODEX_EXE      (default: auto-detect from PATH or a common user install).
  *   PYTHON         (default: `python`; prepended to the spawned window PATH).
- *   ORCH_MODEL     (default: auto — reads host config.toml `model`; falls back to deepseek-v4-flash)
- *   ORCH_EFFORT    (default: xhigh)
+ *   ORCH_MODEL     — optional explicit override; otherwise CLI configuration.
+ *   ORCH_EFFORT    — optional explicit override; otherwise CLI configuration.
  *
  * 通用化设计：本插件对【不同 Windows 设备 / 不同用户名 / 不同 agent】自适应——
  *   ① 所有敏感路径都走 CODEX_HOME|ORCH_STATE_DIR|ORCH_SESSION_DIR（可用环境变量覆盖），绝不硬编码 "C:\Users\<user>\.codex"；
- *   ② agent 通过 ORCH_AGENT + CLAUDE/OPENCODE/CURSOR/QWEN/PI/ZCODE/AIDER/CODEBUDDY/OPENCLAW 探测覆盖主流 agent（未装对应 CLI 自动回退 codex）；
+ *   ② Host identity and native executable are verified; missing/unsupported hosts fail closed.
  *   ③ 任何外部宿主（GUI/CLI/别的 agent）只需在进程环境注入上述可变配置即可运行，无需改本插件源码。
  *
  * Encoding: every text read/write is explicit UTF-8. The window launcher sets
@@ -114,35 +114,19 @@ function readAuthPrompt() {
 }
 
 const WORKSPACE = resolveWorkspace();
-let _codexPathCache;   // memoize: codex 路径检测只做一次（须在 CODEX 初始化前声明，避免 TDZ）
-const CODEX = process.env.CODEX_EXE || defaultCodexPath();
+const AGENT = resolveAgent();
+const CODEX = AGENT.config.bin;
 // PowerShell 单引号字符串内嵌路径：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
 const WORKSPACE_Q = WORKSPACE.replace(/'/g, "''");
 const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
-// 模型/推理力度：ORCH_MODEL/ORCH_EFFORT 环境变量优先，否则用默认 deepseek-v4-flash / max。
-// 值内不能含空格（下文透传成 CLI 参数 -m/-c，空格会拆散成多个参数破坏解析）。
-// 注：codex CLI(TUI 窗) 默认 flash/max；只有 codex GUI 主机才用 config.toml 的 vision-exp/high，二者勿混淆。
-// 通用化/对齐: TUI 窗 model 默认**自动取发起对话(主对话/GUI)同款 LLM**——读 $CODEX_HOME/config.toml 的
-// model 字段（失败回退 deepseek-v4-flash）；effort 默认 xhigh（用户指定），仅在显式设 ORCH_EFFORT 时被覆盖。
-function readConfigModel() {
-  try {
-    const p = path.join(CODEX_HOME, "config.toml");
-    if (!existsSync(p)) return "";
-    const txt = readFileSync(p, "utf8");
-    const m = txt.match(/^\s*model\s*=\s*"([^"]+)"\s*$/m);
-    return m ? String(m[1]).trim() : "";
-  } catch { return ""; }
-}
-const MODEL = process.env.ORCH_MODEL || readConfigModel() || "deepseek-v4-flash";
-const EFFORT = process.env.ORCH_EFFORT || "xhigh";
-// —— Agent 抽象（v0.0.1）：识别当前 agent（默认 codex）+ 本地 cache 其专属配置 ——
-// 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
-// 但允许用户收紧（ORCH_SANDBOX=workspace-write / read-only，ORCH_APPROVAL=on-request）。
-const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
-const APPROVAL = process.env.ORCH_APPROVAL || "never";
-const AGENT = resolveAgent();
-const AGENT_BIN = (AGENT.config && AGENT.config.bin) || "codex";
+// Leave model selection to the host CLI unless explicitly overridden.
+const MODEL = process.env.ORCH_MODEL || undefined;
+const EFFORT = process.env.ORCH_EFFORT || undefined;
+// A caller may pass its effective permissions; never elevate implicitly.
+const SANDBOX = process.env.ORCH_SANDBOX || "workspace-write";
+const APPROVAL = process.env.ORCH_APPROVAL || "on-request";
+const AGENT_BIN = AGENT.config.bin;
 const AGENT_BIN_Q = String(AGENT_BIN).replace(/'/g, "''");
 // exec 一次性模式参数：config 已含 approval_policy=never/sandbox，仅剔除交互专用 -a 并在最前加 exec。
 // 模型/推理力度透传给窗内 codex：MODEL/EFFORT 非空且值不含空格时才追加 -m / -c（-c 用 model_reasoning_effort=<EFFORT>）。
@@ -154,7 +138,7 @@ function appendModelEffortArgs(arr, agentConfig) {
   const id = String(cfg.id || "codex");
   const modelEnv = cfg.modelEnv || "ORCH_MODEL";
   const effortEnv = cfg.effortEnv || "ORCH_EFFORT";
-  // codex 用模块级 MODEL/EFFORT（自动读 config.toml 主对话 model、effort 默认 xhigh）；非 codex 只用自身 env。
+  // Explicit overrides only; otherwise the selected CLI owns configuration.
   const model = process.env[modelEnv] || (id === "codex" ? MODEL : "");
   const effort = process.env[effortEnv] || (id === "codex" ? EFFORT : "");
   if (id !== "codex") {
@@ -225,19 +209,6 @@ function wtAvailable() {
 // propagates to the spawned window processes, instead of only an implicit code default.
 process.env.ORCH_TUI = process.env.ORCH_TUI || "wt";
 const TUI_MODE = String(process.env.ORCH_TUI).toLowerCase();
-function defaultCodexPath() {
-  if (_codexPathCache !== undefined) return _codexPathCache;
-  if (process.platform !== "win32") { _codexPathCache = "codex"; return "codex"; }
-  // A handful of common install locations; scan a couple of npm prefixes too.
-  const cands = ["codex"];
-  for (const c of cands) {
-    try {
-      const r = spawnSync(c, ["--version"], { shell: false, encoding: "utf8", timeout: 8000 });
-      if (!r.error && r.status === 0) { _codexPathCache = c; return c; }
-    } catch { /* keep trying */ }
-  }
-  _codexPathCache = "codex"; return "codex";
-}
 const codex = new Codex({ codexPathOverride: CODEX });
 // 让出 CPU：orchestrator（含拆解线程）以 BelowNormal 优先级跑，不抢占系统/其它任务（限速=80% 性能，慢慢跑）。
 try { process.setPriority(6); console.log("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }
@@ -751,31 +722,7 @@ function armEnforcement() {
 }
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
 // 检测 codex 可执行；找不到则用 node22 的 npm 全局安装 @openai/codex；仍不行则报错中止。
-function ensureCodexCli() {
-  const cands = [
-    process.env.CODEX_EXE,
-  ].filter(Boolean);
-  for (const c of cands) { try { if (existsSync(c)) return c; } catch { /* ignore */ } }
-  // 从 PATH 解析（跨机器/用户，不写死本机安装路径）
-  const firstOnPath = (cmd) => {
-    try {
-      const w = spawnSync("where.exe", [cmd], { encoding: "utf8", shell: false });
-      if (w.status === 0 && String(w.stdout || "").trim()) return String(w.stdout).split(/\r?\n/)[0].trim();
-    } catch { /* ignore */ }
-    return null;
-  };
-  const pathCodex = firstOnPath("codex");
-  if (pathCodex) return pathCodex;
-  const npm = firstOnPath("npm") || "npm";
-  try {
-    console.log("[orchestrator] codex CLI not found -> installing @openai/codex via npm (may take a bit)...");
-    const inst = spawnSync(npm, ["install", "-g", "@openai/codex"], { encoding: "utf8", shell: false, timeout: 180000 });
-    console.log("[orchestrator] npm install exit=" + inst.status + " " + String(inst.stderr || inst.stdout || "").slice(0, 200));
-    const after = firstOnPath("codex");
-    if (after) return after;
-  } catch { /* ignore */ }
-  throw new Error("[orchestrator] FATAL: codex CLI not available and auto-install failed. Cannot run --run-windows.");
-}
+function ensureCodexCli() { return AGENT.config.bin; }
 // ---------------------------------------------------------------------------
 // Superpowers 插件检测（用户要求：运行环境检测里加入对 Superpowers plugin 的检测）。
 // 若 Superpowers 可正常使用 -> 让 Superpowers 参与到后续流程（并发分析 + 并发干活，强强联合）；
@@ -838,26 +785,9 @@ function checkDiskSpace(opts = {}) {
 // ---------------------------------------------------------------------------
 // Visible window (REAL popup, via cmd /c start — reliably opens a new console)
 // ---------------------------------------------------------------------------
-// 自动信任弹窗工作区（codex CLI 0.153.2 在未信任目录会弹「Do you trust this directory?」，使窗内 agent 卡在
-// 信任选择而不干活）。在 codex 启动前把该目录写入 config.toml [projects.'<dir>'] trust_level="trusted"，
-// 等价于自动选「Yes, continue」；幂等（已信任则跳过），后续该目录弹窗不再提示。
-function ensureProjectTrust(dir) {
-  if (!dir) return;
-  try {
-    const cfg = path.join(CODEX_HOME, "config.toml");
-    if (!existsSync(cfg)) return;
-    let txt = readFileSync(cfg, "utf8");
-    const lit = String(dir).replace(/'/g, "''");
-    const key = "[projects.'" + lit + "']";
-    if (txt.includes(key)) return; // 已信任，跳过
-    const block = "\n" + key + "\ntrust_level = \"trusted\"\n";
-    txt = txt.replace(/\s*$/, "") + block;
-    writeFileSync(cfg, txt, "utf8");
-    console.log("[orchestrator] trusted codex TUI workspace: " + dir);
-  } catch { /* ignore */ }
-}
+// Trust configuration is owned by the user, never rewritten here.
 function spawnVisibleWindow(lp, title) {
-  ensureProjectTrust(WORKSPACE);
+  // Workspace trust remains under the host/user configuration.
   // Prefer Windows Terminal: it natively supports IME/TSF composition, so the Codex
   // TUI keeps accepting Microsoft 拼音/日语 IME switches (fixes "偶发失效"). Codex
   // runs the same launcher (UTF-8 + chcp 65001), just hosted in a WT ConPTY.
@@ -1998,6 +1928,12 @@ async function classifyExecutionMode(request) {
 }
 async function main() {
   const mode = process.argv[2];
+  if (mode === "--doctor") {
+    console.log(JSON.stringify({ agent: AGENT.agent, cli: CODEX, workspace: WORKSPACE,
+      stateDir: STATE_DIR, terminal: wtAvailable() ? "wt" : "conhost",
+      args: AGENT_ARGS_LIST, interactiveOutput: "inherited" }, null, 2));
+    return;
+  }
   if (mode === "--plan") {
     const request = process.argv.slice(3).join(" ");
     checkDiskSpace({ warnOnly: true });
