@@ -20,14 +20,22 @@ function cacheDir() {
 }
 function cacheFile() { return path.join(cacheDir(), '.agent-cache.json'); }
 
-// agent 描述表：native=true 走内置（codex 用 @openai/codex-sdk）；其余为占位，
-// 未安装对应 CLI 时 detect 返回 false -> 不可用，编排器自动只用可用项（不报错）。
+// agent 描述表：native=true 走内置（codex 用 @openai/codex-sdk）；其余为**占位**（探测/回退级别），
+// 未安装对应 CLI 时 detect 返回 false -> 不可用，编排器自动回退 codex（不报错）。
+// 甄别后的**市面主流编码终端 agent**：codex/claude/cursor/qwen/pi/zcode/aider/opencode。
+// （已移除易混的 gemini(与 google LLM 同名、2026 有迁移 Antigravity) 与 aichat(仅终端聊天工具、非编码 agent)。
+//  workbudy/codebuddy=腾讯、openclaw=agent gateway 等非纯 CLI 编码 agent，暂不作为可检测项。）
 export const AGENTS = {
   codex: { id: 'codex', label: 'Codex CLI', detectBin: ['codex'], modelEnv: 'ORCH_MODEL', effortEnv: 'ORCH_EFFORT', completionMarker: '__ORCH_DONE__', native: true },
   claude: { id: 'claude', label: 'Claude Code', detectBin: ['claude'], modelEnv: 'ANTHROPIC_MODEL', effortEnv: 'ORCH_CLAUD_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
-  gemini: { id: 'gemini', label: 'Gemini CLI', detectBin: ['gemini'], modelEnv: 'GEMINI_MODEL', effortEnv: 'ORCH_GEMINI_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
   opencode: { id: 'opencode', label: 'OpenCode', detectBin: ['opencode'], modelEnv: 'OPENCODE_MODEL', effortEnv: 'ORCH_OPENCODE_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
-  aichat: { id: 'aichat', label: 'aichat', detectBin: ['aichat'], modelEnv: 'AICHAT_MODEL', effortEnv: 'ORCH_AICHAT_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  cursor: { id: 'cursor', label: 'Cursor CLI', detectBin: ['cursor-agent', 'cursor'], modelEnv: 'CURSOR_MODEL', effortEnv: 'ORCH_CURSOR_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  qwen: { id: 'qwen', label: 'Qwen Code', detectBin: ['qwen'], modelEnv: 'QWEN_MODEL', effortEnv: 'ORCH_QWEN_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  pi: { id: 'pi', label: 'Pi (pi-coding-agent)', detectBin: ['pi'], modelEnv: 'PI_MODEL', effortEnv: 'ORCH_PI_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  zcode: { id: 'zcode', label: 'ZCode CLI', detectBin: ['zcode-cli', 'zcode'], modelEnv: 'ZCODE_MODEL', effortEnv: 'ORCH_ZCODE_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  aider: { id: 'aider', label: 'Aider', detectBin: ['aider'], modelEnv: 'AIDER_MODEL', effortEnv: 'ORCH_AIDER_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  codebuddy: { id: 'codebuddy', label: 'CodeBuddy (WorkBuddy)', detectBin: ['codebuddy'], modelEnv: 'CODEBUDDY_MODEL', effortEnv: 'ORCH_CODEBUDDY_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
+  openclaw: { id: 'openclaw', label: 'OpenClaw (gateway)', detectBin: ['openclaw'], modelEnv: 'OPENCLAW_MODEL', effortEnv: 'ORCH_OPENCLAW_EFFORT', completionMarker: '__ORCH_DONE__', native: false },
 };
 
 function readCache() {
@@ -73,16 +81,22 @@ export function resolveAgent() {
 }
 
 export function agentCacheFile() { return cacheFile(); }
-// 主流 agent 通用启动参数（按 agent 各自 CLI 拼装；codex 保持原样）
+// 主流 agent 通用启动参数（按 agent 各自 CLI 拼装；codex 保持原样）。
+// 注意：pi/codebuddy 无 --cwd，工作目录由 launcher 先行 Set-Location 控制；这里只放 agent 自身的 CLI 参数。
 export function launchArgs(agentConfig, o = {}) {
   const cwd = o.cwd || "";
   const approval = o.approval || "never";
   const sandbox = o.sandbox || "danger-full-access";
   switch (String(agentConfig.id || "")) {
     case "claude": return ["--cwd", cwd];
-    case "gemini": return ["-c", cwd];
+    case "cursor": return ["--cwd", cwd];
+    case "qwen": return ["--cwd", cwd];
+    case "pi": return [];
+    case "zcode": return ["--cwd", cwd];
+    case "aider": return ["--cwd", cwd];
     case "opencode": return ["--cwd", cwd];
-    case "aichat": return ["-c", cwd, "-s"];
+    case "codebuddy": return [];
+    case "openclaw": return ["agent", "--local"];
     case "codex":
     default: return ["--cd", cwd, "-a", approval, "--sandbox", sandbox];
   }

@@ -1008,13 +1008,19 @@ test('通用化: 主流 agent 探测/回退 codex + agentCacheFile 随 ORCH_STAT
   try {
     const ag = await import(importUrl(path.join(scripts, 'agent.mjs')));
     const { AGENTS, resolveAgent, launchArgs, agentCacheFile } = ag;
-    for (const id of ['codex', 'claude', 'gemini', 'opencode', 'aichat']) assert.ok(AGENTS[id], id + ' 应在 AGENTS');
+    for (const id of ['codex', 'claude', 'opencode', 'cursor', 'qwen', 'pi', 'zcode', 'aider', 'codebuddy', 'openclaw']) assert.ok(AGENTS[id], id + ' 应在 AGENTS');
     assert.ok(agentCacheFile().startsWith(tmp), 'agentCacheFile 应随 ORCH_STATE_DIR');
-    for (const a of ['claude', 'gemini', 'opencode', 'aichat', 'unknown']) {
+    process.env.ORCH_AGENT = 'unknown';
+    assert.equal(resolveAgent().agent, 'codex', 'unknown -> 回退 codex');
+    assert.equal(launchArgs(resolveAgent().config, { cwd: 'W' })[0], '--cd', '回退后按 codex 拼参数');
+    for (const a of Object.keys(AGENTS)) {
+      if (a === 'codex') continue;
       process.env.ORCH_AGENT = a;
       const r = resolveAgent();
-      assert.equal(r.agent, 'codex', a + ' 未装 -> 回退 codex');
-      assert.equal(launchArgs(r.config, { cwd: 'W' })[0], '--cd', '回退后按 codex 拼参数');
+      // 已装 -> 解析为自身；未装 -> 回退 codex。二者都合法（探测/回退兼容）。
+      assert.ok(r.agent === a || r.agent === 'codex', a + ' 应解析为自身或回退 codex');
+      // 解析到 codex 时 launchArgs 首参必须为 --cd（确保不会拿 codex 用别的 agent 参数）
+      if (r.agent === 'codex') assert.equal(launchArgs(r.config, { cwd: 'W' })[0], '--cd', a + ' 回退后按 codex 拼参数');
     }
     process.env.ORCH_AGENT = 'codex';
     assert.equal(resolveAgent().agent, 'codex', 'codex 本体');
