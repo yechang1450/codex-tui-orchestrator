@@ -985,6 +985,33 @@ test('computeMaxWindows: 内存上限/下限边界', () => {
   assert.equal(computeMaxWindows(64), 33, '64G -> round(32.768) -> 33');
   assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
 });
+test('通用化: 主流 agent 探测/回退 codex + agentCacheFile 随 ORCH_STATE_DIR/CODEX_HOME 动态', async () => {
+  const tmp = path.join(os.tmpdir(), 'orch-agcache-' + Math.random().toString(36).slice(2));
+  const prevState = process.env.ORCH_STATE_DIR, prevHome = process.env.CODEX_HOME, prevAgent = process.env.ORCH_AGENT;
+  process.env.ORCH_STATE_DIR = tmp;
+  try {
+    const ag = await import(importUrl(path.join(scripts, 'agent.mjs')));
+    const { AGENTS, resolveAgent, launchArgs, agentCacheFile } = ag;
+    for (const id of ['codex', 'claude', 'gemini', 'opencode', 'aichat']) assert.ok(AGENTS[id], id + ' 应在 AGENTS');
+    assert.ok(agentCacheFile().startsWith(tmp), 'agentCacheFile 应随 ORCH_STATE_DIR');
+    for (const a of ['claude', 'gemini', 'opencode', 'aichat', 'unknown']) {
+      process.env.ORCH_AGENT = a;
+      const r = resolveAgent();
+      assert.equal(r.agent, 'codex', a + ' 未装 -> 回退 codex');
+      assert.equal(launchArgs(r.config, { cwd: 'W' })[0], '--cd', '回退后按 codex 拼参数');
+    }
+    process.env.ORCH_AGENT = 'codex';
+    assert.equal(resolveAgent().agent, 'codex', 'codex 本体');
+    delete process.env.ORCH_STATE_DIR;
+    process.env.CODEX_HOME = 'C:/other-user/.codex';
+    assert.ok(agentCacheFile().replace(/\\/g, '/').startsWith('C:/other-user/.codex'), 'agentCacheFile 应随 CODEX_HOME');
+  } finally {
+    if (prevState === undefined) delete process.env.ORCH_STATE_DIR; else process.env.ORCH_STATE_DIR = prevState;
+    if (prevHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = prevHome;
+    if (prevAgent === undefined) delete process.env.ORCH_AGENT; else process.env.ORCH_AGENT = prevAgent;
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
+  }
+});
 
 test('levelWaves: 循环依赖/无依赖/空输入', () => {
   const cyc = [

@@ -12,9 +12,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 通用化：agent 配置缓存放到稳定家目录（ORCH_STATE_DIR / CODEX_HOME），绝不落到插件脚本目录
 // （插件目录会被 cachebuster 升级/重装整体清掉，且多用户/多设备下插件目录可能只读）。
 // 优先 ORCH_STATE_DIR，其次 CODEX_HOME/orchestrator，最后回退 ~/.codex/orchestrator。
-const CACHE_DIR = process.env.ORCH_STATE_DIR
-  || (process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'orchestrator') : path.join(os.homedir(), '.codex', 'orchestrator'));
-const CACHE_FILE = path.join(CACHE_DIR, '.agent-cache.json');
+// 关键：按需读取（调用时读 env），与 orchestrate-sdk 的 resolveCodexHome 一致——跨用户/跨宿主下
+// 即使 env 在 import 之后才被外部注入，也能取到正确路径，绝不固化于模块加载。
+function cacheDir() {
+  return process.env.ORCH_STATE_DIR
+    || (process.env.CODEX_HOME ? path.join(process.env.CODEX_HOME, 'orchestrator') : path.join(os.homedir(), '.codex', 'orchestrator'));
+}
+function cacheFile() { return path.join(cacheDir(), '.agent-cache.json'); }
 
 // agent 描述表：native=true 走内置（codex 用 @openai/codex-sdk）；其余为占位，
 // 未安装对应 CLI 时 detect 返回 false -> 不可用，编排器自动只用可用项（不报错）。
@@ -27,10 +31,10 @@ export const AGENTS = {
 };
 
 function readCache() {
-  try { return JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(cacheFile(), 'utf8')); } catch { return {}; }
 }
 function writeCache(c) {
-  try { fs.mkdirSync(CACHE_DIR, { recursive: true }); fs.writeFileSync(CACHE_FILE, JSON.stringify(c, null, 2) + '\n', 'utf8'); } catch {}
+  try { fs.mkdirSync(cacheDir(), { recursive: true }); fs.writeFileSync(cacheFile(), JSON.stringify(c, null, 2) + '\n', 'utf8'); } catch {}
 }
 
 function binAvailable(bin) {
@@ -68,7 +72,7 @@ export function resolveAgent() {
   return { agent: id, config: resolved };
 }
 
-export function agentCacheFile() { return CACHE_FILE; }
+export function agentCacheFile() { return cacheFile(); }
 // 主流 agent 通用启动参数（按 agent 各自 CLI 拼装；codex 保持原样）
 export function launchArgs(agentConfig, o = {}) {
   const cwd = o.cwd || "";
