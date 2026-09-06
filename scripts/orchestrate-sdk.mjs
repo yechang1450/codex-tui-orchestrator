@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * codex-orchestrator — split a multi-part request into safe parallel blocks.
+ * agent-tui-orchestrator — split a multi-part request into safe parallel blocks.
  *
  * Classification axis is "would running two tasks AT THE SAME TIME break something?"
  *   - YES  -> linked  -> ONE block, strictly serialized (a queue), one window/thread.
@@ -17,7 +17,7 @@
  *                             streams structured events, auto-retries a failed block once,
  *                             writes temp/win-summary.json with per-block results). For pure
  *                             automation only -- AGENTS.md forbids headless --run for real changes.
- *   --spawn <title> <md>    : open ONE real visible codex-interactive window that runs the given
+ *   --spawn <title> <md>    : open ONE real visible agent-interactive window that runs the given
  *                             prompt/`prompt file`, with a real popup terminal (cmd /c start).
  *                             Best for when you want to WATCH a specific task.
  *
@@ -27,15 +27,15 @@
  *   ORCH_STATE_DIR (default: $CODEX_HOME/orchestrator) — 本插件的稳定运行/状态目录（registry/锁 等）。
  *   ORCH_SESSION_DIR (default: $CODEX_HOME/sessions)   — 会话 rollout 目录。
  *   ORCH_SUPERPOWERS_CACHE_DIR (optional)      — 覆盖 superpowers 插件缓存目录（不同宿主/市场路径适配）。
- *   ORCH_AGENT     (default: codex)            — 选 agent：codex|claude|gemini|opencode|aichat；未装对应 CLI 自动回退 codex。
+ *   ORCH_AGENT     (default: codex)            — 选 agent：codex|claude|opencode|cursor|qwen|pi|zcode|aider|codebuddy|openclaw；未装对应 CLI 自动回退 codex。
  *   CODEX_EXE      (default: auto-detect from PATH or a common user install).
  *   PYTHON         (default: `python`; prepended to the spawned window PATH).
- *   ORCH_MODEL     (default: deepseek-v4-flash-vision-exp)
- *   ORCH_EFFORT    (default: high)
+ *   ORCH_MODEL     (default: auto — reads host config.toml `model`; falls back to deepseek-v4-flash)
+ *   ORCH_EFFORT    (default: xhigh)
  *
  * 通用化设计：本插件对【不同 Windows 设备 / 不同用户名 / 不同 agent】自适应——
  *   ① 所有敏感路径都走 CODEX_HOME|ORCH_STATE_DIR|ORCH_SESSION_DIR（可用环境变量覆盖），绝不硬编码 "C:\Users\<user>\.codex"；
- *   ② agent 通过 ORCH_AGENT + CLAUDE/GEMINI/OPENCODE/AICHAT 探测覆盖主流 agent（未装对应 CLI 自动回退 codex）；
+ *   ② agent 通过 ORCH_AGENT + CLAUDE/OPENCODE/CURSOR/QWEN/PI/ZCODE/AIDER/CODEBUDDY/OPENCLAW 探测覆盖主流 agent（未装对应 CLI 自动回退 codex）；
  *   ③ 任何外部宿主（GUI/CLI/别的 agent）只需在进程环境注入上述可变配置即可运行，无需改本插件源码。
  *
  * Encoding: every text read/write is explicit UTF-8. The window launcher sets
@@ -168,7 +168,7 @@ function appendModelEffortArgs(arr, agentConfig) {
   return out;
 }
 // 生成 PowerShell 数组字面量 @('a','b',...)——每个参数独立元素, 含空格/单引号的值也保持为一个参数,
-// 绝不拆裂。用于 & codex @codexArgs 安全传参（替代 AGENT_ARGS.split(" ") 会裂开含空格路径的旧式拼接）。
+// 绝不拆裂。用于 & codex @agentArgs 安全传参（替代 AGENT_ARGS.split(" ") 会裂开含空格路径的旧式拼接）。
 export function buildPsArrayLit(args) {
   const a = Array.isArray(args) ? args : [];
   if (!a.length) return "@()";
@@ -1078,7 +1078,7 @@ function isOrchestratorSelfMod(text) {
 function writeInteractiveLauncher(title, prompt, sfx) {
   const s = safe(title) + (sfx ? "-" + sfx : "");
   mkdirSync(TMP, { recursive: true });
-  const pf = path.join(TMP, `codex-win-${s}.md`);
+  const pf = path.join(TMP, `agent-win-${s}.md`);
   const lp = path.join(TMP, `win-launch-${s}.ps1`);
   const pidf = path.join(TMP, `window-${s}.pid`);
   const rf = path.join(TMP, `win-${s}.result.json`);
@@ -1279,14 +1279,14 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "} -ArgumentList $token, $PID, $resultFile",
     "$code = 1",
     "try {",
-    "  $codexArgs = " + buildPsArrayLit(AGENT_ARGS_LIST) + " + $p",
+    "  $agentArgs = " + buildPsArrayLit(AGENT_ARGS_LIST) + " + $p",
     "  # 会话级容错：codex 若异常退出(无最终汇报)则在同一窗内自动重跑一次，避免并发时 provider/会话瞬时失败造成无输出；不重复弹窗、不二次执行。",
     "  $attempt = 0",
     "  $rep = ''",
     "  $wdDone = $false",
     "  while ($attempt -lt 2) {",
     "    $attempt++",
-    "    & '" + AGENT_BIN_Q + "' @codexArgs",
+    "    & '" + AGENT_BIN_Q + "' @agentArgs",
     "    $code = $LASTEXITCODE",
     "    $rdir = $env:ORCH_SDIR",
     "    $rep = Get-LastReport -dir $rdir -tok $token",
@@ -1880,7 +1880,7 @@ function pidFileOfTransient(f) {
   if ((m = f.match(/^win-(.*)\.result\.json\.self-closed$/))) return "window-" + m[1] + ".pid";
   if ((m = f.match(/^win-(.*)\.result\.json$/))) return "window-" + m[1] + ".pid";
   if ((m = f.match(/^win-launch-(.*)\.ps1$/))) return "window-" + m[1] + ".pid";
-  if ((m = f.match(/^codex-win-(.*)\.md$/))) return "window-" + m[1] + ".pid";
+  if ((m = f.match(/^agent-win-(.*)\.md$/))) return "window-" + m[1] + ".pid";
   if ((m = f.match(/^win-(.*)\.log$/))) return "window-" + m[1] + ".pid";
   return null;
 }
@@ -1899,7 +1899,7 @@ function staleTransientFiles() {
   }
   for (const f of names) {
     const p = path.join(TMP, f);
-    if (!/^(codex-win-.*\.md|win-launch-.*\.ps1|win-.*\.(result\.json|log)|window-.*\.pid(\.self-closed)?|win-.*\.result\.json\.self-closed)$/.test(f)) continue;
+    if (!/^(agent-win-.*\.md|win-launch-.*\.ps1|win-.*\.(result\.json|log)|window-.*\.pid(\.self-closed)?|win-.*\.result\.json\.self-closed)$/.test(f)) continue;
     const pidf = pidFileOfTransient(f);
     if (!pidf) continue;
     try {
@@ -1961,7 +1961,7 @@ function showStatus(readonly) {
   const before = locks.length;
   locks = locks.filter((l) => { const bw = alive.find((w) => w.title === l.blockedBy); return !!bw; });
   if (!readonly && locks.length !== before) { updateLocks(() => { const cur = loadJson(LOCK_REG, []); return cur.filter((l) => { const bw = (loadWindows()).find((w) => w.title === l.blockedBy); return !!bw; }); }); console.log("released " + (before - locks.length) + " lock(s) whose window closed"); }
-  console.log("=== alive codex TUI windows ===");
+  console.log("=== alive agent TUI windows ===");
   for (const w of alive) console.log("  [" + w.title + "] keys=" + (w.keys || []).join(","));
   if (!alive.length) console.log("  (none)");
   console.log("=== pending window reservations (mid-popup) ===");

@@ -3,7 +3,7 @@
  * agent-tui-orchestrator-force — technical enforcement gate for agent-tui-orchestrator.
  *
  * The ONLY sanctioned path for REAL execution (write / build / install / test / restart / any
- * command that changes state) is a real, visible, interactive Codex TUI window launched by
+ * command that changes state) is a real, visible, interactive agent TUI window launched by
  * `--run-windows`. This guard makes that a *checkable invariant*:
  *
  *   - `--enable`  : arm enforcement (write the marker). Once armed, real-execution kinds are
@@ -142,14 +142,14 @@ function runCli() {
       }
       console.log(
         "REFUSED: ORCH_WINDOW=1 but no live registered orchestration window (orchestrator-windows.json). " +
-          "The env var alone is not accepted — it may be forged. Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive Codex TUI window)."
+          "The env var alone is not accepted — it may be forged. Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
       );
       process.exit(1);
     }
     if (realKinds.has(kind)) {
       console.log(
         "REFUSED: real execution ('" + kind + "') from a NON-orchestrator context. " +
-          "Route it through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive Codex TUI window)."
+          "Route it through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
       );
       process.exit(1);
     }

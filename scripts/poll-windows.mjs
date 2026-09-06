@@ -57,11 +57,11 @@ async function aliveCount() {
   try {
     // --readonly：只读查询，不释放/改写锁，避免与运行中的编排器竞态。
     const { stdout } = await execFileP(process.execPath, [SDK, "--status", "--readonly"], { encoding: "utf8", timeout: 15000 });
-    // count lines like "  [B1:..." under the "alive codex TUI windows" section
+    // count lines like "  [B1:..." under the "alive agent TUI windows" section
     const lines = String(stdout || "").split(/\r?\n/);
     let inAlive = false, n = 0, sawHeader = false;
     for (const l of lines) {
-      if (/=== alive codex TUI windows ===/.test(l)) { inAlive = true; sawHeader = true; continue; }
+      if (/=== alive agent TUI windows ===/.test(l)) { inAlive = true; sawHeader = true; continue; }
       if (/=== pending locks/.test(l)) break;
       if (inAlive && /^\s*\[/.test(l)) n++;
     }

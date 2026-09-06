@@ -391,7 +391,7 @@ test('hygiene: pidFileOfTransient maps every artifact family to its pid file', (
   assert.equal(pidFileOfTransient('window-B1-x.pid'), 'window-B1-x.pid');
   assert.equal(pidFileOfTransient('window-B1-x.pid.self-closed'), 'window-B1-x.pid');
   assert.equal(pidFileOfTransient('win-launch-B1-x.ps1'), 'window-B1-x.pid');
-  assert.equal(pidFileOfTransient('codex-win-B1-x.md'), 'window-B1-x.pid');
+  assert.equal(pidFileOfTransient('agent-win-B1-x.md'), 'window-B1-x.pid');
   assert.equal(pidFileOfTransient('win-B1-x.result.json'), 'window-B1-x.pid');
   assert.equal(pidFileOfTransient('win-B1-x.result.json.self-closed'), 'window-B1-x.pid');
   assert.equal(pidFileOfTransient('win-B1-x.log'), 'window-B1-x.pid');
@@ -400,7 +400,7 @@ test('hygiene: pidFileOfTransient maps every artifact family to its pid file', (
 test('hygiene: staleTransientFiles keeps dead artifacts removable but protects live pid families', () => {
   const d = path.join(wsDir, 'temp');
   fs.mkdirSync(d, { recursive: true });
-  const dead = { pid: 'window-dead.pid', launch: 'win-launch-dead.ps1', prompt: 'codex-win-dead.md', result: 'win-dead.result.json' };
+  const dead = { pid: 'window-dead.pid', launch: 'win-launch-dead.ps1', prompt: 'agent-win-dead.md', result: 'win-dead.result.json' };
   fs.writeFileSync(path.join(d, dead.pid), '99999999', 'utf8');
   fs.writeFileSync(path.join(d, dead.launch), '# dead', 'utf8');
   fs.writeFileSync(path.join(d, dead.prompt), 'dead', 'utf8');
@@ -409,7 +409,7 @@ test('hygiene: staleTransientFiles keeps dead artifacts removable but protects l
   fs.writeFileSync(path.join(d, dead.result + '.self-closed'), '1', 'ascii');
   fs.writeFileSync(path.join(d, 'window-live.pid'), String(process.pid), 'utf8');
   fs.writeFileSync(path.join(d, 'win-launch-live.ps1'), '# live', 'utf8');
-  fs.writeFileSync(path.join(d, 'codex-win-live.md'), 'live', 'utf8');
+  fs.writeFileSync(path.join(d, 'agent-win-live.md'), 'live', 'utf8');
   fs.writeFileSync(path.join(d, 'win-live.result.json'), '{"__DONE__":true}', 'utf8');
   fs.writeFileSync(path.join(d, 'win-live.result.json.self-closed'), '1', 'ascii');
   fs.writeFileSync(path.join(d, 'window-live.pid.self-closed'), '1', 'ascii');
@@ -606,7 +606,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // step that DELETES the result-file parent dir to simulate the plugin-upgrade wipe of the temp folder.
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@codexArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @codexArgs");
+  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @agentArgs");
   // Inject before the `& codex` invocation: remove the dir that holds $resultFile (the vanished temp dir).
   ps = ps.replace(/& 'C:\/Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe'/g, "Remove-Item -LiteralPath (Split-Path -Parent $resultFile) -Recurse -Force -ErrorAction SilentlyContinue; & 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'");
   fs.writeFileSync(lp, ps, 'utf8');
@@ -659,7 +659,7 @@ $PID | Set-Content -LiteralPath '${codexPidFile}' -Encoding UTF8
 while($true){Start-Sleep -Seconds 600}`);
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@codexArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @codexArgs");
+  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
@@ -796,7 +796,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // Patch the generated launcher so the "codex" is our fake interactive process (never self-exits).
   let ps = fs.readFileSync(lp, 'utf8');
   const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
-  ps = ps.replace(/&\s*'codex'\s*@codexArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @codexArgs");
+  ps = ps.replace(/&\s*'codex'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeCodex.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   // Simulate a STALE result from a prior window sharing this block path BEFORE the launcher runs.
   fs.writeFileSync(rf, '{"__EXIT__":0,"__DONE__":true,"__REPORT__":"STALE prior run"}', 'utf8');
@@ -954,14 +954,14 @@ test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', (
   assert.equal(keysOverlap([], ['file:D:/temp/a']), false);
   assert.equal(keysOverlap(['file:D:/temp/a'], []), false);
 });
-﻿test('runtime: launcher $codexArgs 用 buildPsArrayLit 数组字面量而非 AGENT_ARGS.split(" ")（含空格路径不再裂开）', () => {
+﻿test('runtime: launcher $agentArgs 用 buildPsArrayLit 数组字面量而非 AGENT_ARGS.split(" ")（含空格路径不再裂开）', () => {
   const { lp, pidf, pf } = writeInteractiveLauncher('psfix', 'PROMPT', 'fx');
   try {
     const body = fs.readFileSync(lp, 'utf8');
     // 必须用数组字面量方式（每参数独立元素），不能再用会裂开含空格路径的 split(" ") 字符串拼接
-    assert.ok(body.includes('$codexArgs = @('), 'launcher must build codexArgs as a PowerShell array literal');
+    assert.ok(body.includes('$agentArgs = @('), 'launcher must build agentArgs as a PowerShell array literal');
     assert.doesNotMatch(body, /AGENT_ARGS\.split\(" "\)/, 'launcher must NOT split AGENT_ARGS by space (would split space-containing values)');
-    assert.ok(body.includes("@('--cd'"), 'launcher must start codexArgs with @(--cd...) array literal');
+    assert.ok(body.includes("@('--cd'"), 'launcher must start agentArgs with @(--cd...) array literal');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } } }
 });
 ﻿
