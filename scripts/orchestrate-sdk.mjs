@@ -123,8 +123,19 @@ const PY = process.env.PYTHON || "python";
 // 模型/推理力度：ORCH_MODEL/ORCH_EFFORT 环境变量优先，否则用默认 deepseek-v4-flash / max。
 // 值内不能含空格（下文透传成 CLI 参数 -m/-c，空格会拆散成多个参数破坏解析）。
 // 注：codex CLI(TUI 窗) 默认 flash/max；只有 codex GUI 主机才用 config.toml 的 vision-exp/high，二者勿混淆。
-const MODEL = process.env.ORCH_MODEL || "deepseek-v4-flash";
-const EFFORT = process.env.ORCH_EFFORT || "max";
+// 通用化/对齐: TUI 窗 model 默认**自动取发起对话(主对话/GUI)同款 LLM**——读 $CODEX_HOME/config.toml 的
+// model 字段（失败回退 deepseek-v4-flash）；effort 默认 xhigh（用户指定），仅在显式设 ORCH_EFFORT 时被覆盖。
+function readConfigModel() {
+  try {
+    const p = path.join(CODEX_HOME, "config.toml");
+    if (!existsSync(p)) return "";
+    const txt = readFileSync(p, "utf8");
+    const m = txt.match(/^\s*model\s*=\s*"([^"]+)"\s*$/m);
+    return m ? String(m[1]).trim() : "";
+  } catch { return ""; }
+}
+const MODEL = process.env.ORCH_MODEL || readConfigModel() || "deepseek-v4-flash";
+const EFFORT = process.env.ORCH_EFFORT || "xhigh";
 // —— Agent 抽象（v0.0.1）：识别当前 agent（默认 codex）+ 本地 cache 其专属配置 ——
 // 窗内 Codex 的沙箱与审批策略：默认沿用"危险全访问 + 永不审批"（编排器需真执行），
 // 但允许用户收紧（ORCH_SANDBOX=workspace-write / read-only，ORCH_APPROVAL=on-request）。
@@ -143,8 +154,9 @@ function appendModelEffortArgs(arr, agentConfig) {
   const id = String(cfg.id || "codex");
   const modelEnv = cfg.modelEnv || "ORCH_MODEL";
   const effortEnv = cfg.effortEnv || "ORCH_EFFORT";
-  const model = process.env[modelEnv] || process.env.ORCH_MODEL || (id === "codex" ? "deepseek-v4-flash" : "");
-  const effort = process.env[effortEnv] || process.env.ORCH_EFFORT || (id === "codex" ? "max" : "");
+  // codex 用模块级 MODEL/EFFORT（自动读 config.toml 主对话 model、effort 默认 xhigh）；非 codex 只用自身 env。
+  const model = process.env[modelEnv] || (id === "codex" ? MODEL : "");
+  const effort = process.env[effortEnv] || (id === "codex" ? EFFORT : "");
   if (id !== "codex") {
     // 非 codex：模型/力度经 CLI 自身环境变量（ANTHROPIC_MODEL/GEMINI_MODEL 等）注入，绝不塞 codex 专属 argv。
     if (model && String(model).trim() && !/\s/.test(String(model))) { try { process.env[modelEnv] = String(model); } catch { /* ignore */ } }

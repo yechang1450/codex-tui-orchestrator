@@ -170,13 +170,19 @@ test('orchestrate-sdk conflictByKeys', () => {
   assert.equal(conflictByKeys(['file:C:/workspace/build/81', 'port:8081']), null);
 });
 test('orchestrate-sdk appendModelEffortArgs injects -m/-c and is space-guarded', () => {
-  // 默认 MODEL=deepseek-v4-flash / EFFORT=max（TUI 窗=codex CLI 默认；GUI 主机才用 config.toml 的 vision-exp/high）
-  const base = ['--cd', 'D:\\', '-a', 'never', '--sandbox', 'danger-full-access'];
-  const out = appendModelEffortArgs(base);
-  assert.deepEqual(out.slice(-4), ['-m', 'deepseek-v4-flash', '-c', 'model_reasoning_effort=max']);
-  assert.ok(out.includes('deepseek-v4-flash') && out.includes('model_reasoning_effort=max'));
-  // 值里含空格时不应被注入成 2 个参数（防 launcher 按空格拆散）：模型名 default 不含空格，故这里只测不含空格正常路径。
-  assert.ok(!/\s/.test('deepseek-v4-flash'), 'model value must contain no space (else launcher arg-split breaks it)');
+  // 显式设 env 保证确定性（默认已改为自动取 config.toml 主对话 model、effort 默认 xhigh，避免依赖宿主 config）。
+  const pm = process.env.ORCH_MODEL, pe = process.env.ORCH_EFFORT;
+  process.env.ORCH_MODEL = 'deepseek-v4-flash'; process.env.ORCH_EFFORT = 'max';
+  try {
+    const base = ['--cd', 'D:\\', '-a', 'never', '--sandbox', 'danger-full-access'];
+    const out = appendModelEffortArgs(base);
+    assert.deepEqual(out.slice(-4), ['-m', 'deepseek-v4-flash', '-c', 'model_reasoning_effort=max']);
+    assert.ok(out.includes('deepseek-v4-flash') && out.includes('model_reasoning_effort=max'));
+    assert.ok(!/\s/.test('deepseek-v4-flash'), 'model value must contain no space (else launcher arg-split breaks it)');
+  } finally {
+    if (pm === undefined) delete process.env.ORCH_MODEL; else process.env.ORCH_MODEL = pm;
+    if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
+  }
 });
 test('通用化: appendModelEffortArgs 对非 codex 走其 modelEnv/effortEnv、绝不注入 codex -m/-c', () => {
   const prevM = process.env.ANTHROPIC_MODEL, prevE = process.env.ORCH_CLAUD_EFFORT;
