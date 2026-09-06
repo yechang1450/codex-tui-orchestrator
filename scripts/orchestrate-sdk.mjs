@@ -135,10 +135,24 @@ const AGENT_BIN = (AGENT.config && AGENT.config.bin) || "codex";
 const AGENT_BIN_Q = String(AGENT_BIN).replace(/'/g, "''");
 // exec 一次性模式参数：config 已含 approval_policy=never/sandbox，仅剔除交互专用 -a 并在最前加 exec。
 // 模型/推理力度透传给窗内 codex：MODEL/EFFORT 非空且值不含空格时才追加 -m / -c（-c 用 model_reasoning_effort=<EFFORT>）。
-function appendModelEffortArgs(arr) {
+function appendModelEffortArgs(arr, agentConfig) {
   const out = [...arr];
-  if (MODEL && String(MODEL).trim() && !/\s/.test(String(MODEL))) out.push("-m", String(MODEL));
-  if (EFFORT && String(EFFORT).trim() && !/\s/.test(String(EFFORT))) out.push("-c", "model_reasoning_effort=" + String(EFFORT));
+  // 通用化：按 agent 各自的 modelEnv/effortEnv 取值（默认 codex 用 ORCH_MODEL/ORCH_EFFORT）；
+  // 只有 codex 才注入 codex 专属 -m/-c model_reasoning_effort=；非 codex 走 CLI 自身环境变量。
+  const cfg = agentConfig || { id: "codex", modelEnv: "ORCH_MODEL", effortEnv: "ORCH_EFFORT" };
+  const id = String(cfg.id || "codex");
+  const modelEnv = cfg.modelEnv || "ORCH_MODEL";
+  const effortEnv = cfg.effortEnv || "ORCH_EFFORT";
+  const model = process.env[modelEnv] || process.env.ORCH_MODEL || (id === "codex" ? "deepseek-v4-flash" : "");
+  const effort = process.env[effortEnv] || process.env.ORCH_EFFORT || (id === "codex" ? "max" : "");
+  if (id !== "codex") {
+    // 非 codex：模型/力度经 CLI 自身环境变量（ANTHROPIC_MODEL/GEMINI_MODEL 等）注入，绝不塞 codex 专属 argv。
+    if (model && String(model).trim() && !/\s/.test(String(model))) { try { process.env[modelEnv] = String(model); } catch { /* ignore */ } }
+    if (effort && String(effort).trim() && !/\s/.test(String(effort))) { try { process.env[effortEnv] = String(effort); } catch { /* ignore */ } }
+    return out;
+  }
+  if (model && String(model).trim() && !/\s/.test(String(model))) out.push("-m", String(model));
+  if (effort && String(effort).trim() && !/\s/.test(String(effort))) out.push("-c", "model_reasoning_effort=" + String(effort));
   return out;
 }
 // 生成 PowerShell 数组字面量 @('a','b',...)——每个参数独立元素, 含空格/单引号的值也保持为一个参数,
@@ -152,9 +166,9 @@ const AGENT_ARGS_EXEC = (() => {
   const raw = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX });
   const cleaned = [];
   for (let i = 0; i < raw.length; i++) { if (raw[i] === "-a") { i++; continue; } cleaned.push(raw[i]); }
-  return ["exec", ...appendModelEffortArgs(cleaned)].map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
+  return ["exec", ...appendModelEffortArgs(cleaned, AGENT.config)].map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 })();
-const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }));
+const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }), AGENT.config);
 // AGENT_ARGS 保留给老式拼接（AGENT_ARGS_EXEC / 兜底），主 launcher 改用 buildPsArrayLit 生成的数组字面量。
 const AGENT_ARGS = AGENT_ARGS_LIST.map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 const TMP = path.join(WORKSPACE, "temp");

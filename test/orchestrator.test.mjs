@@ -178,6 +178,16 @@ test('orchestrate-sdk appendModelEffortArgs injects -m/-c and is space-guarded',
   // 值里含空格时不应被注入成 2 个参数（防 launcher 按空格拆散）：模型名 default 不含空格，故这里只测不含空格正常路径。
   assert.ok(!/\s/.test('deepseek-v4-flash'), 'model value must contain no space (else launcher arg-split breaks it)');
 });
+test('通用化: appendModelEffortArgs 对非 codex 走其 modelEnv/effortEnv、绝不注入 codex -m/-c', () => {
+  const prevM = process.env.ANTHROPIC_MODEL, prevE = process.env.ORCH_CLAUD_EFFORT;
+  process.env.ANTHROPIC_MODEL = 'claude-3-7-sonnet';
+  process.env.ORCH_CLAUD_EFFORT = 'high';
+  const claudeOut = appendModelEffortArgs(['--cwd', 'W'], { id: 'claude', modelEnv: 'ANTHROPIC_MODEL', effortEnv: 'ORCH_CLAUD_EFFORT' });
+  assert.ok(!claudeOut.includes('-m') && !claudeOut.includes('model_reasoning_effort='), '非 codex 不注入 codex 专属 argv');
+  assert.equal(process.env.ANTHROPIC_MODEL, 'claude-3-7-sonnet', '非 codex 模型经 env 就绪');
+  if (prevM === undefined) delete process.env.ANTHROPIC_MODEL; else process.env.ANTHROPIC_MODEL = prevM;
+  if (prevE === undefined) delete process.env.ORCH_CLAUD_EFFORT; else process.env.ORCH_CLAUD_EFFORT = prevE;
+});
 test('orchestrate-sdk classifyExecutionMode: read-only -> inline, real -> execute', async () => {
   // 只读词（分析，无真实动作词）-> inline（命中确定性快判，不触发 LLM）
   assert.equal(await classifyExecutionMode('分析一下布局是否有问题'), 'inline');
