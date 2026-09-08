@@ -54,11 +54,12 @@
  * ============================================================================
  */
 import {nativeArgumentLines} from "./native-argv.mjs";
-import {spawnInactiveWindowDetached} from './inactive-window.mjs';
+import {spawnInactiveWindow} from './inactive-window.mjs';
 import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bindClassifiedTasks} from "./contracts.mjs";
 import {runWindows,verifyRun} from "./runner.mjs";
 import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind} from "./leases.mjs";
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
+import {isCapacityError, capacityRetryPolicy} from './retry-policy.mjs';
 import { networkConfig } from "./network-policy.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
@@ -351,6 +352,7 @@ function fallbackPlan(request) {
     ]
   };
 }
+
 /**
  * 安全拆块：先用 LLM 分类（read-only），失败/超时则重试（ORCH_DECOMPOSE_RETRIES，默认 2），
  * 重试耗尽仍无合法 JSON 时回退到 fallbackPlan —— 单串行窗，确保整批一定落地。
@@ -389,6 +391,7 @@ async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalm
     try {
       const res = await runThreadPrompt(classifyPrompt(request, hints) +
         `\nMaximum execution blocks: ${maxWindows}. Return ALL tasks; overflow tasks will be merged into serial blocks. Never omit tasks to meet the window budget.`, { sandboxMode: "read-only" });
+      if (res?.errored) throw new Error(String(res.errored));
       let plan;
       try {
         const tasks = bindClassifiedTasks(request,extractTasks(res.final || ""));
@@ -405,6 +408,13 @@ async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalm
       if (i === attempts - 1) throw new Error(lastErr);
     } catch (e) {
       if(/Unknown dependency|Self dependency|Cyclic dependencies|Ambiguous block identity/.test(e.message||""))throw e;
+      const retry = capacityRetryPolicy(e, i + 1);
+      if (retry.retry) {
+        console.warn(`[orchestrator] provider capacity; retry ${retry.attempt}/${retry.maxRetries} after ${retry.delayMs}ms`);
+        if (retry.delayMs > 0) await new Promise((resolve) => setTimeout(resolve, retry.delayMs));
+        lastErr = e && e.message ? e.message : String(e);
+        continue;
+      }
       lastErr = e && e.message ? e.message : String(e);
     }
   }
@@ -770,14 +780,13 @@ function spawnVisibleWindow(lp, title) {
     const bn = path.basename(String(lp || ""));
     const winS = bn.replace(/^win-launch-/, "").replace(/\.ps1$/, "");
     const windowName = "win-" + (winS || "x");
-    const helper=spawnInactiveWindowDetached(WT_EXE, ["-w", windowName, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], WORKSPACE);
+    spawnInactiveWindow(WT_EXE, ["-w", windowName, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], WORKSPACE);
     console.log("spawned visible " + AGENT.agent + " TUI (Windows Terminal): " + title + " (window=" + windowName + ")");
-    return helper;
+    return;
   }
   const powershell=path.join(process.env.SystemRoot||process.env.WINDIR||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-  const helper=spawnInactiveWindowDetached(powershell,['-NoProfile','-ExecutionPolicy','Bypass','-File',lp],WORKSPACE);
+  spawnInactiveWindow(powershell,['-NoProfile','-ExecutionPolicy','Bypass','-File',lp],WORKSPACE);
   console.log("spawned visible " + AGENT.agent + " TUI (inactive console): " + title);
-  return helper;
 }
 // 弹窗后精准检测：pid 文件存在 + launcher(WT pane 宿主)进程存活 => 窗口真弹出（见 windowGenuinelyPopped）。
 // 失败重试（上限 maxRetry，默认 3），仍失败返回 false（由调用方标记 popup-failed 并汇报）。
@@ -825,11 +834,15 @@ async function warmupWindow(pidf, token) {
 async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token, reservedByRunner = false) {
   const auxiliaryId="aux-"+path.basename(lp); let coordinator;
   if(!reservedByRunner){coordinator=coordinatorDir(WORKSPACE);const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},computeMaxWindows(os.totalmem()/1024**3));if(!claim.ok)throw new Error("Window admission waiting: "+claim.reason);}
-  maxRetry=1;
+  // 恢复调用方传入的重试上限（默认 3）：同步拉起后每次尝试约 2.5s，重试成本可控，兜底 WT 偶发不弹窗。
   for (let attempt = 1; attempt <= maxRetry; attempt++) {
-    const helper=spawnVisibleWindow(lp, title);
-    const launched=await helper.launchResult;
-    if(!launched.ok)throw new Error('INACTIVE_WINDOW_LAUNCH_FAILED: '+launched.error);
+    // 同步拉起（no-activate helper 经 spawnSync 完成 CreateProcessW 再返回）：实测 async 路径窗口经常不弹。
+    try {
+      spawnVisibleWindow(lp, title);
+    } catch (error) {
+      console.log("  !! [window] launch error (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]: " + error.message);
+      continue;
+    }
     const deadline = Date.now() + 35000;
     let ok = false;
     const t0 = Date.now();
@@ -1384,24 +1397,24 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
     if (pidf) {
       if (!existsSync(pidf)) {
         // pid 文件已被清理 = 窗生命周期已结束（正常关窗/被收尾清理），视为该块执行结束。
-        return { done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
+        return annotateCapacity({ done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
       const lp = readPidFile(pidf);
       if (lp > 0 && !pidAliveCheck(lp)) {
-        return { done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
+        return annotateCapacity({ done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
     }
     if (exitMarkerFile && existsSync(exitMarkerFile)) {
       const rep = readReportFromResult(exitMarkerFile, matchToken);
-      if (rep) return { done: true, text: rep, exitCode: readExitCode(exitMarkerFile) };
+      if (rep) return annotateCapacity({ done: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
       const code = readExitCode(exitMarkerFile);
       const base = matchToken ? { text: extractOwnResult(file, matchToken) } : extractResult(file);
-      if (base.text) return { done: true, text: base.text, exitCode: code };
-      return { done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code };
+      if (base.text) return annotateCapacity({ done: true, text: base.text, exitCode: code }, file);
+      return annotateCapacity({ done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code }, file);
     }
     if (exitMarkerFile && existsSync(exitMarkerFile + ".self-closed")) {
       // watchdog 已写自关标记 = 窗收尾并关闭；即时视为执行结束（无汇报文本，主控按落盘核对）。
-      return { done: true, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) };
+      return annotateCapacity({ done: true, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
     }
     let tail = "";
     try {
@@ -1413,15 +1426,27 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
       closeSync(fd);
       tail = buf.toString("utf8");
     } catch { /* ignore */ }
+    // Provider capacity errors are actionable before task_complete and may leave the
+    // TUI open while showing its countdown. Surface them immediately so the runner
+    // can close this empty attempt and honor the bounded retry policy.
+    if (isCapacityError(tail)) {
+      return annotateCapacity({ done: true, text: tail.slice(-4000), exitCode: readExitCode(exitMarkerFile) }, file);
+    }
     const completion = scanTaskComplete(tail, matchToken, ownerTurnId);
     ownerTurnId = completion.ownerTurnId;
     if (completion.done) {
       // exit code non-zero but task_complete seen -> still a completed turn
-      return { done: true, text: (matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text), exitCode: readExitCode(exitMarkerFile) };
+      return annotateCapacity({ done: true, text: (matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text), exitCode: readExitCode(exitMarkerFile) }, file);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return { done: false, text: "" };
+  return annotateCapacity({ done: false, text: "" }, file);
+}
+function annotateCapacity(result, file) {
+  let evidence = String(result?.text || "");
+  if (file) evidence += "\n" + String(readTail(file, 65536) || "");
+  if (!isCapacityError(evidence)) return result;
+  return { ...result, retryable: "capacity", capacityError: evidence.slice(-4000) };
 }
 // 只读文件尾部窗口(UTF-8, 最多 maxBytes 字节), 用于从超大 rollout 提取末尾的完成汇报。
 // 完成标记/最终消息总在文件末尾, 全量 readFileSync 读 160MB+ rollout 是纯浪费。
@@ -2202,4 +2227,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome };
+export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy };

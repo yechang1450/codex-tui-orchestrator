@@ -17,7 +17,7 @@ Runtime upgrades must retain the task ledger, memory-derived eight-block cap, in
 
 The legacy mixed-case invocation remains documented for existing local references, while the canonical manifest and skill identifiers use lowercase hyphen-case. On Windows the existing marketplace source path remains compatible; any non-Windows migration must update that path explicitly.
 
-## Current candidate: core 1.3.2-rc.1
+## Current candidate: core 1.3.3-rc.1
 
 Plugin version `0.4.39-rc.1` fixes asynchronous PowerShell startup and Unicode process identity. RC means a release candidate with a declared, reproducible verification scope; it does not certify every Windows installation or provider condition. See [RC validation](rc-validation.md) for current results and remaining acceptance gates.
 

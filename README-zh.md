@@ -1,4 +1,4 @@
-> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.3.2-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
+> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.3.3-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
 
 # codex-tui-orchestrator
 

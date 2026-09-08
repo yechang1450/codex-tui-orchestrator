@@ -42,6 +42,8 @@ description: Use when codex-TUI-orchestrator receives an authorized multi-part r
 
 已验证任务不重复执行。已开始但副作用不明确的任务进入 needs-reconciliation（需要主控核对实际结果的状态），不能盲目重跑。仅事先确定可安全重复的任务才能设置 retrySafe:true。启动器不重放整个块。
 
+遇到 `Selected model is at capacity`、`try a different model` 或 `server_overloaded` 时，插件会在尚未写入任务检查点前自动按倒计时退避重试；任务一旦开始，仍遵守 needs-reconciliation 安全边界。可用 ORCH_CAPACITY_RETRIES、ORCH_CAPACITY_RETRY_MS、ORCH_CAPACITY_RETRY_MAX_MS 调整有限重试。
+
 使用 --verify-run <ID> --acceptance-file <JSON> 复核已有结果。不保证任意外部操作恰好执行一次。
 
 ## 诊断和发布

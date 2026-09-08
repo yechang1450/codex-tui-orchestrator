@@ -6,6 +6,7 @@ import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary} from './recovery.mjs';
 import {readCheckpoints} from './checkpoint.mjs';
+import {capacityRetryPolicy,isCapacityError} from './retry-policy.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100,snapshot=processSnapshot}={}) {
@@ -116,6 +117,7 @@ export async function runWindows(request,hooks,options={}) {
       const leaseId=crypto.createHash('sha256').update(runKey).digest('hex').slice(0,16)+'-'+r.key;
       let attemptsThisController=0;
       const limit=Math.max(1,Math.min(3,Number(options.maxAttempts||2)));
+      let capacityRetries=0;
       while(Date.now()<deadline) {
         let e=sum.results[r.key],la=e.launcherFiles,identity;
         if(la)identity=launcherIdentity(hooks.readPid(la.pidf),la.pidf);
@@ -163,12 +165,18 @@ export async function runWindows(request,hooks,options={}) {
           }catch(error){e.status='popup-failed';e.reason=error.message;}
         }
         e=sum.results[r.key];e.launcher=identity||e.launcher;
+        let capacityRetry = null;
         try {
           if(identity) {
             e.status='running';persist();
             const session=await hooks.session('【本块唯一标识】'+active.token,Math.min(90000,Math.max(0,deadline-Date.now())),la.rf);
             const result=session?await hooks.wait(session,Math.max(0,deadline-Date.now()),la.rf,'【本块唯一标识】'+active.token,la.pidf):{done:fs.existsSync(la.rf),exitCode:hooks.exitCode(la.rf)};
             e.exitCode=result.exitCode??hooks.exitCode(la.rf);e.status=result.done?'awaiting-verification':'timeout';
+            if (result.retryable === 'capacity' || isCapacityError(result.text)) {
+              e.retryable = 'capacity';
+              e.capacityError = result.capacityError || result.text || 'provider capacity';
+              capacityRetry = capacityRetryPolicy(e.capacityError, capacityRetries + 1);
+            }
           }
         }catch(error){e.status='failed';e.reason=error.message;}
         finally {
@@ -179,6 +187,18 @@ export async function runWindows(request,hooks,options={}) {
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;
           collectVerification(sum,checks,workspace);persist();
+        }
+        // A capacity failure happens before any task checkpoint. Reclaim the window and
+        // retry after the provider's suggested/backoff delay without consuming the normal
+        // safe-recovery attempt budget. Once a task started, recoveryTasks above prevents
+        // this path from retrying an unproven side effect.
+        const retryCheckpoints=blockCheckpoints(e,b,sum);
+        const retryUnsafe=Object.values(retryCheckpoints).some(cp=>cp?.state==='started'||cp?.state==='completed');
+        if (capacityRetry?.retry && !retryUnsafe) {
+          capacityRetries++;
+          e.status='waiting';e.reason=`Provider capacity; retry ${capacityRetries}/${capacityRetry.maxRetries} in ${capacityRetry.delayMs}ms`;persist();
+          await pause(Math.min(capacityRetry.delayMs,Math.max(0,deadline-Date.now())));
+          continue;
         }
         if(e.status==='verified')return;
         if(!identity&&e.attempts.length&&e.reason==='Visible window did not start'){mark(r,'popup-failed',e.reason);return;}
