@@ -1,0 +1,51 @@
+{
+  "testedAt": "2026-09-06T15:16:48.49Z",
+  "coreVersion": "1.2.1",
+  "coreHash": "893fcc6764901dc8836a14083e39a4fb18a6b69ee20bf61a6162b4a27afa207e",
+  "releaseManifestSha256": "0ae7b3cd5c6ef3f6ffc0b1ca5e5a60fcc905507a074bf288bca27b1e011367a7",
+  "freshInstall": {
+    "emptyCache": true,
+    "registryCacheMisses": 2,
+    "installedPackages": [
+      "@openai/codex-sdk@0.149.0",
+      "@openai/codex@0.149.0"
+    ],
+    "optionalBinariesOmitted": true,
+    "lifecycleScriptsDisabled": true,
+    "doctorExit": 0,
+    "releaseVerificationExit": 0,
+    "existingCliReused": true
+  },
+  "cliCompatibility": {
+    "version": "0.149.0",
+    "nativeExecutableObserved": true,
+    "sessionCliVersion": "0.149.0",
+    "workspace": "D:\\",
+    "approval": "never",
+    "runId": "recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
+    "root": "D:/temp/recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
+    "passed": true,
+    "windowLaunches": 1,
+    "firstTaskExecutions": 1,
+    "adoptedSameLauncher": true,
+    "closed": true
+  },
+  "limits": [
+    "Not a new Windows account",
+    "No eight-window load test on CLI 0.149.0",
+    "No OS reboot or prolonged outage tested"
+  ],
+  "cleanup": {
+    "status": "blocked by host automatic approval review",
+    "reason": "host automatic approval review denied cleanup",
+    "removedFiles": 0,
+    "installDirectory": "D:\\temp\\codex-install-20260906-8cf9084b",
+    "probeDirectory": "D:\\temp\\recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
+    "bypassAttempted": false
+  },
+  "regressions": {
+    "sourcePassed": 132,
+    "installedPassed": 132,
+    "failed": 0
+  }
+}

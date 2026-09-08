@@ -35,19 +35,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-// ---------- 工作区动态探测（不写死工作区绝对路径）----------
-// 优先级：env WORKSPACE_DIR → process.cwd()（不再依赖外部通道配置）
-function resolveWorkspace() {
-  if (process.env.WORKSPACE_DIR && process.env.WORKSPACE_DIR.trim()) return process.env.WORKSPACE_DIR.trim();
-  // Fail-closed: refusing to enforce against an unknown workspace prevents a cwd-based bypass.
-  console.error("[force] FATAL: WORKSPACE_DIR not set; refusing to enforce against an unknown workspace (fail-closed). Set WORKSPACE_DIR to the orchestrator workspace.");
-  process.exit(2);
-}
-
-const WORKSPACE = resolveWorkspace();
-const TMP = path.join(WORKSPACE, "temp");
-// plugin-owned runtime state lives in a stable family home, not workspace temp (override via ORCH_STATE_DIR).
-const STATE_DIR = process.env.ORCH_STATE_DIR || path.join(os.homedir(), ".codex", "orchestrator");
+import { resolveRuntimeContext } from './runtime-context.mjs';
+const { workspace: WORKSPACE, temp: TMP, state: STATE_DIR } = resolveRuntimeContext();
 const FLAG = path.join(STATE_DIR, ".orchestrator-enabled");
 const WINDOWS_REG = path.join(STATE_DIR, "orchestrator-windows.json");
 

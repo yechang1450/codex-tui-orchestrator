@@ -1,0 +1,261 @@
+{
+  "testedAt": "2026-09-06T11:10:11.11Z",
+  "coreVersion": "1.1.0",
+  "finalCoreHash": "817126fe61a38d320809accd2d291abc216aca2521a47d3d3570c30003194c91",
+  "hashes": {
+    "agent-auth-prompt.txt": "18fa9c01972cd99a2fe2b1b74a440b34921a051ba6c0d54daf2f5bf1096457b0",
+    "agent.mjs": "e75eb20ebe560072f67d9e7803467eba4114fb23716b04f82147aebb17a12555",
+    "checkpoint.mjs": "cc65e19d6ad329ab33974aee880c0fcb457b226b8cfe3b492d81d8d5eb0b6920",
+    "contracts.mjs": "2555d4a0644ade9eea81dde15e9ea839bcd15bd5956e0b6ec7ef23aae0099a36",
+    "host-cli.mjs": "d48dcf229af36bef3031b1918fc24847a6ef80fca6599ce7bba9c925d78be963",
+    "lease-lock.ps1": "ea87418c1ee3fee11def11107fe99f4df82a76357b20d05dd369fca1157d3e06",
+    "leases.mjs": "6a3cbb81e27bc19bb3206a09e8ec2fd649e0a606bd3fbf8e428db991d26fe2a3",
+    "native-argv.mjs": "3b5a762eddf8a9042293ee12e9c441cafa566e14974563a04ee168a6d68834c0",
+    "network-policy.mjs": "e15fcef46f74ac07705ae87379ac6ce0b937b2f82d5ba13e94d12c5eff756f46",
+    "orchestrate-sdk.mjs": "5c039577eb8c0009de8836ccce0b490afbc2ad452f0c978fb0d326a6a9e8a69e",
+    "poll-windows.mjs": "94132be08201b90f125408413180f63c3f9628103ed23cd14f4af4c543a85cdd",
+    "recovery.mjs": "bd8587cc6401de741aa1b58b49c5d8dddd1a3c7d9527d84f5573c544391aefda",
+    "runner.mjs": "6085f3dbef6f02763d7d46d1ea1225e882c99d4e64d00d56b2b662336b138b7a",
+    "runtime-context.mjs": "6e8d7c5908a8b86d096f4606915b5766baa1b541661bab1daa944956f7caf779"
+  },
+  "sharedCore": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\scripts\\core",
+  "regressions": [
+    {
+      "root": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator",
+      "tests": 115,
+      "pass": 115,
+      "fail": 0
+    },
+    {
+      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "tests": 115,
+      "pass": 115,
+      "fail": 0
+    }
+  ],
+  "capacity": {
+    "runId": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+    "root": "D:\\temp\\open-live-cbecebadefaad",
+    "passed": true,
+    "coreHash": "d3591317ac3acb2dba9301bbbad4602931eb18bfa01c4033b6f21d345062825f",
+    "coreUnchanged": true,
+    "peak": 8,
+    "windowLaunches": 8,
+    "tasks": 9,
+    "ordered": true,
+    "overlap": true,
+    "overlapMs": 17055,
+    "engineExit": 0,
+    "pollExit": 0,
+    "results": [
+      {
+        "id": "91",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 9144,
+        "started": 1788692654194,
+        "finished": 1788692759680,
+        "sum": 50005000
+      },
+      {
+        "id": "92",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 40356,
+        "started": 1788692673460,
+        "finished": 1788692759480,
+        "sum": 50005000
+      },
+      {
+        "id": "93",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 10076,
+        "started": 1788692671568,
+        "finished": 1788692759586,
+        "sum": 50005000
+      },
+      {
+        "id": "94",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 33464,
+        "started": 1788692742378,
+        "finished": 1788692759433,
+        "sum": 50005000
+      },
+      {
+        "id": "95",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 18784,
+        "started": 1788692659734,
+        "finished": 1788692759570,
+        "sum": 50005000
+      },
+      {
+        "id": "96",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 9788,
+        "started": 1788692653602,
+        "finished": 1788692759555,
+        "sum": 50005000
+      },
+      {
+        "id": "97",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 5168,
+        "started": 1788692652221,
+        "finished": 1788692759710,
+        "sum": 50005000
+      },
+      {
+        "id": "98",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 23004,
+        "started": 1788692659310,
+        "finished": 1788692759680,
+        "sum": 50005000
+      },
+      {
+        "id": "99",
+        "cwd": "D:\\",
+        "nonce": "e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
+        "pid": 30820,
+        "started": 1788692794136,
+        "finished": 1788692809139,
+        "sum": 50005000
+      }
+    ]
+  },
+  "adoption": {
+    "runId": "recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9",
+    "root": "D:\\temp\\recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9",
+    "passed": true,
+    "coreHash": "d3591317ac3acb2dba9301bbbad4602931eb18bfa01c4033b6f21d345062825f",
+    "coreUnchanged": true,
+    "windowLaunches": 1,
+    "firstTaskExecutions": 1,
+    "adoptedSameLauncher": true,
+    "closed": true
+  },
+  "rejectedScenario": {
+    "runId": "acceptance-00f63d3c-337f-4fc8-bdb6-6bb4494e6345",
+    "root": "D:\\temp\\open-live-edebeafeadb",
+    "passed": false,
+    "engineSuccess": true,
+    "reason": "Punctuation split the test request into unassignable fragments; complete-inventory fallback preserved all tasks but opened only one window. Not counted as capacity success."
+  },
+  "postLiveFix": {
+    "files": [
+      "runner.mjs",
+      "recovery.mjs"
+    ],
+    "description": "Preserve execution checkpoints after failed rechecks and status changes, including when the separate checkpoint file is missing.",
+    "regression": "failed rechecks preserve execution evidence so a later resume cannot repeat an uncertain task",
+    "redObserved": true,
+    "finalRegressionsPassed": true,
+    "liveFinishedRunRecheck": {
+      "runId": "recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9",
+      "generation": 3,
+      "success": true,
+      "newWindows": 0,
+      "attempts": 1
+    },
+    "note": "Capacity and crash-adoption live runs precede this small evidence-retention fix; final core has full regression and an actual completed-run resume check, not a repeated 8-window run."
+  },
+  "policies": [
+    {
+      "token": "acceptance-00f63d3c-337f-4fc8-bdb6-6bb4494e6345-B1-a1-3d931760b62b",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-00-12-01a07660-361a-72a1-af73-4bea9456b89d.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9-B1-a1-bdb5089acefb",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-24-01a07663-241d-7ec3-8b7e-d8575d0d84d2.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B5-a1-b2767027a1f1",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-34-01a07663-4cb4-78d2-8981-1f368eb11a9a.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B6-a1-18b85a8f8f23",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-37-01a07663-58bd-7912-aa20-924ebcc9d96f.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B7-a1-7cb094a0d1a6",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-40-01a07663-6419-72f0-ab51-f9fb2722fe54.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B8-a1-93c607e02f09",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-43-01a07663-7003-7140-bf55-ce2745bf1f32.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B1-a1-34ffdb6e1867",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-46-01a07663-7c90-7ed0-9431-144655f94707.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B2-a1-1f17125fa768",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-50-01a07663-8a54-7352-ba69-7f90b314428e.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B3-a1-5f1dd9dde191",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-55-01a07663-9cfe-7cc2-99d9-3e185a398129.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    },
+    {
+      "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B4-a1-5182cb0fa0f1",
+      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-05-16-01a07664-dd44-7a12-a400-a356e7633e80.jsonl",
+      "cwd": "D:\\",
+      "provider": "orchestrator-openai-https",
+      "approval": "never",
+      "sandbox": "danger-full-access"
+    }
+  ],
+  "allLaunchersClosed": true,
+  "cleanup": {
+    "status": "rejected-by-host-auto-review",
+    "reason": "host automatic approval review denied cleanup; no more specific reason provided",
+    "action": "Remove only this turn generated probe scripts, controls, duplicate acceptance files and transient logs",
+    "filesRemoved": 0,
+    "retainedRunRecords": true,
+    "noBypassAttempted": true
+  }
+}

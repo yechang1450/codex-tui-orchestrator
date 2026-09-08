@@ -1,0 +1,39 @@
+{
+  "recordedAt": "2026-09-06T16:01:38.093Z",
+  "coreVersion": "1.2.3",
+  "coreHash": "54600c0d5d8704ea1e94d003e27763df425e86a35ab36346c91085ada75a3aab",
+  "runtimeUnchanged": true,
+  "suites": [
+    {
+      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "passed": 137,
+      "failed": 0,
+      "durationMs": 56012.1111
+    },
+    {
+      "root": "<user-home>/.codex/plugins/cache/personal/codex-TUI-orchestrator/0.4.38+codex.20260906072601",
+      "passed": 137,
+      "failed": 0,
+      "durationMs": 72969.5266
+    }
+  ],
+  "network": "HTTP server bound to 127.0.0.1 on ephemeral port",
+  "faults": [
+    "response-reset after side effect",
+    "response-timeout after side effect"
+  ],
+  "assertions": {
+    "serverSideEffectsPerScenario": 1,
+    "launchAttemptsPerScenario": 1,
+    "unsafeRetryPrevented": true,
+    "uncertainStatePreservedOnResume": true,
+    "independentReconciliationRequired": true,
+    "verifiedResumeCreatesNoNewAttempt": true,
+    "completedFirstTaskExecutions": 1
+  },
+  "limitations": [
+    "Controlled task HTTP response loss, not Codex provider reconnect testing",
+    "No prolonged weak-network, reboot or fresh-user acceptance"
+  ],
+  "cleanup": "Owned test workers, local HTTP servers and temporary fixtures closed and removed by passing test teardown; older policy-rejected cleanup targets untouched"
+}

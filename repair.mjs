@@ -24,6 +24,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {verifyRelease} from './scripts/release-integrity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL = path.basename(__dirname);
@@ -33,16 +34,19 @@ const OPTIONAL_FILES = ['README-zh.md', 'CHANGELOG.md'];
 
 const DEBRIS_DIRS = new Set([
   'node_modules',
+  'temp',
   '__pycache__',
   '.pytest_cache',
   '.cache',
 ]);
 
-const DEBRIS_EXACT = new Set(['.enforce-state.json', '.DS_Store', 'Thumbs.db']);
+const DEBRIS_EXACT = new Set(['.enforce-state.json', '.agent-cache.json', '.DS_Store', 'Thumbs.db']);
 const DEBRIS_RE = /\.(part|tmp|pyc|pyo|crdownload|partial|swp)$/i;
 
+const PROTECTED_DIRS=new Set(['.git','node_modules','temp','.plugin-eval']);
 function listFiles(dir, base = '', out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    if(PROTECTED_DIRS.has(e.name))continue;
     if (e.isSymbolicLink()) continue; // 跳过符号链接：不跟随内容复制/删除（防越权/防逃逸）
     const abs = path.join(dir, e.name);
     const rel = path.join(base, e.name);
@@ -56,14 +60,14 @@ function listFiles(dir, base = '', out = []) {
 function isRegularFile(p) { try { return fs.lstatSync(p).isFile(); } catch { return false; } }
 
 // 可发布 skill 标志：优先 skills/*/SKILL.md（插件规范），兼容旧式根目录 SKILL.md。
-function findSkillFile() {
-  const sk = path.join(__dirname, 'skills');
+function findSkillFile(root = __dirname) {
+  const sk = path.join(root, 'skills');
   if (fs.existsSync(sk)) {
     for (const e of fs.readdirSync(sk, { withFileTypes: true })) {
       if (e.isDirectory() && isRegularFile(path.join(sk, e.name, 'SKILL.md'))) return path.join(sk, e.name, 'SKILL.md');
     }
   }
-  if (isRegularFile(path.join(__dirname, 'SKILL.md'))) return path.join(__dirname, 'SKILL.md');
+  if (isRegularFile(path.join(root, 'SKILL.md'))) return path.join(root, 'SKILL.md');
   return null;
 }
 
@@ -83,6 +87,7 @@ function hasAny(relRoot) {
 
 function check() {
   let problems = 0;
+  try{verifyRelease(__dirname);}catch(e){console.error(e.message);problems++;}
 
   console.log(`[${SKILL}] repair.mjs - self-contained publish / integrity check`);
   console.log(`[${SKILL}] skill root = ${__dirname}`);
@@ -113,6 +118,9 @@ function check() {
     }
   }
 
+  const core=path.join(__dirname,'scripts','core','contracts.mjs');
+  if(!fs.existsSync(core)){console.log('  MISSING shared execution core');problems++;}
+  else console.log('  OK  shared core '+fs.realpathSync(path.dirname(core)));
   const debris = [];
   for (const rel of listFiles(__dirname)) {
     if (isDebrisRel(rel)) debris.push(rel);
@@ -151,6 +159,7 @@ function clean() {
     }
     // Also drop now-empty debris dirs (e.g. empty state/, temp/, __pycache__/).
     for (const dir of DEBRIS_DIRS) {
+      if(PROTECTED_DIRS.has(dir))continue;
       const full = path.join(__dirname, dir);
       if (fs.existsSync(full) && !fs.lstatSync(full).isSymbolicLink()) {
         let real = null;
@@ -174,7 +183,9 @@ function clean() {
 }
 
 function publish(targetRoot) {
+  let staging;
   try {
+    verifyRelease(__dirname);
     if (!path.isAbsolute(targetRoot)) {
       console.error(`[${SKILL}] --target expects an absolute root, got: ${targetRoot}`);
       process.exit(2);
@@ -183,20 +194,38 @@ function publish(targetRoot) {
     const missing = REQUIRED_FILES.filter((nf) => !isRegularFile(path.join(__dirname, nf)));
     if (missing.length || !findSkillFile()) { console.error("[" + SKILL + "] publish aborted: missing " + (missing.length ? missing.join(", ") : "skill SKILL.md (under skills/<name>/)")); process.exit(2); }
     const dest = path.join(path.resolve(targetRoot), SKILL);
+    if(fs.existsSync(dest))throw new Error('Publish target already exists; choose a fresh version directory');
+    const relative=path.relative(__dirname,dest);
+    if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))throw new Error('Publish target must be outside the source tree');
+    // Resolve existing ancestors before creating anything; junction aliases must
+    // not disguise a destination inside the source tree.
+    let ancestor=path.dirname(dest),tail=[path.basename(dest)];
+    while(!fs.existsSync(ancestor)){tail.unshift(path.basename(ancestor));ancestor=path.dirname(ancestor);}
+    const physical=path.join(fs.realpathSync(ancestor),...tail);
+    const physicalRelative=path.relative(fs.realpathSync(__dirname),physical);
+    if(physicalRelative!=='..'&&!physicalRelative.startsWith('..'+path.sep)&&!path.isAbsolute(physicalRelative))throw new Error('Publish target must be outside the source tree');
+    fs.mkdirSync(path.dirname(dest),{recursive:true});
+    staging=fs.mkdtempSync(path.join(path.dirname(dest),'.'+SKILL+'-staging-'));
     console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
     let copied = 0;
     for (const rel of listFiles(__dirname)) {
       if (isDebrisRel(rel)) continue;
       const srcAbs = path.join(__dirname, rel);
-      const dstAbs = path.join(dest, rel);
+      const dstAbs = path.join(staging, rel);
       fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
       // Byte-copy: preserves UTF-8 no-BOM text and any binary data byte-exact.
       fs.copyFileSync(srcAbs, dstAbs);
       copied++;
     }
+    verifyRelease(staging);
+    const missingStaged = REQUIRED_FILES.filter(name => !isRegularFile(path.join(staging, name)));
+    if(missingStaged.length || !findSkillFile(staging))throw new Error('Staged package missing required: '+(missingStaged.length?missingStaged.join(', '):'skill SKILL.md'));
+    if(fs.existsSync(dest))throw new Error('Publish target appeared during publication');
+    fs.renameSync(staging,dest);staging=undefined;
     console.log(`[${SKILL}] published ${copied} file(s) to ${dest}.`);
     process.exit(0);
   } catch (e) {
+    if(staging)fs.rmSync(staging,{recursive:true,force:true});
     console.error(`[${SKILL}] publish failed: ${e.message}`);
     process.exit(2);
   }

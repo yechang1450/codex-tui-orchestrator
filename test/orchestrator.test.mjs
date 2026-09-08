@@ -1,3 +1,4 @@
+process.env.ORCH_AGENT = 'codex';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,6 +9,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scripts = path.resolve(__dirname, '..', 'scripts');
+const fixtureFamily=path.resolve(__dirname,'../temp');fs.mkdirSync(fixtureFamily,{recursive:true});
 
 // ---------- poll-windows: status sets + summary logic ----------
 const importUrl = (p) => pathToFileURL(p).href;
@@ -20,43 +22,28 @@ const runNode = (file, args, opts = {}) => {
   }
 };
 const { TERMINAL, SUCCESS, summaryComplete, summaryTerminal, failures } = await import(importUrl(path.join(scripts, 'poll-windows.mjs')));
-test('poll-windows TERMINAL/SUCCESS sets', () => {
-  assert.equal(TERMINAL.has('done'), true);
-  assert.equal(TERMINAL.has('failed'), true);   // fixed: failed is terminal
-  assert.equal(TERMINAL.has('pending'), false);
-  assert.equal(SUCCESS.has('done'), true);
-  assert.equal(SUCCESS.has('failed'), false);   // failed is NOT success
+const summaryFixture=(status='verified')=>({runId:'test-run',blocks:[{key:'B1'}],tasks:[{id:'T1'}],results:{B1:{status}},taskResults:{T1:{status}}});
+test('poll-windows requires verified status and complete run inventory',()=>{
+ assert.equal(TERMINAL.has('failed'),true);assert.equal(TERMINAL.has('pending'),false);
+ assert.equal(SUCCESS.has('done'),false);assert.equal(SUCCESS.has('verified'),true);
+ assert.equal(summaryComplete(summaryFixture()),true);
+ assert.equal(summaryComplete(summaryFixture('failed')),false);
+ assert.equal(summaryComplete({results:{B1:{status:'verified'}}}),false);
+ assert.equal(summaryComplete(null),false);
 });
-test('poll-windows summaryComplete', () => {
-  const requireAll = process.argv.includes('--require-all-success');
-  const allDone = { results: { B1: { status: 'done' }, B2: { status: 'ok' } } };
-  const oneFailed = { results: { B1: { status: 'done' }, B2: { status: 'failed' } } };
-  assert.equal(summaryComplete(allDone), true);
-  // In default (non require-all-success) mode, failed is terminal -> complete.
-  // In --require-all-success mode, failed is not in SUCCESS -> incomplete.
-  if (requireAll) assert.equal(summaryComplete(oneFailed), false);
-  else assert.equal(summaryComplete(oneFailed), true);
-  assert.equal(summaryComplete(null), false);
-  assert.equal(summaryComplete({ results: {} }), false);
-});
-test('poll-windows failures lists non-success blocks', () => {
-  const f = failures({ results: { B1: { status: 'done' }, B2: { status: 'failed' } } });
-  assert.deepEqual(f, ['B2:failed']);
-});
-test('poll-windows summaryTerminal: failed is terminal, pending is not', () => {
-  assert.equal(summaryTerminal({ results: { B1: { status: 'failed' }, B2: { status: 'popup-failed' } } }), true);
-  assert.equal(summaryTerminal({ results: { B1: { status: 'pending' } } }), false);
-  assert.equal(summaryTerminal(null), false);
-  assert.equal(summaryTerminal({ results: {} }), false);
-  // done-on-disk is treated as a successful terminal (window could not capture report, disk proves work).
-  assert.equal(SUCCESS.has('done-on-disk'), true);
+test('poll-windows terminal aggregation preserves unsuccessful task IDs',()=>{
+ assert.equal(summaryTerminal(summaryFixture('failed')),true);
+ assert.equal(summaryTerminal(summaryFixture('pending')),false);
+ assert.deepEqual(failures(summaryFixture('failed')),['T1:failed']);
+ assert.equal(SUCCESS.has('done-on-disk'),false);
 });
 
 // ---------- force.mjs: armed/liveWindows/pidOf on temp registry ----------
 // force.mjs reads WORKSPACE_DIR at import; we set it before import and test helpers.
-const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-test-'));
+const wsDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-test-'));
 process.env.WORKSPACE_DIR = wsDir;
-const stDir = fs.mkdtempSync(path.join(os.tmpdir(), "orch-force-state-"));
+fs.mkdirSync(path.join(wsDir, 'temp'), { recursive: true });
+const stDir = fs.mkdtempSync(path.join(wsDir, 'temp', "orch-force-state-"));
 process.env.ORCH_STATE_DIR = stDir;
 const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG, STATE_DIR } = await import(importUrl(path.join(scripts, 'codex-TUI-orchestrator-force.mjs')));
 test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
@@ -85,9 +72,9 @@ test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
 });
 
 test('force.mjs CLI --status/--assert read/--assert write', () => {
-  const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-cli-'));
+  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-cli-'));
   try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'temp', 'state') };
     // 测试模拟“非窗/窗外观”语境：剥离宿主（已授权编排窗）遗留的 ORCH_WINDOW，
     // 否则子进程会误判为“已授权窗活窗=0”，让本应 read-only ok 的 --assert read 变成 REFUSED。
     delete env.ORCH_WINDOW;
@@ -110,12 +97,12 @@ test('force.mjs CLI --status/--assert read/--assert write', () => {
 });
 
 test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATION when armed', () => {
-  const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-cli2-'));
+  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-cli2-'));
   try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'temp', 'state') };
     // 同上：模拟非窗语境，剥离宿主 ORCH_WINDOW，避免 --assert read 被误判为已授权窗。
     delete env.ORCH_WINDOW;
-    const tmpDir = path.join(cliDir, 'state');
+    const tmpDir = path.join(cliDir, 'temp', 'state');
     fs.mkdirSync(tmpDir, { recursive: true });
     // arm enforcement
     fs.writeFileSync(path.join(tmpDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
@@ -138,13 +125,13 @@ test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATIO
 });
 
 test('force.mjs CLI --enable arms enforcement', () => {
-  const cliDir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-force-enable-'));
+  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-enable-'));
   try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'state') };
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'temp', 'state') };
     delete env.ORCH_WINDOW;
     const en = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--enable'], { env });
     assert.equal(en.code, 0);
-    const flag = path.join(cliDir, 'state', '.orchestrator-enabled');
+    const flag = path.join(cliDir, 'temp', 'state', '.orchestrator-enabled');
     assert.equal(fs.existsSync(flag), true);
   } finally {
     fs.rmSync(cliDir, { recursive: true, force: true });
@@ -157,6 +144,16 @@ const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = awa
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { readTail } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { scanTaskComplete } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+test('scanTaskComplete: 只接受当前 turn 的结构化 task_complete', () => {
+  const token = '【本块唯一标识】TC2-abc';
+  const user = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', turn_id: 'turn-owner', content: [{ text: 'diagnostic task_complete TC2-abc' }] } });
+  const foreign = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-foreign' } });
+  const own = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-owner' } });
+  assert.deepEqual(scanTaskComplete(user + '\n' + foreign, token), { done: false, ownerTurnId: 'turn-owner' });
+  assert.deepEqual(scanTaskComplete(user + '\n' + foreign + '\n' + own, token), { done: true, ownerTurnId: 'turn-owner' });
+  assert.equal(scanTaskComplete(JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'task_complete TC2-abc' }] } }), token).done, false);
+});
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -262,11 +259,13 @@ test('orchestrate-sdk blockPrompt: run-windows block prompt embeds a real ASCII 
   assert.doesNotMatch(prompt, /【本块唯一标识】\s+完成/);
 });
 
-test('orchestrate-sdk levelWaves strips self/unknown dependsOn and enforces ordering', () => {
+test('orchestrate-sdk levelWaves rejects malformed dependencies and enforces valid ordering', () => {
   const recs = [
     { key: 'B1', title: 'B1:task-1', b: { title: 'task-1' }, dependsOn: [] },
     { key: 'B2', title: 'B2:task-2', b: { title: 'task-2' }, dependsOn: ['task-1', 'task-2', 'not-a-block'] },
   ];
+  assert.throws(()=>levelWaves(structuredClone(recs)),/dependency/i);
+  recs[1].dependsOn=['task-1'];
   const waves = levelWaves(recs);
   // 自引用 task-2 与未知 not-a-block 应被剔除，仅保留对 task-1(B1) 的依赖 -> 严格两波、B1 在前
   assert.equal(waves.length, 2, 'self/unknown deps removed -> B2 must wait for B1');
@@ -289,7 +288,7 @@ test('orchestrate-sdk decomposeHash: cache key is hints-aware (no cross-project 
 test('orchestrate-sdk checkDiskSpace: returns true on a disk with space (thresholds zeroed)', () => {
   const prevMin = process.env.ORCH_MIN_FREE_MB;
   const prevHard = process.env.ORCH_MIN_FREE_HARD_MB;
-  const ws2 = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-disk-'));
+  const ws2 = fs.mkdtempSync(path.join(fixtureFamily, 'orch-disk-'));
   try {
     process.env.ORCH_MIN_FREE_MB = '0';
     process.env.ORCH_MIN_FREE_HARD_MB = '0';
@@ -319,7 +318,7 @@ after(() => {
 
 // ---------- 运行时逻辑覆盖（弹窗确认 / 汇报提取 / launcher 模板 / 宽松完成判定） ----------
 test('runtime: readPidFile parses pid file', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt1-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt1-'));
   try {
     const pf = path.join(d, 'w.pid');
     fs.writeFileSync(pf, '1234\n', 'utf8');
@@ -347,7 +346,7 @@ test('runtime: pidAliveCheck', () => {
   assert.equal(pidAliveCheck(-5), false);
 });
 test('runtime: windowGenuinelyPopped = pidf present AND launcher process alive', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt2-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt2-'));
   try {
     const pf = path.join(d, 'w.pid');
     assert.equal(windowGenuinelyPopped(path.join(d, 'missing.pid'), 'tok'), false);
@@ -360,7 +359,7 @@ test('runtime: windowGenuinelyPopped = pidf present AND launcher process alive',
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 test('runtime: extractResult takes last assistant text (token/content/value tolerant)', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt3-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt3-'));
   try {
     const f = path.join(d, 'rollout-x.jsonl');
     const line = (o) => JSON.stringify(o) + '\n';
@@ -378,7 +377,7 @@ test('runtime: extractResult takes last assistant text (token/content/value tole
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 test('runtime: readReportFromResult returns non-empty __REPORT__ even without token', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt4-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt4-'));
   try {
     const rf = path.join(d, 'w.result.json');
     fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 0, __DONE__: true, __REPORT__: '窗口最终文本' }) + '\n__EXIT__=0', 'utf8');
@@ -432,14 +431,14 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 2000) concurrency, no cap', () => {
+test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 2000) concurrency, at most eight', () => {
   assert.equal(computeMaxWindows(2), 1, '2G -> round(1.024) -> 1 (caller refuses <4G)');
   assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2 windows');
   assert.equal(computeMaxWindows(8), 4, '8G -> round(4.096) -> 4 windows');
   assert.equal(computeMaxWindows(12), 6, '12G -> round(6.144) -> 6 windows');
   assert.equal(computeMaxWindows(16), 8, '16G -> round(8.192) -> 8 windows');
-  assert.equal(computeMaxWindows(32), 16, '32G -> round(16.384) -> 16 windows');
-  assert.equal(computeMaxWindows(64), 33, '64G -> round(32.768) -> 33 windows');
+  assert.equal(computeMaxWindows(32), 8, '32G -> capped at 8 windows');
+  assert.equal(computeMaxWindows(64), 8, '64G -> capped at 8 windows');
 });
 test('orchestrate-sdk applyAuthPromptPolicy: 不注入子代理指令 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
   // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
@@ -461,7 +460,7 @@ test('runtime: launcher extracts the REAL ASCII block token even when boilerplat
   // 「【本块唯一标识】…完成」开头 BEFORE the injected unique token. The old regex matched that
   // boilerplate first and stripped it to an empty $token => watchdog auto-close never fired.
   const body = '1. 修复TUI窗任务成功后仍报「已退出进程代码为1」且无法自动关窗的问题。\n上面任务之间互相独立：并行执行。\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。\n\n【本块唯一标识】B1-abc123-4f2g9z\n（最终汇报请以「【本块唯一标识】B1-abc123-4f2g9z 完成」开头，并说明本块完成情况）';
-  const auth = '\n\n（已获授权推进并执行。本窗为 codex-TUI-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
+  const auth = '\n\n（已获授权推进并执行。本窗为 open-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
   const { lp, pidf, pf } = writeInteractiveLauncher('t', body + auth, 'x');
   try {
     const ps = fs.readFileSync(lp, 'utf8');
@@ -493,12 +492,17 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     // 6) 加固（本轮新增）：rollout 达到 task_complete（但既无 __ORCH_DONE__ 也无『完成』汇报，如 selftest/纯只读窗）
     //    时，watchdog 也立即写 .self-closed + 杀净 codex 并 exit 0——避免落到依赖 $sawChild 的陈旧 result 分支，
     //    拖到 orchestrator 的 15s 兜底才收窗（慢/易卡）。层级化：watchdog 只认 __ORCH_DONE__ <token>，不再依赖 SUBAGENTS_DONE。
-    assert.ok(body.includes("$tcDone = (($tail | Where-Object { $_ -match 'task_complete' }) -and ($tail | Where-Object { $_.Contains($token) }))"), 'watchdog must detect task_complete in its own rollout (token-scoped)');
+    assert.ok(body.includes('$tcDone = $false'), 'watchdog must initialize structured task_complete detection');
+    assert.match(body, /ConvertFrom-Json -ErrorAction Stop/, 'watchdog must parse JSONL before accepting task_complete');
+    assert.ok(body.includes('$payloadType = if ($payload -and $payload.type)'), 'watchdog must inspect the typed payload event');
+    assert.match(body, /\$isTaskComplete = .*task_complete/, 'watchdog must recognize the typed task_complete event');
+    assert.match(body, /\$ownerTurnId/, 'watchdog must bind completion to the token owner turn');
+    assert.doesNotMatch(body, /\$tail \| Where-Object \{ \$_ -match 'task_complete' \}/, 'watchdog must not use raw task_complete substring matching');
     assert.ok(body.includes("if ($tcDone) {"), 'watchdog task_complete branch must close on task_complete alone (no SUBAGENTS_DONE dependency)');
     assert.doesNotMatch(body, /if \(Test-Path -LiteralPath \$resultFile\) \{ exit 0 \}/, 'watchdog must not exit on a stale result file while codex is alive');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   const idxGrace = src.indexOf('const deadline = Date.now() + 60000');
   const idxLeave = src.indexOf('leaving it to self-exit 0');
   assert.ok(idxGrace > -1, 'closeWindowByPid must poll/grace before giving up on a launcher');
@@ -511,7 +515,7 @@ test('runtime: spawnWindowWithRetry warms up after popup so the parent never rac
   // If the parent immediately polls for the window's session rollout, it can miss it ("no session rollout matched")
   // and wrongly close a still-starting window. The fix wires warmupWindow() (waits for a codex descendant) into
   // spawnWindowWithRetry's confirmed path. Assert that wiring exists in the source so it can't silently regress.
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   // 1) warmupWindow must be defined
   assert.match(src, /async function warmupWindow/, 'warmupWindow must exist');
   // 2) spawnWindowWithRetry must invoke warmupWindow after confirming popup
@@ -534,32 +538,22 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
     // 2) the done-detection must NOT be gated on a SUBAGENTS_DONE marker
     assert.doesNotMatch(body, /Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not depend on SUBAGENTS_DONE in the rollout');
     // 3) the TUI auth prompt (via applyAuthPromptPolicy in SDK source) must instruct the window to confirm sub-agents itself and output only __ORCH_DONE__ <token>
-    const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+    const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
     assert.doesNotMatch(src, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'TUI prompt must NOT instruct sub-agent usage (route removed)');
     assert.doesNotMatch(src, /update_goal complete|能力探测/, 'TUI prompt must NOT mention codex goal mechanisms (goal route removed)');
     assert.match(src, /__ORCH_DONE__ <本窗token>/, 'TUI prompt must instruct the bare __ORCH_DONE__ <token> exit marker');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk: producing blocks with no on-disk change are downgraded to uncaptured (未落盘=未完成)', () => {
-  // A window may plan to create a file but never actually write it (the marker.txt case). Under "done=execution ended",
-  // that would be wrongly accepted. The fix adds a disk recheck at aggregation: for producing blocks whose file:/dir:
-  // targets show no change since the window started, status is downgraded to "uncaptured" so poll-windows won't count it.
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
-  // 1) must define a "producing block" classifier
-  assert.match(src, /PROD_VERBS/, 'orchestrator must classify producing tasks via PROD_VERBS');
-  assert.match(src, /isProducingBlock/, 'orchestrator must have isProducingBlock');
-  // 2) must re-check file:/dir: targets for a change since the window started
-  assert.match(src, /targetChangedSinceStart/, 'orchestrator must detect on-disk change since window start');
-  assert.match(src, /assertProductLanding/, 'orchestrator must run assertProductLanding at aggregation');
-  // 3) the aggregation done-path must invoke the landing recheck
-  assert.match(src, /assertProductLanding\(s\.key, recsByKey\.get\(s\.key\), s, summary\[s\.key\]\)/, 'aggregation must call assertProductLanding on each done block');
-  // 4) TUI prompt must forbid emitting the done marker if a declared product is not actually on disk
-  const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
-  assert.match(authTpl, /禁止输出结束标记/, 'TUI prompt must forbid the done marker when a product is not on disk');
-  assert.match(authTpl, /逐一真实读回|确认真实存在.*盘上|内容\/编码正确/, 'TUI prompt must require the product to really land + self-check');
+test('orchestrate-sdk: window completion delegates to independent parent verification',async()=>{
+ const {collectVerification}=await import('../scripts/core/runner.mjs');
+ const sum={runId:'test',blocks:[{key:'B1',taskIds:['T1']}],results:{B1:{endedAt:1,attempts:[]}},taskResults:{T1:{status:'verified',checkpoint:{state:'completed'}}}};
+ collectVerification(sum,{},path.resolve(scripts,'..'));
+ assert.equal(sum.results.B1.status,'awaiting-verification');
+ assert.equal(sum.taskResults.T1.status,'awaiting-verification');
 });
+
 test('orchestrate-sdk: 无子代理共享文件载体（SUBTASK_DIR/ORCH_SUBTASK_DIR 应清除）', () => {
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   // 已删除子代理共享文件载体：源码不应再有 SUBTASK_DIR / ORCH_SUBTASK_DIR。
   assert.doesNotMatch(src, /SUBTASK_DIR|ORCH_SUBTASK_DIR/, 'shared-file sub-agent carrier must be removed');
   const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
@@ -572,7 +566,7 @@ test('orchestrate-sdk: 窗内不使用子代理（shared-file/sub-agent 不再�
   assert.match(srcTpl, /不使用子代理|不再使用子代理/, 'prompt must state NO sub-agent usage');
   assert.doesNotMatch(srcTpl, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'prompt must NOT instruct sub-agent usage');
   // SDK 逻辑不硬编码绝对路径
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   assert.doesNotMatch(src, /D:\\build\\82/, 'must not hardcode absolute build path inside SDK logic');
 });
 
@@ -582,7 +576,7 @@ test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> 
   // plugin was cachebuster-upgraded from 0.2.1 -> 0.2.2). Set-Content then threw DirectoryNotFoundException
   // and the pane stuck at "[进程已退出，代码为 1]". We simulate that by deleting the launcher's result-file
   // parent dir right before the watchdog would fire, and assert the launcher recreates it and exits 0.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-vanish-'));
+  const ws = fs.mkdtempSync(path.join(fixtureFamily, 'orch-vanish-'));
   const tok = 'V1-abc-789';
   const { lp, pidf, pf, rf } = writeInteractiveLauncher('vanish', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
   const agentPidFile = path.join(ws, 'codex.pid');
@@ -618,7 +612,7 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0, grandPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => fs.existsSync(agentPidFile) && fs.existsSync(grandPidFile), 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0 && readPidFile(grandPidFile) > 0, 15000);
     agentPid = readPidFile(agentPidFile); grandPid = readPidFile(grandPidFile);
     assert.ok(agentPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
     const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
@@ -642,7 +636,7 @@ test('runtime: watchdog must NOT self-close on the injected prompt text that con
   // to end with `__ORCH_DONE__ <token>`). That made the watchdog self-close right after the prompt was handed
   // to the window, before the agent did any work -> task dropped. Fixed: the __ORCH_DONE__ branch must also
   // require it be an agent_message / "role":"assistant" line.
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-prem-'));
+  const ws = fs.mkdtempSync(path.join(fixtureFamily, 'orch-prem-'));
   const tok = 'P1-abc-000';
   const { lp, pidf, pf, rf } = writeInteractiveLauncher('premature', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
   const agentPidFile = path.join(ws, 'codex.pid');
@@ -669,7 +663,7 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => fs.existsSync(agentPidFile), 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0, 15000);
     agentPid = readPidFile(agentPidFile);
     assert.ok(agentPid > 0, 'fake codex PID must be written');
     // Give the watchdog time to (incorrectly) detect the user-message __ORCH_DONE__ line.
@@ -685,8 +679,57 @@ while($true){Start-Sleep -Seconds 600}`);
   }
 });
 
+test('runtime: watchdog must NOT self-close on untyped task_complete text (premature-close regression)', async () => {
+  const ws = fs.mkdtempSync(path.join(fixtureFamily, 'orch-tc-prem-'));
+  const tok = 'TC1-abc-000';
+  const { lp, pidf, pf, rf } = writeInteractiveLauncher('task-complete-text', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
+  const agentPidFile = path.join(ws, 'codex.pid');
+  const fakeAgent = path.join(ws, 'fake-agent.ps1');
+  const writePs = (f, body) => fs.writeFileSync(f, '\uFEFF' + body.trimStart() + '\r\n', 'utf8');
+  const rolloutFile = path.join(ws, 'sdir', 'rollout-task-complete.jsonl');
+  // The first line is ordinary user text and the second is a typed event from a different turn.
+  // Neither belongs to the current turn, so neither may close the window.
+  writePs(fakeAgent, `$ErrorActionPreference='Continue'
+$dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
+$userLine='{"type":"response_item","payload":{"type":"message","role":"user","turn_id":"turn-owner","content":[{"type":"input_text","text":"diagnostic task_complete ${tok}"}]}}'
+$foreignLine='{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-foreign"}}'
+Set-Content -LiteralPath (Join-Path $dir 'rollout-task-complete.jsonl') -Value @($userLine,$foreignLine) -Encoding UTF8
+$PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
+while($true){Start-Sleep -Seconds 600}`);
+  let ps = fs.readFileSync(lp, 'utf8');
+  const psExe = 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+  ps = ps.replace(/&\s*'[^']+'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
+  fs.writeFileSync(lp, ps, 'utf8');
+  const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const launcherExit = new Promise((resolve) => { child.once('exit', (code) => resolve(code)); child.once('error', () => resolve(null)); });
+  let agentPid = 0;
+  const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
+  try {
+    await waitFor(() => readPidFile(agentPidFile) > 0, 15000);
+    agentPid = readPidFile(agentPidFile);
+    assert.ok(agentPid > 0, 'fake codex PID must be written');
+    const earlyExit = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(3000).then(() => 'still-running')]);
+    assert.equal(earlyExit, 'still-running', 'watchdog must ignore untyped and foreign-turn task_complete signals');
+    assert.equal(pidAliveCheck(agentPid), true, 'codex must still be alive because the completion event belongs to another turn');
+    fs.appendFileSync(rolloutFile, JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-owner' } }) + '\n', 'utf8');
+    const completed = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(10000).then(() => 'timeout')]);
+    assert.notEqual(completed, 'timeout', 'watchdog must close after the current turn emits a typed task_complete event');
+    assert.equal(completed, 0, 'launcher must exit cleanly after typed completion');
+    assert.equal(fs.existsSync(rf + '.self-closed'), true, 'typed completion must write the self-closed marker');
+  } finally {
+    for (const pid of [agentPid]) { if (pid > 0 && pidAliveCheck(pid)) { try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); } catch { /* ignore */ } } }
+    try { child.kill(); } catch { /* ignore */ }
+    for (const f of [lp, pidf, pf, rf, rf + '.self-closed', agentPidFile]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } }
+    try { fs.rmSync(ws, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 test('runtime: minimal launcher smoke -> recursive kill frees & codex; result file exit 0; launcher exits 0 without force-kill', async () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt-launch-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt-launch-'));
   const pidFile = path.join(d, 'launcher.pid');
   const agentPidFile = path.join(d, 'codex.pid');
   const grandPidFile = path.join(d, 'grand.pid');
@@ -743,7 +786,9 @@ exit 0`);
     assert.equal(pidAliveCheck(launcherPid), true, 'fake launcher must be alive before graceful close');
     assert.equal(pidAliveCheck(agentPid), true, 'fake codex must be alive before graceful close');
     assert.equal(pidAliveCheck(grandPid), true, 'grandchild must be alive before graceful close');
-    const closed = await closeWindowByPid(launcherPid);
+    const {processSnapshot}=await import('../scripts/core/leases.mjs');
+    assert.equal(await closeWindowByPid(launcherPid),false,'unidentified process must not be closed');
+    const closed = await closeWindowByPid(launcherPid,processSnapshot().get(launcherPid));
     assert.equal(closed, true, 'closeWindowByPid must report the launcher closed gracefully');
     const exitRes = await Promise.race([
       launcherExit,
@@ -773,7 +818,7 @@ exit 0`);
 test('runtime: watchdog self-close reaps codex even when a stale result file pre-exists (regression: codex TUI left alive, window not auto-closed)', async () => {
   // The in-launcher watchdog must NOT early-exit on a stale result file while codex descendants are still alive;
   // it must kill the codex tree so `& codex` returns and the launcher reaches `exit 0` (auto-close the window).
-  const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-watchdog-'));
+  const ws = fs.mkdtempSync(path.join(fixtureFamily, 'orch-watchdog-'));
   const tok = 'W1-abc-123';
   const { lp, pidf, pf, rf } = writeInteractiveLauncher('wdguard', 'task\n\n【本块唯一标识】' + tok + ' 完成', 'x');
   const agentPidFile = path.join(ws, 'codex.pid');
@@ -808,7 +853,7 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0, grandPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => fs.existsSync(agentPidFile) && fs.existsSync(grandPidFile), 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0 && readPidFile(grandPidFile) > 0, 15000);
     agentPid = readPidFile(agentPidFile); grandPid = readPidFile(grandPidFile);
     assert.ok(agentPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
     // Watchdog must fire even with a stale result file -> kill codex -> launcher exits 0.
@@ -902,7 +947,7 @@ test('orchestrate-sdk resolveHints: 无 env 时默认 tail 关键词 + 命中 en
   }
 });
 
-test('orchestrate-sdk buildBlocksFromTasks: 按项目分组/tool未归属串行/已达成不可行跳过', () => {
+test('orchestrate-sdk buildBlocksFromTasks: 按项目分组并保留模型标记已完成或不可行的任务', () => {
   const b = buildBlocksFromTasks([
     { id: 'a', summary: '修81登录页', project: '81', kind: 'project' },
     { id: 'b', summary: '修82购物车', project: '82', kind: 'project' },
@@ -911,9 +956,10 @@ test('orchestrate-sdk buildBlocksFromTasks: 按项目分组/tool未归属串行/
     { id: 'y', summary: '不可行的活', feasible: false },
     { id: 'z', summary: '', project: '81' },
   ]);
-  // 已完成/不可行/空摘要 -> 被跳过
+  // 模型状态不能删任务；空摘要由原始任务清单兜底。
   assert.ok(Array.isArray(b), 'must return an array of blocks');
-  assert.ok(b.length >= 1, 'must produce at least one block from the remaining tasks');
+  assert.ok(b.length >= 1, 'must produce task blocks');
+  assert.match(JSON.stringify(b),/已完成的活/);assert.match(JSON.stringify(b),/不可行的活/);
   // 含模块映射：摘要提到模块但没写项目号 -> 归位
   const b2 = buildBlocksFromTasks([{ id: 'm', summary: '整理会员管理', kind: 'project' }], { moduleToProj: { 会员管理: '82' } });
   const flat = JSON.stringify(b2);
@@ -962,12 +1008,13 @@ test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', (
     assert.ok(body.includes('$agentArgs = @('), 'launcher must build agentArgs as a PowerShell array literal');
     assert.doesNotMatch(body, /AGENT_ARGS\.split\(" "\)/, 'launcher must NOT split AGENT_ARGS by space (would split space-containing values)');
     assert.ok(body.includes("@('--cd'"), 'launcher must start agentArgs with @(--cd...) array literal');
+    assert.ok(body.includes('--dangerously-bypass-approvals-and-sandbox'), 'authorized Codex TUI must carry the inherited no-prompt permission envelope');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } } }
 });
 ﻿
 // ---------- 深挖边界：extractResult / computeMax / levelWaves / decomposeHash / applyAuthPromptPolicy ----------
 test('extractResult: 忽略非 JSON 行/坏行, 取最后一条 assistant 文本, 空文件安全', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-er-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-er-'));
   try {
     const f = path.join(d, 'r.jsonl');
     fs.writeFileSync(f, '不是JSON\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'A' }] } }) + '\n垃圾行\n' + JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'B' }] } }), 'utf8');
@@ -981,7 +1028,7 @@ test('extractResult: 忽略非 JSON 行/坏行, 取最后一条 assistant 文本
 });
 
 test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不抛错', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rr-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rr-'));
   try {
     const rf = path.join(d, 'r.json');
     fs.writeFileSync(rf, 'not json at all', 'utf8');
@@ -998,15 +1045,15 @@ test('computeMaxWindows: 内存上限/下限边界', () => {
   assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2');
   assert.equal(computeMaxWindows(7), 4, '7G -> round(3.584) -> 4');
   assert.equal(computeMaxWindows(16), 8, '16G -> round(8.192) -> 8');
-  assert.equal(computeMaxWindows(64), 33, '64G -> round(32.768) -> 33');
+  assert.equal(computeMaxWindows(64), 8, '64G -> capped at 8');
   assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
 });
-test('dedicated entry rejects non-Codex hosts without fallback', async () => {
+test('Codex entry rejects unsupported hosts without fallback', async () => {
   const { resolveAgent } = await import(importUrl(path.join(scripts, 'agent.mjs')));
   const prev = process.env.ORCH_AGENT;
   try {
     process.env.ORCH_AGENT = 'unknown';
-    assert.throws(() => resolveAgent(), /codex/i);
+    assert.throws(() => resolveAgent(), /Codex plugin only supports codex/);
     process.env.ORCH_AGENT = 'codex';
     assert.equal(resolveAgent().agent, 'codex');
   } finally {
@@ -1020,7 +1067,7 @@ test('levelWaves: 循环依赖/无依赖/空输入', () => {
     { key: 'B2', title: 'B2', b: {}, dependsOn: ['B1'] },
     { key: 'B3', title: 'B3', b: {}, dependsOn: ['B2'] },
   ];
-  assert.ok(Array.isArray(levelWaves(cyc)), '环依赖不抛错');
+  assert.throws(()=>levelWaves(cyc),/Cyclic dependencies/);
   assert.equal(levelWaves([]).length, 0, '空输入');
   const ind = [{ key: 'B1', title: 'B1', b: {}, dependsOn: [] }, { key: 'B2', title: 'B2', b: {}, dependsOn: [] }];
   assert.equal(levelWaves(ind).length, 1, '无依赖全并行一波');
@@ -1035,7 +1082,7 @@ test('decomposeHash: 相同请求+相同 hints 稳定, 不同 hints 不同', () 
 });
 
 test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 + SDK 逻辑不硬编码绝对路径', () => {
-  const src = fs.readFileSync(path.join(scripts, 'orchestrate-sdk.mjs'), 'utf8');
+  const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   assert.doesNotMatch(src, /ORCH_SUBTASK_DIR/, 'subtask dir must be removed (no shared-file carrier)');
   assert.doesNotMatch(src, /D:\\build\\82/, 'no hardcoded build/82 path in SDK logic');
   assert.equal(applyAuthPromptPolicy('无子句'), '无子句', '无匹配原样');
@@ -1043,7 +1090,7 @@ test('applyAuthPromptPolicy + SDK 路径: 输出契约无 SUBAGENTS_DONE 后缀 
 ﻿
 // ---------- 算法优化回归：readTail / extractResult tail / keysOverlap Set ----------
 test('readTail: 只读尾部窗口, 大文件尾含最终消息; 缺失/空/超小文件安全', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt5-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt5-'));
   try {
     const f = path.join(d, 'big.jsonl');
     const line = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'X' }] } }) + '\n';
@@ -1066,7 +1113,7 @@ test('readTail: 只读尾部窗口, 大文件尾含最终消息; 缺失/空/超�
 });
 
 test('extractResult: 大 rollout 只读尾部也能取到最后一条完成汇报(与全量语义一致)', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-rt6-'));
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt6-'));
   try {
     const f = path.join(d, 'r.jsonl');
     const line = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'middle' }] } }) + '\n';
@@ -1095,7 +1142,7 @@ test('registry tryReserveWindow/commitReservation/cancelReservation: 冲突判�
   const os = await import('node:os');
   const fs = await import('node:fs');
   const path2 = await import('node:path');
-  const root = fs.mkdtempSync(path2.join(os.tmpdir(), 'orch-reg-'));
+  const root = fs.mkdtempSync(path2.join(fixtureFamily, 'orch-reg-'));
   const db = path2.join(root, 'windows.json');
   // 固定时间轴，便于测 TTL 过期
   let fakeNow = 1_000_000;
@@ -1149,11 +1196,29 @@ test('registry tryReserveWindow/commitReservation/cancelReservation: 冲突判�
   }
 });
 
+test('registry malformed state fails closed instead of bypassing capacity checks', async () => {
+  const fs = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = fs.mkdtempSync(path2.join(fixtureFamily, 'orch-reg-corrupt-'));
+  const db = path2.join(root, 'windows.json');
+  fs.writeFileSync(db, '{not-json', 'utf8');
+  __setOrchHooks({ db, alive: () => true, lock: (fn) => fn(), now: () => Date.now() });
+  try {
+    assert.throws(
+      () => tryReserveWindow({ id: 'W-corrupt', title: 'corrupt', keys: ['file:D:/a'], pending: true, pid: 0, reservedAt: Date.now() }),
+      /Invalid orchestration state/,
+    );
+  } finally {
+    __setOrchHooks(null);
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 test('extractUsage: 从 rollout JSONL 累积真实 token usage（input/prompt、output/completion、cached、total，容错字段名）', async () => {
   const os = await import('node:os');
   const fs = await import('node:fs');
   const path2 = await import('node:path');
-  const root = fs.mkdtempSync(path2.join(os.tmpdir(), 'orch-usage-'));
+  const root = fs.mkdtempSync(path2.join(fixtureFamily, 'orch-usage-'));
   const f = path2.join(root, 'rollout.jsonl');
   // 三行：response_item assistant 带 usage(input_tokens/output_tokens/cached)，payload usage(prompt_tokens/completion_tokens)，纯 response usage(total_tokens)
   const lines = [
@@ -1194,7 +1259,7 @@ test('resolveCodexHome: 环境变量优先，未设回退 homedir/.codex（跨�
 
 test('isOrchestratorSelfMod: 通用化识别自引用(编排/调度/TUI窗/源码, 中英文)，不误判普通页面修复', () => {
   // 自引用命中：中英文均可
-  assert.equal(isOrchestratorSelfMod('修复 codex-TUI-orchestrator 的编排逻辑'), true, 'en self-ref');
+  assert.equal(isOrchestratorSelfMod('修复 open-tui-orchestrator 的编排逻辑'), true, 'en self-ref');
   assert.equal(isOrchestratorSelfMod('优化调度窗的关窗逻辑'), true, 'zh 调度窗 self-ref');
   assert.equal(isOrchestratorSelfMod('改 orchestrate-sdk.mjs 的源码'), true, 'sdk path self-ref');
   assert.equal(isOrchestratorSelfMod('加固 orchestrator 的并发稳定性'), true, 'orchestrator hardening');

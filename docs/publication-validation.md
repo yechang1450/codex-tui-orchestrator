@@ -1,0 +1,11 @@
+# Publication completeness and existing-release preservation
+
+The publisher now rechecks mandatory README, LICENSE and skill entry files in its staged copy after release-integrity verification and before renaming that directory to the final destination. Checking only the original source did not detect a mandatory non-runtime file omitted during copying. The failure reports `Staged package missing required`, removes only the staging directory it created and leaves existing releases untouched.
+
+`test/release-package.test.mjs` injects omission of README and LICENSE separately. Each case requires a nonzero exit, no final package or leftover staging directory, and an unchanged, valid previously published package. A subsequent publication to a fresh version directory must succeed. Existing coverage also injects an explicit copy failure, rejects changed runtime contents and refuses to overwrite an existing release. The previously published package still passes its doctor check with the tested SDK fixture installed.
+
+Use a fresh version directory for each publication. `repair.mjs --target` creates a package; it does not change the desktop plugin manager's active-version selection. Existing versions remain independently usable by their absolute entry paths. These tests establish package preservation and repeatable publication, not an actual plugin-manager upgrade or rollback. Activation, fresh-user installation and rollback through the real plugin manager remain unverified.
+
+The publisher is now exercised against the current 1.3.1 candidate as well as the historical 1.2.3 fixture. The current package record in [current package validation](../test/current-package-validation.json) captures the exact source and published paths, core/runtime counts, hash equality, locked-SDK install, doctor, status, repair and cleanup checks. The real desktop plugin-manager activation and rollback remain explicitly unverified; package publication does not silently imply manager state.
+
+The historical publisher regression remains available in [publication validation results](../test/publication-stability-1.2.3.json). Its 1.2.3 label identifies the evidence fixture and does not describe the current execution core.

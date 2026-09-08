@@ -1,11 +1,11 @@
 {
-  "name": "codex-TUI-orchestrator",
-  "version": "0.4.38+codex.20260906072601",
+  "name": "codex-tui-orchestrator",
+  "version": "0.4.40-rc.1",
   "description": "把多部分请求按并发冲突拆成 linked/independent 块，通过可见自动关闭的 Codex TUI 窗并发执行（独立并行、联动串行）。Use when 涉及写/建/装/测/重启等真实执行且需并发；只读分析留在主对话不弹窗。",
   "author": {
     "name": "Yang Wenchàng"
   },
-  "homepage": "https://github.com/",
+  "homepage": "https://github.com/yechang1450/agent-tui-orchestrator",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -26,9 +26,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/",
-    "privacyPolicyURL": "https://github.com/",
-    "termsOfServiceURL": "https://github.com/",
+    "websiteURL": "https://github.com/yechang1450/agent-tui-orchestrator",
+    "privacyPolicyURL": "https://github.com/yechang1450/agent-tui-orchestrator/blob/master/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/yechang1450/agent-tui-orchestrator/blob/master/docs/terms.md",
     "brandColor": "#6A3DE8",
     "composerIcon": "./assets/icon.png",
     "logo": "./assets/icon.png",

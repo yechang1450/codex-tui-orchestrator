@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "testedAt": "2026-09-07T11:55:00+08:00",
+  "coreVersion": "1.3.1",
+  "coreHash": "b3a07da7c37455d5c1cdc52c008972deb4b4630dd09a68e3622ed6ea70d48d1f",
+  "source": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-tui-orchestrator",
+  "controlledScenarios": [
+    {
+      "id": "response-reset-after-side-effect",
+      "result": "pass",
+      "testFile": "test/recovery-runtime.test.mjs",
+      "tests": 1,
+      "sideEffectCount": 1,
+      "requestCount": 1,
+      "uncertainStatusPreserved": true,
+      "blindRetry": false,
+      "independentReconciliationRequired": true
+    },
+    {
+      "id": "response-timeout-after-side-effect",
+      "result": "pass",
+      "testFile": "test/recovery-runtime.test.mjs",
+      "tests": 1,
+      "sideEffectCount": 1,
+      "requestCount": 1,
+      "uncertainStatusPreserved": true,
+      "blindRetry": false,
+      "independentReconciliationRequired": true
+    },
+    {
+      "id": "partial-process-retry",
+      "result": "pass",
+      "testFile": "test/recovery-runtime.test.mjs",
+      "tests": 1,
+      "completedSideEffectRepeated": false,
+      "retryAttemptBounded": true,
+      "resumeOpensNewWindow": false
+    }
+  ],
+  "suiteRuns": [
+    {"implementation": "codex-tui-orchestrator", "tests": 7, "passed": 7, "failed": 0},
+    {"implementation": "open-tui-orchestrator", "tests": 4, "passed": 4, "failed": 0}
+  ],
+  "unverifiedScenarios": [
+    {"id": "prolonged-provider-outage", "reason": "No extended external-provider outage was induced; the current live run stopped at the account usage limit."},
+    {"id": "windows-restart", "reason": "The host was not rebooted during this validation session; no reboot result is inferred."},
+    {"id": "full-controller-crash-live-adoption-current-core", "reason": "The current real eight-window run was incomplete before model receipts; controlled recovery coverage passed, but no current-core model adoption claim is made."}
+  ]
+}

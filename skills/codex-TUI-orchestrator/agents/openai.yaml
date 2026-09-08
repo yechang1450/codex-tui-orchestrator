@@ -4,6 +4,6 @@ interface:
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.svg"
   brand_color: "#6A3DE8"
-  default_prompt: "Use $codex-TUI-orchestrator to split this multi-part real task into independent/linked blocks and run them in visible parallel Codex TUI windows."
+  default_prompt: "Use $codex-tui-orchestrator (legacy $codex-TUI-orchestrator) to split this multi-part real task into independent/linked blocks and run them in visible parallel Codex TUI windows."
 policy:
   allow_implicit_invocation: true

@@ -1,0 +1,263 @@
+{
+  "testedAt": "2026-09-06T09:31:56.516Z",
+  "passed": true,
+  "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
+  "workspace": "D:\\",
+  "stateDirectory": "D:\\temp\\orchestrator",
+  "terminal": "wt",
+  "capacity": 8,
+  "peak": 8,
+  "totalWindows": 8,
+  "distinctLaunchers": 8,
+  "blocks": 8,
+  "tasks": 9,
+  "receiptsValid": true,
+  "serialOverflowVerified": true,
+  "overlapMilliseconds": 16621,
+  "engineExitCode": 0,
+  "strictPollExitCode": 0,
+  "finalAliveWindows": 0,
+  "offlineTestsPassed": 91,
+  "policyEvidence": [
+    {
+      "session": "rollout-2026-09-06T17-26-40-01a0760a-9681-70c2-8293-d75497dbd5ea.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-26-42-01a0760a-9daf-7f01-8624-c4540594e0a4.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-26-45-01a0760a-a7fe-7731-a939-d196c568a097.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-26-48-01a0760a-b474-7c50-a277-00ca494e5f0b.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-26-51-01a0760a-c2df-7893-93e4-9c3bf555872a.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-26-56-01a0760a-d3d3-7481-b017-6d94fbd7b97d.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-27-01-01a0760a-e708-77a1-8d15-e90a25920187.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    },
+    {
+      "session": "rollout-2026-09-06T17-27-07-01a0760a-fe00-7552-b2f0-6d8ffab2e9b4.jsonl",
+      "cwd": "D:\\",
+      "approval": "never",
+      "sandbox": "danger-full-access",
+      "approvalRequests": 0
+    }
+  ],
+  "results": [
+    {
+      "id": "91",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 3396,
+      "started": 1788686924362,
+      "finished": 1788686963886,
+      "sum": 50005000
+    },
+    {
+      "id": "92",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 32156,
+      "started": 1788686922319,
+      "finished": 1788686963886,
+      "sum": 50005000
+    },
+    {
+      "id": "93",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 8564,
+      "started": 1788686923235,
+      "finished": 1788686963762,
+      "sum": 50005000
+    },
+    {
+      "id": "94",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 4332,
+      "started": 1788686927417,
+      "finished": 1788686963932,
+      "sum": 50005000
+    },
+    {
+      "id": "95",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 34344,
+      "started": 1788686932214,
+      "finished": 1788686963559,
+      "sum": 50005000
+    },
+    {
+      "id": "96",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 32276,
+      "started": 1788686935186,
+      "finished": 1788686963512,
+      "sum": 50005000
+    },
+    {
+      "id": "97",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 24124,
+      "started": 1788686939908,
+      "finished": 1788686963590,
+      "sum": 50005000
+    },
+    {
+      "id": "98",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 6588,
+      "started": 1788686946891,
+      "finished": 1788686963963,
+      "sum": 50005000
+    },
+    {
+      "id": "99",
+      "cwd": "D:\\",
+      "nonce": "df637988-1f5a-4002-8185-c41d8823c5f3",
+      "pid": 13220,
+      "started": 1788686974904,
+      "finished": 1788686989923,
+      "sum": 50005000
+    }
+  ],
+  "overlapEvidence": {
+    "at": 1788686948454,
+    "live": [
+      {
+        "title": "B1:capacity-1",
+        "launcherPid": 28744,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          33112
+        ]
+      },
+      {
+        "title": "B2:capacity-2",
+        "launcherPid": 30100,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          31368
+        ]
+      },
+      {
+        "title": "B3:capacity-3",
+        "launcherPid": 30548,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          976
+        ]
+      },
+      {
+        "title": "B4:capacity-4",
+        "launcherPid": 31796,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          29516
+        ]
+      },
+      {
+        "title": "B5:capacity-5",
+        "launcherPid": 30156,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          14584
+        ]
+      },
+      {
+        "title": "B6:capacity-6",
+        "launcherPid": 28648,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          31648
+        ]
+      },
+      {
+        "title": "B7:capacity-7",
+        "launcherPid": 22688,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          15480
+        ]
+      },
+      {
+        "title": "B8:capacity-8",
+        "launcherPid": 528,
+        "launcherParentPid": 4860,
+        "codexPids": [
+          5988
+        ]
+      }
+    ],
+    "ready": [
+      "91",
+      "92",
+      "93",
+      "94",
+      "95",
+      "96",
+      "97",
+      "98"
+    ]
+  },
+  "engineSha256": "bd182650244d9343134cce6de6b1ff91f8c083ffd6c756e424a156643ded95f7",
+  "previousAcceptance": {
+    "passed": true,
+    "tasks": 9,
+    "cleanup": {
+      "currentStatus": "blocked_by_policy",
+      "currentRunDirectories": [
+        "D:\\temp\\capacity-live-cfcffebefdf",
+        "D:\\temp\\capacity-live-daadfbbddcea"
+      ],
+      "priorPolicyBlockedDirectories": [
+        "D:\\temp\\capacity-live-cbcfccfadaf",
+        "D:\\temp\\capacity-live-bebacefaed",
+        "D:\\temp\\capacity-live-cccedafea",
+        "D:\\temp\\capacity-live-ffdadeeabadbdd"
+      ]
+    }
+  },
+  "cleanup": {
+    "directory": "D:\\temp\\capacity-live-afebccfcafdcecc",
+    "status": "blocked_by_host_policy"
+  }
+}

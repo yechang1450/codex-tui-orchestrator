@@ -1,0 +1,2 @@
+# Release seals hash exact bytes, including PowerShell BOM and line endings.
+* -text

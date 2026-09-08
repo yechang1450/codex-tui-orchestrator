@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "testedAt": "2026-09-07T17:23:18.277Z",
+  "purpose": "两套编排器的 Codex Security 标准源代码审计与本地回归证据",
+  "scans": [
+    {
+      "implementation": "codex-tui-orchestrator",
+      "scanId": "2350bc0e-afa1-451e-a746-8b36e917ee8c",
+      "status": "complete",
+      "targetPath": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-tui-orchestrator",
+      "targetRevision": "628a747787602cccaa123c74d380a1182df112d3",
+      "scanDirectory": "C:\\Users\\fixture-user\\AppData\\Local\\Temp\\codex-security-scans-P6lbLM\\codex-TUI-orchestrator\\628a747787602cccaa123c74d380a1182df112d3_20260907T090151Z_78w6b78i",
+      "coreHashAtEvidence": "b3a07da7c37455d5c1cdc52c008972deb4b4630dd09a68e3622ed6ea70d48d1f",
+      "filesReviewedByAudit": 19,
+      "findings": 0,
+      "coverage": "partial",
+      "reportAvailable": true,
+      "snapshotWarning": "安全工作台报告针对原始快照；工作台运行期间工作区发生了后续改动，最新改动另由本地回归覆盖。",
+      "reportPath": "C:\\Users\\fixture-user\\AppData\\Local\\Temp\\codex-security-scans-P6lbLM\\codex-TUI-orchestrator\\628a747787602cccaa123c74d380a1182df112d3_20260907T090151Z_78w6b78i\\report.md",
+      "independentBaseline": "unavailable: the requested baseline worker could not start under the available model capacity"
+    },
+    {
+      "implementation": "open-tui-orchestrator",
+      "scanId": "7f121996-73fe-4b81-bbce-2d02c9cdc0f6",
+      "status": "complete",
+      "targetPath": "<user-home>/.tools/open-tui-orchestrator",
+      "targetRevision": "52fb3b5364f9271daa88e3585c20255cb07a347b",
+      "scanDirectory": "<user-home>/AppData/Local/Temp/codex-security-scans-ctUkp7/open-tui-orchestrator/52fb3b5364f9271daa88e3585c20255cb07a347b_20260907T171659Z_tmt2x1yo",
+      "coreHashAtEvidence": "4941eff879b20fad33c710f3b32f70ded36bd3fe7c94f3a469fead4da3844e4c",
+      "evidenceStatus": "historical-core",
+      "currentCoreHash": "6559062bdcf1a3ed5a8436678c54c5ce4a2dc3382a38470935e5850e013731e0",
+      "filesReviewedByAudit": 24,
+      "findings": 0,
+      "coverage": "partial",
+      "reportAvailable": true,
+      "snapshotWarning": "安全工作台报告绑定核心门控改动之前的源码快照；当前核心哈希已单独记录，需完成复扫后才能恢复 current-core 标记。独立基线和长期环境验收仍需单独补齐。",
+      "reportPath": "<user-home>/AppData/Local/Temp/codex-security-scans-ctUkp7/open-tui-orchestrator/52fb3b5364f9271daa88e3585c20255cb07a347b_20260907T171659Z_tmt2x1yo/report.md",
+      "independentBaseline": "unavailable: the requested baseline worker could not start under the available model capacity"
+    }
+  ],
+  "localRegression": {
+    "dedicatedFocused": {
+      "tests": 153,
+      "passed": 153,
+      "failed": 0
+    },
+    "genericFocused": {
+      "tests": 149,
+      "passed": 149,
+      "failed": 0
+    }
+  },
+  "limitations": [
+    "两份安全扫描均完成并发现 0 个可报告问题；覆盖报告保留独立基线和长期环境验收的未闭合项。",
+    "独立基线代理因模型容量不可用，没有第二条独立扫描基线。",
+    "长期 provider 中断、Windows 重启、全新用户安装和插件管理器升级/回滚仍是发行前环境门槛。"
+  ]
+}

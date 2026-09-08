@@ -1,0 +1,110 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {spawn} from 'node:child_process';
+import http from 'node:http';
+import {fileURLToPath} from 'node:url';
+import {runWindows,collectVerification,verifyRun,waitForProcessExit} from '../scripts/core/runner.mjs';
+import {recordCheckpoint,readCheckpoints} from '../scripts/core/checkpoint.mjs';
+import {claimRun,releaseRun} from '../scripts/core/leases.mjs';
+const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+const pause=ms=>new Promise(r=>setTimeout(r,ms));
+test('launcher exit verification tolerates a short process teardown race',async()=>{
+ const expected={ProcessId:7,Name:'powershell.exe',Started:'s',CommandLine:'win-launch-test.ps1'};let calls=0;
+ const gone=await waitForProcessExit(expected,{timeoutMs:200,intervalMs:10,snapshot:()=>calls++===0?new Map([[7,expected]]):new Map()});
+ assert.equal(gone,true);
+ const stuck=await waitForProcessExit(expected,{timeoutMs:20,intervalMs:10,snapshot:()=>new Map([[7,expected]])});
+ assert.equal(stuck,false);
+});
+test('checkpoint refuses duplicate execution and completion without a start record',()=>{
+ fs.mkdirSync(family,{recursive:true});const d=fs.mkdtempSync(path.join(family,'checkpoints-'));
+ try{const f=path.join(d,'attempt.json');fs.writeFileSync(f,JSON.stringify({runId:'r',token:'t',taskIds:['T1']}));
+  assert.throws(()=>recordCheckpoint(f,'T1','completed'),/started/);recordCheckpoint(f,'T1','started');
+  assert.throws(()=>recordCheckpoint(f,'T1','started'),/already started/);recordCheckpoint(f,'T1','completed');
+  assert.throws(()=>recordCheckpoint(f,'T1','started'),/already completed/);assert.throws(()=>recordCheckpoint(f,'other','started'),/Invalid/);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('checkpoint identity stays anchored to the controller ledger and rejects foreign previous records',()=>{
+ fs.mkdirSync(family,{recursive:true});const d=fs.mkdtempSync(path.join(family,'checkpoint-identity-'));
+ try{
+  const f=path.join(d,'attempt.json'),expected={runId:'original',token:'original-token',taskIds:['T1']};
+  fs.writeFileSync(f,JSON.stringify(expected));recordCheckpoint(f,'T1','started');
+  const cp=path.join(d,'checkpoints','T1.json'),original=fs.readFileSync(cp,'utf8');
+  for(const change of [{runId:'foreign'},{token:'foreign'},{id:'T2'},{state:'unexpected'}]){
+   fs.writeFileSync(cp,JSON.stringify({...JSON.parse(original),...change}));
+   const before=fs.readFileSync(cp,'utf8');
+   assert.throws(()=>recordCheckpoint(f,'T1','completed'),/Invalid checkpoint identity or state/);
+   assert.equal(fs.readFileSync(cp,'utf8'),before);
+  }
+  fs.writeFileSync(cp,original);
+  assert.equal(readCheckpoints(f,expected).T1.state,'started');
+  for(const change of [{runId:'foreign'},{token:'foreign'},{taskIds:[]},{taskIds:['T2']}]){
+   fs.writeFileSync(f,JSON.stringify({...expected,...change}));
+   assert.throws(()=>readCheckpoints(f,expected),/Attempt identity mismatch/);
+   const sum={runId:expected.runId,blocks:[{key:'B1',taskIds:['T1']}],results:{B1:{endedAt:1,attempts:[{...expected,file:f}]}},taskResults:{}};
+   collectVerification(sum,{},d);
+   assert.equal(sum.taskResults.T1.status,'needs-reconciliation');
+   assert.equal(sum.results.B1.status,'needs-reconciliation');
+  }
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('two controllers cannot own the same run concurrently',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'run-claim-'));let claim;
+ try{claim=claimRun(d,'run');assert.throws(()=>claimRun(d,'run'),/live controller/);releaseRun(d,'run',claim);claim=claimRun(d,'run');}
+ finally{if(claim)releaseRun(d,'run',claim);await pause(500);fs.rmSync(d,{recursive:true,force:true});}
+});
+for(const fault of ['safe-retry','response-reset','response-timeout'])test('actual recovery without duplicate side effects: '+fault,async()=>{
+ const d=fs.mkdtempSync(path.join(family,'recover-process-')),attempts=[],children=[];
+ let requests=0,server,endpoint='';
+ if(fault!=='safe-retry'){
+  server=http.createServer((req,res)=>{requests++;fs.writeFileSync(path.join(d,'remote.json'),JSON.stringify({count:requests}));if(fault==='response-reset')res.destroy();});
+  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
+  endpoint='http://127.0.0.1:'+server.address().port;
+ }
+ const lit=s=>"'"+s.replaceAll("'","''")+"'";
+ const worker=path.join(d,'worker.mjs');
+ fs.writeFileSync(worker,`import fs from 'node:fs';import path from 'node:path';import {recordCheckpoint} from ${JSON.stringify(new URL('../scripts/core/checkpoint.mjs',import.meta.url).href)};
+ const [file,rf,root]=process.argv.slice(2),a=JSON.parse(fs.readFileSync(file));
+ while(!fs.existsSync(rf+'.go'))await new Promise(r=>setTimeout(r,20));
+ for(const id of a.taskIds){recordCheckpoint(file,id,'started');
+ if(id==='T001'){const f=path.join(root,'count.json');const count=fs.existsSync(f)?JSON.parse(fs.readFileSync(f)).count:0;fs.writeFileSync(f,JSON.stringify({count:count+1}));}
+ if(id==='T002'&&${JSON.stringify(fault)}!=='safe-retry'){
+  try{await fetch(${JSON.stringify(endpoint)},{method:'POST',signal:AbortSignal.timeout(500)});throw new Error('Expected transport failure');}
+  catch(error){fs.writeFileSync(path.join(root,'transport-error.json'),JSON.stringify({name:error.name,message:error.message}));}
+  fs.writeFileSync(rf,JSON.stringify({exitCode:23}));process.exit(23);
+ }
+ if(id==='T002'&&a.number===1){fs.writeFileSync(rf,JSON.stringify({exitCode:23}));process.exit(23);}
+ if(id==='T002')fs.writeFileSync(path.join(root,'done.json'),JSON.stringify({done:true}));
+ recordCheckpoint(file,id,'completed');}
+ fs.writeFileSync(rf,JSON.stringify({exitCode:0}));`);
+ const checks=path.join(d,'acceptance.json');fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'count.json',equals:{count:1}}],T002:{retrySafe:fault==='safe-retry',checks:[{type:'json',path:'done.json',equals:{done:true}}]}}));
+ const hooks={plan:async()=>[{title:'linked',type:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
+  launcher:(key,prompt,suffix)=>{const file=/开始前：node "[^"]+" "([^"]+)"/.exec(prompt)[1];attempts.push(JSON.parse(fs.readFileSync(file)).taskIds);
+   const pidf=path.join(d,'window-'+suffix+'.pid'),lp=path.join(d,'win-launch-'+suffix+'.ps1'),rf=path.join(d,suffix+'.result');
+   fs.writeFileSync(lp,'\ufeff'+`$PID | Set-Content -LiteralPath ${lit(pidf)} -Encoding UTF8\n& ${lit(process.execPath)} ${lit(worker)} ${lit(file)} ${lit(rf)} ${lit(d)}\nexit 0`);return{pidf,lp,rf};},
+  spawn:async(lp,_title,pidf)=>{const child=spawn('powershell.exe',['-NoProfile','-File',lp],{windowsHide:true,stdio:'ignore'});children.push(child);const end=Date.now()+15000;while(!fs.existsSync(pidf)&&Date.now()<end)await pause(20);return fs.existsSync(pidf);},
+  readPid:p=>fs.existsSync(p)?Number(fs.readFileSync(p,'utf8').replace(/^\uFEFF/,'')):0,
+  session:async()=> 'controlled',wait:async(_session,_timeout,rf)=>{fs.writeFileSync(rf+'.go','go');const end=Date.now()+15000;while(!fs.existsSync(rf)&&Date.now()<end)await pause(20);return {done:fs.existsSync(rf),exitCode:JSON.parse(fs.readFileSync(rf)).exitCode};},
+  exitCode:rf=>fs.existsSync(rf)?JSON.parse(fs.readFileSync(rf)).exitCode:null,
+  register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},close:async()=>{await pause(300);},
+ };
+ try{const opts={workspace:d,capacity:8,runId:'partial',acceptanceFile:checks,coordinator:path.join(d,'temp','coordinator'),auth:'test'};
+  const sum=await runWindows('执行甲；执行乙',hooks,opts);
+  if(fault!=='safe-retry'){
+   assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation');
+   assert.equal(requests,1);assert.deepEqual(attempts,[['T001','T002']]);
+   const transport=JSON.parse(fs.readFileSync(path.join(d,'transport-error.json')));
+   assert.equal(transport.name,fault==='response-timeout'?'TimeoutError':'TypeError');
+   const resumed=await runWindows('',hooks,{...opts,resume:true});
+   assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(requests,1);assert.equal(attempts.length,1);
+   const reconciled=JSON.parse(fs.readFileSync(checks));reconciled.T002={checks:[{type:'json',path:'remote.json',equals:{count:1}}]};
+   fs.writeFileSync(checks,JSON.stringify(reconciled));assert.equal(verifyRun(d,'partial',checks),true);
+   const verified=await runWindows('',hooks,{...opts,resume:true});assert.equal(verified.success,true);
+   assert.equal(requests,1);assert.equal(attempts.length,1);assert.equal(JSON.parse(fs.readFileSync(path.join(d,'count.json'))).count,1);
+   return;
+  }
+  assert.equal(sum.success,true,JSON.stringify(sum.results));assert.deepEqual(attempts,[['T001','T002'],['T002']]);assert.equal(JSON.parse(fs.readFileSync(path.join(d,'count.json'))).count,1);
+  const recovered=await runWindows('',hooks,{...opts,resume:true});assert.equal(recovered.success,true);assert.equal(attempts.length,2,'verified resume must open no new window');
+ }finally{for(const child of children)if(child.exitCode===null)child.kill();if(server){server.closeAllConnections();await new Promise(resolve=>server.close(resolve));}await pause(500);fs.rmSync(d,{recursive:true,force:true});}
+});

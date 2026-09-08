@@ -1,0 +1,35 @@
+{
+  "coreVersion": "1.2.3",
+  "recordedAt": "2026-09-06T15:29:19.075Z",
+  "releaseManifestSha256": "c422cfe9be00f11c66f247e29b8b8b40c099713fb00f395794c8b64829040ec7",
+  "suites": [
+    {
+      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "tests": 135,
+      "passed": 135,
+      "failed": 0
+    },
+    {
+      "root": "<user-home>/.codex/plugins/cache/personal/codex-TUI-orchestrator/0.4.38+codex.20260906072601",
+      "tests": 135,
+      "passed": 135,
+      "failed": 0
+    }
+  ],
+  "faultVariants": 16,
+  "assertions": [
+    "resume invokes no execution hook for damaged ledger",
+    "resume and verify preserve corrupted summary and acceptance files",
+    "normal Windows process recovery does not repeat completed side effects"
+  ],
+  "historicalLedgersValidatedReadOnly": [
+    "recovery-aa516a22-1447-4ffb-b70c-ebe19cc73019",
+    "acceptance-dbdc89ad-d836-440c-bc04-62d7a137eba4",
+    "recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8"
+  ],
+  "limitations": [
+    "No new model-driven eight-window acceptance for this core",
+    "No prolonged-outage, reboot or fresh-user acceptance",
+    "Structural consistency is not authentication or reconstruction of deleted evidence"
+  ]
+}

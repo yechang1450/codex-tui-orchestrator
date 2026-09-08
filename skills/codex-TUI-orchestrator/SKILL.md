@@ -1,135 +1,54 @@
 ---
-name: codex-TUI-orchestrator
-description: 把多部分请求按并发冲突拆成 linked/independent 块，通过可见自动关闭的 Codex TUI 窗真实并发执行（独立并行、联动串行）；纯只读/分析自动 inline 不弹窗。Use when a request contains several real, executable steps that should run concurrently without conflict; read-only analysis stays inline.
+name: codex-tui-orchestrator
+description: Use when codex-TUI-orchestrator receives an authorized multi-part request needing conflict/dependency-based visible Codex TUI execution with independent verification; 只读分析和修改编排器自身留在主对话。
 ---
-# Codex TUI Orchestrator（多合一 · 单 skill 承载全部能力）
 
-引擎在插件根目录的 `scripts/orchestrate-sdk.mjs`；本 skill 是**唯一入口**，把全部编排能力（拆块分类 / 冲突锁 / 依赖排序 / 原型门禁 / 注册表 / 窗口运行时 / 结果汇聚 / 执行门禁 / 拆块缓存 / 清洁 / 归因验证）**内嵌为一套**，适用时由宿主权限与用户请求约束。
+# Codex TUI Orchestrator
 
-## 何时弹窗 / 何时 inline
-- **只读 / 纯分析 / 纯方案 / 纯解答** → 留在主对话内联，**不弹窗**。`--run-windows` 入口已有确定性只读门禁（命中只读词且无真实动作词→直接 inline、exit 0）。
-- **真实执行**（写/改/建/装/测/重启/删/起停/配置/还原/解耦等） → 必须先交给 `--run-windows` 拆块定性：**能拆出 2+ 并行块 → 弹可见 TUI 窗并发/串行**；**单一/串行块 → autosafe 判 inline 就地执行（不弹窗）**，确需盯单任务用 SDK `--spawn` 弹单窗。**禁止**用 headless `--run/--exec` 做真实改动（`ORCH_ALLOW_HEADLESS=1` 仅是纯自动化逃生门）。
+本插件仅支持 Codex CLI。其它 Agent 由独立的 open-tui-orchestrator 实现适配。专用插件持有固定核心快照，不得链接通用开发目录；启动时按 release.json 检查核心完整性。
 
-## 使用纪律（遵守宿主规则与用户授权）
-仅在请求适合多窗编排时使用本技能，不接管其它任务。只读分析留在主对话；修改编排器自身必须 inline。技能不能扩大授权、绕过审批或覆盖宿主规则。
-1. **一轮全量交付**：每轮把全部可执行任务纳入同一个 `--run-windows`，一次性并发/串行拉起，禁止「逐个串行、挑几项、下轮再做」。
-2. **保轮询**：`--run-windows` 之后**必须**运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`；只有它返回 0 才能结束本轮（全部块 status ∈ 成功集）。非 0=仍有未成功→继续等/重试/如实上报，绝不提前收尾。
-3. **每窗自查 + 只出识别码**：每窗结束前必须完成读回/回归/无乱码自验，最后**只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**；执行结束即 `done`（不等同于成功），是否达成 prompt 预期由主控关窗后核对真实落盘状态。
-4. **不得先问是否执行**：凡真实执行且用户已授权（出现「继续/全面推进/允许执行/同意」等），直接 `--run-windows`，严禁「要不要我弹窗/需要授权吗」类二次确认。
-5. **适用范围**：仅处理用户指定或明显适合并行拆分的多部分任务；不要强制把所有单文件改动也路由到编排器。
-6. **父进程复核**：全部窗关闭后，父进程用 `--verify` 或读回目标文件独立核验真实落盘，不信窗内自报；不一致→以盘面为准并纠正。
-7. **执行彻底**：凡 `--run-windows` 已拉起或能并入本轮的全部可执行任务，必须本轮做完、验证完、收尾完。
-8. **留痕**：遵循工作区既有约定，仅使用当地已安装且适用的技能；不假定任意宿主都有个人技能。
-9. **orchestrator 自身改动永远优先于并独立于所有 TUI 窗**：凡属改 `orchestrate-sdk.mjs` / codex-TUI-orchestrator 自身的请求，**必须先在本发起对话中 inline 就地改完并验证**，再据此发起并发 TUI 窗；`--run-windows` 遇到此类请求会**强制返回 inline、不弹窗**（TUI 窗依赖 SDK，改 SDK 的窗其自身的 watchdog/关窗也依赖被改的 SDK，会出现「改它的窗自己关不掉」）。同时**不得改变底层设计**——「按并发冲突拆 linked/independent 块、实现无冲突同步并发」是根本，不能改为其它并发模型。
-10. **TUI 窗使用已核验的 Codex 原生 CLI**：不自动安装，不回退其它宿主。模型配置由 CLI 自身读取；主控若有会话级覆盖，显式传 ORCH_MODEL/ORCH_EFFORT。沙箱和审批由调用方显式传 ORCH_SANDBOX/ORCH_APPROVAL，否则使用 workspace-write/on-request；不自动改写目录信任。
-11. **窗内先检查再执行**：在上下文列 TODO LIST（目标、依赖、动作、验证、收尾）；不强制另建清单文件。不得先写后查，失败或缺少授权时如实报告。
-12. **窗内不使用子代理（硬性）**：orchestrator 发起的每个 TUI 窗**不再使用子代理**（`spawn_agent`/共享任务文件/等子代理/`SUBAGENTS_DONE` 后缀一律不用）。所有工作由该窗自己直接完成；任务需重新拆分时由主控调度，窗内不得递归开窗。可靠并行 = 多窗，任务完成判定 = 窗内最终落盘产物。（codex GUI 是否用子代理与本插件无关。）
+## 使用范围与授权
 
-## 内嵌能力（11 项，全部恒启用、无开关）
-| 能力 | 职责 |
-|---|---|
-| 拆块分类 | 请求→linked/independent 块 + 只读→inline 门禁 |
-| 冲突锁 | 活窗资源冲突→等待/上锁/重跑；弹窗前**原子占位**（跨进程同键防「检查-弹窗」间隙竞态） |
-| 依赖排序 | dependsOn 前置顺序/串行 |
-| 原型门禁 | L1 空判 + L2 复杂度识别（确定性，不单开 LLM）；可行性已由拆块 LLM 判定 |
-| 注册表 | 跨进程 windows/locks + 互斥；`pending` 占位窗（pid=0，超 120s 自动作废）也参与冲突判定 |
-| 窗口运行时 | launcher/spawn/watchdog/close + 汇报捕获（`ORCH_TUI=wt/conhost`、`ORCH_CLOSE_DELAY_MS`）|
-| 结果汇聚 | poll-windows 保轮询契约（常开）|
-| 执行门禁 | armed/assert/kind fail-closed + headless 硬关 |
-| 拆块缓存 | 相同请求缓存 + `--clear-cache` |
-| 清洁 | 用完即弃清临时（`ORCH_KEEP_TEMP` 排查用）|
-| 归因验证 | `--verify` 冲突键归因（只读诊断）|
+- 只读分析、方案及编排器自身修改在主对话执行。
+- 适合拆分的真实任务使用 --run-windows；独立块并发，冲突或依赖任务串行。需要单独可见窗口时使用 --spawn。
+- 用户已授权时直接执行，不重复询问是否批准窗口。窗口使用 never；技能不能覆盖宿主工具限制。
+- 不用 headless --run/--exec 代替可见 TUI。窗内不得递归编排或另开窗口。
+- 默认 ORCH_TUI=wt，使用 Windows Terminal 承载可见 TUI；内部仍使用 PowerShell 启动脚本管理执行生命周期。ORCH_TUI=inactive 仅为显式传统控制台选项，不主动切换用户窗口；它也不能保证完全避免焦点变化，见 docs/inactive-windows.md。
 
-## 能力细节（内嵌实现约定）
-### 拆块分类
-- 两段式：**LLM 先定性**（扁平任务清单 `{tasks:[{id,summary,kind,project,conflict_hints,depends_on,feasible,already_done}]}`，字段少、禁工具、纯 JSON）→ **确定性分块引擎**（代码按 project 分组、工具独立、模块→项目 hint 归位、依赖映射、可行性过滤）。
-- 模块→项目 hint 经 `ORCH_TASK_HINTS`（JSON 映射，如 `{"会员管理":"82"}`）传入，把「没写项目号但属于某项目」的任务归位。
-- 入口只读门禁：明显两端走确定性快判，歧义交 LLM；fail-safe 判真实执行。
-- **autosafe 检测**：拆成单一/串行块时，不弹窗，返回 `{"mode":"inline",...}` 由发起对话就地串行执行。
-- 触发：任一 `--run-windows` 请求。
+## 目录和容量
 
-### 冲突锁
-- 与**正在运行的窗**比对 conflictKeys；重叠→等待其关闭；仍冲突→上锁（`locked` 终态，不误窗）；冲突释放→自动重跑。
-- 弹窗前在独占锁内先写 `pending` 占位（pid=0、保留 pidFile），弹出成功再提交真实 pid；`pending` 新鲜占位对其它编排进程视为已占用，杜绝两个进程同时通过检查后弹同键窗。
-- 触发：`--run-windows` 每次 spawn 前，以及同批窗口之间。
-- 依赖：注册表（读 windows/locks）。
+从发起对话目录调用 SDK 绝对路径，不切换到安装目录。默认沿用当前工作区；临时文件归入工作区 temp/orchestrator。
 
-### 依赖排序
-- 解析 `dependsOn` 依赖→按层排队（wave）；linked 整块串行；independent 且无前置→同层并行。
-- 触发：decompose 之后、spawn 之前。
-- 边界：只处理**逻辑先后**（前置/产出依赖），**不等于**资源冲突（那是冲突锁）。
+规划前检测内存：最大窗口数 = min(8, round(内存 GiB × 1024 ÷ 2000))。整批至多该数量的块；多余任务合并到已有块串行执行，不另排额外批次。全局容量计入活动和预留窗口。
 
-### 原型门禁（确定性）
-- 每个块 spawn 前做**确定性**门禁：L1 空/无动作→拒绝；L2 复杂度识别（多句/含分析/长指令→复杂，仅作状态提示）。
-- 该门禁**恒启用、无开关**，核心目的就是**确保无白窗**：绝不弹出一个“空壳/无动作/已达成”的占位窗，宁可拦下（preflight-failed）也不虚跑。
-- 触发：每块 spawn 前。
-- 可行性（是否可行/已达成）已由**拆块 LLM**在分块阶段判定（`feasible`/`already_done`，不可行或已完成任务会被过滤）；执行前不再为每块单开一次 LLM（避免重复往返、成本友好）。
+原始任务保持稳定 ID；普通逗号后的补充说明不能丢失。模型只能分类，不得改写任务原文或凭已完成建议跳过任务。覆盖不确定时保留全部任务，并明确报告串行兜底。
 
-### 注册表
-- 共享 `~/.codex/orchestrator/orchestrator-windows.json` / `orchestrator-locks.json`（`ORCH_STATE_DIR` 可覆盖）；`withRegistryLock`（独占锁文件）串行写；`updateWindows/updateLocks` 锁内 load+mutate+save，只追加不整表覆盖；超过 120s 的 `pending` 死占位自动回收。
-- 触发：所有读活窗/锁、写新窗口/锁、done-and-close 清理、`--status`。
+每块只等待自身前置验收成功，不等待无关块。未知、自指及循环依赖在启动前报错。冲突锁考虑规范化路径及父子目录关系。
 
-### 窗口运行时
-- 写 `win-launch-*.ps1`（UTF-8+BOM、chcp 65001）→ spawn **交互式 Codex TUI 窗** → 窗口 agent **只输出一行结束标记 `__ORCH_DONE__ <本窗token>`**（不做长篇汇报）；launcher 内置 watchdog **只认该结束符**（且必须是 agent/assistant 消息，绝不匹配被注入的提示词行）即写 `.self-closed` 强标记并杀 codex 树 → `exit 0` 自动关窗；未输出结束符时回退到"最后一条含本窗 token 的 assistant 消息"。watchdog 观察上限默认=父进程轮询上限+10 分钟（`ORCH_WATCHDOG_MAX_MIN` 可覆盖），长任务/父进程意外退出后仍能「执行结束即自关」。`Write-Result` 用 `Get-LastReport` 尽力落本窗最后输出到 `win-<s>.result.json`（有则记，无则标记需外部核对落盘）。
-- **弹窗检测（精准）**：spawn 后以「pid 文件存在 + launcher(Windows Terminal pane 宿主)进程存活」双重确认窗口真弹出；**同批多个窗并行弹窗 + 并行确认**（不逐窗串行等待），失败重试（上限 3），仍失败标记 `popup-failed` 并汇报。
-- **完成判定（用户方案：done=做完了，不等同于成功）**：窗口执行结束（识别码 `.self-closed` / result 文件 / codex 退出）即 `done`；是否真的达成 prompt 预期，由主控关窗后去核对真实落盘状态，而非依赖窗内汇报文本。真正的失败由 `popup-failed`/`preflight-failed` 承担。
-- 触发：`--run-windows` / `--spawn`。
-- **窗口 prompt 规则**：必须要求「一次性完成全部改动→读回+node --check+无乱码→才输出唯一一行 `__ORCH_DONE__ <本窗token>`；无需长篇汇报，仅在确实失败时补一句说明」，**禁止中途输出未完状态**（否则 auto-close 会误关）。
+## 执行与独立验收
 
-### 结果汇聚
-- `--run-windows` 之后，主对话必须运行 `node scripts/poll-windows.mjs --require-all-success --timeoutMs <T>`，仅当全部块成功集（done/ok/completed/done-retried/done-on-disk）+被正确拦截（preflight-failed/locked/unlocked）时返回 0；非 0=仍有未成功→继续等/重试/如实上报（全窗已关且 summary 已终态但含失败 → 立即返回 1，不空等到超时）。
-- 触发：每次 `--run-windows` 之后。
+1. 主控准备唯一 run ID 和验收 JSON，按 T001 等原始任务 ID 定义只读检查。验收应核对内容或行为，不能仅凭文件存在。
+2. 调用 node <SDK绝对路径> --run-id <ID> --acceptance-file <JSON绝对路径> --run-windows "<完整请求>"。
+3. 窗内逐项执行提供的 started/completed 检查点命令；完成全部实际操作和自查后，最后只输出 __ORCH_DONE__ <本窗token>。
+4. 主控运行 node <scripts绝对路径>/poll-windows.mjs --run-id <ID> --require-all-success --timeoutMs <时限>。
+5. 全部原始任务 verified 且所属窗口关闭才算成功。结束标记、关窗、agent 自报及其它批次的结果都不能代替验收。
+6. 缺检查或结果不符时保留任务并继续核查；不能当作完成。全部授权任务在本轮验证后交付。
 
-### 执行门禁
-- `armEnforcement()` 写 `.orchestrator-enabled`；`--assert <kind>` 只在**被授权的窗口**（`ORCH_WINDOW=1`）里放行；headless `--run/--exec` 需 `ORCH_ALLOW_HEADLESS=1`；`codex-TUI-orchestrator-preflight.mjs` 未 armed 时按 kind fail-closed（真实 kinds REFUSED+exit1，只读放行）。
-- 触发：每次真实执行发起前。
+产物按 run ID 放在工作区 temp/orchestrator/runs/<ID>。清理只针对本次拥有且已结束的临时文件，不删除活动窗文件或无关文件。
 
-### 拆块缓存
-- 相同请求按 hash 缓存 block plan；命中即复用（越用越快，永不自动失效）。
-- 清理：`node orchestrate-sdk.mjs --clear-cache` 或删除缓存文件。
+## 中断恢复
 
-### 清洁
-- 清理 `temp/` 下 `codex-win-*`/`win-launch-*`/`win-*.result.json`/`win-*.log`/`window-*.pid` 及 `.self-closed` 标记等一次性产物（`win-summary.json` 默认保留给 poll）；清理按 pid 文件存活态保护活窗，绝不误删正在运行的窗口。
-- 触发：`--run-windows` / `--spawn` 结束后。
+从原工作区运行 node <SDK绝对路径> --resume-run <ID>。使用保存的任务、计划和验收条件；按 PID、创建时间及命令行接管存活窗口，不重复启动替代窗。
 
-### 归因验证
-- 判断某个改动文件是否可归因到**窗内受权写入**：剥离 `file:/dir:/port:/service:` 前缀后做路径感知匹配。
-- 触发：`codex-TUI-orchestrator-force.mjs --verify <file>`。
+已验证任务不重复执行。已开始但副作用不明确的任务进入 needs-reconciliation（需要主控核对实际结果的状态），不能盲目重跑。仅事先确定可安全重复的任务才能设置 retrySafe:true。启动器不重放整个块。
 
-## 引擎调用（从 `scripts/` 运行）
-- `node orchestrate-sdk.mjs --run-windows "<request>"` → 批量真实执行（独立并行/联动串行，自动关窗，结果进 `temp/win-summary.json`）。
-- `node orchestrate-sdk.mjs --spawn "<title>" "<prompt|.md>"` → 弹一个手动交互窗。
-- `node orchestrate-sdk.mjs --plan "<request>"` → 只拆块打印（只读）。
-- `node orchestrate-sdk.mjs --status [--readonly]` → 活窗/锁。
-- `node orchestrate-sdk.mjs --clear-cache` → 清拆块缓存。
-- `node scripts/codex-TUI-orchestrator-force.mjs --status|--assert <kind>|--enable|--disable|--verify <file>` → 执行门禁与归因。
-- `node scripts/codex-TUI-orchestrator-preflight.mjs <kind>` → 未 armed 时按 kind fail-closed 的独立门禁。
+使用 --verify-run <ID> --acceptance-file <JSON> 复核已有结果。不保证任意外部操作恰好执行一次。
 
-## 依赖
-- Node 22+、Codex CLI、Windows Terminal/console。
-- 编码：所有文本读写显式 UTF-8（`.ps1` 带 BOM），禁 GBK 乱码。
-- 留痕由宿主工作区约定决定，不硬编码个人目录或不存在的技能。
+## 诊断和发布
 
-## 通用化 / 跨设备 / 跨 agent / 跨用户适配
+- --doctor 检查依赖；--plan 仅规划；--status --readonly 检查窗口与锁。
+- node <插件绝对路径>/scripts/release-integrity.mjs 校验发布核心。
+- 开发改动经回归与相关真实验收后才能发布。修改核心前确认没有活动窗口，不热替换正在运行的版本。
+- Codex 使用现有登录的 HTTPS Responses 配置，避免 WebSocket 首次超时回退；HTTPS 仍可能遇到断网。
 
-本插件支持不同 Windows 用户与设备的 Codex 环境；其它宿主接入使用独立 open-tui-orchestrator 项目，目前仅完成 Codex 适配。
-
-> **支持边界**：
-> - 当前专用插件只支持 Codex CLI；通用 Node 入口位于 open-tui-orchestrator，首期也只实现 Codex adapter（宿主 CLI 的参数与运行协议适配层）。
-> - 未知宿主、未实现 adapter 或缺少 CLI：fail-closed（明确报错并停止），不自动安装，绝不回退 Codex。
-
-### 可配置环境变量（env-first，均有合理缺省）
-- `CODEX_HOME`：权威 Codex 家目录（缺省 `~/.codex`）。跨用户/设备最关键：非默认安装、Docker、托管 CI 等通过它指向真实家目录。
-- `ORCH_STATE_DIR`：本插件的稳定运行/状态目录（registry、锁等），缺省 `$CODEX_HOME/orchestrator`。**不能**放在会被插件升级/重装清掉的目录。
-- `ORCH_SESSION_DIR`：会话 rollout 目录，缺省 `$CODEX_HOME/sessions`。
-- `ORCH_SUPERPOWERS_CACHE_DIR`：覆盖 superpowers 插件缓存路径（不同宿主/市场安装位置），缺省自动探测 `$CODEX_HOME/plugins/cache/.../superpowers`。
-- `ORCH_AGENT`：专用插件只接受 codex；通用入口由调用方显式指定宿主，或由 CODEX_THREAD_ID/CODEX_SESSION_ID 识别 Codex。
-- `CODEX_EXE` / `ORCH_MODEL` / `ORCH_EFFORT`：覆盖 CLI 路径与模型/努力度（跨宿主可注入不同模型）。
-
-### 兼容点
-- **不同 Windows 设备/用户名**：所有 `.codex` 路径经 `CODEX_HOME` 推导（不再硬编码 `C:\Users\<user>\.codex`）；注册表落在稳定家目录（`ORCH_STATE_DIR`/`$CODEX_HOME/orchestrator`），绝不在会被插件升级/重装清掉的插件脚本目录。
-- **不同 agent**：需要各自已安装 CLI 和已实现的适配器；当前只开放 Codex。不能用 Codex SDK 或参数冒充其它宿主。
-- **不同用户**：路径从环境解析。CLI 核验失败必须报错；不得修改用户信任设置或隐式扩大授权。
-- **跨平台窗口**：优先 Windows Terminal（`wt.exe`），不可用则回退 `conhost`（`cmd /c start`）。
-
-> 通用入口不等于全部宿主已接通；只声明经过实现与验证的支持范围。
+详见 [执行协议](../../docs/execution-contract.md) 和 [发布规则](../../docs/release-policy.md)。
