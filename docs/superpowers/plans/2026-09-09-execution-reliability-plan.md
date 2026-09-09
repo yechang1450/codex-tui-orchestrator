@@ -37,10 +37,10 @@
 - `computeMaxWindows(reportedGiB)` remains the public function used by planning, admission, and recovery.
 - All callers pass the same OS-reported GiB value; no caller recomputes the formula.
 
-- [ ] Add a failing boundary test proving decimal-to-binary conversion occurs before multiplication and flooring is used.
-- [ ] Run the focused capacity tests and confirm the new assertion fails against the current round-only implementation.
-- [ ] Implement the single formula and align the low-memory guard and test helpers.
-- [ ] Run the focused capacity, planning, and recovery tests.
+- [x] Add a failing boundary test proving decimal-to-binary conversion occurs before multiplication and flooring is used.
+- [x] Run the focused capacity tests and confirm the new assertion fails against the current round-only implementation.
+- [x] Implement the single formula and align the low-memory guard and test helpers.
+- [x] Run the focused capacity, planning, and recovery tests.
 
 ### Task 2: Separate provider-capacity retries from normal recovery attempts
 
@@ -55,11 +55,11 @@
 - The runner tracks `controllerAttempts` and `capacityRetries` independently.
 - A capacity retry is eligible only when the current attempt has no durable task checkpoint.
 
-- [ ] Add a failing runner test with three provider-capacity failures and no checkpoints; assert the configured capacity retry budget is honored.
-- [ ] Add a failing test proving a capacity failure does not leave task results as `failed` in the next TodoList.
-- [ ] Run those tests and confirm they fail for the current shared attempt counter and stale state.
-- [ ] Implement independent counters, pending-state restoration, and immediate TodoList/goal persistence.
-- [ ] Verify started-checkpoint and completed-checkpoint cases still enter reconciliation and never blindly replay.
+- [x] Add a failing runner test with three provider-capacity failures and no checkpoints; assert the configured capacity retry budget is honored.
+- [x] Add a failing test proving a capacity failure does not leave task results as `failed` in the next TodoList.
+- [x] Run those tests and confirm they fail for the current shared attempt counter and stale state.
+- [x] Implement independent counters, pending-state restoration, and immediate TodoList/goal persistence.
+- [x] Verify started-checkpoint and completed-checkpoint cases still enter reconciliation and never blindly replay.
 
 ### Task 3: Make TodoList and local goal state derived and recoverable
 
@@ -75,11 +75,11 @@
 - Add one projection path from `summary.tasks`, `summary.blocks`, and `summary.taskResults` to TodoList and `goal.json`.
 - `goal.json` carries controller-mirror metadata, run identity, summary generation, and a summary digest.
 
-- [ ] Add failing tests for `verifyRun` refreshing goal/task statuses, resume rejecting an identity-mismatched mirror, and resume rebuilding a missing mirror.
-- [ ] Add a failing test for the running task state and for rejecting a TodoList with mismatched statuses.
-- [ ] Run the focused ledger tests and confirm the current stale mirror behavior fails.
-- [ ] Implement the shared projection, verification refresh, mirror validation/rebuild policy, and atomic digest binding.
-- [ ] Verify that native host Goal tools are not claimed or invoked by the plugin.
+- [x] Add failing tests for `verifyRun` refreshing goal/task statuses, resume rejecting an identity-mismatched mirror, and resume rebuilding a missing mirror.
+- [x] Add a failing test for the running task state and for rejecting a TodoList with mismatched statuses.
+- [x] Run the focused ledger tests and confirm the current stale mirror behavior fails.
+- [x] Implement the shared projection, verification refresh, mirror validation/rebuild policy, and atomic digest binding.
+- [x] Verify that native host Goal tools are not claimed or invoked by the plugin.
 
 ### Task 4: Validate visible-window foreground behavior
 
@@ -94,10 +94,10 @@
 - The helper keeps the initiating window as the baseline and never treats source-regex matching as acceptance evidence.
 - The live probe records actual foreground samples, input delivery, visibility, minimization, execution receipt, and closure.
 
-- [ ] Add a failing acceptance assertion that continuously sends input to the initiating window while the TUI starts.
-- [ ] Run the probe once and preserve only its result under the existing test evidence directory.
-- [ ] Adjust the guard only for a demonstrated failure; do not add a promise that Windows can never change focus.
-- [ ] Run helper unit tests and the controlled live focus probe.
+- [x] Add a failing acceptance assertion that continuously sends input to the initiating window while the TUI starts.
+- [ ] Run the probe once and preserve only its result under the existing test evidence directory. (Not run because it would take the user's current foreground focus.)
+- [x] Keep the guard unchanged because no live probe failure has demonstrated that a code change is needed; do not add a promise that Windows can never change focus.
+- [x] Run helper unit tests and PowerShell syntax validation; the controlled live focus probe remains pending.
 
 ### Task 5: Rebuild and verify the installed copy
 
@@ -109,10 +109,10 @@
 **Interfaces:**
 - The installed copy must be byte-consistent with the sealed source release before it is considered active.
 
-- [ ] Add or update a package validation assertion that detects source/cache drift.
-- [ ] Run source release-integrity and package validation before copying anything.
-- [ ] Rebuild the cache through the existing workflow, then run cache release-integrity, doctor, and readonly status.
-- [ ] Confirm no live TUI windows, reservations, or temporary test artifacts remain.
+- [x] Add or update the package validation gate: direct source/cache hash equality detects drift before activation.
+- [x] Run source release-integrity and package validation before copying anything.
+- [x] Rebuild the cache through the existing workflow, then run cache release-integrity, doctor, and readonly status.
+- [x] Confirm no live TUI windows or reservations remain; existing cache test fixtures were preserved.
 
 ### Task 6: Full verification and handoff
 
@@ -120,7 +120,7 @@
 - Check: all modified files under `codex-tui-orchestrator`
 - Check: `README-zh.md`, `docs/execution-contract.md`, `docs/rc-validation.md`, and `skills/codex-TUI-orchestrator/SKILL.md` for behavior consistency
 
-- [ ] Run the full source test suite and record the exact pass/fail counts.
-- [ ] Run release-integrity, doctor, readonly status, package validation, and the controlled live checks.
-- [ ] Inspect the diff for accidental `open-tui-orchestrator` changes, stale model claims, and temporary artifacts.
-- [ ] Report any live-check limitation explicitly; do not call the release complete when a required gate is red.
+- [x] Run the full source test suite and record the exact pass/fail counts.
+- [x] Run release-integrity, doctor, readonly status, package validation, and the non-interactive checks.
+- [x] Inspect the diff for accidental `open-tui-orchestrator` changes, stale formula claims, and temporary artifacts.
+- [x] Report the continuous-input live-check limitation explicitly; do not call the release fully complete while that gate is unrun.
