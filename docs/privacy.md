@@ -13,4 +13,4 @@ initiating workspace's `temp` directory. Users can remove completed run data
 with the normal workspace cleanup process.
 
 Questions about this policy can be raised in the project repository:
-<https://github.com/yechang1450/agent-tui-orchestrator>.
+<https://github.com/yechang1450/codex-tui-orchestrator>.

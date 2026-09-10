@@ -20,10 +20,10 @@ test('current documentation points at the sealed core and labels older evidence 
   assert.match(readme, versionRe);
   assert.match(readmeZh, versionRe);
   assert.match(compatibility, versionRe);
-  assert.equal(manifest.homepage, 'https://github.com/yechang1450/agent-tui-orchestrator');
+  assert.equal(manifest.homepage, 'https://github.com/yechang1450/codex-tui-orchestrator');
   assert.equal(manifest.interface.websiteURL, manifest.homepage);
-  assert.equal(manifest.interface.privacyPolicyURL, 'https://github.com/yechang1450/agent-tui-orchestrator/blob/master/docs/privacy.md');
-  assert.equal(manifest.interface.termsOfServiceURL, 'https://github.com/yechang1450/agent-tui-orchestrator/blob/master/docs/terms.md');
+  assert.equal(manifest.interface.privacyPolicyURL, 'https://github.com/yechang1450/codex-tui-orchestrator/blob/master/docs/privacy.md');
+  assert.equal(manifest.interface.termsOfServiceURL, 'https://github.com/yechang1450/codex-tui-orchestrator/blob/master/docs/terms.md');
   assert.doesNotMatch(JSON.stringify(manifest), /github\.com\/"/i);
   const current = policy.split(/^## Earlier validation/m)[0];
   assert.match(current, new RegExp(`Current candidate: core ${version.replaceAll('.', '\\.')}`));

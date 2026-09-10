@@ -5,7 +5,7 @@
   "author": {
     "name": "Yang Wenchàng"
   },
-  "homepage": "https://github.com/yechang1450/agent-tui-orchestrator",
+  "homepage": "https://github.com/yechang1450/codex-tui-orchestrator",
   "license": "MIT",
   "keywords": [
     "codex",
@@ -26,9 +26,9 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/yechang1450/agent-tui-orchestrator",
-    "privacyPolicyURL": "https://github.com/yechang1450/agent-tui-orchestrator/blob/master/docs/privacy.md",
-    "termsOfServiceURL": "https://github.com/yechang1450/agent-tui-orchestrator/blob/master/docs/terms.md",
+    "websiteURL": "https://github.com/yechang1450/codex-tui-orchestrator",
+    "privacyPolicyURL": "https://github.com/yechang1450/codex-tui-orchestrator/blob/master/docs/privacy.md",
+    "termsOfServiceURL": "https://github.com/yechang1450/codex-tui-orchestrator/blob/master/docs/terms.md",
     "brandColor": "#6A3DE8",
     "composerIcon": "./assets/icon.png",
     "logo": "./assets/icon.png",

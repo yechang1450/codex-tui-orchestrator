@@ -24,7 +24,7 @@
     "runtime-context.mjs": "39ee58751764034504a6e3c5a6cb53ded725abee5a5ccd7675ade7d690bdb58b"
   },
   "runtimeFiles": {
-    ".codex-plugin/plugin.json": "ba9d128c93fb3930a83f001b40c9acf9b2c9d75c98cb012a8aeb4d6c7930ce26",
+    ".codex-plugin/plugin.json": "c39fe91f5bd6e11b3458b574ed0d60b9f6bf90f810e1762b62d947d1cb1ecae5",
     "repair.mjs": "14aa6cdf8d817219bb30c9beeca28ddfa3b3648218492be228627eb360c75ab2",
     "scripts/agent-auth-prompt.txt": "18fa9c01972cd99a2fe2b1b74a440b34921a051ba6c0d54daf2f5bf1096457b0",
     "scripts/agent.mjs": "7aec825e3b32b637844c352401aaf06a66daeee7cdc8e2ecbebc4d4816abd910",
