@@ -13,15 +13,15 @@ Maintainer procedure:
 5. Use `node repair.mjs --target <fresh-version-parent>` to create a clean distribution. Source and copied package must pass integrity verification. Existing targets are rejected to avoid stale mixed releases. Runtime temp, dependencies, evaluation state and git metadata are excluded. Core directory links are rejected rather than materialized.
 6. Verify the copied release before activation. The plugin manager remains responsible for version activation and rollback; never hot-replace a running core.
 
-Runtime upgrades must retain the task ledger, memory-derived eight-block cap, independent acceptance, process identity and bounded recovery contracts. Uncertain external effects cannot be made exactly-once by a local retry mechanism.
+Runtime upgrades must retain the task ledger, calculated memory capacity, independent acceptance, process identity and bounded recovery contracts. Uncertain external effects cannot be made exactly-once by a local retry mechanism.
 
 The legacy mixed-case invocation remains documented for existing local references, while the canonical manifest and skill identifiers use lowercase hyphen-case. On Windows the existing marketplace source path remains compatible; any non-Windows migration must update that path explicitly.
 
-## Current candidate: core 1.3.3-rc.1
+## Current candidate: core 1.3.4-rc.1
 
-Plugin version `0.4.39-rc.1` fixes asynchronous PowerShell startup and Unicode process identity. RC means a release candidate with a declared, reproducible verification scope; it does not certify every Windows installation or provider condition. See [RC validation](rc-validation.md) for current results and remaining acceptance gates.
+Plugin version `0.4.43-rc.1` fixes asynchronous PowerShell startup and Unicode process identity. RC means a release candidate with a declared, reproducible verification scope; it does not certify every Windows installation or provider condition. See [RC validation](rc-validation.md) for current results and remaining acceptance gates.
 
-The required local gates are the full source regression, a fresh self-contained package regression, locked dependency installation, release integrity, public doctor/status and real Windows process lifecycle/Unicode/startup tests. Model-backed eight-window completion and live controller adoption are tracked separately and must be reported honestly; a candidate with either incomplete is not fully accepted for deployment. A broad stable release additionally requires clean-user installation, actual manager upgrade/rollback, prolonged provider outage and OS reboot evidence.
+The required local gates are the full source regression, a fresh self-contained package regression, locked dependency installation, release integrity, public doctor/status and real Windows process lifecycle/Unicode/startup tests. A model-backed run at the calculated capacity, with valid task receipts and serial overflow coverage, is tracked separately and must be reported honestly; the current-core controller adoption gate is now recorded in [current live evidence](../test/controller-adoption-validation-1.3.4-rc.1.json). The repaired planner now records 12 capacity blocks for the 13-task acceptance, while the host run reached six live descendants before popup startup failures; it remains blocked with invalid/incomplete receipts in [capacity evidence](../test/concurrency-validation-1.3.4-rc.1.json). A broad stable release additionally requires clean-user installation, actual manager upgrade/rollback, prolonged provider outage and OS reboot evidence.
 
 ## Earlier validation (core 1.3.1)
 

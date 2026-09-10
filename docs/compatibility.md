@@ -1,6 +1,6 @@
 # 安装与 CLI 兼容验收
 
-当前专用核心为 1.3.3-rc.1，当前验证见 [RC 验收记录](rc-validation.md)。以下是 1.3.1 历史矩阵：现场当时已确认的 Codex CLI 为 0.153.4，Windows Terminal 为 1.24.11911.0；SDK 锁定版本和历史 1.2.x 记录仍按下表标注。下表只列实测范围，不是所有功能和环境的兼容保证。完整字段见 [1.3.1 兼容矩阵](../test/compatibility-matrix-1.3.1.json)。
+当前专用核心为 1.3.4-rc.1，当前验证见 [RC 验收记录](rc-validation.md)。以下是 1.3.1 历史矩阵：现场当时已确认的 Codex CLI 为 0.153.4，Windows Terminal 为 1.24.11911.0；SDK 锁定版本和历史 1.2.x 记录仍按下表标注。下表只列实测范围，不是所有功能和环境的兼容保证。完整字段见 [1.3.1 兼容矩阵](../test/compatibility-matrix-1.3.1.json)。
 
 | Codex CLI | 环境 | 已通过 | 未覆盖 |
 | --- | --- | --- | --- |

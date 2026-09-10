@@ -21,12 +21,13 @@ const nonce = crypto.randomUUID();
 const runId='acceptance-'+nonce;
 const summaryFile=path.join(workspace,'temp','orchestrator','runs',runId,'summary.json');
 const acceptanceFile=path.join(root,'acceptance.json');
-const capacity = Math.round(os.totalmem() / 1024 ** 3 * 1024 / 2000);
-if (process.platform !== 'win32' || capacity !== 8) throw new Error('This acceptance scenario requires Windows and a calculated capacity of eight');
+const reportedGiB = os.totalmem() / 1024 ** 3;
+const capacity = Math.floor(reportedGiB * 1024 / 1000 * 3 / 4);
+if (process.platform !== 'win32' || capacity < 2) throw new Error('This acceptance scenario requires Windows and at least two calculated windows');
 fs.mkdirSync(root, { recursive: true });
 const env = { ...process.env, ORCH_AGENT: agent, ORCH_MAX_POLL_MS: '900000', ORCH_RUN_ID:runId, ORCH_ACCEPTANCE_FILE:acceptanceFile };
 for (const key of ['WORKSPACE_DIR', 'ORCH_STATE_DIR', 'ORCH_TUI', 'ORCH_SANDBOX', 'ORCH_APPROVAL']) delete env[key];
-const config = { nonce, workspace, ids: Array.from({ length: 9 }, (_, i) => String(91 + i)), capacity };
+const config = { nonce, workspace, ids: Array.from({ length: capacity + 1 }, (_, i) => String(91 + i)), capacity };
 fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
 fs.writeFileSync(acceptanceFile,JSON.stringify(Object.fromEntries(config.ids.map((id,i)=>['T'+String(i+1).padStart(3,'0'),[{type:'json',path:path.join(root,'project-'+id,'result'+id+'.json'),equals:{id,nonce,cwd:workspace,sum:50005000}}]])),null,2));
 const probe = `import fs from 'node:fs';
@@ -43,7 +44,7 @@ assert.equal(process.cwd(), config.workspace);
 const started = Date.now();
 fs.writeFileSync(path.join(out, 'started.json'), JSON.stringify({id, nonce:config.nonce, pid:process.pid, started}));
 while (!fs.existsSync(path.join(root, 'release')) && id !== config.ids.at(-1)) {
-  if (Date.now() - started > 600000) throw new Error('parent did not observe eight overlapping windows');
+  if (Date.now() - started > 600000) throw new Error('parent did not observe the calculated overlapping windows');
   await new Promise(r => setTimeout(r, 500));
 }
 await new Promise(r => setTimeout(r, 15000));
@@ -61,7 +62,7 @@ for (const id of config.ids) {
 }
 const request = config.ids.map(id => `项目${id}：执行 node ${root.replaceAll('\\', '/')}/project-${id}/probe${id}.mjs ${id} 创建 ${root.replaceAll('\\', '/')}/project-${id}/result${id}.json 并等待命令完成后读回该结果文件核验成功，按主持提供的命令逐项记录检查点，禁止另开窗口禁止提交或写记忆`).join('；');
 fs.writeFileSync(path.join(root, 'request.txt'), request, 'utf8');
-console.log(JSON.stringify({ root, capacity, tasks: 9, nonce }));
+console.log(JSON.stringify({ root, capacity, tasks: config.ids.length, nonce }));
 const children = [];
 function launch(script, args, label) {
   const entry = label === 'engine' ? (process.env.ORCH_LIVE_ENTRY||path.join(repo, 'scripts', 'orchestrate-sdk.mjs')) : path.join(repo, 'scripts', script);
@@ -122,7 +123,7 @@ while (!engineEnded && Date.now() < deadline) {
     if (live.length > peak) { peak = live.length; console.log('[measure] peak=' + peak + ' ready=' + ready.length); }
     if (live.length === capacity && config.ids.slice(0, capacity).every(id => ready.includes(id)) && !fs.existsSync(path.join(root, 'release'))) {
       fs.writeFileSync(path.join(root, 'release'), String(Date.now()));
-      console.log('[measure] verified eight live '+agent+' descendants and eight running probes; barrier released');
+      console.log('[measure] verified calculated live '+agent+' descendants and running probes; barrier released');
     }
     if (live.length > capacity) throw new Error('Capacity exceeded');
   } catch (e) { console.log('[measure] ' + String(e)); }
@@ -137,10 +138,10 @@ const results = config.ids.map(id => {
 
 const summary = fs.existsSync(summaryFile) ? JSON.parse(fs.readFileSync(summaryFile, 'utf8')) : null;
 const receiptsValid = results.every((r, i) => !r.missing && r.id === config.ids[i] && r.nonce === nonce && r.sum === 50005000 && r.cwd === workspace && r.finished > r.started);
-const ordered = receiptsValid && results[8].started >= results[7].finished;
+const ordered = receiptsValid && results[capacity].started >= results[capacity - 1].finished;
 const windowLaunches = (engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
 const uniqueLaunchers = new Set(samples.flatMap(s => s.live.map(w => w.launcherPid))).size;
-const overlap = receiptsValid && Math.max(...results.slice(0, 8).map(r => r.started)) < Math.min(...results.slice(0, 8).map(r => r.finished));
+const overlap = receiptsValid && Math.max(...results.slice(0, capacity).map(r => r.started)) < Math.min(...results.slice(0, capacity).map(r => r.finished));
 const passed = engineResult.code === 0 && pollResult.code === 0 && peak === capacity && receiptsValid && ordered && overlap
   && windowLaunches === capacity && uniqueLaunchers === capacity
   && Object.keys(summary?.results || {}).length === capacity && Object.values(summary.results).every(r => r.status === 'verified');

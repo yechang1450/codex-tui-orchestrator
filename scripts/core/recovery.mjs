@@ -1,4 +1,5 @@
-import {levelWaves,verifyChecks,requestTasks} from './contracts.mjs';
+import {levelWaves,verifyChecks,requestTasks,computeMaxWindows,buildTodoList} from './contracts.mjs';
+import os from 'node:os';
 
 // Validate persisted structure before recovery can change state or invoke tools.
 export function validateRecoverySummary(sum) {
@@ -10,7 +11,11 @@ export function validateRecoverySummary(sum) {
  if(!object(sum)||sum.protocol!==2||typeof sum.request!=='string'||!Number.isSafeInteger(sum.generation)||sum.generation<1||!Array.isArray(sum.history))fail('invalid header');
  const tasks=requestTasks(sum.request);
  if(!tasks.length||!Array.isArray(sum.tasks)||!same(sum.tasks.map(t=>({id:t?.id,prompt:t?.prompt})),tasks))fail('original task inventory mismatch');
- if(!Array.isArray(sum.blocks)||!sum.blocks.length||sum.blocks.length>8||!Array.isArray(sum.plan)||sum.plan.length!==sum.blocks.length)fail('block inventory mismatch');
+ if(sum.todoList!==undefined){
+  const expected=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
+  if(!Array.isArray(sum.todoList)||!same(sum.todoList,expected))fail('todo list status mismatch');
+ }
+ if(!Array.isArray(sum.blocks)||!sum.blocks.length||sum.blocks.length>computeMaxWindows(os.totalmem()/1024**3)||!Array.isArray(sum.plan)||sum.plan.length!==sum.blocks.length)fail('block inventory mismatch');
  const ids=tasks.map(t=>t.id),blockIds=sum.blocks.map(b=>b?.key);
  if(!strings(blockIds)||!exact(blockIds,sum.results)||!exact(ids,sum.taskResults))fail('result inventory mismatch');
  const covered=[];
@@ -51,11 +56,22 @@ export function recoveryTasks(tasks,checkpoints,checks,workspace) {
   const result={verified:[],pending:[],uncertain:[],results:{}};
   for(const task of tasks) {
     const cp=checkpoints[task.id],policy=taskPolicy(checks[task.id]);
-    if(!cp){result.pending.push(task.id);continue;}
+    if(!cp){
+      result.pending.push(task.id);
+      result.results[task.id]={status:'pending'};
+      continue;
+    }
     if(cp.state==='invalid'){result.uncertain.push(task.id);result.results[task.id]={status:'needs-reconciliation',reason:'Invalid checkpoint',checkpoint:cp};continue;}
     const verification=verifyChecks(policy.checks,workspace);
     if(verification.status==='verified'){result.verified.push(task.id);result.results[task.id]={...verification,checkpoint:cp};}
-    else if(policy.retrySafe){result.pending.push(task.id);}
+    else if(policy.retrySafe){
+      // A failed recheck is not a verified receipt. Clear the old status before
+      // composing the next prompt, otherwise the TodoList says "verified" while
+      // the task is being retried and the new attempt can inherit an invalid
+      // receipt identity.
+      result.pending.push(task.id);
+      result.results[task.id]={status:'pending',reason:'Prior receipt did not satisfy acceptance; safe retry declared',checkpoint:cp};
+    }
     else {result.uncertain.push(task.id);result.results[task.id]={status:'needs-reconciliation',reason:'Started task has no proven result and is not declared safe to retry',verification,checkpoint:cp};}
   }
   return result;

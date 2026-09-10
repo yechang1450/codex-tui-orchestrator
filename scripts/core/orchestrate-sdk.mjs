@@ -55,12 +55,12 @@
  */
 import {nativeArgumentLines} from "./native-argv.mjs";
 import {spawnInactiveWindow} from './inactive-window.mjs';
-import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bindClassifiedTasks} from "./contracts.mjs";
+import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bindClassifiedTasks,computeMaxWindows} from "./contracts.mjs";
 import {runWindows,verifyRun} from "./runner.mjs";
 import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind} from "./leases.mjs";
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy} from './retry-policy.mjs';
-import { networkConfig } from "./network-policy.mjs";
+import { networkConfig, resolveOpenAIBaseUrl } from "./network-policy.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, closeSync, renameSync } from "node:fs";
@@ -107,9 +107,10 @@ const CODEX = AGENT.config.bin;
 const WORKSPACE_Q = WORKSPACE.replace(/'/g, "''");
 const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
-// Leave model selection to the host CLI unless explicitly overridden.
-const MODEL = process.env.ORCH_MODEL || undefined;
-const EFFORT = process.env.ORCH_EFFORT || undefined;
+// TUI 窗默认使用指定的 Codex Spark 模型与最高思考强度；调用方显式传入
+// ORCH_MODEL / ORCH_EFFORT 时保留其覆盖权。
+const MODEL = process.env.ORCH_MODEL || "gpt-5.3-codex-spark";
+const EFFORT = process.env.ORCH_EFFORT || "xhigh";
 // A caller may pass its effective permissions; never elevate implicitly.
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = "never";
@@ -125,7 +126,7 @@ function appendModelEffortArgs(arr, agentConfig) {
   const id = String(cfg.id || "codex");
   const modelEnv = cfg.modelEnv || "ORCH_MODEL";
   const effortEnv = cfg.effortEnv || "ORCH_EFFORT";
-  // Explicit overrides only; otherwise the selected CLI owns configuration.
+  // Codex TUI 默认使用 Spark + xhigh；显式环境变量优先。
   const model = process.env[modelEnv] || (id === "codex" ? MODEL : "");
   const effort = process.env[effortEnv] || (id === "codex" ? EFFORT : "");
   if (id !== "codex") {
@@ -195,7 +196,11 @@ function wtAvailable() {
 // propagates to the spawned window processes, instead of only an implicit code default.
 process.env.ORCH_TUI = process.env.ORCH_TUI || "wt";
 const TUI_MODE = String(process.env.ORCH_TUI).toLowerCase();
-const codex = AGENT.agent==='codex'?new (await import('@openai/codex-sdk')).Codex({ codexPathOverride: CODEX, config: networkConfig }):null;
+const codex = AGENT.agent==='codex'?new (await import('@openai/codex-sdk')).Codex({
+  codexPathOverride: CODEX,
+  baseUrl: resolveOpenAIBaseUrl(),
+  config: networkConfig,
+}):null;
 // 让出 CPU：orchestrator（含拆解线程）以 BelowNormal 优先级跑，不抢占系统/其它任务（限速=80% 性能，慢慢跑）。
 try { process.setPriority(6); console.log("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }
 function threadBase() {
@@ -240,7 +245,7 @@ function classifyPrompt(request, hints = {}) {
   return (
     "你是任务定性分析器，只做一件事：把下面请求拆成「扁平任务清单」，不要分块、不要合并、不要执行。" +
     "每个自然任务一条，字段如下：id(字符串编号)、summary(保留原意的一句话)、kind(project|tool|system)、" +
-    "project(80|81|82|83，只在请求里明确写了才填，否则填 null)、" +
+    "project(请求中明确出现的任意项目编号或名称，只在请求里明确写了才填，否则填 null)、" +
     "hint(该任务涉及模块/资源关键词，如 会员管理、商品、订单)、" +
     "conflict_hints(会碰到的资源字符串数组，如 [\"db:订单\",\"dir:管理端\"]，无则 [])、" +
     "depends_on(依赖的其它任务 id 数组，无则 [])、" +
@@ -506,11 +511,11 @@ function genericProjectSplit(request) {
   // 保守、确定性拆分（权威修复）：仅当请求能被可靠切成"每个编号各有一个专属句子"时才拆，
   // 且每个块 prompt 只针对该项目（绝不整段重复）。混合/歧义请求返回 null 交给 LLM 语义拆块。
   const dirs = new Set();
-  const re = /(?:^|[\s,/\\])(?:build|proj|project|app|src|workspace|web|site|game)[\s/\\]+(\d{1,3})(?=\D|$)/gi;
+  const re = /(?:^|[\s,/\\：:])(?:项目|project|proj|build|app|src|workspace|web|site|game)[\s/\\-：:]*(\d{1,3})(?=\D|$)/gi;
   let m;
   while ((m = re.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   // fallback: bare standalone 2-digit project numbers (e.g. "给80的前端", "81登录页")
-  const bareRe = /(?<![0-9])(\d{2})(?![0-9])/g;
+  const bareRe = /(?<![0-9])(\d{2,3})(?![0-9])/g;
   while ((m = bareRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   if (dirs.size < 2) return null;
   const sentences = requestTasks(request).map(t=>t.prompt);
@@ -538,7 +543,7 @@ function genericProjectSplit(request) {
 }
 function projectRef(s, n) {
   // 无正则的确定匹配：检查句子是否含 "build\N" / "build/N" / 关键词N，避免转义坑
-  return s.indexOf("build\\" + n) !== -1 || s.indexOf("build/" + n) !== -1 || new RegExp("(?<![0-9])" + n + "(?![0-9])", "i").test(s);
+  return new RegExp("(?:项目|project|proj|build|app|src|workspace|web|site|game)?[\\s/\\\\-：:]*" + n + "(?![0-9])", "i").test(s);
 }
 // 通用单任务快速判定（不写死 build/N）：无"多动作/多目标"标记、且命中明确动作词 -> 生成单一独立块。
 function trySingleBlock(request) {
@@ -957,11 +962,8 @@ function psKillDescendantsLines() {
   ];
 }
 
-// 内存 → 最大并发 TUI 窗数：n GB 内存 -> round(n * 1024 / 2000) 台并发（四舍五入取整，约等于 n/2，随内存线性扩展、无封顶），
-// 内存越大并发越多；下限由调用方以 <4G 判定为不支持。为可测试而独立成函数。
-function computeMaxWindows(memGb) {
-  return Math.min(8, Math.round((memGb * 1024) / 2000));
-}
+// computeMaxWindows 已下沉至 contracts.mjs（fresh 规划与 resume 校验共用），此处经 import 复用。
+
 // Capacity is a planning constraint, not a queue of extra windows.
 export function capPlanBlocks(input, capacity) {
   if (!Number.isInteger(capacity) || capacity < 1) throw new RangeError('capacity must be a positive integer');
@@ -1822,10 +1824,14 @@ function inferTargetKeys(text) {
     const p = m[0].replace(/[\\/]+$/, "");
     if (isFileLike(p)) keys.add("file:" + p);
   }
-  // Unix 风格绝对路径
-  for (const m of s.matchAll(/(?<![A-Za-z:])\/[^\s"'`,;)]+/g)) {
+  // Unix 风格绝对路径：仅接受带目录成分的多段路径（≥2 个斜杠），且排除前导字符为字母/数字/冒号的情况——
+  // 否则 “project-91/probe.mjs” 这类数字结尾目录会把 “/probe.mjs” 抽成碎片 key：多个任务写同名文件即互相撞 key，
+  // normalizePlan 会把彼此独立的块静默合并成单块（并行计划坍缩为 inline）。
+  for (const m of s.matchAll(/(?<![A-Za-z0-9:])\/[^\s"'`,;)]+/g)) {
     const p = m[0].replace(/[\\/]+$/, "");
-    if (isFileLike(p)) keys.add("file:" + p);
+    if (!isFileLike(p)) continue;
+    if ((p.match(/\//g) || []).length < 2) continue; // 单段 “/file.ext” 视为碎片，不生成冲突 key
+    keys.add("file:" + p);
   }
   return [...keys];
 }
@@ -1841,6 +1847,11 @@ function normalizePlan(plan) {
   const groups=[];
   for(const r of ordered) {
     const hits=groups.filter(g=>g.some(x=>keysOverlap(x.keys,r.keys)));
+    if(hits.length){
+      // 合并诊断：块因共享冲突 key 被并组。若 key 是“/单段文件名”碎片形式，提示可能为误合并来源。
+      const shared=[...new Set(hits.flat().flatMap(x=>x.keys).filter(k=>r.keys.includes(k)))];
+      console.warn("[orchestrator] plan merge: blocks [" + [...new Set(hits.flat().map(x=>x.key)),r.key].join(",") + "] share conflict key(s): " + shared.join(", ") + (shared.some(k=>/^file:(\/|\\)[^/\\]+$/.test(k)) ? "（含单段文件名碎片 key，警惕同名文件导致的非预期合并）" : ""));
+    }
     const group=[...hits.flat(),r];for(const hit of hits)groups.splice(groups.indexOf(hit),1);groups.push(group);
   }
   const owner=new Map();groups.forEach((g,i)=>g.forEach(r=>owner.set(r.key,i)));
@@ -1979,7 +1990,7 @@ async function classifyExecutionMode(request) {
   return "execute"; // fail-safe
 }
 export async function main() {
-  for(const [flag,key] of [["--run-id","ORCH_RUN_ID"],["--acceptance-file","ORCH_ACCEPTANCE_FILE"]]){const index=process.argv.indexOf(flag);if(index>=0){if(!process.argv[index+1])throw new Error(flag+" needs a value");process.env[key]=process.argv[index+1];process.argv.splice(index,2);}}
+  for(const [flag,key] of [["--run-id","ORCH_RUN_ID"],["--acceptance-file","ORCH_ACCEPTANCE_FILE"],["--acceptance","ORCH_ACCEPTANCE_FILE"]]){const index=process.argv.indexOf(flag);if(index>=0){if(!process.argv[index+1])throw new Error(flag+" needs a value");process.env[key]=process.argv[index+1];process.argv.splice(index,2);}}
   const mode = process.argv[2];
   if (mode === "--doctor") {
     console.log(JSON.stringify({ agent: AGENT.agent, cli: CODEX, workspace: WORKSPACE,
@@ -2150,7 +2161,7 @@ export async function main() {
     if(!resume&&await classifyExecutionMode(request)==='inline'){console.log(JSON.stringify({mode:'inline',reason:'Read-only analysis'}));return;}
     if(!checkDiskSpace()) {process.exitCode=1;return;}
     const capacity=computeMaxWindows(os.totalmem()/1024**3);
-    if(capacity<2)throw new Error('At least 4 GB of memory is required');
+    if(capacity<2)throw new Error('At least two execution windows are required by the scheduler');
     armEnforcement();
     const result=await runWindows(request,{
       plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,launcher:writeInteractiveLauncher,prompt:buildBlockPrompt,

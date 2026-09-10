@@ -181,6 +181,17 @@ test('orchestrate-sdk appendModelEffortArgs injects -m/-c and is space-guarded',
     if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
   }
 });
+test('orchestrate-sdk TUI defaults to Codex Spark with xhigh reasoning', () => {
+  const pm = process.env.ORCH_MODEL, pe = process.env.ORCH_EFFORT;
+  delete process.env.ORCH_MODEL; delete process.env.ORCH_EFFORT;
+  try {
+    const out = appendModelEffortArgs(['--cd', 'D:\\']);
+    assert.deepEqual(out.slice(-4), ['-m', 'gpt-5.3-codex-spark', '-c', 'model_reasoning_effort=xhigh']);
+  } finally {
+    if (pm === undefined) delete process.env.ORCH_MODEL; else process.env.ORCH_MODEL = pm;
+    if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
+  }
+});
 test('通用化: appendModelEffortArgs 对非 codex 走其 modelEnv/effortEnv、绝不注入 codex -m/-c', () => {
   const prevM = process.env.ANTHROPIC_MODEL, prevE = process.env.ORCH_CLAUD_EFFORT;
   process.env.ANTHROPIC_MODEL = 'claude-3-7-sonnet';
@@ -238,6 +249,12 @@ test('orchestrate-sdk genericProjectSplit splits comma-separated bare projects -
   assert.deepEqual(new Set(r.blocks.map((b) => b.title)), new Set(['proj-81', 'proj-82']));
   // 单项目 + 逗号续句（不带项目号）-> 保守返回 null（交 LLM，不误拆）
   assert.equal(genericProjectSplit('优化81的UI，让它更美观'), null);
+});
+test('orchestrate-sdk genericProjectSplit recognizes project-100..103 and Chinese 项目 labels', () => {
+  const request = ['100','101','102','103'].map(id => `项目${id}：执行 node D:/temp/project-${id}/probe${id}.mjs ${id}`).join('；');
+  const r = genericProjectSplit(request);
+  assert.ok(r && r.blocks && r.blocks.length === 4, 'three-digit project labels must remain independently schedulable');
+  assert.deepEqual(new Set(r.blocks.map(b => b.title)), new Set(['proj-100','proj-101','proj-102','proj-103']));
 });
 test('orchestrate-sdk loadCachedDecompose returns null for empty cache', () => {
   assert.equal(loadCachedDecompose('修复 81 登录页'), null);
@@ -431,14 +448,14 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk computeMaxWindows: n GB -> round(n * 1024 / 2000) concurrency, at most eight', () => {
-  assert.equal(computeMaxWindows(2), 1, '2G -> round(1.024) -> 1 (caller refuses <4G)');
-  assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2 windows');
-  assert.equal(computeMaxWindows(8), 4, '8G -> round(4.096) -> 4 windows');
-  assert.equal(computeMaxWindows(12), 6, '12G -> round(6.144) -> 6 windows');
-  assert.equal(computeMaxWindows(16), 8, '16G -> round(8.192) -> 8 windows');
-  assert.equal(computeMaxWindows(32), 8, '32G -> capped at 8 windows');
-  assert.equal(computeMaxWindows(64), 8, '64G -> capped at 8 windows');
+test('orchestrate-sdk computeMaxWindows: reported GiB converted through 1024/1000 then floors three quarters', () => {
+  assert.equal(computeMaxWindows(2), 1, '2 GiB -> floor(2*1024/1000*3/4) -> 1');
+  assert.equal(computeMaxWindows(4), 3, '4 GiB -> floor(4*1024/1000*3/4) -> 3 windows');
+  assert.equal(computeMaxWindows(8), 6, '8 GiB -> floor(8*1024/1000*3/4) -> 6 windows');
+  assert.equal(computeMaxWindows(12), 9, '12 GiB -> floor(12*1024/1000*3/4) -> 9 windows');
+  assert.equal(computeMaxWindows(16), 12, '16 GiB -> floor(16*1024/1000*3/4) -> 12 windows');
+  assert.equal(computeMaxWindows(32), 24, '32 GiB -> floor(32*1024/1000*3/4) -> 24 windows');
+  assert.equal(computeMaxWindows(64), 49, '64 GiB -> floor(64*1024/1000*3/4) -> 49 windows');
 });
 test('orchestrate-sdk applyAuthPromptPolicy: 不注入子代理指令 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
   // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
@@ -926,6 +943,12 @@ test('orchestrate-sdk classifyPrompt: 含请求 + 模块映射提示 + 关键约
   const p2 = classifyPrompt('清理仓库', {});
   assert.ok(!p2.includes('已知模块→项目映射'), 'must omit mapping text when no module hints');
 });
+test('orchestrate-sdk classifyPrompt accepts arbitrary explicit project identifiers', () => {
+  const p = classifyPrompt('项目100：修复登录页；project-103：优化接口', {});
+  assert.match(p, /project\([^)]*编号或名称/);
+  assert.doesNotMatch(p, /project\(80\|81\|82\|83/);
+  assert.match(p, /项目100：修复登录页；project-103：优化接口/);
+});
 
 test('orchestrate-sdk resolveHints: 无 env 时默认 tail 关键词 + 命中 env 时并入', () => {
   const prevTail = process.env.ORCH_TASK_TAIL; const prevMod = process.env.ORCH_TASK_HINTS; const prevFold = process.env.ORCH_TASK_FOLD;
@@ -1039,14 +1062,14 @@ test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不�
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
-test('computeMaxWindows: 内存上限/下限边界', () => {
-  assert.equal(computeMaxWindows(2), 1, '2G -> round(1.024) -> 1');
-  assert.equal(computeMaxWindows(3.9), 2, '3.9G -> round(1.9968) -> 2');
-  assert.equal(computeMaxWindows(4), 2, '4G -> round(2.048) -> 2');
-  assert.equal(computeMaxWindows(7), 4, '7G -> round(3.584) -> 4');
-  assert.equal(computeMaxWindows(16), 8, '16G -> round(8.192) -> 8');
-  assert.equal(computeMaxWindows(64), 8, '64G -> capped at 8');
-  assert.equal(computeMaxWindows(0), 0, '0 -> round(0) -> 0 (caller refuses <4G)');
+test('computeMaxWindows: reported GiB conversion and floor boundaries', () => {
+  assert.equal(computeMaxWindows(2), 1, '2 GiB -> floor(2*1024/1000*3/4) -> 1');
+  assert.equal(computeMaxWindows(3.9), 2, '3.9 GiB -> floor(3.9*1024/1000*3/4) -> 2');
+  assert.equal(computeMaxWindows(4), 3, '4 GiB -> floor(4*1024/1000*3/4) -> 3');
+  assert.equal(computeMaxWindows(7), 5, '7 GiB -> floor(7*1024/1000*3/4) -> 5');
+  assert.equal(computeMaxWindows(16), 12, '16 GiB -> floor(16*1024/1000*3/4) -> 12');
+  assert.equal(computeMaxWindows(64), 49, '64 GiB -> floor(64*1024/1000*3/4) -> 49');
+  assert.equal(computeMaxWindows(0), 0, '0 -> floor(0) -> 0 (caller refuses unsupported memory)');
 });
 test('Codex entry rejects unsupported hosts without fallback', async () => {
   const { resolveAgent } = await import(importUrl(path.join(scripts, 'agent.mjs')));

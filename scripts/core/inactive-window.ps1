@@ -1,5 +1,8 @@
 param([Parameter(Mandatory=$true)][string]$Payload)
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$OutputEncoding=[Text.UTF8Encoding]::new($false)
+chcp 65001 | Out-Null
 try {
   $request=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Payload)) | ConvertFrom-Json
   Add-Type -TypeDefinition @'
@@ -26,7 +29,7 @@ public static class OrchestratorInactiveShell {
   var until=Environment.TickCount+2500;
   while(Environment.TickCount<until){
    var now=new LastInput();now.cbSize=(uint)Marshal.SizeOf(now);GetLastInputInfo(ref now);
-   if(now.dwTime!=baselineInput)break;
+   if(now.dwTime!=baselineInput&&GetForegroundWindow()!=baseline)break;
    if(baseline!=IntPtr.Zero&&GetForegroundWindow()!=baseline)SetForegroundWindow(baseline);
    System.Threading.Thread.Sleep(20);
   }

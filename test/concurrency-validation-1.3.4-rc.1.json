@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "coreVersion": "1.3.4-rc.1",
+  "releaseJsonSha256": "4b60e3d89ad354f142d49e11efb4881cf8b37932b052aa9528483f2ba24193a0",
+  "status": "blocked",
+  "reason": "Planner now produced 12 capacity blocks, but the real Windows/WT host accepted only six concurrent agent descendants before popup startup failures; the barrier was not released and no complete receipts were produced.",
+  "command": "node test/live-concurrency.mjs",
+  "runId": "acceptance-154e100f-1822-4c0e-997e-414d9e6f62de",
+  "capacity": 12,
+  "tasks": 13,
+  "summarySuccess": false,
+  "taskStatuses": {},
+  "root": "<user-home>/.codex/plugins/codex-tui-orchestrator/temp/open-live-ddcdcefdccf",
+  "summaryPath": "<user-home>/.codex/plugins/codex-tui-orchestrator/temp/orchestrator/runs/acceptance-154e100f-1822-4c0e-997e-414d9e6f62de/summary.json",
+  "result": {
+    "passed": false,
+    "peak": 6,
+    "receiptsValid": false,
+    "ordered": false,
+    "overlap": false
+  },
+  "block": {
+    "status": "needs-reconciliation",
+    "reason": "Interrupted after popup startup failures before the barrier could release; started tasks require reconciliation.",
+    "taskIds": [
+      "T001",
+      "T002",
+      "T003",
+      "T004",
+      "T005",
+      "T006",
+      "T007",
+      "T008",
+      "T009",
+      "T010",
+      "T011",
+      "T012",
+      "T013"
+    ],
+    "exitCode": null
+  },
+  "finalizedAt": 1789015921543,
+  "plannerBlocks": 12
+}

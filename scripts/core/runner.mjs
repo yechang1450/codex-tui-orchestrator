@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks} from './contracts.mjs';
+import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText} from './contracts.mjs';
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary} from './recovery.mjs';
 import {readCheckpoints} from './checkpoint.mjs';
@@ -30,6 +30,27 @@ export function runDirectory(workspace,runId) {
   return path.join(workspace,'temp','orchestrator','runs',runId);
 }
 function loadChecks(file){return file?JSON.parse(fs.readFileSync(file,'utf8')):{};}
+function goalDigest(sum) {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    generation:sum.generation,runId:sum.runId,tasks:sum.tasks,blocks:sum.blocks,
+    results:sum.results,taskResults:sum.taskResults,
+  })).digest('hex');
+}
+function writeGoalMirror(dir,sum,event,status='active') {
+  const todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
+  sum.todoList=todoList;
+  atomicJson(path.join(dir,'goal.json'),{
+    version:2,source:'controller-mirror',runId:sum.runId,workspace:sum.workspace,
+    objective:sum.request,status,updatedAt:Date.now(),event,summaryGeneration:sum.generation,
+    summaryDigest:goalDigest(sum),tasks:todoList.map(item=>({id:item.id,status:item.status,block:item.block})),
+    blocks:sum.blocks.map(block=>({key:block.key,title:block.title,status:sum.results[block.key]?.status||'pending',taskIds:block.taskIds})),
+  });
+}
+function resetUnverifiedTasks(sum,block) {
+  for(const id of block.taskIds) {
+    if(sum.taskResults[id]?.status!=='verified')sum.taskResults[id]={status:'pending'};
+  }
+}
 function blockCheckpoints(entry,block,sum) {
   const out={};
   for(const a of entry?.attempts||[]) {
@@ -73,7 +94,16 @@ export function verifyRun(workspace,runId,acceptanceFile) {
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
   if(sum.protocol===2)validateRecoverySummary(sum);
   const claim=claimRun(sum.coordinator||coordinatorDir(workspace),'run:'+path.resolve(dir).toLowerCase());
-  try{collectVerification(sum,loadChecks(acceptanceFile||path.join(dir,'acceptance.json')),workspace);sum.success=summaryComplete(sum,true);atomicJson(file,sum);return sum.success;}
+  const checks=loadChecks(acceptanceFile||path.join(dir,'acceptance.json'));
+  try{
+    if(sum.tasks?.length){
+      const keyDiff=acceptanceKeyDiff(checks,sum.tasks);
+      if(keyDiff?.unknown.length)throw new Error('Acceptance keys do not match any task id: '+keyDiff.unknown.join(', ')+'（task ids: '+sum.tasks.map(t=>t.id).join(', ')+'）');
+      if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
+    }
+    collectVerification(sum,checks,workspace);sum.success=summaryComplete(sum,true);sum.todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);atomicJson(file,sum);
+    writeGoalMirror(dir,sum,sum.success?'verify.completed':'verify.failed',sum.success?'completed':'failed');return sum.success;
+  }
   finally{releaseRun(sum.coordinator||coordinatorDir(workspace),'run:'+path.resolve(dir).toLowerCase(),claim);}
 }
 
@@ -91,6 +121,12 @@ export async function runWindows(request,hooks,options={}) {
       if((sum.agent||'codex')!==(options.agent||'codex'))throw new Error('Resume agent must match the saved run');
       if(path.resolve(sum.workspace)!==workspace||sum.runId!==runId)throw new Error('Run workspace/identity mismatch');
       validateRecoverySummary(sum);
+      const savedGoalFile=path.join(dir,'goal.json');
+      if(fs.existsSync(savedGoalFile)) {
+        const savedGoal=JSON.parse(fs.readFileSync(savedGoalFile,'utf8'));
+        if(savedGoal.runId!==runId||path.resolve(savedGoal.workspace||'')!==workspace)throw new Error('Run goal mirror identity mismatch');
+        if(savedGoal.version===2&&savedGoal.summaryDigest!==goalDigest(sum))throw new Error('Run goal mirror digest mismatch');
+      }
       if(sum.blocks.length>capacity)throw new Error('Current memory capacity is below the saved block count');
       checks=loadChecks(options.acceptanceFile||path.join(dir,'acceptance.json'));
       sum.history.push({generation:sum.generation,finishedAt:sum.finishedAt,success:sum.success});
@@ -98,29 +134,41 @@ export async function runWindows(request,hooks,options={}) {
     }else {
       if(fs.existsSync(dir))throw new Error('Run ID already exists; use --resume-run or --verify-run');
       fs.mkdirSync(dir,{recursive:true});checks=loadChecks(options.acceptanceFile);
-      atomicJson(path.join(dir,'manifest.json'),{runId,workspace,request,tasks:requestTasks(request),startedAt:Date.now()});
+      const inventory=requestTasks(request);
+      atomicJson(path.join(dir,'manifest.json'),{runId,workspace,request,tasks:inventory,todoList:buildTodoList(inventory),startedAt:Date.now()});
       const candidate=await hooks.plan(request,capacity);
       const {plan,tasks}=ledgerPlan(request,candidate,capacity,hooks.compact);
       const recs=plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[],keys:[...new Set([...(b.conflictKeys||[]),...b.tasks.flatMap(t=>hooks.infer(t.prompt||''))].map(k=>canonicalKey(k,workspace)))]}));
       levelWaves(recs);
       sum={protocol:2,version:CORE_VERSION,agent:options.agent||'codex',runId,workspace,request,capacity,coordinator,generation:1,history:[],startedAt:Date.now(),tasks,plan:recs,
-        blocks:recs.map(r=>({key:r.key,title:r.title,taskIds:r.b.tasks.flatMap(t=>t.sourceIds)})),results:{},taskResults:{}};
+        blocks:recs.map(r=>({key:r.key,title:r.title,taskIds:r.b.tasks.flatMap(t=>t.sourceIds)})),results:{},taskResults:{},todoList:[]};
       for(const r of recs){sum.results[r.key]={status:'pending',attempts:[]};for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)sum.taskResults[id]={status:'pending'};}
     }
     sum.owner=claim.owner;sum.coordinator=coordinator;
+    const refreshTodoList=()=>{sum.todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);};
+    refreshTodoList();
+    const persistGoal=(event,status='active')=>writeGoalMirror(dir,sum,event,status);
+    persistGoal('run.started');
+    {
+      const keyDiff=acceptanceKeyDiff(checks,sum.tasks);
+      if(keyDiff?.unknown.length)throw new Error('Acceptance keys do not match any task id: '+keyDiff.unknown.join(', ')+'（task ids: '+sum.tasks.map(t=>t.id).join(', ')+'）');
+      if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
+    }
     atomicJson(path.join(dir,'acceptance.json'),checks);
     const persist=()=>atomicJson(summaryFile,sum);
-    const mark=(r,status,reason)=>{sum.results[r.key]={...sum.results[r.key],status,reason};for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(sum.taskResults[id]?.status!=='verified')sum.taskResults[id]={...sum.taskResults[id],status,reason};persist();};
+    const mark=(r,status,reason)=>{sum.results[r.key]={...sum.results[r.key],status,reason};for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(sum.taskResults[id]?.status!=='verified')sum.taskResults[id]={...sum.taskResults[id],status,reason};refreshTodoList();persist();persistGoal(`block.${r.key}.${status}`);};
     persist();console.log(`[run] runId=${runId} blocks=${sum.blocks.length} capacity=${capacity} generation=${sum.generation} summary=${summaryFile}`);
     async function execute(r) {
       const b=sum.blocks.find(b=>b.key===r.key),tasks=b.taskIds.map(id=>sum.tasks.find(t=>t.id===id));
+      const identify=(pid,pidFile)=>hooks.identity?hooks.identity(pid,pidFile):launcherIdentity(pid,pidFile);
+      const waitExit=identity=>hooks.waitForExit?hooks.waitForExit(identity):waitForProcessExit(identity);
       const leaseId=crypto.createHash('sha256').update(runKey).digest('hex').slice(0,16)+'-'+r.key;
       let attemptsThisController=0;
       const limit=Math.max(1,Math.min(3,Number(options.maxAttempts||2)));
       let capacityRetries=0;
       while(Date.now()<deadline) {
         let e=sum.results[r.key],la=e.launcherFiles,identity;
-        if(la)identity=launcherIdentity(hooks.readPid(la.pidf),la.pidf);
+        if(la)identity=identify(hooks.readPid(la.pidf),la.pidf);
         const adopted=identity&&(!e.launcher||sameProcess(e.launcher,identity));
         let active;
         if(adopted) {
@@ -129,9 +177,9 @@ export async function runWindows(request,hooks,options={}) {
           const cps=blockCheckpoints(e,b,sum);
           const recovery=recoveryTasks(tasks,cps,checks,workspace);
           Object.assign(sum.taskResults,recovery.results);
-          if(recovery.verified.length===tasks.length){e.status='verified';e.endedAt=Date.now();persist();return;}
-          if(recovery.uncertain.length){e.status='needs-reconciliation';e.reason='Uncertain tasks: '+recovery.uncertain.join(', ');e.endedAt=Date.now();persist();return;}
-          if(attemptsThisController>=limit){mark(r,'failed','Safe recovery attempt budget exhausted');return;}
+          if(recovery.verified.length===tasks.length){e.status='verified';e.endedAt=Date.now();refreshTodoList();persist();persistGoal(`block.${r.key}.verified`);return;}
+          if(recovery.uncertain.length){e.status='needs-reconciliation';e.reason='Uncertain tasks: '+recovery.uncertain.join(', ');e.endedAt=Date.now();refreshTodoList();persist();persistGoal(`block.${r.key}.needs-reconciliation`);return;}
+          if(attemptsThisController>=limit&&capacityRetries===0){mark(r,'failed','Safe recovery attempt budget exhausted');return;}
           if(attemptsThisController)await pause(Math.min(2000*attemptsThisController,Math.max(0,deadline-Date.now())));
           let reserved=false;
           while(Date.now()<deadline) {
@@ -147,19 +195,26 @@ export async function runWindows(request,hooks,options={}) {
           atomicJson(attemptFile,active);e.attempts.push(active);
           const helper=fileURLToPath(new URL('./checkpoint.mjs',import.meta.url));
           const command=(id,state)=>`node "${helper}" "${attemptFile}" ${id} ${state}`;
+          const todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
           const body=options.auth+'\n本窗目录为 '+workspace+'；所有工具 workdir 保持此目录，除非原始任务明确另指定。\n'+
+            'Global TodoList (controller-owned; do not rewrite):\n'+todoListText(todoList)+'\n\nCurrent block TodoList ('+r.key+'):\n'+todoListText(todoList,r.key)+'\n'+
             '仅按顺序执行下列待办任务。每项开始前必须成功执行 started 命令，失败则停止该项，禁止重复执行。完成并自验后立即执行 completed 命令。每项都立即写检查点，不能等整块完成。任何项失败则停止后续任务，说明情况并退出本轮，不自行重跑整块。\n'+
             '已独立验收的任务禁止重做：'+recovery.verified.join(', ')+'\n'+
             recovery.pending.map(id=>`任务 ${id}\n开始前：${command(id,'started')}\n原始任务：${tasks.find(t=>t.id===id).prompt}\n完成自验后：${command(id,'completed')}`).join('\n\n')+
             '\n全部待办完成后，最后仅输出 __ORCH_DONE__ '+token;
           try{la=hooks.launcher(r.key,hooks.prompt(body,token),runId+'-a'+number);}
           catch(error){await coordinate(()=>release(coordinator,leaseId),deadline);throw error;}
-          e={...e,status:'launching',leaseId,token,launcherFiles:la,launcher:null,endedAt:null,startedAt:Date.now()};sum.results[r.key]=e;persist();
+          e={...e,status:'launching',leaseId,token,launcherFiles:la,launcher:null,endedAt:null,startedAt:Date.now()};sum.results[r.key]=e;refreshTodoList();persist();persistGoal(`block.${r.key}.launching`);
           try {
             hooks.register({id:leaseId,runId,title:r.title,keys:r.keys,pidFile:la.pidf,pid:0,pending:true,reservedAt:Date.now()});
             await coordinate(()=>prepare(coordinator,leaseId,la.pidf),deadline);
-            if(!await hooks.spawn(la.lp,r.title,la.pidf,1,token))throw new Error('Visible window did not start');
-            identity=launcherIdentity(hooks.readPid(la.pidf),la.pidf);
+            // Keep the launcher retry budget owned by the runner's caller. A
+            // hard-coded one-shot spawn made transient WT/provider startup
+            // failures collapse an otherwise full-capacity wave into a single
+            // live window, then produced incomplete receipts.
+            const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
+            if(!await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token))throw new Error('Visible window did not start');
+            identity=identify(hooks.readPid(la.pidf),la.pidf);
             if(!identity)throw new Error('Launcher process identity mismatch');
             await coordinate(()=>bind(coordinator,leaseId,identity),deadline);hooks.commit(leaseId,identity.ProcessId);
           }catch(error){e.status='popup-failed';e.reason=error.message;}
@@ -168,7 +223,7 @@ export async function runWindows(request,hooks,options={}) {
         let capacityRetry = null;
         try {
           if(identity) {
-            e.status='running';persist();
+            e.status='running';for(const id of b.taskIds)if(sum.taskResults[id]?.status!=='verified')sum.taskResults[id]={...sum.taskResults[id],status:'running'};refreshTodoList();persist();persistGoal(`block.${r.key}.running`);
             const session=await hooks.session('【本块唯一标识】'+active.token,Math.min(90000,Math.max(0,deadline-Date.now())),la.rf);
             const result=session?await hooks.wait(session,Math.max(0,deadline-Date.now()),la.rf,'【本块唯一标识】'+active.token,la.pidf):{done:fs.existsSync(la.rf),exitCode:hooks.exitCode(la.rf)};
             e.exitCode=result.exitCode??hooks.exitCode(la.rf);e.status=result.done?'awaiting-verification':'timeout';
@@ -180,13 +235,13 @@ export async function runWindows(request,hooks,options={}) {
           }
         }catch(error){e.status='failed';e.reason=error.message;}
         finally {
-          if(!identity&&la)identity=launcherIdentity(hooks.readPid(la.pidf),la.pidf);
+          if(!identity&&la)identity=identify(hooks.readPid(la.pidf),la.pidf);
           if(identity)await hooks.close(identity.ProcessId,identity);
-          if(identity&&!(await waitForProcessExit(identity))){e.status='failed';e.reason='Launcher still alive; lease retained';persist();return;}
+          if(identity&&!(await waitExit(identity))){e.status='failed';e.reason='Launcher still alive; lease retained';persist();return;}
           await coordinate(()=>release(coordinator,e.leaseId||leaseId),Date.now()+30000);
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;
-          collectVerification(sum,checks,workspace);persist();
+          collectVerification(sum,checks,workspace);refreshTodoList();persist();persistGoal(`block.${r.key}.${e.status}`);
         }
         // A capacity failure happens before any task checkpoint. Reclaim the window and
         // retry after the provider's suggested/backoff delay without consuming the normal
@@ -196,19 +251,25 @@ export async function runWindows(request,hooks,options={}) {
         const retryUnsafe=Object.values(retryCheckpoints).some(cp=>cp?.state==='started'||cp?.state==='completed');
         if (capacityRetry?.retry && !retryUnsafe) {
           capacityRetries++;
+          resetUnverifiedTasks(sum,b);refreshTodoList();
           e.status='waiting';e.reason=`Provider capacity; retry ${capacityRetries}/${capacityRetry.maxRetries} in ${capacityRetry.delayMs}ms`;persist();
+          delete e.retryable;delete e.capacityError;
+          persistGoal(`block.${r.key}.capacity-retry`);
           await pause(Math.min(capacityRetry.delayMs,Math.max(0,deadline-Date.now())));
           continue;
         }
+        if(e.retryable==='capacity') { mark(r,'failed','Provider capacity retry budget exhausted');return; }
         if(e.status==='verified')return;
-        if(!identity&&e.attempts.length&&e.reason==='Visible window did not start'){mark(r,'popup-failed',e.reason);return;}
+        // Popup/launcher interruptions have no task checkpoint, so the bounded controller
+        // attempt budget retries the block automatically. Only started or completed checkpoints
+        // can move a task into needs-reconciliation and stop blind replay.
       }
       mark(r,'timeout','Run deadline exhausted');
     }
     await scheduleReady(sum.plan,async r=>{try{await execute(r);}catch(e){mark(r,'failed',e.message);}},key=>sum.results[key]?.status,
       (r,failed)=>mark(r,'blocked','Predecessors not verified: '+failed.join(', ')));
     for(const r of sum.plan)if(!TERMINAL.has(sum.results[r.key]?.status))mark(r,'failed','No terminal result');
-    sum.finishedAt=Date.now();sum.success=summaryComplete(sum,true);persist();
+    sum.finishedAt=Date.now();sum.success=summaryComplete(sum,true);refreshTodoList();persist();persistGoal(sum.success?'run.completed':'run.failed',sum.success?'completed':'failed');
     console.log(`[run] finalized runId=${runId} success=${sum.success} summary=${summaryFile}`);return sum;
   }finally{await coordinate(()=>releaseRun(coordinator,runKey,claim),Date.now()+30000);}
 }

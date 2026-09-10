@@ -29,7 +29,7 @@ test('current documentation points at the sealed core and labels older evidence 
   assert.match(current, new RegExp(`Current candidate: core ${version.replaceAll('.', '\\.')}`));
 
   for (const line of [...readme.split(/\r?\n/), ...readmeZh.split(/\r?\n/)]) {
-    if (/(当前|current)\\s*(?:core|核心)/i.test(line)) assert.match(line, versionRe);
+    if (/(当前|current)\s*(?:core|核心)/i.test(line)) assert.match(line, versionRe);
   }
   assert.match(read('docs/live-validation-1.2.1.md'), /历史|historical/i);
   assert.match(read('docs/live-validation-1.2.3.md'), /历史|historical/i);

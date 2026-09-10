@@ -1,5 +1,12 @@
-param([string]$Workspace=(Get-Location).Path,[string]$Terminal,[switch]$Legacy)
+param([string]$Workspace=(Get-Location).Path,[string]$Terminal,[switch]$Legacy,[switch]$ContinuousInput)
 $ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$OutputEncoding=[Text.UTF8Encoding]::new($false)
+chcp 65001 | Out-Null
+if($ContinuousInput -and (-not [Environment]::UserInteractive -or [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')){
+ @{passed=$false;skipped=$true;reason='continuous-input probe requires an interactive STA Windows desktop';inputMode=$true} | ConvertTo-Json -Compress
+ exit 0
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -TypeDefinition @'
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
@@ -23,6 +30,20 @@ public static class InactiveWindowProbe {
 $root=Join-Path $Workspace ('temp\inactive-window-'+[Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($root) | Out-Null
 $title='ORCH-INACTIVE-'+[Guid]::NewGuid().ToString('N')
+$initiator=$null;$inputBox=$null;$inputAttempts=0;$inputDelivered=0;$inputLostFocus=$false;$inputError=$null
+if($ContinuousInput){
+ # This is an opt-in, synthetic-input probe. It creates an owned WinForms
+ # initiator so the test never types into the user's existing application.
+ $initiator=New-Object Windows.Forms.Form
+ $initiator.Text='ORCH-INITIATOR-'+[Guid]::NewGuid().ToString('N')
+ $initiator.StartPosition='CenterScreen';$initiator.Width=480;$initiator.Height=120
+ $initiator.ShowInTaskbar=$true
+ $inputBox=New-Object Windows.Forms.TextBox
+ $inputBox.Dock='Fill';$inputBox.Multiline=$true;$inputBox.ReadOnly=$false
+ $initiator.Controls.Add($inputBox)
+ $initiator.Show();$initiator.Activate();$inputBox.Focus()
+ [Windows.Forms.Application]::DoEvents()
+}
 $probe=Join-Path $root 'probe.ps1'
 $receipt=Join-Path $root 'receipt.json'
 $escaped=$receipt.Replace("'","''")
@@ -41,6 +62,15 @@ try {
  $until=[DateTime]::UtcNow.AddSeconds(20)
  while([DateTime]::UtcNow -lt $until){
   [Windows.Forms.Application]::DoEvents()
+  if($ContinuousInput -and $inputBox){
+   $inputAttempts++
+   if([InactiveWindowProbe]::GetForegroundWindow().ToInt64() -ne $initiator.Handle.ToInt64()){$inputLostFocus=$true}
+   try {
+    [Windows.Forms.SendKeys]::SendWait('.')
+    [Windows.Forms.Application]::DoEvents()
+    if($inputBox.Text.Length -gt $inputDelivered){$inputDelivered=$inputBox.Text.Length}
+   } catch {$inputError=$_.Exception.Message}
+  }
   $window=[InactiveWindowProbe]::Find($title)
   if($window -ne [IntPtr]::Zero){$seen=$window;$visible=$visible -or [InactiveWindowProbe]::IsWindowVisible($window);$minimized=$minimized -or [InactiveWindowProbe]::IsIconic($window);if([InactiveWindowProbe]::GetForegroundWindow() -eq $window){$foregroundSamples++}}
   elseif($seen -ne [IntPtr]::Zero){break}
@@ -52,9 +82,13 @@ try {
  $startupEvents=@([InactiveWindowProbe]::Details | Where-Object {$parts=$_ -split ':'; $parts[0] -eq [string]$seen.ToInt64() -and ([long]$parts[1]-$startedTick) -lt 3000}).Count
  # A user may deliberately click the visible window later. That is supported;
  # distinguish those later activations from the initial launch phase.
- $passed=$seen -ne [IntPtr]::Zero -and $visible -and -not $minimized -and $targetForegroundEvents -eq 0 -and $foregroundSamples -eq 0 -and (Test-Path -LiteralPath $receipt) -and [InactiveWindowProbe]::Find($title) -eq [IntPtr]::Zero
- $report=@{passed=$passed;root=$root;startedTick=$startedTick;endTick=[Environment]::TickCount;baseline=$baseline;visible=$visible;minimized=$minimized;startupForegroundEvents=$startupEvents;foregroundEvents=$activations;targetForegroundEvents=$targetForegroundEvents;foregroundSamples=$foregroundSamples;samples=$samples;events=@([InactiveWindowProbe]::Details);hwnd=$seen.ToInt64();closed=([InactiveWindowProbe]::Find($title) -eq [IntPtr]::Zero)}
+ $inputOk=(-not $ContinuousInput) -or ($inputAttempts -gt 0 -and $inputDelivered -gt 0 -and -not $inputLostFocus -and -not $inputError)
+ $passed=$seen -ne [IntPtr]::Zero -and $visible -and -not $minimized -and $targetForegroundEvents -eq 0 -and $foregroundSamples -eq 0 -and (Test-Path -LiteralPath $receipt) -and [InactiveWindowProbe]::Find($title) -eq [IntPtr]::Zero -and $inputOk
+ $report=@{passed=$passed;skipped=$false;root=$root;startedTick=$startedTick;endTick=[Environment]::TickCount;baseline=$baseline;visible=$visible;minimized=$minimized;startupForegroundEvents=$startupEvents;foregroundEvents=$activations;targetForegroundEvents=$targetForegroundEvents;foregroundSamples=$foregroundSamples;samples=$samples;events=@([InactiveWindowProbe]::Details);hwnd=$seen.ToInt64();closed=([InactiveWindowProbe]::Find($title) -eq [IntPtr]::Zero);inputMode=([bool]$ContinuousInput);inputAttempts=$inputAttempts;inputDelivered=$inputDelivered;inputLostFocus=$inputLostFocus;inputError=$inputError}
  $json=$report | ConvertTo-Json -Compress
  [IO.File]::WriteAllText((Join-Path $root 'report.json'),$json,[Text.UTF8Encoding]::new($false));Write-Output $json
  if(-not $passed){throw 'Inactive window acceptance failed'}
-} finally {[InactiveWindowProbe]::UnhookWinEvent($hook) | Out-Null}
+} finally {
+ if($initiator){$initiator.Close();$initiator.Dispose()}
+ [InactiveWindowProbe]::UnhookWinEvent($hook) | Out-Null
+}

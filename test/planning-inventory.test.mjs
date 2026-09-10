@@ -12,6 +12,16 @@ test('nine original comma-rich tasks remain eight complete execution blocks',()=
  assert.equal(result.plan.length,8);assert.equal(result.tasks.length,9);
  assert.deepEqual(result.plan.map(b=>b.tasks.flatMap(t=>t.sourceIds).length),[1,1,1,1,1,1,1,2]);
 });
+test('three-digit project inventory is split instead of falling back to one serial block',()=>{
+ const request=Array.from({length:13},(_,i)=>{const id=String(91+i);return `项目${id}：执行 node D:/temp/project-${id}/probe${id}.mjs ${id} 创建结果文件并核验`}).join('；');
+ const candidate=sdk.genericProjectSplit(request);
+ assert.equal(candidate?.blocks.length,13);
+ assert.deepEqual(new Set(candidate.blocks.map(b=>b.title)),new Set(Array.from({length:13},(_,i)=>`proj-${91+i}`)));
+ const result=ledgerPlan(request,candidate.blocks,12,(blocks,cap)=>sdk.capPlanBlocks(blocks,cap));
+ assert.equal(result.plan.length,12);
+ assert.equal(result.tasks.length,13);
+ assert.deepEqual(result.plan.map(b=>b.tasks.flatMap(t=>t.sourceIds).length).sort((a,b)=>a-b),[1,1,1,1,1,1,1,1,1,1,1,2]);
+});
 test('model summaries are rebound to original IDs before grouping',()=>{
  assert.equal(typeof contracts.bindClassifiedTasks,'function');
  const original='项目91：修改页面，检查结果；项目92：修改接口，运行测试';

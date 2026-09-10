@@ -16,6 +16,12 @@ test('Windows CLI discovery consults the native where.exe result when PATH is em
   });
   assert.ok(candidates.includes('C:\\Program Files\\Codex\\codex.exe'));
 });
+test('Windows CLI discovery covers current npm vendor bin layout', () => {
+  const candidates = cliCandidates({ PATH:'C:\\tools', Path:'', SystemRoot:'C:\\Windows' }, 'win32', {
+    where: () => ({ status:1, stdout:'' })
+  });
+  assert.ok(candidates.includes('C:\\tools\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe'));
+});
 test('host identity and resolved executable are preserved', () => {
   assert.equal(detectHostAgent({ CODEX_THREAD_ID:'x' }), 'codex');
   const host = resolveHost({env:{ORCH_AGENT:'codex'}, candidates:()=>['missing','native cli'], probe:p=>p==='native cli'});

@@ -1,2 +1,8 @@
-# Release seals hash exact bytes, including PowerShell BOM and line endings.
-* -text
+# 统一换行：仓库内容一律 LF，防止 autocrlf 在 stash/pop、checkout 时改写工作区字节，
+# 导致 release-integrity（按工作区字节 sha256）出现 "core differs" 假差异。
+* text=auto eol=lf
+*.ps1 text eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

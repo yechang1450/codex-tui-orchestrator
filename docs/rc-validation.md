@@ -1,6 +1,6 @@
-# 0.4.39-rc.1 验收记录
+# 0.4.43-rc.1 验收记录
 
-候选核心：`1.3.3-rc.1`。本记录区分候选包生成与完整 RC 验收；任何未完成项目都不能记为通过。
+候选核心：`1.3.4-rc.1`。本记录区分候选包生成与完整 RC 验收；任何未完成项目都不能记为通过。
 
 ## 本次修复
 
@@ -27,7 +27,19 @@ node test/live-recovery.mjs
 
 ## 当前验收状态
 
-完整源码回归、干净包回归、安装与真实链路结果由本轮完成后写入本节；尚未完成时本候选包处于验收中。
+当前候选包已完成可重复的离线和发布前验收：源仓完整回归 `187/187`；现有全新发布包记录在锁文件依赖 `npm ci --omit=optional --ignore-scripts --no-audit --no-fund` 后回归 `180/180`，并通过 `release-integrity`（核心 20 文件、runtime 43 文件）、`doctor` 和只读 `status`，无活动窗口、预约或锁。当前包的机器可读记录见 [current-package-validation.json](../test/current-package-validation.json)，旧 `1.3.1` 记录已单独保留为历史证据。
+
+doctor 已确认当前测试默认参数为 `gpt-5.3-codex-spark` 与 `xhigh`，15.64 GiB 按公式得到并发上限 12。宿主桌面配置已保存 `followUpQueueMode = "queue"`；插件本身没有 steer 参数，也不覆盖宿主设置。
+
+当前核心连续输入焦点探针已通过，结果见 [1.3.4 连续输入证据](../test/inactive-window-validation-1.3.4-rc.1.json)：输入送达、无观察到的焦点丢失、目标窗口前台采样为 0，并已自动关闭。
+
+当前核心的控制器中断接管也已通过：第一任务只执行一次，测试控制器中断后由 `--resume-run` 接管同一窗口，代数推进到 2，结果见 [1.3.4 控制器接管证据](../test/controller-adoption-validation-1.3.4-rc.1.json)。
+
+同一验收在已安装缓存中也已发起，但 provider 窗口未产生任务检查点，安全尝试预算耗尽后按失败收束；该结果保留在 [缓存接管阻塞证据](../test/controller-adoption-validation-1.3.4-rc.1-cache.json)，不能用源仓成功结果替代缓存包验收。
+
+当前核心的真实模型驱动容量验收已在修复后重新执行：规划器正确产出 12 个容量块（13 个任务的最后 2 个串行溢出），但本机 Windows Terminal/模型启动实际峰值为 6；其余窗口经历三次启动尝试仍未确认，barrier 未释放，因此没有完整有效收据，运行进入 `needs-reconciliation`。这已排除原先的两项代码根因（未知三位项目编号触发单块回退、runner 将窗口重试硬编码为 1），但宿主启动容量仍未通过当前 RC 门槛。结果保留在 [当前容量验收阻塞证据](../test/concurrency-validation-1.3.4-rc.1.json)，不能标记为通过。
+
+以下项目仍未完成，因此本候选包还不能标记为完整 RC 验收通过：当前核心的有效模型驱动容量任务与收据、已安装缓存的控制器接管，以及真实插件管理器激活/回滚。额度不足时保留 `blocked by provider capacity`，不把历史核心的窗口证据升级为当前核心证据。
 
 ## 稳定版边界
 

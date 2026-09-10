@@ -1,0 +1,173 @@
+{
+  "schema": 1,
+  "coreVersion": "1.3.4-rc.1",
+  "releaseJsonSha256": "f6f587d19308627ee280a6c70ec1e02c31070be089c0fa8700c422adbd00eb91",
+  "validatedAt": "2026-09-09T14:31:25.696Z",
+  "command": "node test/live-recovery.mjs",
+  "status": "blocked",
+  "reason": "No task checkpoint was produced in the installed-cache run; the runner exhausted its safe attempt budget after two popup attempts.",
+  "passed": false,
+  "runId": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+  "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\scripts\\orchestrate-sdk.mjs",
+  "workspace": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1",
+  "root": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+  "error": "Error: Timed out: first task completed and second task running",
+  "summary": {
+    "protocol": 2,
+    "version": "1.3.4-rc.1",
+    "agent": "codex",
+    "runId": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+    "workspace": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1",
+    "request": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" one 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆；同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" two 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆",
+    "capacity": 12,
+    "coordinator": "D:\\temp\\orchestrator\\coordinator",
+    "generation": 1,
+    "history": [],
+    "startedAt": 1788964001743,
+    "tasks": [
+      {
+        "id": "T001",
+        "prompt": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" one 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆"
+      },
+      {
+        "id": "T002",
+        "prompt": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" two 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆"
+      }
+    ],
+    "plan": [
+      {
+        "key": "B1",
+        "title": "merged-1",
+        "b": {
+          "title": "merged-1",
+          "type": "linked",
+          "tasks": [
+            {
+              "id": "t1",
+              "title": "task-1",
+              "prompt": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" one 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆",
+              "sourceIds": [
+                "T001"
+              ]
+            },
+            {
+              "id": "t2",
+              "title": "task-2",
+              "prompt": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" two 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆",
+              "sourceIds": [
+                "T002"
+              ]
+            }
+          ],
+          "conflictKeys": [
+            "dir:C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+            "file:C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs",
+            "dir:C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1",
+            "file:C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1"
+          ],
+          "dependsOn": []
+        },
+        "dependsOn": [],
+        "keys": [
+          "dir:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1/temp/recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+          "file:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1/temp/recovery-61cfd5ec-babe-47b5-b191-d50a13adb040/probe.mjs",
+          "dir:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1",
+          "file:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1"
+        ]
+      }
+    ],
+    "blocks": [
+      {
+        "key": "B1",
+        "title": "merged-1",
+        "taskIds": [
+          "T001",
+          "T002"
+        ]
+      }
+    ],
+    "results": {
+      "B1": {
+        "status": "failed",
+        "attempts": [
+          {
+            "file": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\orchestrator\\runs\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\attempts\\B1\\1\\attempt.json",
+            "runId": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+            "token": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-B1-a1-7ca4132764e6",
+            "number": 1,
+            "taskIds": [
+              "T001",
+              "T002"
+            ],
+            "createdAt": 1788964002812,
+            "endedAt": 1788964105065,
+            "exitCode": null
+          },
+          {
+            "file": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\orchestrator\\runs\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\attempts\\B1\\2\\attempt.json",
+            "runId": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+            "token": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-B1-a2-985a235949d5",
+            "number": 2,
+            "taskIds": [
+              "T001",
+              "T002"
+            ],
+            "createdAt": 1788964108497,
+            "endedAt": 1788964211267,
+            "exitCode": null
+          }
+        ],
+        "leaseId": "7410aad3f5803895-B1",
+        "token": "recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-B1-a2-985a235949d5",
+        "launcherFiles": {
+          "lp": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\win-launch-B1-recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-a2.ps1",
+          "pidf": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\window-B1-recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-a2.pid",
+          "pf": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\agent-win-B1-recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-a2.md",
+          "rf": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\win-B1-recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-a2.result.json"
+        },
+        "launcher": {
+          "ProcessId": 10524,
+          "Name": "powershell.exe",
+          "CommandLine": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\win-launch-B1-recovery-61cfd5ec-babe-47b5-b191-d50a13adb040-a2.ps1",
+          "Started": "2026-09-09T14:28:30.0289820Z"
+        },
+        "endedAt": 1788964211267,
+        "startedAt": 1788964108498,
+        "exitCode": null,
+        "reason": "Safe recovery attempt budget exhausted"
+      }
+    },
+    "taskResults": {
+      "T001": {
+        "status": "failed",
+        "reason": "Safe recovery attempt budget exhausted"
+      },
+      "T002": {
+        "status": "failed",
+        "reason": "Safe recovery attempt budget exhausted"
+      }
+    },
+    "todoList": [
+      {
+        "id": "T001",
+        "prompt": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" one 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆",
+        "status": "failed",
+        "block": "B1"
+      },
+      {
+        "id": "T002",
+        "prompt": "同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\" two 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆",
+        "status": "failed",
+        "block": "B1"
+      }
+    ],
+    "owner": {
+      "ProcessId": 39348,
+      "Name": "node.exe",
+      "CommandLine": "C:\\Users\\fixture-user\\.tools\\node22-fresh\\node.exe C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\scripts\\orchestrate-sdk.mjs --run-windows \"同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \\\"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\\\" one 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆；同一项目 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040：执行 node \\\"C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1\\temp\\recovery-61cfd5ec-babe-47b5-b191-d50a13adb040\\probe.mjs\\\" two 并等待命令结束，在发起目录 C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.43-rc.1 执行，按主持命令记录检查点，禁止另开窗、禁止提交和写记忆\"",
+      "Started": "2026-09-09T14:26:24.5097140Z"
+    },
+    "finishedAt": 1788964211731,
+    "success": false
+  }
+}

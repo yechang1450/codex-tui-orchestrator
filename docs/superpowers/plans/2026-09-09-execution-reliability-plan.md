@@ -112,6 +112,7 @@
 - [x] Add or update the package validation gate: direct source/cache hash equality detects drift before activation.
 - [x] Run source release-integrity and package validation before copying anything.
 - [x] Rebuild the cache through the existing workflow, then run cache release-integrity, doctor, and readonly status.
+- [x] Publish a fresh current RC package, run locked `npm ci`, package repair, doctor, readonly status, and the full 180-test package regression; persist the machine-readable result in `test/current-package-validation.json` and retain the old 1.3.1 record under its historical name.
 - [x] Confirm no live TUI windows or reservations remain; existing cache test fixtures were preserved.
 
 ### Task 6: Full verification and handoff

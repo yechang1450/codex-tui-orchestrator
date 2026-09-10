@@ -34,6 +34,10 @@ export function cliCandidates(env = process.env, platform = process.platform, {w
       path.join(modules, 'codex-win32-x64', 'vendor'),
       path.join(modules, 'codex', 'node_modules', '@openai', 'codex-win32-arm64', 'vendor')]) {
       for (const triple of ['x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc']) {
+        // Current npm packages place the native binary below codex/bin; older
+        // packages used codex.exe directly below the target directory.
+        found.push(path.join(base, triple, 'bin', 'codex.exe'));
+        found.push(path.join(base, triple, 'codex', 'bin', 'codex.exe'));
         found.push(path.join(base, triple, 'codex', 'codex.exe'));
       }
     }

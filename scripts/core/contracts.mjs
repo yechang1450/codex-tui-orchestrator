@@ -3,9 +3,23 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 
-export const CORE_VERSION = '1.3.3-rc.1';
+export const CORE_VERSION = '1.3.4-rc.1';
 export const SUCCESS = new Set(['verified']);
 export const TERMINAL = new Set(['verified','failed','blocked','cancelled','awaiting-verification','preflight-failed','popup-failed','timeout','needs-reconciliation']);
+
+// 校验 acceptance 契约 key 与 task id 的一致性：unknown key（拼错/多余）= 直接报错；task 无 check = 告警（将停在 awaiting-verification）。
+export function acceptanceKeyDiff(checks,tasks) {
+  if(!checks||typeof checks!=='object'||Array.isArray(checks)||!Object.keys(checks).length)return null;
+  const ids=[...(new Set((tasks||[]).map(t=>t?.id).filter(Boolean)))],keys=Object.keys(checks);
+  const unknown=keys.filter(k=>!ids.includes(k)),missing=ids.filter(k=>!keys.includes(k));
+  return (unknown.length||missing.length)?{unknown,missing}:null;
+}
+
+// 报告 GiB → 最大并发 TUI 窗数：先按 1024/1000 换算，再取四分之三并向下取整。
+// fresh 规划与 --resume-run 的恢复校验共用同一容量；不再额外设置 8 窗硬上限。
+export function computeMaxWindows(memGb) {
+  return Math.floor(memGb * 1024 / 1000 * 3 / 4);
+}
 
 export function summaryComplete(sum, strict = true) {
   if (!sum?.runId || !Array.isArray(sum.blocks) || !Array.isArray(sum.tasks) || !sum.blocks.length || !sum.tasks.length) return false;
@@ -74,6 +88,27 @@ export function requestTasks(request) {
   parts.push(text.slice(start));
   return parts.map(s=>s.trim()).filter(Boolean).map((prompt,i)=>({id:`T${String(i+1).padStart(3,'0')}`,prompt}));
 }
+// 结构化 TodoList（主控账本中的任务清单）：所有执行块共享同一份原始任务与状态视图。
+// 分块只建立 block 归属，不改写 id/prompt；恢复和重试时可从任务结果重新生成，避免窗口自行维护第二份清单。
+export function buildTodoList(tasks, blocks = [], taskResults = {}) {
+  const owner = new Map();
+  for (const block of blocks || []) for (const id of block?.taskIds || []) owner.set(id, block.key || null);
+  return (tasks || []).map(task => ({
+    id: task.id,
+    prompt: task.prompt,
+    status: taskResults?.[task.id]?.status || 'pending',
+    block: owner.get(task.id) || null,
+  }));
+}
+export function todoListText(todoList, blockKey = '') {
+  const list = Array.isArray(todoList) ? todoList : [];
+  const current = blockKey ? list.filter(item => item.block === blockKey) : list;
+  const lines = current.map(item => {
+    const mark = item.status === 'verified' || item.status === 'completed' ? '[x]' : '[ ]';
+    return `${mark} ${item.id} (${item.status}) ${item.prompt}`;
+  });
+  return lines.length ? lines.join('\n') : '(empty TodoList)';
+}
 export function bindClassifiedTasks(request,classified) {
   const tasks=requestTasks(request),byId=new Map(tasks.map(t=>[t.id,t]));
   if(!Array.isArray(classified)||classified.length!==tasks.length||new Set(classified.map(t=>t.id)).size!==tasks.length||classified.some(t=>!byId.has(t.id)))throw new Error('Classified task inventory mismatch');
@@ -116,8 +151,15 @@ export function verifyChecks(checks,workspace) {
         evidence.push({type:'command',command:check.command,args:check.args,exitCode:result.status});continue;
       }
       const file=path.resolve(workspace,check.path);
-      if(check.type==='file') {if(!fs.statSync(file).isFile())throw new Error('Not a file: '+file);if(check.sha256&&sha256(file)!==check.sha256)throw new Error('Hash mismatch: '+file);}
-      else if(check.type==='json') {const value=JSON.parse(fs.readFileSync(file,'utf8'));for(const [key,expected] of Object.entries(check.equals||{})){if(JSON.stringify(value[key])!==JSON.stringify(expected))throw new Error('JSON mismatch: '+file+' '+key);}}
+      if(check.type==='file') {
+        if(!fs.existsSync(file))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));
+        if(!fs.statSync(file).isFile())throw new Error('Not a file: '+file);if(check.sha256&&sha256(file)!==check.sha256)throw new Error('Hash mismatch: '+file);}
+      else if(check.type==='json') {
+        if(!fs.existsSync(file))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));
+        let value;try{value=JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){throw new Error('Acceptance JSON parse failed: '+file+': '+e.message);}
+        for(const [key,expected] of Object.entries(check.equals||{})){
+          if(!(key in value))throw new Error('JSON field missing: '+file+' key="'+key+'" expected='+JSON.stringify(expected));
+          if(JSON.stringify(value[key])!==JSON.stringify(expected))throw new Error('JSON mismatch: '+file+' key="'+key+'" expected='+JSON.stringify(expected)+' actual='+JSON.stringify(value[key]));}}
       else if(check.type==='absent') {if(fs.existsSync(file))throw new Error('Unexpected path: '+file);}
       else throw new Error('Unsupported acceptance check: '+check.type);
       evidence.push({type:check.type,path:file,sha256:check.type==='absent'?undefined:sha256(file)});

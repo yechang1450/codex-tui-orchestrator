@@ -14,12 +14,13 @@ description: Use when codex-TUI-orchestrator receives an authorized multi-part r
 - 用户已授权时直接执行，不重复询问是否批准窗口。窗口使用 never；技能不能覆盖宿主工具限制。
 - 不用 headless --run/--exec 代替可见 TUI。窗内不得递归编排或另开窗口。
 - 默认 ORCH_TUI=wt，使用 Windows Terminal 承载可见 TUI；内部仍使用 PowerShell 启动脚本管理执行生命周期。ORCH_TUI=inactive 仅为显式传统控制台选项，不主动切换用户窗口；它也不能保证完全避免焦点变化，见 docs/inactive-windows.md。
+- TUI 窗默认使用 `gpt-5.3-codex-spark` 与最高 `xhigh` 思考强度；调用方显式设置 `ORCH_MODEL` 或 `ORCH_EFFORT` 时覆盖默认值。
 
 ## 目录和容量
 
 从发起对话目录调用 SDK 绝对路径，不切换到安装目录。默认沿用当前工作区；临时文件归入工作区 temp/orchestrator。
 
-规划前检测内存：最大窗口数 = min(8, round(内存 GiB × 1024 ÷ 2000))。整批至多该数量的块；多余任务合并到已有块串行执行，不另排额外批次。全局容量计入活动和预留窗口。
+规划前检测内存：最大窗口数 = floor(系统报告 GiB × 1024/1000 × 3/4)。整批至多该数量的块；多余任务合并到已有块串行执行，不另排额外批次。全局容量计入活动和预留窗口。
 
 原始任务保持稳定 ID；普通逗号后的补充说明不能丢失。模型只能分类，不得改写任务原文或凭已完成建议跳过任务。覆盖不确定时保留全部任务，并明确报告串行兜底。
 
@@ -37,6 +38,10 @@ description: Use when codex-TUI-orchestrator receives an authorized multi-part r
 产物按 run ID 放在工作区 temp/orchestrator/runs/<ID>。清理只针对本次拥有且已结束的临时文件，不删除活动窗文件或无关文件。
 
 ## 中断恢复
+
+单个任务不需要拆分成可见并发块时，可用独立监督器：`node <插件绝对路径>/scripts/supervise.mjs --workspace <工作区> --prompt "<完整任务>" --max-attempts 3`。它把会话 ID 和尝试记录写入工作区 `temp/orchestrator/supervisor/runs/<ID>`，对传输错误、超时、容量、限流和服务端错误做有限退避，并在可能时恢复同一个 Codex 会话。保存的任务用同一 `--run-id <ID> --resume` 继续。
+
+监督器只能保证有限恢复，不能把有不确定外部副作用的操作变成可安全重复；这类情况仍需先核对实际状态。多任务计划继续使用下面的检查点恢复流程。
 
 从原工作区运行 node <SDK绝对路径> --resume-run <ID>。使用保存的任务、计划和验收条件；按 PID、创建时间及命令行接管存活窗口，不重复启动替代窗。
 

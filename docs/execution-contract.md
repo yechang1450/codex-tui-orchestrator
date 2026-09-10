@@ -1,12 +1,12 @@
-# Dedicated execution contract (core 1.3.1, run protocol 2)
+# Dedicated execution contract (core 1.3.4-rc.1, run protocol 2)
 
 The dedicated Codex plugin uses a physical release snapshot of scripts/core and verifies release.json at startup. Generic development is isolated from the dedicated source and installed cache. Changes are promoted explicitly only after verification; repair.mjs --target creates a fresh release directory. See release-policy.md. The generic entry implements Codex and pi adapters; the dedicated Codex plugin still accepts Codex only. See pi-adapter.md for Pi-specific CLI, planning, session and shutdown behavior.
 
 ## Planning and capacity
 
-Detect memory first: min(8, round(memoryGiB * 1024 / 2000)). The complete plan contains at most this many blocks. Overflow tasks run serially inside existing blocks; no additional capacity waves. Each block starts as soon as its own prerequisites are verified and a capacity/resource lease is available. A dependent of A does not wait for unrelated B. Reject unknown, self and cyclic dependencies before launching. Merge transitive resource conflicts and preserve dependency order. Windows file locks normalize case, separators and existing junction ancestors, and account for directory containment.
+Detect memory first: floor(reported memoryGiB * 1024 / 1000 * 3 / 4). The complete plan contains at most this many blocks. Overflow tasks run serially inside existing blocks; no additional capacity waves. Each block starts as soon as its own prerequisites are verified and a capacity/resource lease is available. A dependent of A does not wait for unrelated B. Reject unknown, self and cyclic dependencies before launching. Merge transitive resource conflicts and preserve dependency order. Windows file locks normalize case, separators and existing junction ancestors, and account for directory containment.
 
-The parent persists manifest.json with the original request and T001... task identities before asking the planner. Model already_done/feasible flags never authorize omission. Uncertain model coverage falls back to the complete original inventory in a serial block.
+The parent persists manifest.json with the original request, the structured TodoList and T001... task identities before asking the planner. Model already_done/feasible flags never authorize omission. Uncertain model coverage falls back to the complete original inventory in a serial block. Each block receives the global TodoList plus its current block view.
 
 Task parsing preserves ordinary comma continuations and quoted command separators. Deterministic planning uses the same boundaries as the original ledger. Semantic classification must return the original IDs; the parent restores original text by ID before grouping. A paraphrased summary cannot silently collapse otherwise valid parallel work into the coverage fallback.
 
@@ -53,4 +53,4 @@ Windows inherit the initiating directory; do not derive cwd from a target filena
 
 ## Regression commands
 
-Run node --test test/*.test.mjs in the dedicated plugin directory. Invoke test/live-codex.mjs by absolute path from the desired workspace for the opt-in 8-window/9-task real-model acceptance. ORCH_LIVE_ENTRY can select the Codex-specific scripts/orchestrate-sdk.mjs entry to run the same acceptance contract. Existing historical result files are not evidence for a changed core version; retain newly generated run IDs and summaries.
+Run node --test test/*.test.mjs in the dedicated plugin directory. Invoke test/live-codex.mjs by absolute path from the desired workspace for the opt-in calculated-capacity real-model acceptance. ORCH_LIVE_ENTRY can select the Codex-specific scripts/orchestrate-sdk.mjs entry to run the same acceptance contract. Existing historical result files are not evidence for a changed core version; retain newly generated run IDs and summaries.
