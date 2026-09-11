@@ -15,6 +15,20 @@ Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or 
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
+### Install from GitHub
+
+Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Clone into a new directory under your chosen installation parent:
+
+```powershell
+git clone https://github.com/yechang1450/codex-tui-orchestrator.git
+cd codex-tui-orchestrator
+npm ci --prefix scripts --omit=optional --ignore-scripts
+node scripts/release-integrity.mjs
+node scripts/orchestrate-sdk.mjs --doctor
+```
+
+Dependencies are restored from the lockfile; local `node_modules` and previous run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` directory name: the release manifest validates path casing as well as file content. Doctor checks installation and CLI discovery, not provider access or task completion. Register and enable the plugin in Codex separately if you want its skill loaded into conversations. Keep existing Codex credentials and any active workspace state when replacing the plugin directory.
+
 ```powershell
 node scripts/orchestrate-sdk.mjs --doctor
 $env:WORKSPACE_DIR = 'D:\your-project'

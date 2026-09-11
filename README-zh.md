@@ -13,6 +13,20 @@ Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or 
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
+### 从 GitHub 重新安装
+
+需要 Windows、Node 22+，以及已安装并完成登录的原生 Codex CLI。在选定的安装父目录内下载到新目录：
+
+```powershell
+git clone https://github.com/yechang1450/codex-tui-orchestrator.git
+cd codex-tui-orchestrator
+npm ci --prefix scripts --omit=optional --ignore-scripts
+node scripts/release-integrity.mjs
+node scripts/orchestrate-sdk.mjs --doctor
+```
+
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写；发布清单同时校验路径和文件内容。doctor（安装诊断，检查依赖和 CLI 发现）不代表服务商可用或任务已完成。需要在 Codex 对话中加载技能时，还要通过插件管理器注册并启用。替换插件目录时保留 Codex 登录配置与仍在执行的工作区状态。
+
 ```powershell
 node scripts/orchestrate-sdk.mjs --doctor
 $env:WORKSPACE_DIR = 'D:\your-project'
