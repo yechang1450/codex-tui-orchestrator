@@ -68,7 +68,7 @@ $env:ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
 node scripts/orchestrate-sdk.mjs --doctor
 ```
 
-Invoke the installed command or absolute script path from the initiating conversation directory; do not change into the installation directory. Use --plan for planning, --spawn <title> <prompt-or-file> for one visible window, and --status to inspect state. Read-only and orchestrator-self-modification requests remain inline. --run and a bare request respect ORCH_EXEC_MODE (headless by default). --exec/--headless and --run-windows/--visible explicitly choose a mode. Either mode preserves all tasks in a serial fallback when inventory coverage is uncertain.
+从发起对话的工作区调用已安装命令或绝对脚本路径，不要切换到安装目录。用 `--plan` 只规划，用 `--spawn <title> <prompt-or-file>` 启动一个可见窗口，用 `--status` 查看状态。只读请求和编排器自身修改留在当前对话；`--run` 与裸请求遵循 `ORCH_EXEC_MODE`（默认 headless）。`--exec`/`--headless` 与 `--run-windows`/`--visible` 可明确选择模式。资源清单不确定时，两种模式都会保留全部任务并串行兜底。
 
 ## 双通道实时状态
 
@@ -102,11 +102,11 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 
 ## Completion / 完成
 
-The window checks real outputs before emitting its token-specific __ORCH_DONE__ marker. The watchdog only treats assistant output as completion evidence; the parent independently verifies outputs and collects every block's terminal state. Child windows must not recursively launch orchestration or subagents.
+窗口会先检查真实输出，再发出本次令牌对应的 `__ORCH_DONE__` 标记。看门狗（监视子进程并在异常时收尾的组件）只把助手输出当作完成线索；主控还会独立验收输出，并收集每个块的终态。子窗口不得递归启动编排器或子代理。
 
 每次运行都会持久化主控拥有的 `manifest.json`、结构化 `todoList` 和 `goal.json`。规划器先从这份清单分块，每个执行块都会收到全局 TodoList 和本块视图。Goal 状态是运行/块/任务状态的本地持久镜像；Codex 宿主可以用会话级 Goal 做高层跟踪，但 TUI 窗不会直接调用宿主 Goal 工具。
 
-The authorization template supports the user's scope and host rules; it cannot grant permissions. Only use available skills. Failures and blockers must be reported, never converted to success.
+授权模板只表达用户范围和宿主规则，不能授予额外权限。只能使用当前可用的技能；失败和阻塞必须报告，不能改写成成功。
 
 ## Verification scope / 验证边界
 
@@ -120,7 +120,7 @@ Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024
 
 Overflow blocks are grouped into at most the calculated capacity. Tasks inside a merged block execute serially in dependency order, and all task bodies and conflict keys are retained. Capacity is a per-invocation plan limit, not a cross-process global quota; the shared coordinator applies the same calculated limit across active and reserved windows.
 
-Run `node --test --test-concurrency=1 test/*.test.mjs` for offline regression tests. The scheduler rejects uncapped input instead of silently making overflow waves. Cyclic overflow dependencies produce an explicit error before execution rather than silently omitting tasks.
+离线回归测试运行 `node --test --test-concurrency=1 test/*.test.mjs`。调度器会拒绝未限容量的输入，不会悄悄制造溢出波次；溢出依赖形成环时，会在执行前明确报错，不会静默遗漏任务。
 
 ## Real-window acceptance
 

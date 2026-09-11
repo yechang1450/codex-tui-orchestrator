@@ -1,9 +1,9 @@
 interface:
   display_name: "Codex TUI Orchestrator"
-  short_description: "按并发冲突拆块、可见 Codex TUI 窗真实并发执行"
+  short_description: "按并发冲突拆块，默认 exec+headless 执行，可用 --run-windows 选择可见 Codex TUI"
   icon_small: "./assets/icon.png"
   icon_large: "./assets/icon.svg"
   brand_color: "#6A3DE8"
-  default_prompt: "Use $codex-tui-orchestrator (legacy $codex-TUI-orchestrator) to split this multi-part real task into independent/linked blocks and run them in visible parallel Codex TUI windows."
+  default_prompt: "Use $codex-tui-orchestrator (legacy $codex-TUI-orchestrator) to split this multi-part real task into independent/linked blocks and run them with default exec+headless; use --run-windows or --visible when a visible Codex TUI is requested."
 policy:
   allow_implicit_invocation: true
