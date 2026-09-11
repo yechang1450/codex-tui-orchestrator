@@ -1,39 +1,17 @@
 #!/usr/bin/env node
 /**
- * codex-TUI-orchestrator-force — technical enforcement gate for codex-TUI-orchestrator.
- *
- * The ONLY sanctioned path for REAL execution (write / build / install / test / restart / any
- * command that changes state) is a real, visible, interactive agent TUI window launched by
- * `--run-windows`. This guard makes that a *checkable invariant*:
- *
- *   - `--enable`  : arm enforcement (write the marker). Once armed, real-execution kinds are
- *                   refused from any NON-window context.
- *   - `--disable` : disarm.
- *   - `--status`  : report armed state + currently alive execution windows.
- *   - `--assert <kind>` : returns 0 (ok) / 1 (refused). A sanctioned window sets
- *                   $env:ORCH_WINDOW=1 (its launcher does), so it passes. A non-window
- *                   context that tries a real-execution kind gets refused with a route hint.
- *   - `--verify <file>` : best-effort check whether a changed file was written inside a live
- *                   sanctioned window. Reliably PASS (in a window), reliably VIOLATION (no live
- *                   window / not in a window), or INDETERMINATE (live window exists but this is
- *                   not that context) — never fabricates a verdict it cannot support.
- *
- * A window is counted as ALIVE only if it is registered in `orchestrator-windows.json` AND its
- * pid file still exists AND `process.kill(pid, 0)` (in try/catch) confirms the process is really
- * running. A record whose pid file exists but whose process has already exited is treated as NOT
- * alive and dropped from results — the old "pid file exists == alive" check is gone.
- *
- * Combined with the hard gate on headless `--run`/`--exec` inside orchestrate-sdk.mjs
- * (ORCH_ALLOW_HEADLESS must be `1`, verboten for real work), this is the "once the skill is
- * enabled, real executions must go through the TUI window" enforcement.
- *
- * Usage (from scripts dir):  node codex-TUI-orchestrator-force.mjs --status | --assert <kind> | --verify <file> | --enable | --disable
+ * Execution-context guard for tracked visible launchers and hidden exec workers.
+ * A sanctioned marker alone is insufficient: the workspace registry must contain
+ * a matching live launcher. This is an operational guard, not a security boundary
+ * against forged markers plus deliberate registration of another execution.
+ * --arm enables enforcement; --assert checks before execution; --record audits it.
  */
 import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync, lstatSync, renameSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import {launcherIdentity,processSnapshot,sameProcess} from './core/leases.mjs';
 
 import { resolveRuntimeContext } from './runtime-context.mjs';
 const { workspace: WORKSPACE, temp: TMP, state: STATE_DIR } = resolveRuntimeContext();
@@ -96,8 +74,14 @@ function pidAlive(pid) {
 function liveWindows() {
   const reg = loadJson(WINDOWS_REG, []);
   if (!Array.isArray(reg)) { console.error("[force] refusing: orchestrator-windows.json is not an array (fail-closed)."); return []; }
+  let snapshot;
+  if(reg.some(w=>w.mode==='headless'||path.basename(w.pidFile||'').startsWith('exec-')))try{snapshot=processSnapshot();}catch{return [];}
   return reg.filter((w) => {
     if (!w.pidFile) return false;
+    if(w.mode==='headless'||path.basename(w.pidFile).startsWith('exec-')){
+      const actual=launcherIdentity(pidOf(w),w.pidFile,snapshot);
+      return !!actual&&(!w.identity||sameProcess(w.identity,actual));
+    }
     return pidAlive(pidOf(w));
   });
 }
@@ -109,7 +93,7 @@ function runCli() {
     mkdirSync(STATE_DIR, { recursive: true });
     // 小标记直接用 writeFileSync 覆盖写，避免 tmp+rename→rm→rename 间隙内标记缺失的竞态。
     writeFileSync(FLAG, String(Date.now()), "utf8");
-    console.log("enforcement ARMED: real executions must go through --run-windows (visible interactive TUI).");
+    console.log("enforcement ARMED: use --exec by default or --run-windows for visible execution.");
   } else if (mode === "--disable") {
     try { rmSync(FLAG, { force: true }); } catch { /* ignore */ }
     console.log("enforcement disarmed.");
@@ -123,7 +107,7 @@ function runCli() {
     const realKinds = new Set(["exec", "write", "build", "install", "test", "restart", "start", "stop", "real", "all", "run"]);
     const readKinds = new Set(["read", "analyze", "plan", "view", "query", "search", "status", "list", "preview", "ls", "show", "check", "validate", "dry-run", "help"]);
     if (!armed()) { console.log("ok: orchestrator not armed."); process.exit(0); }
-    if (process.env.ORCH_WINDOW === "1") {
+    if (process.env.ORCH_WINDOW === "1" || process.env.ORCH_EXECUTION === "1") {
       const wins = liveWindows();
       if (wins.length > 0) {
         console.log("ok: sanctioned orchestration window (" + wins.length + " live registered window(s)).");
@@ -131,14 +115,14 @@ function runCli() {
       }
       console.log(
         "REFUSED: ORCH_WINDOW=1 but no live registered orchestration window (orchestrator-windows.json). " +
-          "The env var alone is not accepted — it may be forged. Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
+          "The env var alone is not accepted — it may be forged. Route through  node orchestrate-sdk.mjs --exec \"<request>\"  (tracked headless execution; use --run-windows for a visible TUI)."
       );
       process.exit(1);
     }
     if (realKinds.has(kind)) {
       console.log(
         "REFUSED: real execution ('" + kind + "') from a NON-orchestrator context. " +
-          "Route it through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
+          "Route it through  node orchestrate-sdk.mjs --exec \"<request>\"  (tracked headless execution; use --run-windows for a visible TUI)."
       );
       process.exit(1);
     }
@@ -195,7 +179,7 @@ function runCli() {
       });
     });
     if (wins.length === 0) {
-      console.log("VIOLATION: no live registered orchestration window exists; this change cannot be confirmed as an in-window write. Verify/re-run inside a window (node orchestrate-sdk.mjs --run-windows \"<request>\").");
+      console.log("VIOLATION: no live registered orchestration window exists; this change cannot be confirmed as an in-window write. Verify/re-run inside a window (node orchestrate-sdk.mjs --exec \"<request>\").");
       process.exit(1);
     }
     if (wins.length > 1) {

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "package": "codex-tui-orchestrator",
+  "pluginVersion": "0.5.0-rc.1",
+  "coreVersion": "1.4.0-rc.1",
+  "protocol": 2,
+  "generatedAt": "2026-09-11T01:54:36.144Z",
+  "release": {
+    "schema": 2,
+    "coreFiles": 24,
+    "runtimeFiles": 48,
+    "sourceTests": "208/208",
+    "packageTests": "208/208",
+    "followupTests": "9/9",
+    "npmCi": true,
+    "cacheSynced": true
+  },
+  "live": {
+    "mode": "headless",
+    "runId": "acceptance-9c9542c5-a58a-4921-aa42-0e49b1ae82c3",
+    "capacity": 12,
+    "peak": 11,
+    "windowLaunches": 19,
+    "uniqueLaunchers": 19,
+    "receiptsValid": false,
+    "ordered": false,
+    "overlap": false,
+    "passed": false,
+    "engineCode": 1,
+    "pollCode": 1,
+    "providerLimited": true
+  },
+  "rootCause": {
+    "fixed": [
+      "Codex default coordinator now uses HKCU Software/CodexTuiOrchestrator and temp/orchestrator/codex-coordinator",
+      "resume validates ledger and goal mirror before claiming and preserves saved coordinator",
+      "headless admission binds and commits before go latch"
+    ],
+    "observed": "旧通用 open-tui-orchestrator 曾共享 TuiOrchestrator 全局租约池；其容量4及身份清理会删除 Codex 预约。旧进程未被修改。"
+  },
+  "limits": [
+    "真实 provider 本轮返回 429，不能作为当前实现的完整 12/12 回执通过",
+    "宿主原生 TodoList/spawn 卡片需宿主消费 JSON 状态接口，插件不注入原生卡片",
+    "自动审批拒绝删除旧验证包 temp/codex-tui-orchestrator-package-1.4.0-rc.1"
+  ]
+}

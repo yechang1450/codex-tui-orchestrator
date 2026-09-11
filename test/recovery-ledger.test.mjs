@@ -22,7 +22,7 @@ test('saved recovery ledger rejects inconsistent inventories without mutating in
  const changes=[s=>s.tasks.pop(),s=>s.tasks[0].prompt='changed',s=>s.blocks[0].taskIds.pop(),
   s=>s.blocks[0].taskIds.push('T001'),s=>s.plan=[],s=>s.plan[0].b.tasks[0].sourceIds.reverse(),
   s=>delete s.results.B1,s=>s.results.extra={},s=>delete s.taskResults.T001,
-  s=>s.generation=0,s=>s.history=null,s=>s.plan[0].dependsOn=['B1'],
+  s=>s.generation=0,s=>s.history=null,s=>s.executionMode='unknown',s=>s.plan[0].dependsOn=['B1'],
   s=>s.results.B1.status='running',s=>s.results.B1.launcherFiles={pidf:'window.pid'},
   s=>s.results.B1.attempts=null,s=>s.results.B1.attempts=[{runId:'foreign',token:'t',file:'x',taskIds:['T001']}]];
  for(const change of changes){const value=structuredClone(valid);change(value);const saved=JSON.stringify(value);
@@ -84,6 +84,10 @@ test('verifyRun rebuilds the local goal mirror from verified task state',()=>{
   assert.equal(verifyRun(root,'goal-refresh',checks),true);
   const goal=JSON.parse(fs.readFileSync(path.join(dir,'goal.json'),'utf8'));
   assert.equal(goal.status,'completed');assert.equal(goal.tasks[0].status,'verified');assert.equal(goal.summaryGeneration,1);
+  const final=JSON.parse(fs.readFileSync(path.join(dir,'summary.json')));
+  const event=JSON.parse(fs.readFileSync(path.join(dir,'events.jsonl'),'utf8').trim());
+  assert.equal(event.type,'verify.completed');assert.equal(event.executionStatus[0].status,'verified');
+  assert.equal(final.eventSeq,event.seq);assert.equal(goal.eventSeq,event.seq);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 

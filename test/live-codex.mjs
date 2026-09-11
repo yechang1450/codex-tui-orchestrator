@@ -1,9 +1,9 @@
-// Opt-in real Codex TUI acceptance test; consumes the configured model's quota.
+// Opt-in real Codex execution acceptance; ORCH_LIVE_MODE selects headless/visible.
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -11,11 +11,13 @@ const exec = promisify(execFile);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const workspace = process.cwd();
 const agent=process.env.ORCH_LIVE_AGENT||'codex';
+const executionMode=process.env.ORCH_LIVE_MODE||'visible';
+if(!['headless','visible'].includes(executionMode))throw new Error('Invalid ORCH_LIVE_MODE');
 const coreFiles=fs.readdirSync(path.join(repo,'scripts','core')).filter(n=>/\.(mjs|ps1|txt)$/.test(n)).sort();
 const coreHash=()=>crypto.createHash('sha256').update(coreFiles.map(n=>n+':'+crypto.createHash('sha256').update(fs.readFileSync(path.join(repo,'scripts','core',n))).digest('hex')).join('\n')).digest('hex');
 const coreHashAtLaunch=coreHash();
 const parent = path.join(workspace, 'temp');
-const name = (agent==='pi'?'pi-live-':'open-live-') + crypto.randomUUID().replace(/[^a-z]/g, '');
+const name = 'codex-live-'+executionMode+'-' + crypto.randomUUID().replace(/[^a-z]/g, '');
 const root = path.join(parent, name);
 const nonce = crypto.randomUUID();
 const runId='acceptance-'+nonce;
@@ -36,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const config = JSON.parse(fs.readFileSync(path.join(root, 'config.json'), 'utf8'));
-const id = process.argv[2];
+const id = path.basename(fileURLToPath(import.meta.url)).slice(5, -4);
 assert.ok(config.ids.includes(id));
 const out = path.join(root, 'project-' + id);
 fs.mkdirSync(out, { recursive: true });
@@ -60,7 +62,10 @@ for (const id of config.ids) {
   fs.mkdirSync(path.join(root, 'project-' + id));
   fs.writeFileSync(path.join(root, 'project-' + id, 'probe' + id + '.mjs'), probe);
 }
-const request = config.ids.map(id => `项目${id}：执行 node ${root.replaceAll('\\', '/')}/project-${id}/probe${id}.mjs ${id} 创建 ${root.replaceAll('\\', '/')}/project-${id}/result${id}.json 并等待命令完成后读回该结果文件核验成功，按主持提供的命令逐项记录检查点，禁止另开窗口禁止提交或写记忆`).join('；');
+// Validate the generated program before spending provider quota on the fixture.
+const syntax=spawnSync(process.execPath,['--check',path.join(root,'project-'+config.ids[0],'probe'+config.ids[0]+'.mjs')],{encoding:'utf8',windowsHide:true});
+if(syntax.status!==0)throw new Error('Invalid live probe: '+syntax.stderr);
+const request = config.ids.map(id => `项目${id}：执行 node ${root.replaceAll('\\', '/')}/project-${id}/probe${id}.mjs 创建 ${root.replaceAll('\\', '/')}/project-${id}/result${id}.json 并等待命令完成后读回该结果文件核验成功，按主持提供的命令逐项记录检查点，禁止另开窗口禁止提交或写记忆`).join('；');
 fs.writeFileSync(path.join(root, 'request.txt'), request, 'utf8');
 console.log(JSON.stringify({ root, capacity, tasks: config.ids.length, nonce }));
 const children = [];
@@ -80,9 +85,9 @@ function launch(script, args, label) {
   });
   return { child, done, output: () => output };
 }
-const engine = launch('orchestrate-sdk.mjs', ['--run-windows', request], 'engine');
+const engine = launch('orchestrate-sdk.mjs', [executionMode==='headless'?'--exec':'--run-windows', request], 'engine');
 const startupDeadline = Date.now() + 60000;
-while (engine.child.exitCode === null && !/spawned visible/.test(engine.output()) && Date.now() < startupDeadline) await new Promise(r => setTimeout(r, 500));
+while (engine.child.exitCode === null && !fs.existsSync(summaryFile) && Date.now() < startupDeadline) await new Promise(r => setTimeout(r, 500));
 const poll = launch('poll-windows.mjs', ['--require-all-success', '--timeoutMs', '960000', '--intervalMs', '5000'], 'poll');
 let engineEnded = false;
 engine.done.then(() => {
@@ -139,14 +144,14 @@ const results = config.ids.map(id => {
 const summary = fs.existsSync(summaryFile) ? JSON.parse(fs.readFileSync(summaryFile, 'utf8')) : null;
 const receiptsValid = results.every((r, i) => !r.missing && r.id === config.ids[i] && r.nonce === nonce && r.sum === 50005000 && r.cwd === workspace && r.finished > r.started);
 const ordered = receiptsValid && results[capacity].started >= results[capacity - 1].finished;
-const windowLaunches = (engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
+const windowLaunches = executionMode==='headless'?Object.values(summary?.results||{}).reduce((n,r)=>n+(r.attempts?.length||0),0):(engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
 const uniqueLaunchers = new Set(samples.flatMap(s => s.live.map(w => w.launcherPid))).size;
 const overlap = receiptsValid && Math.max(...results.slice(0, capacity).map(r => r.started)) < Math.min(...results.slice(0, capacity).map(r => r.finished));
 const passed = engineResult.code === 0 && pollResult.code === 0 && peak === capacity && receiptsValid && ordered && overlap
   && windowLaunches === capacity && uniqueLaunchers === capacity
   && Object.keys(summary?.results || {}).length === capacity && Object.values(summary.results).every(r => r.status === 'verified');
 const equivalentToCurrentCodexPlugin = passed && windowLaunches <= capacity;
-const report = { coreHashAtLaunch, coreHashAtEnd:coreHash(), coreUnchanged:coreHashAtLaunch===coreHash(), coreVersion:summary?.version, passed, equivalentToCurrentCodexPlugin, runId, entry: process.env.ORCH_LIVE_ENTRY||path.join(repo, 'scripts', 'orchestrate-sdk.mjs'), terminal: 'wt', workspace, root, nonce, capacity, peak, windowLaunches, uniqueLaunchers, engineResult, pollResult, receiptsValid, ordered, overlap, results, summary, samples };
+const report = { coreHashAtLaunch, coreHashAtEnd:coreHash(), coreUnchanged:coreHashAtLaunch===coreHash(), coreVersion:summary?.version, executionMode, passed, equivalentToCurrentCodexPlugin, runId, entry: process.env.ORCH_LIVE_ENTRY||path.join(repo, 'scripts', 'orchestrate-sdk.mjs'), terminal: executionMode==='headless'?null:'wt', workspace, root, nonce, capacity, peak, windowLaunches, uniqueLaunchers, engineResult, pollResult, receiptsValid, ordered, overlap, results, summary, samples };
 fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(root, 'engine.log'), engine.output());
 fs.writeFileSync(path.join(root, 'poll.log'), poll.output());

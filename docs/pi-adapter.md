@@ -1,6 +1,6 @@
 # pi agent 接入与分块修复
 
-open-tui-orchestrator 支持已安装的 Codex CLI 和 pi CLI。专用 codex-TUI-orchestrator 仍只接受 Codex；两套入口共享并发、任务清单、冲突锁、恢复和验收核心。
+open-tui-orchestrator 支持已安装的 Codex CLI 和 pi CLI。专用 codex-tui-orchestrator 只接受 Codex；两套入口各自维护并发协调器、任务清单、冲突锁、恢复和验收状态，避免跨实现清理彼此的租约。
 
 ## 使用
 

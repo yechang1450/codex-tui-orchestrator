@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {runWindows} from '../scripts/core/runner.mjs';
 
-test('capacity retries use their own budget and restore pending TodoList state',async()=>{
+for(const mixed of [false,true])test(mixed?'capacity recovery never disables the ordinary failure budget':'capacity retries use their own budget and restore pending TodoList state',async()=>{
  const workspace=fs.mkdtempSync(path.join(os.tmpdir(),'orch-capacity-run-'));
  const original={ORCH_CAPACITY_RETRIES:process.env.ORCH_CAPACITY_RETRIES,ORCH_CAPACITY_RETRY_MS:process.env.ORCH_CAPACITY_RETRY_MS};
  process.env.ORCH_CAPACITY_RETRIES='3';process.env.ORCH_CAPACITY_RETRY_MS='0';
@@ -19,20 +19,19 @@ test('capacity retries use their own budget and restore pending TodoList state',
   spawn:async(...args)=>{spawnRetries.push(args[3]);live=true;return true;},
   readPid:()=>1,identity:()=>live?identity:null,waitForExit:async()=>true,
   close:async()=>{live=false;},session:async()=>true,
-  wait:async()=>({done:true,exitCode:1,text:'Selected model is at capacity. Please try a different model.'}),
+  wait:async()=>({done:true,exitCode:1,text:mixed&&launches>1?'Unrecoverable CLI startup failure':'Selected model is at capacity.'}),
   exitCode:()=>1,
  };
  try {
   const sum=await runWindows('执行任务',hooks,{workspace,capacity:8,runId:'capacity',auth:'test',maxAttempts:1,coordinator:path.join(workspace,'coordinator')});
-  assert.equal(launches,4,'initial attempt plus three capacity retries');
+  const expected=mixed?2:4;
+  assert.equal(launches,expected,'capacity attempts must not disable the normal failure limit');
   assert.equal(sum.success,false);
   assert.equal(sum.results.B1.status,'failed');
   assert.equal(sum.taskResults.T001.status,'failed');
-  assert.equal(prompts.length,4);
-  assert.deepEqual(spawnRetries,[3,3,3,3],'runner must preserve a bounded multi-attempt launcher retry budget');
-  assert.match(prompts[1],/T001 \(pending\)/);
-  assert.match(prompts[2],/T001 \(pending\)/);
-  assert.match(prompts[3],/T001 \(pending\)/);
+  assert.equal(prompts.length,expected);
+  assert.deepEqual(spawnRetries,Array(expected).fill(3),'runner must preserve a bounded multi-attempt launcher retry budget');
+  for(const prompt of prompts.slice(1))assert.match(prompt,/T001 \(pending\)/);
  } finally {
   if(original.ORCH_CAPACITY_RETRIES===undefined)delete process.env.ORCH_CAPACITY_RETRIES;else process.env.ORCH_CAPACITY_RETRIES=original.ORCH_CAPACITY_RETRIES;
   if(original.ORCH_CAPACITY_RETRY_MS===undefined)delete process.env.ORCH_CAPACITY_RETRY_MS;else process.env.ORCH_CAPACITY_RETRY_MS=original.ORCH_CAPACITY_RETRY_MS;

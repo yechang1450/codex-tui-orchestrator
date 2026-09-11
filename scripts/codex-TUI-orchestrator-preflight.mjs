@@ -38,7 +38,7 @@ if (!armed()) {
   if (realKinds.has(kind)) {
     console.log(
       "REFUSED: preflight '" + kind + "' is a real-execution kind but the orchestrator is not armed (enforcement disabled). " +
-        "Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
+        "Route through  node orchestrate-sdk.mjs --exec \"<request>\"  (tracked headless execution; use --run-windows for a visible TUI)."
     );
     process.exit(1);
   }
@@ -47,18 +47,18 @@ if (!armed()) {
 }
 
 // liveWindows() 为跨进程快照（存在竞态），此处是 before-you-run 的近似判定；如需严格应在执行前紧邻复验。
-const envWindow = process.env.ORCH_WINDOW === "1";
+const envWindow = process.env.ORCH_WINDOW === "1" || process.env.ORCH_EXECUTION === "1";
 const alive = liveWindows().length;
 // 与 force --assert 保持一致：ORCH_WINDOW=1 但无活窗 → env 单独不可采信，一律 REFUSED（含只读 kind）。
 if (envWindow && alive === 0) {
   console.log(
     "REFUSED: ORCH_WINDOW=1 but no live registered orchestration window (env var alone is not accepted; may be forged). " +
-      "Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
+      "Route through  node orchestrate-sdk.mjs --exec \"<request>\"  (tracked headless execution; use --run-windows for a visible TUI)."
   );
   process.exit(1);
 }
 // Only a process that (a) sets ORCH_WINDOW=1 AND (b) has a live registered window is sanctioned.
-// A headless/script context running while a legitimate window happens to be open must NOT pass.
+// An unmarked script context must not pass just because another tracked execution is alive.
 if (envWindow && alive > 0) {
   console.log("ok: sanctioned orchestration window; '" + kind + "' may proceed.");
   process.exit(0);
@@ -67,7 +67,7 @@ if (envWindow && alive > 0) {
 if (realKinds.has(kind)) {
   console.log(
     "REFUSED: preflight '" + kind + "' is a real-execution kind but this is NOT a sanctioned orchestration window. " +
-      "Route through  node orchestrate-sdk.mjs --run-windows \"<request>\"  (a real, visible, interactive agent TUI window)."
+      "Route through  node orchestrate-sdk.mjs --exec \"<request>\"  (tracked headless execution; use --run-windows for a visible TUI)."
   );
   process.exit(1);
 }

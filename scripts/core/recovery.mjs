@@ -9,6 +9,7 @@ export function validateRecoverySummary(sum) {
  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
  const exact=(ids,value)=>object(value)&&new Set(ids).size===ids.length&&Object.keys(value).length===ids.length&&ids.every(id=>Object.hasOwn(value,id)&&object(value[id]));
  if(!object(sum)||sum.protocol!==2||typeof sum.request!=='string'||!Number.isSafeInteger(sum.generation)||sum.generation<1||!Array.isArray(sum.history))fail('invalid header');
+ if(sum.executionMode!==undefined&&!['headless','visible'].includes(sum.executionMode))fail('invalid execution mode');
  const tasks=requestTasks(sum.request);
  if(!tasks.length||!Array.isArray(sum.tasks)||!same(sum.tasks.map(t=>({id:t?.id,prompt:t?.prompt})),tasks))fail('original task inventory mismatch');
  if(sum.todoList!==undefined){

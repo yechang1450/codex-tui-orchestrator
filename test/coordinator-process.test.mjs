@@ -4,8 +4,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {coordinatorDir} from '../scripts/core/leases.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+test('Codex default coordinator is isolated from the generic TUI pool',()=>{
+ const workspace=path.resolve(family,'..'),env={...process.env,ORCH_COORDINATOR_DIR:''};
+ const dir=coordinatorDir(workspace,env);
+ assert.equal(path.basename(dir),'codex-coordinator');
+ assert.notEqual(dir,path.join(workspace,'temp','orchestrator','coordinator'));
+ if(process.platform==='win32')assert.equal(coordinatorDir(path.join(workspace,'other-workspace'),env),dir);
+});
 test('nine independent parent processes contend for eight shared slots without lost updates',async()=>{
  fs.mkdirSync(family,{recursive:true});const dir=fs.mkdtempSync(path.join(family,'cross-process-'));
  const module=new URL('../scripts/core/leases.mjs',import.meta.url).href;

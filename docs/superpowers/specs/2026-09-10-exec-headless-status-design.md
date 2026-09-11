@@ -26,11 +26,11 @@
 - `executionStatus`：每个块的 mode、queued/reserved/launching/running/awaiting-verification/retrying/verified/failed 等运行时状态。
 - `events.jsonl`：带单调 `seq` 的状态事件历史。
 
-`summary.json` 与 `goal.json` 继续作为原子快照；每次状态变化同时追加事件。事件包含 `runId`、`block`、可选 `taskId`、`mode`、`attempt`、状态和时间戳。
+`summary.json` 与 `goal.json` 继续作为原子快照；每次状态变化同时追加事件。事件包含 `runId`、`seq`、`generation`、类型、时间戳，以及 `todoList` 和 `executionStatus` 的完整投影；块内包含 mode、attempt、PID 等字段。
 
 ### 实时查看
 
-增加 `--status --run-id <id>` 的单次快照和 `--status --watch --run-id <id>` 的只读事件流。主控可据此同时展示 TodoList 与 execution/spawn 状态；TUI 窗只消费提示中的本块视图，不直接修改主控状态。
+增加 `--status --run-id <id>` 的单次快照和 `--status --watch --run-id <id>` 的只读事件流。主控可据此同时展示 TodoList 与 execution/spawn 状态；交互终端刷新双面板，普通输出追加变化事件。原生 Codex 卡片需要宿主消费这个接口，插件不能仅靠技能注入原生卡片；TUI 窗只消费提示中的本块视图，不直接修改主控状态。
 
 ### 恢复与验收
 

@@ -1,22 +1,22 @@
-> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.3.4-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
+> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.0-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
 
 # codex-tui-orchestrator
 
-Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, visible interactive windows, completion watchdogs and result verification.
+Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, default headless exec, optional visible TUI, durable checkpoints and independent result verification.
 
-版本：`0.4.43-rc.1`。当前 RC 验收范围、结果与限制见 [RC 验收记录](docs/rc-validation.md)。
+版本：`0.5.0-rc.1`。当前 RC 验收范围、结果与限制见 [RC 验收记录](docs/rc-validation.md)。
 
 ## Current support / 当前支持
 
 Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or missing native CLI fails closed: no automatic install and no fallback to Codex.
 目前仅接通 Codex；其它 agent 不能冒充 Codex 运行。接入新宿主必须同时实现规划、交互参数、会话输出解析和完成/清理协议，不能只添加一个命令名。
 
-Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test test/*.test.mjs`.
+Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
 ```powershell
 node scripts/orchestrate-sdk.mjs --doctor
 $env:WORKSPACE_DIR = 'D:\your-project'
-node scripts/orchestrate-sdk.mjs --run-windows 'Your authorized multi-part task'
+node scripts/orchestrate-sdk.mjs --exec 'Your authorized multi-part task'
 ```
 
 ### 自动重试与继续
@@ -42,7 +42,26 @@ $env:ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
 node scripts/orchestrate-sdk.mjs --doctor
 ```
 
-Invoke the installed command or absolute script path from the initiating conversation directory; do not change into the installation directory. Use --plan for planning, --spawn <title> <prompt-or-file> for one visible window, and --status to inspect state. Read-only and orchestrator-self-modification requests remain inline. Explicit --run-windows can execute a single serial fallback block when inventory coverage is uncertain.
+Invoke the installed command or absolute script path from the initiating conversation directory; do not change into the installation directory. Use --plan for planning, --spawn <title> <prompt-or-file> for one visible window, and --status to inspect state. Read-only and orchestrator-self-modification requests remain inline. --run and a bare request respect ORCH_EXEC_MODE (headless by default). --exec/--headless and --run-windows/--visible explicitly choose a mode. Either mode preserves all tasks in a serial fallback when inventory coverage is uncertain.
+
+## 双通道实时状态
+
+TodoList（原始任务清单）保留 T001 等任务身份。Execution（执行块状态面板，也称 spawn 状态）显示每个块的模式、PID、尝试次数、等待原因和重试时间。块已启动不代表其中每个任务都已开始。
+
+- started 检查点使任务进入 running；completed 进入 awaiting-verification；独立验收通过才显示 verified。
+- 执行输出持续显示双状态。交互终端固定刷新面板，普通输出按状态变化追加。
+- manifest.json 从规划开始保存清单；summary.json 是权威快照，events.jsonl 是带序号事件，goal.json 是派生镜像。文件都归当前工作区 temp/orchestrator/runs/<ID>。
+
+~~~powershell
+node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch
+node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch --json
+~~~
+
+status.mjs 只读且不依赖 SDK，退出观察不会终止执行。JSONL（逐行 JSON 事件）用于接入宿主界面；重连先读最新快照再跟随事件，--after 指定已观察序号。默认每 250ms 观察检查点，系统和同步协调可能延迟显示，不承诺硬实时。
+
+Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终端面板和状态事件；原生卡片需要宿主消费同一接口，不能仅靠技能文件注入。可以随时打开观察面板；选择下一次任务的执行模式不会重启当前任务。
+
+恢复沿用原来的执行模式和任务身份。旧记录未声明模式时仍按 visible 恢复，不会因新默认值改变执行方式。
 
 ## Host contract / 宿主契约
 
@@ -51,15 +70,15 @@ Invoke the installed command or absolute script path from the initiating convers
 - ORCH_MODEL / ORCH_EFFORT 是显式覆盖项；TUI 窗默认使用 `gpt-5.3-codex-spark` 与最高 `xhigh` 思考强度。GUI 对话里的临时覆盖不会自动读取，调用方需显式传入。
 - 传输断开、超时、流中断，或启动器在写入任务检查点前异常退出时，执行块会在 `maxAttempts`（默认 2 次）预算内自动重试；已经写入 started 但无法证明结果的任务会停在 `needs-reconciliation`，不会盲目重做副作用。
 - ORCH_SANDBOX / ORCH_APPROVAL pass the caller's authorized execution policy. Authorized execution windows default to danger-full-access / never. ORCH_SANDBOX can restrict the sandbox; approval is always never, including when a legacy ORCH_APPROVAL requests prompting. For the default authorized Codex TUI path, the launcher carries the effective never + danger-full-access envelope with `--dangerously-bypass-approvals-and-sandbox`, which also suppresses the CLI's project trust confirmation. Restricted sandbox values are preserved and never elevated. The exact workspace trust setting is passed for this invocation only; global config.toml is not modified. External host policy can still reject an operation.
-- Windows Terminal is preferred; conhost is the terminal fallback, not an agent fallback. Interactive stdout is inherited, never piped through Tee-Object.
-- WORKSPACE_DIR selects the task workspace. CODEX_HOME selects Codex configuration/session storage. The default workspace is the caller's current directory; --workspace / WORKSPACE_DIR explicitly overrides it. ORCH_STATE_DIR defaults to workspace/temp/orchestrator, shared by both tools in that workspace; any override must remain below workspace/temp. Cross-workspace runs share the coordinator locator; run results stay in their own workspace.
+- Headless uses hidden workers and codex exec --json with stdin prompts. Visible mode prefers Windows Terminal with conhost fallback and inherited interactive stdout. ORCH_TUI applies only to visible mode.
+- WORKSPACE_DIR 选择任务工作区，CODEX_HOME 选择 Codex 配置和会话存储。默认工作区是调用者当前目录，也可用 --workspace / WORKSPACE_DIR 覆盖。ORCH_STATE_DIR 默认位于 workspace/temp/orchestrator；Codex 的协调器独立使用 `temp/orchestrator/codex-coordinator` 和 HKCU `Software/CodexTuiOrchestrator`，不会与 open-tui-orchestrator 共用租约池。不同工作区的 Codex 运行共享该定位器，运行结果仍留在各自工作区。ORCH_COORDINATOR_DIR 是仅用于明确共享 Codex 容量池的高级覆盖项。
 - Task temporary artifacts remain under workspace/temp and are handled by the existing cleanup protocol. Do not delete active runtime state. ORCH_SESSION_DIR can override session discovery.
 
 ## Completion / 完成
 
 The window checks real outputs before emitting its token-specific __ORCH_DONE__ marker. The watchdog only treats assistant output as completion evidence; the parent independently verifies outputs and collects every block's terminal state. Child windows must not recursively launch orchestration or subagents.
 
-每次运行都会持久化主控拥有的 `manifest.json`、结构化 `todoList` 和 `goal.json`。规划器先从这份清单分块，每个可见窗口都会收到全局 TodoList 和本块视图。Goal 状态是运行/块/任务状态的本地持久镜像；Codex 宿主可以用会话级 Goal 做高层跟踪，但 TUI 窗不会直接调用宿主 Goal 工具。
+每次运行都会持久化主控拥有的 `manifest.json`、结构化 `todoList` 和 `goal.json`。规划器先从这份清单分块，每个执行块都会收到全局 TodoList 和本块视图。Goal 状态是运行/块/任务状态的本地持久镜像；Codex 宿主可以用会话级 Goal 做高层跟踪，但 TUI 窗不会直接调用宿主 Goal 工具。
 
 The authorization template supports the user's scope and host rules; it cannot grant permissions. Only use available skills. Failures and blockers must be reported, never converted to success.
 
@@ -73,7 +92,7 @@ Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024
 
 Overflow blocks are grouped into at most the calculated capacity. Tasks inside a merged block execute serially in dependency order, and all task bodies and conflict keys are retained. Capacity is a per-invocation plan limit, not a cross-process global quota; the shared coordinator applies the same calculated limit across active and reserved windows.
 
-Run `node --test test/*.test.mjs` for offline regression tests. The scheduler rejects uncapped input instead of silently making overflow waves. Cyclic overflow dependencies produce an explicit error before execution rather than silently omitting tasks.
+Run `node --test --test-concurrency=1 test/*.test.mjs` for offline regression tests. The scheduler rejects uncapped input instead of silently making overflow waves. Cyclic overflow dependencies produce an explicit error before execution rather than silently omitting tasks.
 
 ## Real-window acceptance
 
@@ -94,7 +113,7 @@ Codex 的规划 SDK 和 TUI 窗统一使用 orchestrator-openai-https 配置（�
 ## 发行成熟度
 当前属于本机验证的候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；历史并发测试不代表跨机器或跨版本认证。
 
-当前候选 core 1.3.4-rc.1 已完成源仓与全新发布包 `180/180` 回归、锁文件依赖安装、release integrity、doctor、只读 status 和源码/缓存哈希核验；连续输入焦点和源仓控制器接管已通过，已安装缓存接管与按计算容量 12 执行的当前模型实测均保留为阻塞证据，尚不能宣称完整 RC。详细记录见 [RC 验收记录](docs/rc-validation.md)、[当前包验收证据](test/current-package-validation.json) 和 [当前容量阻塞证据](test/concurrency-validation-1.3.4-rc.1.json)。
+当前候选 core 1.4.0-rc.1 的验收以 [RC 验收记录](docs/rc-validation.md) 为准。1.3.4 的窗口、包与容量记录属于历史证据，不用于证明这次默认模式变更。
 
 隐私与使用条款见 [隐私说明](docs/privacy.md) 与 [使用条款](docs/terms.md)。
 

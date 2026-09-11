@@ -1,6 +1,6 @@
-# Dedicated execution contract (core 1.3.4-rc.1, run protocol 2)
+# Dedicated execution contract (core 1.4.0-rc.1, run protocol 2)
 
-The dedicated Codex plugin uses a physical release snapshot of scripts/core and verifies release.json at startup. Generic development is isolated from the dedicated source and installed cache. Changes are promoted explicitly only after verification; repair.mjs --target creates a fresh release directory. See release-policy.md. The generic entry implements Codex and pi adapters; the dedicated Codex plugin still accepts Codex only. See pi-adapter.md for Pi-specific CLI, planning, session and shutdown behavior.
+The dedicated Codex plugin uses a physical release snapshot of scripts/core and verifies release.json at startup. Generic development is isolated from the dedicated source and installed cache. Changes are promoted explicitly only after verification; repair.mjs --target creates a fresh release directory. See release-policy.md. This repository accepts Codex only; generic adapters evolve separately in open-tui-orchestrator.
 
 ## Planning and capacity
 
@@ -14,7 +14,7 @@ Task parsing preserves ordinary comma continuations and quoted command separator
 
 The initiating agent chooses a unique run ID and defines independent acceptance checks before launch. This is automatic parent preparation, not a user approval prompt.
 
-- Execute: node <absolute-entry> --run-id <id> --acceptance-file <absolute-json> --run-windows <request>
+- Execute: node <absolute-entry> --run-id <id> --acceptance-file <absolute-json> --exec <request>
 - Poll: node <absolute-scripts>/poll-windows.mjs --run-id <id> --require-all-success
 - Recheck outputs without rerunning tasks: node <absolute-entry> --verify-run <id> --acceptance-file <absolute-json>
 - Recover the saved plan after interruption: node <absolute-entry> --resume-run <id>
@@ -41,9 +41,34 @@ retrySafe means repeating the operation cannot create an unintended duplicate ef
 
 ## Global coordination and process identity
 
-Runs in both tools share a window coordinator across this Windows user session, including different workspaces. The first workspace owns temp/orchestrator/coordinator; HKCU Software/TuiOrchestrator stores only its locator. A Windows named mutex serializes lease changes and is released on crashes. Other workspaces keep their own run outputs in their own temp directories. ORCH_COORDINATOR_DIR is an explicit advanced override; all related callers must use the same value to share the cap.
+Codex runs use an independent window coordinator across this Windows user session, including different workspaces. The first Codex workspace owns `temp/orchestrator/codex-coordinator`; HKCU `Software/CodexTuiOrchestrator` stores only its locator. This namespace is separate from open-tui-orchestrator's generic pool, so either tool's identity sweeper cannot remove the other's reservations. A Windows named mutex serializes lease changes and is released on crashes. Other workspaces keep their own run outputs in their own temp directories. `ORCH_COORDINATOR_DIR` is an explicit advanced override; use it only when every participating Codex caller intentionally shares the same pool. Resuming a run reuses the coordinator recorded in its validated ledger for compatibility with older runs.
 
 A lease is held before launch and records owner and launcher identity. Capacity counts pending and active windows across runs. Busy resources wait without dropping tasks. Only resource/dependency waits and pre-existing global occupancy delay execution; overflow tasks never create extra windows. Launcher identity includes PID, creation time, executable name and command line. Close operations recheck identity and kill descendants deepest first; they do not kill the shared Windows Terminal host.
+
+## 双通道实时状态
+
+TodoList（原始任务清单）保留 T001 等任务身份。Execution（执行块状态面板，也称 spawn 状态）显示每个块的模式、PID、尝试次数、等待原因和重试时间。块已启动不代表其中每个任务都已开始。
+
+- started 检查点使任务进入 running；completed 进入 awaiting-verification；独立验收通过才显示 verified。
+- 执行输出持续显示双状态。交互终端固定刷新面板，普通输出按状态变化追加。
+- manifest.json 从规划开始保存清单；summary.json 是权威快照，events.jsonl 是带序号事件，goal.json 是派生镜像。文件都归当前工作区 temp/orchestrator/runs/<ID>。
+
+~~~powershell
+node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch
+node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch --json
+~~~
+
+status.mjs 只读且不依赖 SDK，退出观察不会终止执行。JSONL（逐行 JSON 事件）用于接入宿主界面；重连先读最新快照再跟随事件，--after 指定已观察序号。默认每 250ms 观察检查点，系统和同步协调可能延迟显示，不承诺硬实时。
+
+Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终端面板和状态事件；原生卡片需要宿主消费同一接口，不能仅靠技能文件注入。可以随时打开观察面板；选择下一次任务的执行模式不会重启当前任务。
+
+恢复沿用原来的执行模式和任务身份。旧记录未声明模式时仍按 visible 恢复，不会因新默认值改变执行方式。
+
+## Execution modes
+
+--exec/--headless uses a durable hidden worker running codex exec --json. --run and bare requests respect ORCH_EXEC_MODE (headless by default); --run-windows/--visible explicitly selects visible TUI. Both use the same runner and leases. Workers wait for controller admission, then own their CLI child, logs and result. Controller loss does not lose the pipes or replay the block.
+
+Each run saves executionMode. Legacy missing values mean visible. Worker adoption checks PID, start time and exact worker/configuration command line. Ordinary and capacity failure budgets remain separate. Only unstarted or explicitly retry-safe tasks can be repeated. Readers ignore truncated final event lines; the next claimed writer repairs them. Invalid complete event records fail visibly. Stale goal mirrors rebuild from the validated summary.
 
 ## Runtime policy
 
@@ -53,4 +78,4 @@ Windows inherit the initiating directory; do not derive cwd from a target filena
 
 ## Regression commands
 
-Run node --test test/*.test.mjs in the dedicated plugin directory. Invoke test/live-codex.mjs by absolute path from the desired workspace for the opt-in calculated-capacity real-model acceptance. ORCH_LIVE_ENTRY can select the Codex-specific scripts/orchestrate-sdk.mjs entry to run the same acceptance contract. Existing historical result files are not evidence for a changed core version; retain newly generated run IDs and summaries.
+Run node --test --test-concurrency=1 test/*.test.mjs in the dedicated plugin directory. Invoke test/live-codex.mjs by absolute path from the desired workspace for the opt-in calculated-capacity real-model acceptance. ORCH_LIVE_ENTRY can select the Codex-specific scripts/orchestrate-sdk.mjs entry to run the same acceptance contract. Existing historical result files are not evidence for a changed core version; retain newly generated run IDs and summaries.

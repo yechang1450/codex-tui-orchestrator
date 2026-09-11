@@ -6,8 +6,8 @@ import {fileURLToPath} from 'node:url';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('current RC package evidence binds the fresh package to the sealed source', () => {
-  const evidence = JSON.parse(fs.readFileSync(path.join(repo, 'test', 'current-package-validation.json'), 'utf8'));
+test('historical 1.3.4 package evidence retains its original validation scope', () => {
+  const evidence = JSON.parse(fs.readFileSync(path.join(repo, 'test', 'package-validation-1.3.4-rc.1-historical.json'), 'utf8'));
   assert.equal(evidence.schema, 2);
   assert.ok(typeof evidence.source==='string');
   assert.equal(evidence.coreVersion, '1.3.4-rc.1');

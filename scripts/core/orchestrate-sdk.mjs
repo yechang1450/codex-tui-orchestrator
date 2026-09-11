@@ -1,62 +1,22 @@
 #!/usr/bin/env node
 /**
- * open-tui-orchestrator — split a multi-part request into safe parallel blocks.
- *
- * Classification axis is "would running two tasks AT THE SAME TIME break something?"
- *   - YES  -> linked  -> ONE block, strictly serialized (a queue), one window/thread.
- *   - NO   -> independent -> its OWN block, run in parallel with the others.
- *
- * Modes:
- *   --plan "<request>"      : decompose only (read-only), print {blocks: [...]}.
- *   --run-windows "<request>" : THE engine for real executions. Decompose (read-only) + execute.
- *                             Independent blocks -> own real visible window, run in PARALLEL;
- *                             linked blocks -> ONE window, serialized. Each window auto-closes when
- *                             its task finishes; results aggregated to temp/win-summary.json.
- *                             Conflicts with already-running windows are locked (not spawned).
- *   --run  "<request>"      : decompose + execute via the Codex SDK threads (reliable, headless,
- *                             streams structured events, auto-retries a failed block once,
- *                             writes temp/win-summary.json with per-block results). For pure
- *                             automation only -- AGENTS.md forbids headless --run for real changes.
- *   --spawn <title> <md>    : open ONE real visible agent-interactive window that runs the given
- *                             prompt/`prompt file`, with a real popup terminal (cmd /c start).
- *                             Best for when you want to WATCH a specific task.
- *
- * Configuration (all optional, env-first with sensible defaults):
- *   WORKSPACE_DIR  (default: process.cwd())  — auto-detected workspace root for the user.
- *   CODEX_HOME     (default: ~/.codex)        — 权威 Codex 家目录；跨用户/设备/宿主适配点。
- *   ORCH_STATE_DIR (default: $WORKSPACE_DIR/temp/orchestrator) — 本插件的稳定运行/状态目录（registry/锁 等）；覆盖值必须仍在 workspace/temp 下。
- *   ORCH_SESSION_DIR (default: $CODEX_HOME/sessions)   — 会话 rollout 目录。
- *   ORCH_SUPERPOWERS_CACHE_DIR (optional)      — 覆盖 superpowers 插件缓存目录（不同宿主/市场路径适配）。
- *   ORCH_AGENT     — host identity; only Codex adapter is implemented. No fallback.
- *   CODEX_EXE      (default: auto-detect from PATH or a common user install).
- *   PYTHON         (default: `python`; prepended to the spawned window PATH).
- *   ORCH_MODEL     — optional explicit override; otherwise CLI configuration.
- *   ORCH_EFFORT    — optional explicit override; otherwise CLI configuration.
- *
- * 通用化设计：本插件对【不同 Windows 设备 / 不同用户名 / 不同 agent】自适应——
- *   ① 所有敏感路径都走 CODEX_HOME|ORCH_STATE_DIR|ORCH_SESSION_DIR（可用环境变量覆盖），绝不硬编码 "C:\Users\<user>\.codex"；ORCH_STATE_DIR 仅允许位于 workspace/temp；
- *   ② Host identity and native executable are verified; missing/unsupported hosts fail closed.
- *   ③ 任何外部宿主（GUI/CLI/别的 agent）只需在进程环境注入上述可变配置即可运行，无需改本插件源码。
- *
- * Encoding: every text read/write is explicit UTF-8. The window launcher sets
- *   [Console]::OutputEncoding/$OutputEncoding = UTF-8 and reads prompts with -Encoding UTF8,
- *   so Chinese never becomes mojibake on a Chinese-locale Windows (the old GBK trap).
- *
- * ============================================================================
- * 【铁律 · 一次性并发执行】一旦发起 --run-windows 真实执行：
- *   1) 必须在这一轮里把【全部】可执行任务一次性交给 SDK 拆块并【全部】拉起：
- *      independent 并行、linked 串行，同一批里的所有窗同时运行。
- *   2) 发起后【中途不停、不问、不折返、不挑几项、不"下一步再说"、不逐条串行】。
- *   3) 一直轮询到【全部】块都有终态（done/failed/preflight-failed/locked/unfinished），
- *      收齐全部汇报结果才写 win-summary.json 并结束，绝不在"第一扇窗先跑完"就提前收尾。
- *   4) 本窗内【禁止】再调用 --run-windows/--spawn/另开新窗，杜绝 GUI→TUI→TUI 嵌套；
- *      窗自身即被授权执行环境，直接执行并汇报，不以"需要授权/要我修吗/"为由暂停。
- * ============================================================================
+ * codex-tui-orchestrator: conflict/dependency-based Codex execution.
+ * --exec / --headless: hidden Codex exec, the default for --run and bare requests.
+ * --run-windows / --visible: visible interactive TUI, with the same runner ledger.
+ * --plan: read-only classification. --status --run-id ID --watch: live dual status.
+ * WORKSPACE_DIR selects the initiating workspace; ORCH_EXEC_MODE selects the default
+ * execution mode, ORCH_TUI selects the terminal only for visible execution.
+ * All tasks retain their original identities. Dependent tasks await verification;
+ * overflow stays serial inside capacity-limited blocks. Checkpoints and acceptance
+ * determine completion; child blocks must not recursively start orchestration.
  */
 import {nativeArgumentLines} from "./native-argv.mjs";
 import {spawnInactiveWindow} from './inactive-window.mjs';
 import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bindClassifiedTasks,computeMaxWindows} from "./contracts.mjs";
 import {runWindows,verifyRun} from "./runner.mjs";
+import {resolveExecutionMode,buildExecArgs} from './execution-mode.mjs';
+import {createHeadlessHooks} from './headless-executor.mjs';
+import {renderRunStatus} from './status-events.mjs';
 import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind} from "./leases.mjs";
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy} from './retry-policy.mjs';
@@ -95,7 +55,7 @@ function readAuthPrompt() {
       if (txt && txt.trim()) return txt;
     }
   } catch (e) { /* fall through */ }
-  return "\n\n（已获授权推进并执行。本窗为 open-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等为由暂停或询问。执行结束再输出结束标记。）";
+  return "\n\n（已获授权推进并执行。本执行块由 codex-tui-orchestrator 启动：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等为由暂停或询问。执行结束再输出结束标记。）";
 }
 
 const { workspace: WORKSPACE, temp: TMP, state: STATE_DIR } = resolveRuntimeContext();
@@ -146,15 +106,7 @@ export function buildPsArrayLit(args) {
   if (!a.length) return "@()";
   return "@(" + a.map((x) => "'" + String(x).replace(/'/g, "''") + "'").join(",") + ")";
 }
-const AGENT_ARGS_EXEC = (() => {
-  const raw = launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX });
-  const cleaned = [];
-  for (let i = 0; i < raw.length; i++) { if (raw[i] === "-a") { i++; continue; } cleaned.push(raw[i]); }
-  return ["exec", ...appendModelEffortArgs(cleaned, AGENT.config)].map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
-})();
 const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }), AGENT.config);
-// AGENT_ARGS 保留给老式拼接（AGENT_ARGS_EXEC / 兜底），主 launcher 改用 buildPsArrayLit 生成的数组字面量。
-const AGENT_ARGS = AGENT_ARGS_LIST.map((aa) => "'" + String(aa).replace(/'/g, "''") + "'").join(" ");
 
 // Runtime state belongs to the initiating workspace temp/orchestrator directory.
 
@@ -1991,12 +1943,14 @@ async function classifyExecutionMode(request) {
 }
 export async function main() {
   for(const [flag,key] of [["--run-id","ORCH_RUN_ID"],["--acceptance-file","ORCH_ACCEPTANCE_FILE"],["--acceptance","ORCH_ACCEPTANCE_FILE"]]){const index=process.argv.indexOf(flag);if(index>=0){if(!process.argv[index+1])throw new Error(flag+" needs a value");process.env[key]=process.argv[index+1];process.argv.splice(index,2);}}
-  const mode = process.argv[2];
+  const bareRequest=process.argv[2]&&!process.argv[2].startsWith('--');
+  const mode = bareRequest?'--run':process.argv[2];
   if (mode === "--doctor") {
+    const executionMode=resolveExecutionMode('',process.env),visible=executionMode==='visible';
     console.log(JSON.stringify({ agent: AGENT.agent, cli: CODEX, workspace: WORKSPACE,
-      stateDir: STATE_DIR, terminal: TUI_MODE==='wt'&&wtAvailable() ? "wt" : "conhost",
-      windowActivation: TUI_MODE==='wt'&&wtAvailable() ? 'terminal-managed' : 'no-activate',
-      args: AGENT_ARGS_LIST, interactiveOutput: "inherited" }, null, 2));
+      stateDir: STATE_DIR, executionMode, terminal: visible?(TUI_MODE==='wt'&&wtAvailable() ? "wt" : "conhost"):null,
+      windowActivation: visible?(TUI_MODE==='wt'&&wtAvailable() ? 'terminal-managed' : 'no-activate'):'none',
+      args: visible?AGENT_ARGS_LIST:buildExecArgs(AGENT_ARGS_LIST), interactiveOutput: visible?'inherited':'jsonl' }, null, 2));
     return;
   }
   if (mode === "--plan") {
@@ -2088,7 +2042,7 @@ export async function main() {
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
     const prompt =
-      "这是 open-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
+      "这是 codex-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
       "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     const claim = { id: "claim-" + rid + "-selftest", title: "selftest-close", keys: ["selftest:" + rid], pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
@@ -2152,84 +2106,61 @@ export async function main() {
     const id=process.argv[3]||process.env.ORCH_RUN_ID;
     process.exitCode=verifyRun(WORKSPACE,id,process.env.ORCH_ACCEPTANCE_FILE)?0:1;return;
   }
-  if (mode === '--run-windows' || mode === '--resume-run') {
+  if (['--run-windows','--visible','--run','--exec','--headless','--resume-run'].includes(mode)) {
     const resume=mode==='--resume-run';
-    const request=resume?'':process.argv.slice(3).join(' ');
+    const request=resume?'':process.argv.slice(bareRequest?2:3).join(' ');
     if(resume)process.env.ORCH_RUN_ID=process.argv[3]||process.env.ORCH_RUN_ID;
-    if(!resume&&!request)throw new Error('--run-windows needs a request');
+    if(!resume&&!request)throw new Error('Execution needs a request');
     if(isOrchestratorSelfMod(request)){console.log(JSON.stringify({mode:'inline',reason:'Modify the orchestrator in the initiating conversation before opening windows'}));return;}
     if(!resume&&await classifyExecutionMode(request)==='inline'){console.log(JSON.stringify({mode:'inline',reason:'Read-only analysis'}));return;}
     if(!checkDiskSpace()) {process.exitCode=1;return;}
     const capacity=computeMaxWindows(os.totalmem()/1024**3);
-    if(capacity<2)throw new Error('At least two execution windows are required by the scheduler');
+    if(capacity<1)throw new Error('Insufficient memory for an execution block');
+    let savedMode;
+    if(resume){
+      const id=process.env.ORCH_RUN_ID;
+      if(!/^[A-Za-z0-9_-]{1,100}$/.test(id||''))throw new Error('Invalid run ID');
+      savedMode=JSON.parse(readFileSync(path.join(WORKSPACE,'temp','orchestrator','runs',id,'summary.json'),'utf8')).executionMode;
+    }
+    const executionMode=resolveExecutionMode(mode,process.env,savedMode);
+    if(AGENT.agent!=='codex'&&executionMode==='headless')throw new Error('Headless executor requires Codex');
     armEnforcement();
-    const result=await runWindows(request,{
-      plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,launcher:writeInteractiveLauncher,prompt:buildBlockPrompt,
+    const executor=executionMode==='headless'?createHeadlessHooks({cli:CODEX,args:buildExecArgs(AGENT_ARGS_LIST),workspace:WORKSPACE,timeoutMs:POLL_TIMEOUT_MS}):{
+      launcher:writeInteractiveLauncher,
       spawn:(...args)=>spawnWindowWithRetry(...args,true),readPid:readPidFile,
       session:AGENT.agent==='pi'?async(_token,_timeout,rf)=>rf:waitForSessionFile,
       wait:AGENT.agent==='pi'?async(_session,timeout,rf,_token,pidf)=>waitPiResult(rf,timeout,pidf):waitTaskComplete,exitCode:readExitCode,
-      register:r=>updateWindows(ws=>[...ws,r]),commit:commitReservation,unregister:cancelReservation,close:closeWindowByPid,
+      close:closeWindowByPid,
       cleanup:la=>{for(const f of [la.lp,la.pf,la.pidf,la.rf,la.pidf+'.self-closed',la.rf+'.self-closed'])try{rmSync(f,{force:true});}catch{}}
-    },{workspace:WORKSPACE,capacity,resume,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt()});
+    };
+    const onEvent=event=>{
+      if(process.env.ORCH_STATUS_FORMAT==='json')console.log(JSON.stringify(event));
+      else if(process.stdout.isTTY){process.stdout.write('\x1b[2J\x1b[H');console.log(renderRunStatus(event));}
+      else console.log(`[status] ${event.type} | TodoList: ${(event.todoList||[]).map(t=>t.id+':'+t.status).join(' ')} | Execution: ${(event.executionStatus||[]).map(b=>b.block+':'+b.mode+':'+b.status).join(' ')}`);
+    };
+    const result=await runWindows(request,{
+      plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
+      register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
+    },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt()});
     process.exitCode=result.success?0:1;return;
   }
 
   if (mode === "--status") {
+    if(process.env.ORCH_RUN_ID||process.argv.includes('--watch')){
+      const {main:statusMain}=await import('../status.mjs');
+      await statusMain([...process.argv.slice(3),'--workspace',WORKSPACE]);return;
+    }
     showStatus(process.argv.includes("--readonly"));
     return;
   }
-  if (mode === "--run" || mode === "--exec") {
-    if(AGENT.agent==='pi')throw new Error('Pi execution uses --run-windows; headless execution is not implemented');
-    // Enforcement: headless real execution is hard-disabled by default. The sanctioned engine for
-    // REAL work is --run-windows (a real visible TUI window). Opt-in via ORCH_ALLOW_HEADLESS=1 only
-    // for pure, windowless automation that the user has explicitly sanctioned.
-    if (process.env.ORCH_ALLOW_HEADLESS !== "1") {
-      console.error("[orchestrator] REFUSED: headless --run/--exec is disabled by open-tui-orchestrator enforcement. Real work must go through --run-windows (a real, visible, interactive TUI window). Set ORCH_ALLOW_HEADLESS=1 only for pure automation you explicitly want windowless.");
-      process.exitCode = 1;
-      return;
-    }
-    const request = process.argv.slice(3).join(" ");
-    if (!request) throw new Error("--run needs a request");
-    console.log("[orchestrator] decomposing...");
-    const plan = await decomposeSafely(request);
-    console.log("[orchestrator] blocks=" + plan.length);
-    const summary = {};
-    for (let i = 0; i < plan.length; i++) {
-      summary["B" + (i + 1)] = { title: plan[i].title, type: plan[i].type, status: "pending" };
-    }
-    const runBlock = async (b, idx) => {
-      const key = idx;
-      const attempt = async (retry) => {
-        const body = retry ? "(上一轮执行可能失败，请先检查环境与路径，换一种更稳妥的方式完成。)\n" + blockBody(b) : blockBody(b);
-        const res = await runThreadPrompt(body);
-        console.log("=== " + key + " " + b.title + (retry ? " (重试)" : "") + " ===");
-        console.log(trunc(res.final, 2000));
-        if (!res.errored) { summary[key].status = "done"; summary[key].result = res.final; return true; }
-        summary[key].status = "failed"; summary[key].result = res.errored;
-        return false;
-      };
-      if (await attempt(false)) return;
-      console.log("  !! 失败，自动重试: " + summary[key].result);
-      const ok = await attempt(true);
-      if (ok) summary[key].status = "done-retried";
-    };
-    await Promise.all(plan.map((b, i) => runBlock(b, "B" + (i + 1))));
-    mkdirSync(TMP, { recursive: true });
-    const out = path.join(TMP, "win-summary.json");
-    writeFileSync(out, JSON.stringify(summary, null, 2), "utf8");
-    console.log("[orchestrator] summary -> " + out);
-    console.log(JSON.stringify(summary, null, 2));
-    // 用完即删：汇总已打印到 stdout；默认删除本批临时产物，ORCH_KEEP_TEMP=1 可保留供排查
-    if (process.env.ORCH_KEEP_TEMP !== "1") {
-      try { rmSync(out, { force: true }); console.log("[orchestrator] temp artifacts cleaned (used-and-discarded)"); } catch { /* ignore */ }
-    }
-    return;
-  }
+  if(mode?.startsWith('--')&&mode!=='--help')throw new Error('Unknown mode: '+mode);
   console.log(
     "Usage:\n" +
       "  node orchestrate-sdk.mjs --plan \"<request>\"\n" +
       "  node orchestrate-sdk.mjs --run  \"<request>\"\n" +
+      "  node orchestrate-sdk.mjs --exec \"<request>\"  (default: headless)\n" +
       "  node orchestrate-sdk.mjs --run-windows \"<request>\"\n" +
+      "  node orchestrate-sdk.mjs --status --run-id <id> --watch\n" +
       "  node orchestrate-sdk.mjs --spawn <title> \"<prompt or .md>\"",
   );
 }

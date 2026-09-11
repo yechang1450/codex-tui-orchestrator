@@ -18,6 +18,12 @@ export function sameProcess(expected,actual) {
 }
 export function launcherIdentity(pid,pidFile,snapshot=processSnapshot()) {
   const actual=snapshot.get(Number(pid));
+  if(!pidFile)return null;
+  if(path.basename(pidFile).startsWith('exec-')){
+    const args=String(actual?.CommandLine||'').toLowerCase().replaceAll('/','\\');
+    const contains=file=>new RegExp('(?:^|\\s)"?'+file.toLowerCase().replaceAll('/','\\').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'"?(?=\\s|$)').test(args);
+    return /^node(?:\.exe)?$/i.test(actual?.Name||'')&&contains(fileURLToPath(new URL('./headless-worker.mjs',import.meta.url)))&&contains(pidFile.replace(/\.pid$/,'.json'))?actual:null;
+  }
   const script=path.join(path.dirname(pidFile),path.basename(pidFile).replace(/^window-/,'win-launch-').replace(/\.pid$/,'.ps1'));
   const args=String(actual?.CommandLine||'').toLowerCase().replaceAll('/','\\');
   if(!/^(powershell|pwsh)\.exe$/i.test(actual?.Name||'')||!args.includes(script.toLowerCase().replaceAll('/','\\')))return null;
@@ -28,10 +34,13 @@ export function launcherIdentity(pid,pidFile,snapshot=processSnapshot()) {
 // initiating workspace's temp. A named mutex makes first discovery atomic.
 export function coordinatorDir(workspace,env=process.env) {
   if(env.ORCH_COORDINATOR_DIR)return path.resolve(workspace,env.ORCH_COORDINATOR_DIR);
-  const fallback=path.join(workspace,'temp','orchestrator','coordinator');
+  // Codex owns an independent pool. The former generic locator was also used
+  // by open-tui-orchestrator, whose sweeper can only understand its own
+  // launcher identities and therefore removes valid Codex reservations.
+  const fallback=path.join(workspace,'temp','orchestrator','codex-coordinator');
   if(process.platform!=='win32')return fallback;
   const quoted=fallback.replaceAll("'","''");
-  const script=`$held=$false; $m=[Threading.Mutex]::new($false,'Local\\TuiOrchestrator.Coordinator'); try {try{$held=$m.WaitOne(15000)}catch [Threading.AbandonedMutexException]{$held=$true}; if(-not $held){throw 'Coordinator locator busy'}; $key='HKCU:\\Software\\TuiOrchestrator'; $p=(Get-ItemProperty -LiteralPath $key -Name CoordinatorRoot -ErrorAction SilentlyContinue).CoordinatorRoot; if(-not $p){$p='${quoted}'; New-Item -Path $key -Force|Out-Null; New-ItemProperty -LiteralPath $key -Name CoordinatorRoot -Value $p -PropertyType String -Force|Out-Null}; Write-Output $p}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
+  const script=`$held=$false; $m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.Coordinator'); try {try{$held=$m.WaitOne(15000)}catch [Threading.AbandonedMutexException]{$held=$true}; if(-not $held){throw 'Coordinator locator busy'}; $key='HKCU:\\Software\\CodexTuiOrchestrator'; $p=(Get-ItemProperty -LiteralPath $key -Name CoordinatorRoot -ErrorAction SilentlyContinue).CoordinatorRoot; if(-not $p){$p='${quoted}'; New-Item -Path $key -Force|Out-Null; New-ItemProperty -LiteralPath $key -Name CoordinatorRoot -Value $p -PropertyType String -Force|Out-Null}; Write-Output $p}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
   const r=spawnSync('powershell.exe',['-NoProfile','-Command','[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); '+script],{encoding:'utf8',windowsHide:true,timeout:20000});
   if(r.status!==0||!r.stdout.trim())throw new Error('Unable to locate machine window coordinator');
   return path.resolve(r.stdout.trim());

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-test('current core live evidence covers focus protection and controller adoption',()=>{
+test('historical 1.3.4 live evidence retains focus, adoption and blocked capacity results',()=>{
  const focus=JSON.parse(fs.readFileSync(new URL('./inactive-window-validation-1.3.4-rc.1.json',import.meta.url),'utf8'));
  const adoption=JSON.parse(fs.readFileSync(new URL('./controller-adoption-validation-1.3.4-rc.1.json',import.meta.url),'utf8'));
  const cacheAdoption=JSON.parse(fs.readFileSync(new URL('./controller-adoption-validation-1.3.4-rc.1-cache.json',import.meta.url),'utf8'));
