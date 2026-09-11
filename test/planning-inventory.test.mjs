@@ -5,7 +5,7 @@ const {requestTasks,ledgerPlan}=contracts;
 process.env.ORCH_AGENT='codex';
 const sdk=await import('../scripts/orchestrate-sdk.mjs');
 test('nine original comma-rich tasks remain eight complete execution blocks',()=>{
- const request=Array.from({length:9},(_,i)=>`项目${91+i}：执行 node D:/temp/demo/project-${91+i}/probe.mjs，读回结果验证，记录检查点`).join('；');
+ const request=Array.from({length:9},(_,i)=>`项目${91+i}：执行 node fixture:/demo/project-${91+i}/probe.mjs，读回结果验证，记录检查点`).join('；');
  const candidate=sdk.genericProjectSplit(request);
  assert.equal(candidate?.blocks.length,9);
  const result=ledgerPlan(request,candidate.blocks,8,(blocks,cap)=>{while(blocks.length>cap){const last=blocks.pop();blocks.at(-1).tasks.push(...last.tasks);}return blocks;});
@@ -13,7 +13,7 @@ test('nine original comma-rich tasks remain eight complete execution blocks',()=
  assert.deepEqual(result.plan.map(b=>b.tasks.flatMap(t=>t.sourceIds).length),[1,1,1,1,1,1,1,2]);
 });
 test('three-digit project inventory is split instead of falling back to one serial block',()=>{
- const request=Array.from({length:13},(_,i)=>{const id=String(91+i);return `项目${id}：执行 node D:/temp/project-${id}/probe${id}.mjs ${id} 创建结果文件并核验`}).join('；');
+ const request=Array.from({length:13},(_,i)=>{const id=String(91+i);return `项目${id}：执行 node fixture:/project-${id}/probe${id}.mjs ${id} 创建结果文件并核验`}).join('；');
  const candidate=sdk.genericProjectSplit(request);
  assert.equal(candidate?.blocks.length,13);
  assert.deepEqual(new Set(candidate.blocks.map(b=>b.title)),new Set(Array.from({length:13},(_,i)=>`proj-${91+i}`)));

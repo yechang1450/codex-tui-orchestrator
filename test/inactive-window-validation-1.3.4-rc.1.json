@@ -5,7 +5,7 @@
   "validatedAt": "2026-09-09T14:17:34.252Z",
   "command": "test/live-inactive-window.ps1 -ContinuousInput",
   "startupForegroundEvents": 1,
-  "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-tui-orchestrator\\temp\\inactive-window-cad2c5089b6d40188b4f9e927ff36731",
+  "root": "<user-home>\\.codex\\plugins\\codex-tui-orchestrator\\<temp>\\inactive-window-cad2c5089b6d40188b4f9e927ff36731",
   "visible": true,
   "endTick": 109170937,
   "samples": 118,

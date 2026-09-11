@@ -18,16 +18,16 @@
     "runner.mjs": "6085f3dbef6f02763d7d46d1ea1225e882c99d4e64d00d56b2b662336b138b7a",
     "runtime-context.mjs": "6e8d7c5908a8b86d096f4606915b5766baa1b541661bab1daa944956f7caf779"
   },
-  "sharedCore": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\scripts\\core",
+  "sharedCore": "<user-home>\\.tools\\open-tui-orchestrator\\scripts\\core",
   "regressions": [
     {
-      "root": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator",
+      "root": "<user-home>\\.tools\\open-tui-orchestrator",
       "tests": 115,
       "pass": 115,
       "fail": 0
     },
     {
-      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "root": "<user-home>\\.codex\\plugins\\codex-TUI-orchestrator",
       "tests": 115,
       "pass": 115,
       "fail": 0
@@ -35,7 +35,7 @@
   ],
   "capacity": {
     "runId": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d",
-    "root": "D:\\temp\\open-live-cbecebadefaad",
+    "root": "<temp-root>\\open-live-cbecebadefaad",
     "passed": true,
     "coreHash": "d3591317ac3acb2dba9301bbbad4602931eb18bfa01c4033b6f21d345062825f",
     "coreUnchanged": true,
@@ -133,7 +133,7 @@
   },
   "adoption": {
     "runId": "recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9",
-    "root": "D:\\temp\\recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9",
+    "root": "<temp-root>\\recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9",
     "passed": true,
     "coreHash": "d3591317ac3acb2dba9301bbbad4602931eb18bfa01c4033b6f21d345062825f",
     "coreUnchanged": true,
@@ -144,7 +144,7 @@
   },
   "rejectedScenario": {
     "runId": "acceptance-00f63d3c-337f-4fc8-bdb6-6bb4494e6345",
-    "root": "D:\\temp\\open-live-edebeafeadb",
+    "root": "<temp-root>\\open-live-edebeafeadb",
     "passed": false,
     "engineSuccess": true,
     "reason": "Punctuation split the test request into unassignable fragments; complete-inventory fallback preserved all tasks but opened only one window. Not counted as capacity success."
@@ -170,7 +170,7 @@
   "policies": [
     {
       "token": "acceptance-00f63d3c-337f-4fc8-bdb6-6bb4494e6345-B1-a1-3d931760b62b",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-00-12-01a07660-361a-72a1-af73-4bea9456b89d.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-00-12-01a07660-361a-72a1-af73-4bea9456b89d.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -178,7 +178,7 @@
     },
     {
       "token": "recovery-90a03d2e-315c-4767-8d5b-0c8c75cc61b9-B1-a1-bdb5089acefb",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-24-01a07663-241d-7ec3-8b7e-d8575d0d84d2.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-24-01a07663-241d-7ec3-8b7e-d8575d0d84d2.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -186,7 +186,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B5-a1-b2767027a1f1",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-34-01a07663-4cb4-78d2-8981-1f368eb11a9a.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-34-01a07663-4cb4-78d2-8981-1f368eb11a9a.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -194,7 +194,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B6-a1-18b85a8f8f23",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-37-01a07663-58bd-7912-aa20-924ebcc9d96f.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-37-01a07663-58bd-7912-aa20-924ebcc9d96f.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -202,7 +202,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B7-a1-7cb094a0d1a6",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-40-01a07663-6419-72f0-ab51-f9fb2722fe54.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-40-01a07663-6419-72f0-ab51-f9fb2722fe54.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -210,7 +210,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B8-a1-93c607e02f09",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-43-01a07663-7003-7140-bf55-ce2745bf1f32.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-43-01a07663-7003-7140-bf55-ce2745bf1f32.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -218,7 +218,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B1-a1-34ffdb6e1867",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-46-01a07663-7c90-7ed0-9431-144655f94707.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-46-01a07663-7c90-7ed0-9431-144655f94707.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -226,7 +226,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B2-a1-1f17125fa768",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-50-01a07663-8a54-7352-ba69-7f90b314428e.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-50-01a07663-8a54-7352-ba69-7f90b314428e.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -234,7 +234,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B3-a1-5f1dd9dde191",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-55-01a07663-9cfe-7cc2-99d9-3e185a398129.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-03-55-01a07663-9cfe-7cc2-99d9-3e185a398129.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",
@@ -242,7 +242,7 @@
     },
     {
       "token": "acceptance-e2a7cb2d-ec5d-4b12-b40f-f88f6c83fd0d-B4-a1-5182cb0fa0f1",
-      "sessionFile": "C:\\Users\\fixture-user\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-05-16-01a07664-dd44-7a12-a400-a356e7633e80.jsonl",
+      "sessionFile": "<user-home>\\.codex\\sessions\\2026\\09\\06\\rollout-2026-09-06T19-05-16-01a07664-dd44-7a12-a400-a356e7633e80.jsonl",
       "cwd": "D:\\",
       "provider": "orchestrator-openai-https",
       "approval": "never",

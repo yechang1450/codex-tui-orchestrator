@@ -4,7 +4,7 @@
   "releaseManifestSha256": "c422cfe9be00f11c66f247e29b8b8b40c099713fb00f395794c8b64829040ec7",
   "suites": [
     {
-      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "root": "<user-home>\\.codex\\plugins\\codex-TUI-orchestrator",
       "tests": 135,
       "passed": 135,
       "failed": 0

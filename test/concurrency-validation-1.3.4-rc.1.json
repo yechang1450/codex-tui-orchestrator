@@ -10,8 +10,8 @@
   "tasks": 13,
   "summarySuccess": false,
   "taskStatuses": {},
-  "root": "<user-home>/.codex/plugins/codex-tui-orchestrator/temp/open-live-ddcdcefdccf",
-  "summaryPath": "<user-home>/.codex/plugins/codex-tui-orchestrator/temp/orchestrator/runs/acceptance-154e100f-1822-4c0e-997e-414d9e6f62de/summary.json",
+  "root": "<user-home>/.codex/plugins/codex-tui-orchestrator/<temp>/open-live-ddcdcefdccf",
+  "summaryPath": "<user-home>/.codex/plugins/codex-tui-orchestrator/<temp>/orchestrator/runs/acceptance-154e100f-1822-4c0e-997e-414d9e6f62de/summary.json",
   "result": {
     "passed": false,
     "peak": 6,

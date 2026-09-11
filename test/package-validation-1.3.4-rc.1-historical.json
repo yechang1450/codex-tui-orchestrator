@@ -1,8 +1,8 @@
 {
   "schema": 2,
   "validatedAt": "2026-09-09T13:52:52.629Z",
-  "source": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-tui-orchestrator",
-  "target": "<user-home>/.codex/plugins/temp/codex-tui-orchestrator-rc-20260909-214858/codex-tui-orchestrator",
+  "source": "<user-home>\\.codex\\plugins\\codex-tui-orchestrator",
+  "target": "<user-home>/.codex/plugins/<temp>/codex-tui-orchestrator-rc-20260909-214858/codex-tui-orchestrator",
   "coreVersion": "1.3.4-rc.1",
   "manifestVersion": "0.4.43-rc.1",
   "coreFiles": 20,
@@ -28,19 +28,19 @@
   "doctor": {
     "exitCode": 0,
     "agent": "codex",
-    "cli": "C:\\Users\\fixture-user\\.tools\\node22-fresh\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
-    "workspace": "C:\\Users\\fixture-user\\.codex\\plugins\\temp\\codex-tui-orchestrator-rc-20260909-214858\\codex-tui-orchestrator",
-    "stateDir": "C:\\Users\\fixture-user\\.codex\\plugins\\temp\\codex-tui-orchestrator-rc-20260909-214858\\codex-tui-orchestrator\\temp\\orchestrator",
+    "cli": "<user-home>\\.tools\\node22-fresh\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+    "workspace": "<user-home>\\.codex\\plugins\\<temp>\\codex-tui-orchestrator-rc-20260909-214858\\codex-tui-orchestrator",
+    "stateDir": "<user-home>\\.codex\\plugins\\<temp>\\codex-tui-orchestrator-rc-20260909-214858\\codex-tui-orchestrator\\<temp>\\orchestrator",
     "terminal": "wt",
     "windowActivation": "terminal-managed",
     "args": [
       "--cd",
-      "C:\\Users\\fixture-user\\.codex\\plugins\\temp\\codex-tui-orchestrator-rc-20260909-214858\\codex-tui-orchestrator",
+      "<user-home>\\.codex\\plugins\\<temp>\\codex-tui-orchestrator-rc-20260909-214858\\codex-tui-orchestrator",
       "--sandbox",
       "danger-full-access",
       "--dangerously-bypass-approvals-and-sandbox",
       "-c",
-      "projects.\"C:\\\\Users\\\\fixture-user\\\\.codex\\\\plugins\\\\temp\\\\codex-tui-orchestrator-rc-20260909-214858\\\\codex-tui-orchestrator\".trust_level=\"trusted\"",
+      "projects.\"C:\\\\Users\\\\fixture-user\\\\.codex\\\\plugins\\\\<temp>\\\\codex-tui-orchestrator-rc-20260909-214858\\\\codex-tui-orchestrator\".trust_level=\"trusted\"",
       "-c",
       "model_provider=\"orchestrator-openai-https\"",
       "-c",
@@ -82,7 +82,7 @@
   },
   "cleanup": {
     "cleaned": true,
-    "target": "<user-home>/.codex/plugins/temp/codex-tui-orchestrator-rc-20260909-214858"
+    "target": "<user-home>/.codex/plugins/<temp>/codex-tui-orchestrator-rc-20260909-214858"
   },
   "upgradeRollback": {
     "status": "unverified",

@@ -251,7 +251,7 @@ test('orchestrate-sdk genericProjectSplit splits comma-separated bare projects -
   assert.equal(genericProjectSplit('优化81的UI，让它更美观'), null);
 });
 test('orchestrate-sdk genericProjectSplit recognizes project-100..103 and Chinese 项目 labels', () => {
-  const request = ['100','101','102','103'].map(id => `项目${id}：执行 node D:/temp/project-${id}/probe${id}.mjs ${id}`).join('；');
+  const request = ['100','101','102','103'].map(id => `项目${id}：执行 node fixture:/project-${id}/probe${id}.mjs ${id}`).join('；');
   const r = genericProjectSplit(request);
   assert.ok(r && r.blocks && r.blocks.length === 4, 'three-digit project labels must remain independently schedulable');
   assert.deepEqual(new Set(r.blocks.map(b => b.title)), new Set(['proj-100','proj-101','proj-102','proj-103']));
@@ -1018,10 +1018,10 @@ test('blockKeys: 无 conflictKeys 时回退到 __<title>, 不返回空数组', (
 });
 
 test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', () => {
-  assert.equal(keysOverlap(['file:D:/temp/a'], ['file:D:/temp/a']), true);
-  assert.equal(keysOverlap(['file:D:/temp/a'], ['file:D:/temp/b']), false);
-  assert.equal(keysOverlap([], ['file:D:/temp/a']), false);
-  assert.equal(keysOverlap(['file:D:/temp/a'], []), false);
+  assert.equal(keysOverlap(['file:fixture:/a'], ['file:fixture:/a']), true);
+  assert.equal(keysOverlap(['file:fixture:/a'], ['file:fixture:/b']), false);
+  assert.equal(keysOverlap([], ['file:fixture:/a']), false);
+  assert.equal(keysOverlap(['file:fixture:/a'], []), false);
 });
 ﻿test('runtime: launcher $agentArgs 用 buildPsArrayLit 数组字面量而非 AGENT_ARGS.split(" ")（含空格路径不再裂开）', () => {
   const { lp, pidf, pf } = writeInteractiveLauncher('psfix', 'PROMPT', 'fx');

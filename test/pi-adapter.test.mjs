@@ -10,6 +10,6 @@ test('installed pi resolves its own CLI and never receives Codex flags',()=>{
  assert.ok(!args.includes('--sandbox'));assert.ok(!args.includes('--cd'));
 });
 test('an explicit missing pi CLI never falls back to PATH or Codex',()=>{
- assert.throws(()=>resolveHost({env:{...process.env,ORCH_AGENT:'pi',ORCH_CLI:'D:/temp/no-such-pi-orchestrator-test.exe'}}),/CLI_MISSING/);
+ assert.throws(()=>resolveHost({env:{...process.env,ORCH_AGENT:'pi',ORCH_CLI:'fixture:/no-such-pi-orchestrator-test.exe'}}),/CLI_MISSING/);
  assert.throws(()=>launchArgs({id:'pi'},{sandbox:'read-only'}),/PI_SANDBOX_UNSUPPORTED/);
 });

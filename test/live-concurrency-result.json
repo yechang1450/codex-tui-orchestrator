@@ -1,9 +1,9 @@
 {
   "testedAt": "2026-09-06T09:31:56.516Z",
   "passed": true,
-  "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
+  "entry": "<user-home>\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
   "workspace": "D:\\",
-  "stateDirectory": "D:\\temp\\orchestrator",
+  "stateDirectory": "<temp-root>\\orchestrator",
   "terminal": "wt",
   "capacity": 8,
   "peak": 8,
@@ -245,19 +245,19 @@
     "cleanup": {
       "currentStatus": "blocked_by_policy",
       "currentRunDirectories": [
-        "D:\\temp\\capacity-live-cfcffebefdf",
-        "D:\\temp\\capacity-live-daadfbbddcea"
+        "<temp-root>\\capacity-live-cfcffebefdf",
+        "<temp-root>\\capacity-live-daadfbbddcea"
       ],
       "priorPolicyBlockedDirectories": [
-        "D:\\temp\\capacity-live-cbcfccfadaf",
-        "D:\\temp\\capacity-live-bebacefaed",
-        "D:\\temp\\capacity-live-cccedafea",
-        "D:\\temp\\capacity-live-ffdadeeabadbdd"
+        "<temp-root>\\capacity-live-cbcfccfadaf",
+        "<temp-root>\\capacity-live-bebacefaed",
+        "<temp-root>\\capacity-live-cccedafea",
+        "<temp-root>\\capacity-live-ffdadeeabadbdd"
       ]
     }
   },
   "cleanup": {
-    "directory": "D:\\temp\\capacity-live-afebccfcafdcecc",
+    "directory": "<temp-root>\\capacity-live-afebccfcafdcecc",
     "status": "blocked_by_host_policy"
   }
 }

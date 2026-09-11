@@ -5,7 +5,7 @@
   "releaseManifestSha256": "503ea03441619692b6628744d9fb93f3dc4a6bd507b8659c2a5799171e84fb15",
   "suites": [
     {
-      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "root": "<user-home>\\.codex\\plugins\\codex-TUI-orchestrator",
       "passed": 140,
       "failed": 0
     },
@@ -39,7 +39,7 @@
       "events": [],
       "endTick": 58629265,
       "minimized": false,
-      "root": "D:\\temp\\inactive-window-14664b16214549e9a4f23be09d1b269b"
+      "root": "<temp-root>\\inactive-window-14664b16214549e9a4f23be09d1b269b"
     }
   ],
   "otherDirectObservations": [
@@ -59,7 +59,7 @@
       ],
       "endTick": 58704781,
       "minimized": false,
-      "root": "D:\\temp\\inactive-window-4c4d979496684fd29c2beaabbc13c5f8"
+      "root": "<temp-root>\\inactive-window-4c4d979496684fd29c2beaabbc13c5f8"
     },
     {
       "baseline": 3737814,
@@ -74,7 +74,7 @@
       "startupForegroundEvents": 0,
       "endTick": 58745484,
       "minimized": true,
-      "root": "D:\\temp\\inactive-window-adb956ce537b4bcbb8a385b01790dcaa",
+      "root": "<temp-root>\\inactive-window-adb956ce537b4bcbb8a385b01790dcaa",
       "events": [
         "27068624:58740671:actual=27068624:now=58740671",
         "3737814:58741812:actual=3737814:now=58741812"
@@ -93,7 +93,7 @@
       "startupForegroundEvents": 1,
       "endTick": 58767640,
       "minimized": false,
-      "root": "D:\\temp\\inactive-window-76ef479a13f54c5791de39eb68a8d1d8",
+      "root": "<temp-root>\\inactive-window-76ef479a13f54c5791de39eb68a8d1d8",
       "events": [
         "4915332:58762062:actual=4915332:now=58762062",
         "3737814:58762375:actual=3737814:now=58762375"
@@ -104,7 +104,7 @@
   "uncertainActivationCause": true,
   "realCodexRecovery": {
     "runId": "recovery-cfc4a080-dfb3-4642-9cc7-940a99052c7c",
-    "root": "D:\\temp\\recovery-cfc4a080-dfb3-4642-9cc7-940a99052c7c",
+    "root": "<temp-root>\\recovery-cfc4a080-dfb3-4642-9cc7-940a99052c7c",
     "passed": true,
     "windowLaunches": 1,
     "attempts": 1,

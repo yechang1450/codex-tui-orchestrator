@@ -33,8 +33,8 @@
 - Consumes: current manifest, skill frontmatter, release hashes and the existing 143-test baseline.
 - Produces: a before JSON/Markdown evaluation and a recorded list of structural versus runtime gaps.
 
-- [x] Run `node <user-home>/.codex/plugins/cache/openai-curated-remote/plugin-eval/0.1.2/scripts/plugin-eval.js start <user-home>/.codex/plugins/codex-tui-orchestrator --request "Evaluate this plugin and tell me what remains before a mature stable release." --format markdown`.
-- [x] Run `node <user-home>/.codex/plugins/cache/openai-curated-remote/plugin-eval/0.1.2/scripts/plugin-eval.js analyze <user-home>/.codex/plugins/codex-tui-orchestrator --format markdown --brief-out <user-home>/.codex/plugins/codex-tui-orchestrator/temp/plugin-eval-before.json`.
+- [x] Run `node <cache>/openai-curated-remote/plugin-eval/0.1.2/scripts/plugin-eval.js start <repo> --request "Evaluate this plugin and tell me what remains before a mature stable release." --format markdown`.
+- [x] Run `node <cache>/openai-curated-remote/plugin-eval/0.1.2/scripts/plugin-eval.js analyze <repo> --format markdown --brief-out <repo>/temp/plugin-eval-before.json`.
 - [x] Record that the static 63/100 result is driven by naming, trigger wording, deferred cost and absent coverage artifacts; do not rename the historical ID blindly.
 
 ### Task 2: Improve manifest and skill routing without breaking identity
@@ -102,7 +102,7 @@
 
 - [x] Add a package check that rejects a package whose core hash, manifest version or required links do not match the source.
 - [x] Run it against deliberately damaged/stale staging copies and observe rejection.
-- [x] Publish a fresh r11 package to `<user-home>/.codex/plugins/cache/personal/codex-tui-orchestrator-validation-20260907-r11` and verify it through the package validator.
+- [x] Publish a fresh r11 package to `<cache>/personal/codex-tui-orchestrator-validation-20260907-r11` and verify it through the package validator.
 - [x] Verify the copied package, install its locked SDK, run doctor, read-only status and repair/public entry checks.
 - [x] Record the exact package path, versions and hashes; actual plugin-manager activation/rollback remains explicitly unverified.
 

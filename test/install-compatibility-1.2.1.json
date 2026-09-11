@@ -23,7 +23,7 @@
     "workspace": "D:\\",
     "approval": "never",
     "runId": "recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
-    "root": "D:/temp/recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
+    "root": "<temp-root>/recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
     "passed": true,
     "windowLaunches": 1,
     "firstTaskExecutions": 1,
@@ -39,8 +39,8 @@
     "status": "blocked by host automatic approval review",
     "reason": "host automatic approval review denied cleanup",
     "removedFiles": 0,
-    "installDirectory": "D:\\temp\\codex-install-20260906-8cf9084b",
-    "probeDirectory": "D:\\temp\\recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
+    "installDirectory": "<temp-root>\\codex-install-20260906-8cf9084b",
+    "probeDirectory": "<temp-root>\\recovery-6d1da0db-bd40-4b8e-a81a-ef5bbe03dbf8",
     "bypassAttempted": false
   },
   "regressions": {

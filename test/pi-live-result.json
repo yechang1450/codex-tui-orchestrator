@@ -38,9 +38,9 @@
   "runs": [
     {
       "agent": "pi",
-      "root": "D:/temp/pi-live-dcdcdacaee",
+      "root": "<temp-root>/pi-live-dcdcdacaee",
       "runId": "acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325",
-      "entry": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\cli.mjs",
+      "entry": "<user-home>\\.tools\\open-tui-orchestrator\\cli.mjs",
       "passed": true,
       "liveCoreHash": "dd9d5be10b6535818ee06062782de515df471a43c4cf08ade3ee8ee24d34a39d",
       "coreUnchanged": true,
@@ -67,49 +67,49 @@
       "sessions": [
         {
           "block": "B1",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B1-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B1-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B2",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B2-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B2-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B3",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B3-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B3-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B4",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B4-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B4-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B5",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B5-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B5-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B6",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B6-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B6-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B7",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B7-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B7-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         },
         {
           "block": "B8",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B8-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B8-acceptance-ccc49c83-5b7d-4c8e-9538-fec742357325-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         }
@@ -122,7 +122,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-91\\result91.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-91\\result91.json",
               "sha256": "921958b195f31ec3a1da17eaf3b30b3d0c4bce6e42f547e456ed505a5ca295eb"
             }
           ]
@@ -134,7 +134,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-92\\result92.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-92\\result92.json",
               "sha256": "9a45f7d7bae5c34f9da9eedddcc78c69310295cab272e7324f2fc08ec198b7dc"
             }
           ]
@@ -146,7 +146,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-93\\result93.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-93\\result93.json",
               "sha256": "c8cda4f23e0d51171bf8a028551fec189bcc29c9d3dc4391120a61f44019975e"
             }
           ]
@@ -158,7 +158,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-94\\result94.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-94\\result94.json",
               "sha256": "0824395027540791a83e128939695c99c6329710c58c64f1d773aa98922b8522"
             }
           ]
@@ -170,7 +170,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-95\\result95.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-95\\result95.json",
               "sha256": "e9088c2f40205b38b9e6cbd28e74d19395fd1f12029bc409161fcab5f5c1c804"
             }
           ]
@@ -182,7 +182,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-96\\result96.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-96\\result96.json",
               "sha256": "523db4a5795dbca4478a2c39222df93dcc9558affbcd4edf484d59d073d95824"
             }
           ]
@@ -194,7 +194,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-97\\result97.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-97\\result97.json",
               "sha256": "cb01ca6bf2850942b16dfc47cd9b559664060bf6351f4ee12d05b34fef2469a1"
             }
           ]
@@ -206,7 +206,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-98\\result98.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-98\\result98.json",
               "sha256": "01b96c2ad0bb400299a091b96ae46882eda226df20e2af79293561ea5ca63a9e"
             }
           ]
@@ -218,7 +218,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\pi-live-dcdcdacaee\\project-99\\result99.json",
+              "path": "<temp-root>\\pi-live-dcdcdacaee\\project-99\\result99.json",
               "sha256": "264664947b38686385aaf545ff21278e718cd70d115b632442ad2e8163e292e6"
             }
           ]
@@ -228,9 +228,9 @@
     },
     {
       "agent": "codex",
-      "root": "D:/temp/open-live-eeddedfddfc",
+      "root": "<temp-root>/open-live-eeddedfddfc",
       "runId": "acceptance-d65f8ab6-3733-4959-a522-dfaa4f258182",
-      "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
+      "entry": "<user-home>\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
       "passed": true,
       "liveCoreHash": "cd5b69a64e257314b6ae6f1abb3339979077e294e3358b7e5c2dfb529c84b515",
       "coreUnchanged": true,
@@ -263,7 +263,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-91\\result91.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-91\\result91.json",
               "sha256": "42d6323f22fdae4ae536f630bd2d8f8cd14b1b988289434356d74003ad48fca1"
             }
           ]
@@ -275,7 +275,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-92\\result92.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-92\\result92.json",
               "sha256": "f666622b6444f04ce6027f395f9688bae7d6cdc87fb79d6cebdf3f3ec699cb73"
             }
           ]
@@ -287,7 +287,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-93\\result93.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-93\\result93.json",
               "sha256": "e10fdbd7d7c38e395845bb2ff797e2069bf2d3ee5d1c9fc740726190a719d596"
             }
           ]
@@ -299,7 +299,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-94\\result94.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-94\\result94.json",
               "sha256": "04d4c985a117e965a76a56df63441b953d0d62198d97e02e27dc46d849b9b865"
             }
           ]
@@ -311,7 +311,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-95\\result95.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-95\\result95.json",
               "sha256": "d1a993a101bb7fbd70aeca5276db094362b4b17c851f65ab0f8b2d1c446bc9c6"
             }
           ]
@@ -323,7 +323,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-96\\result96.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-96\\result96.json",
               "sha256": "7f5fb59e33cf04d9ac8fe4ce3dbb734c857487cf7e82c4b730e582410fac72d0"
             }
           ]
@@ -335,7 +335,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-97\\result97.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-97\\result97.json",
               "sha256": "d6e7caa17cd69b6d30a7284101c2b3871a993b58a74a9cb51b0879a5a20f4bb2"
             }
           ]
@@ -347,7 +347,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-98\\result98.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-98\\result98.json",
               "sha256": "dac6efa1450a953599588529f2f04f7ba482e62a6fa9ece1eadf1d2c1e80b094"
             }
           ]
@@ -359,7 +359,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-eeddedfddfc\\project-99\\result99.json",
+              "path": "<temp-root>\\open-live-eeddedfddfc\\project-99\\result99.json",
               "sha256": "8bdd58210dcad727da0bc106ceffc8ed340e093265fe74a04510475290b48426"
             }
           ]
@@ -369,9 +369,9 @@
     },
     {
       "agent": "pi-recovery",
-      "root": "D:/temp/recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712",
+      "root": "<temp-root>/recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712",
       "runId": "recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712",
-      "entry": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\scripts\\orchestrate-sdk.mjs",
+      "entry": "<user-home>\\.tools\\open-tui-orchestrator\\scripts\\orchestrate-sdk.mjs",
       "passed": true,
       "liveCoreHash": "cd5b69a64e257314b6ae6f1abb3339979077e294e3358b7e5c2dfb529c84b515",
       "coreUnchanged": true,
@@ -387,7 +387,7 @@
       "sessions": [
         {
           "block": "B1",
-          "file": "D:\\temp\\orchestrator\\pi\\sessions\\B1-recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712-a1.jsonl",
+          "file": "<temp-root>\\orchestrator\\pi\\sessions\\B1-recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712-a1.jsonl",
           "cwd": "D:\\",
           "assistantCompletion": true
         }
@@ -400,7 +400,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712\\one.json",
+              "path": "<temp-root>\\recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712\\one.json",
               "sha256": "1d0624e489a26d8d3edea2c041cb962c97985406c6d5f4e9be61a9101968320d"
             }
           ]
@@ -412,7 +412,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712\\two.json",
+              "path": "<temp-root>\\recovery-4b907ee1-0030-408c-ba5c-3c3ebe04a712\\two.json",
               "sha256": "9b3ead8826e93aa429d79f1cff8307c024fc7a7bca8fcbf7c452f729d1ad22f7"
             }
           ]

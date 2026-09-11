@@ -30,7 +30,7 @@
       "fail": 0
     }
   ],
-  "sharedCore": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\scripts\\core",
+  "sharedCore": "<user-home>\\.tools\\open-tui-orchestrator\\scripts\\core",
   "selfContainedPackaging": {
     "verified": true,
     "sourceFiles": 12
@@ -41,8 +41,8 @@
       "passed": false,
       "runId": "acceptance-63fb8611-1ee8-400e-91bf-e62f227ff6e0",
       "version": "1.0.0",
-      "root": "D:\\temp\\open-live-cfccbbcaab",
-      "entry": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\cli.mjs",
+      "root": "<temp-root>\\open-live-cfccbbcaab",
+      "entry": "<user-home>\\.tools\\open-tui-orchestrator\\cli.mjs",
       "capacity": 8,
       "peak": 8,
       "windowLaunches": 8,
@@ -145,7 +145,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-91\\result91.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-91\\result91.json",
               "sha256": "dc3cbae97082c805be0f625fc10c17af5d3d76eab1226eab19636eda89fcc311"
             }
           ]
@@ -155,7 +155,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-92\\result92.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-92\\result92.json",
               "sha256": "9dde2d2fddfc23a1991fc36c30b3c75028ab0f37e995856a55a3045a66a15c37"
             }
           ]
@@ -165,7 +165,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-93\\result93.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-93\\result93.json",
               "sha256": "fb76a0181f8d5f116ab0a8837d673d474265855ecb7b33ff30f49648c9e6169c"
             }
           ]
@@ -175,7 +175,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-94\\result94.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-94\\result94.json",
               "sha256": "78ec88f8e450b5caec5bc076741b8a9c9e14f1ee5b20a9f4b8dd7623079f3503"
             }
           ]
@@ -185,7 +185,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-95\\result95.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-95\\result95.json",
               "sha256": "2ecde3c61cabd986ffc65d79615ca925e9203e730324e78bf5b0dbca93529b16"
             }
           ]
@@ -195,7 +195,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-96\\result96.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-96\\result96.json",
               "sha256": "5f049dc9c63d57bb1e3170d9965980fb0e0a68f3570488791e94372694358a93"
             }
           ]
@@ -205,7 +205,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-97\\result97.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-97\\result97.json",
               "sha256": "0bcfb63f075501e8f8340173306f968c8c9ed73d0ac05210ce9688ea97ae5589"
             }
           ]
@@ -215,7 +215,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-98\\result98.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-98\\result98.json",
               "sha256": "a3c1eb3bf7f08cdca250092b25b75d6bdb9d187afe1b22ad88802ecaa5f12f18"
             }
           ]
@@ -225,7 +225,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cfccbbcaab\\project-99\\result99.json",
+              "path": "<temp-root>\\open-live-cfccbbcaab\\project-99\\result99.json",
               "sha256": "6245c11370e02f19ff9501d43b7496b65f6686d1e69ee25070617c011fa520f8"
             }
           ]
@@ -238,8 +238,8 @@
       "passed": true,
       "runId": "acceptance-f3d1a34d-5d48-4c11-9eba-b96cbb139d4c",
       "version": "1.0.0",
-      "root": "D:\\temp\\open-live-cebfdfcdaf",
-      "entry": "C:\\Users\\fixture-user\\.tools\\open-tui-orchestrator\\cli.mjs",
+      "root": "<temp-root>\\open-live-cebfdfcdaf",
+      "entry": "<user-home>\\.tools\\open-tui-orchestrator\\cli.mjs",
       "capacity": 8,
       "peak": 8,
       "windowLaunches": 8,
@@ -342,7 +342,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-91\\result91.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-91\\result91.json",
               "sha256": "ac90d99e27833fcb7374fb43c3a20dc07c4161d82a29288d476ac3aaf8c1532c"
             }
           ]
@@ -352,7 +352,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-92\\result92.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-92\\result92.json",
               "sha256": "c7482e1083d59251c52752f2ae2cb95b469f59a4d696c6562bbee69d5130c8ae"
             }
           ]
@@ -362,7 +362,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-93\\result93.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-93\\result93.json",
               "sha256": "76c7f8dc22805e922283e2ef386e7ea72b63c8a42b6bdfbfa9e11f0efe9aa7c0"
             }
           ]
@@ -372,7 +372,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-94\\result94.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-94\\result94.json",
               "sha256": "6f3e152c0fc82c7d2c27534a756fb794d14080881940a87a4461b03d3c00cfb5"
             }
           ]
@@ -382,7 +382,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-95\\result95.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-95\\result95.json",
               "sha256": "78d67564bee0d0a59bebe0f4e26d4d694e9f2cea7856628d2c71016511815edf"
             }
           ]
@@ -392,7 +392,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-96\\result96.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-96\\result96.json",
               "sha256": "9808dc98c6d7d2a53838817a4567ec88371c57c1709f00cc9c276bdc510f69f7"
             }
           ]
@@ -402,7 +402,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-97\\result97.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-97\\result97.json",
               "sha256": "866aec4b6cb7478a4bac2064d2e3d2667c8ad2efac89800c89795855f9611a00"
             }
           ]
@@ -412,7 +412,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-98\\result98.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-98\\result98.json",
               "sha256": "be1c9046d7ac572eaa16859f4cf81d63aec1a203e6f2311d04eb017461dfa3d2"
             }
           ]
@@ -422,7 +422,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-cebfdfcdaf\\project-99\\result99.json",
+              "path": "<temp-root>\\open-live-cebfdfcdaf\\project-99\\result99.json",
               "sha256": "f57d8be9e86d11844b8df526ee965dc4570e10feeac30b751e2146c4cf51de2f"
             }
           ]
@@ -434,8 +434,8 @@
       "passed": true,
       "runId": "acceptance-11fcf493-2e22-4828-a21c-cbbb79d07851",
       "version": "1.0.1",
-      "root": "D:\\temp\\open-live-adfebdacabcddcce",
-      "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
+      "root": "<temp-root>\\open-live-adfebdacabcddcce",
+      "entry": "<user-home>\\.codex\\plugins\\cache\\personal\\codex-TUI-orchestrator\\0.4.38+codex.20260906072601\\scripts\\orchestrate-sdk.mjs",
       "capacity": 8,
       "peak": 8,
       "windowLaunches": 8,
@@ -538,7 +538,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-91\\result91.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-91\\result91.json",
               "sha256": "8748180bce226ea8c6d33d09da0e24acd5bd46673cc90dfb379cb1a5e3e041fe"
             }
           ]
@@ -548,7 +548,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-92\\result92.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-92\\result92.json",
               "sha256": "1ffea59bcd18f70713ec66ba09e323e7c2f336659878d4671334c3d179ea0565"
             }
           ]
@@ -558,7 +558,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-93\\result93.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-93\\result93.json",
               "sha256": "cd9628d4e00bc0d659ab81043434c7825e8fbafa1fab91188c1f8665167de809"
             }
           ]
@@ -568,7 +568,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-94\\result94.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-94\\result94.json",
               "sha256": "944870497c4a4591ace9d400dd2056b4d3aa3117cf40c4664b951fdb64c8a520"
             }
           ]
@@ -578,7 +578,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-95\\result95.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-95\\result95.json",
               "sha256": "ea7b664b11ab87de17963a6854ea010442ee3ceaccd1295e281225bd73ec2b84"
             }
           ]
@@ -588,7 +588,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-96\\result96.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-96\\result96.json",
               "sha256": "29327caf127f6f269306473ab6ea05128f41f8ab2a67f397ddb26d20df681560"
             }
           ]
@@ -598,7 +598,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-97\\result97.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-97\\result97.json",
               "sha256": "1a9ddaa453edfabd159997838a0c73480f5df9df33cbf153d5b3bbc7d38293e8"
             }
           ]
@@ -608,7 +608,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-98\\result98.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-98\\result98.json",
               "sha256": "5a784a4513d280a681231a2ec4cb0e7cd754221d8ca22968bfdc5f63fdec93ba"
             }
           ]
@@ -618,7 +618,7 @@
           "evidence": [
             {
               "type": "json",
-              "path": "D:\\temp\\open-live-adfebdacabcddcce\\project-99\\result99.json",
+              "path": "<temp-root>\\open-live-adfebdacabcddcce\\project-99\\result99.json",
               "sha256": "1252c3c7e9ddf211142fd04088f2a9b3704f113393fa0edd169d759405f76827"
             }
           ]
@@ -751,9 +751,9 @@
   "cleanup": {
     "status": "host-policy-rejected",
     "directories": [
-      "D:\\temp\\open-live-cfccbbcaab",
-      "D:\\temp\\open-live-cebfdfcdaf",
-      "D:\\temp\\open-live-adfebdacabcddcce"
+      "<temp-root>\\open-live-cfccbbcaab",
+      "<temp-root>\\open-live-cebfdfcdaf",
+      "<temp-root>\\open-live-adfebdacabcddcce"
     ],
     "reason": "Automatic approval review rejected recursive deletion; no specific policy reason supplied. No bypass attempted."
   },

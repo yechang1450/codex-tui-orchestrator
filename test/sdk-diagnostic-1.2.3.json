@@ -6,7 +6,7 @@
   "releaseManifestSha256": "6bbc69fe6014322a705b9a7555b740192ebd12e4b4ec700b400102251f096205",
   "suites": [
     {
-      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "root": "<user-home>\\.codex\\plugins\\codex-TUI-orchestrator",
       "passed": 138,
       "failed": 0
     },
@@ -25,7 +25,7 @@
   "publicExportsMatchEngine": true,
   "installedDoctor": {
     "workspace": "D:\\",
-    "stateDir": "D:\\temp\\orchestrator",
+    "stateDir": "<temp-root>\\orchestrator",
     "approval": "never",
     "terminal": "wt",
     "https": true,

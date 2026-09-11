@@ -8,7 +8,7 @@
   "runTiming": "The live run predates the current focus-guard change; its result remains retained as pre-change startup/capacity evidence.",
   "runId": "acceptance-2d7dae3e-c322-41f5-b947-fe808907d6f8",
   "workspace": "D:\\",
-  "root": "D:\\temp\\open-live-acffeebbedfff",
+  "root": "<temp-root>\\open-live-acffeebbedfff",
   "terminal": "wt",
   "codexCli": "0.153.4",
   "capacity": 8,

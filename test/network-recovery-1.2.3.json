@@ -5,7 +5,7 @@
   "runtimeUnchanged": true,
   "suites": [
     {
-      "root": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-TUI-orchestrator",
+      "root": "<user-home>\\.codex\\plugins\\codex-TUI-orchestrator",
       "passed": 137,
       "failed": 0,
       "durationMs": 56012.1111
