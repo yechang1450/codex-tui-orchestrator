@@ -59,6 +59,17 @@ function listFiles(dir, base = '', out = []) {
 // republish 只复制常规文件，不跟随符号链接；校验也保持一致（lstat，不 follow symlink）。
 function isRegularFile(p) { try { return fs.lstatSync(p).isFile(); } catch { return false; } }
 
+function renamePublishedStaging(staging,dest) {
+  const deadline=Date.now()+2000;
+  while(true){
+    try { fs.renameSync(staging,dest); return; }
+    catch(error){
+      if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(error.code)||Date.now()>=deadline)throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50);
+    }
+  }
+}
+
 // 可发布 skill 标志：优先 skills/*/SKILL.md（插件规范），兼容旧式根目录 SKILL.md。
 function findSkillFile(root = __dirname) {
   const sk = path.join(root, 'skills');
@@ -221,7 +232,7 @@ function publish(targetRoot) {
     const missingStaged = REQUIRED_FILES.filter(name => !isRegularFile(path.join(staging, name)));
     if(missingStaged.length || !findSkillFile(staging))throw new Error('Staged package missing required: '+(missingStaged.length?missingStaged.join(', '):'skill SKILL.md'));
     if(fs.existsSync(dest))throw new Error('Publish target appeared during publication');
-    fs.renameSync(staging,dest);staging=undefined;
+    renamePublishedStaging(staging,dest);staging=undefined;
     console.log(`[${SKILL}] published ${copied} file(s) to ${dest}.`);
     process.exit(0);
   } catch (e) {

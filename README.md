@@ -91,6 +91,8 @@ The authorization template supports the user's scope and host rules; it cannot g
 
 Automated tests exercise grouping, dependency-ready scheduling, locks, native CLI selection, fail-closed errors, generated PowerShell launchers, watchdog auto-close and process-tree cleanup using controlled child processes. They do not establish real model/provider availability or prove that every future agent is supported. A real model-backed visible-window acceptance run is a separate check.
 
+The focused execution acceptance suite is `node --test --test-concurrency=1 test/execution-acceptance.test.mjs`. It checks model/effort parity for headless and visible launch plans, captures the worker argv, verifies live TodoList and spawn-group events, and checks the explicit native-host integration boundary. Set `ORCH_REAL_CODEX_ACCEPTANCE=1` to additionally run one real headless and one visible TUI task; that opt-in check requires a configured Codex account and Windows desktop.
+
 ## Capacity-constrained planning
 
 Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024 / 1000 * 3 / 4)`; on this machine the reported 15.64 GiB yields 12 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.

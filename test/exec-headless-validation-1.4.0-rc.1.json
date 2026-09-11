@@ -9,8 +9,8 @@
     "schema": 2,
     "coreFiles": 24,
     "runtimeFiles": 48,
-    "sourceTests": "208/208",
-    "packageTests": "208/208",
+    "sourceTests": "213 passed + 1 opt-in skipped",
+    "packageTests": "213 passed + 1 opt-in skipped",
     "followupTests": "9/9",
     "npmCi": true,
     "cacheSynced": true

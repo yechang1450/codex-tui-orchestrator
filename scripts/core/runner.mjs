@@ -51,7 +51,7 @@ export function refreshTaskProgress(sum){
   let changed=false;
   for(const block of sum.blocks){
     const entry=sum.results[block.key],attempt=entry?.attempts?.at(-1);
-    if(!attempt||!['running','launching'].includes(entry.status))continue;
+    if(!attempt||!['running','launching','awaiting-verification'].includes(entry.status))continue;
     let checkpoints;try{checkpoints=readCheckpoints(attempt.file,{...attempt,runId:sum.runId});}catch{continue;}
     for(const id of attempt.taskIds){
       const checkpoint=checkpoints[id];
@@ -277,6 +277,11 @@ export async function runWindows(request,hooks,options={}) {
             e.exitCode=result.exitCode??hooks.exitCode(la.rf);e.status=result.done?'awaiting-verification':'timeout';
             if(result.threadId)active.threadId=result.threadId;
             if(!result.done&&result.text)e.reason=result.text;
+            // The worker may have flushed its final completed checkpoint just
+            // before the durable result became visible. Refresh before
+            // publishing the awaiting-verification transition so host readers
+            // never miss that live task state.
+            refreshTaskProgress(sum);
             persist(`block.${r.key}.${e.status}`);
             if (result.retryable === 'capacity' || isCapacityError(result.text)) {
               e.retryable = 'capacity';
