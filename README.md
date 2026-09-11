@@ -15,25 +15,35 @@ Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or 
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
-### Install from GitHub
+### Install or update from GitHub
 
-Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Clone into a new directory under your chosen installation parent:
-
-```powershell
-git clone https://github.com/yechang1450/codex-tui-orchestrator.git
-cd codex-tui-orchestrator
-npm ci --prefix scripts --omit=optional --ignore-scripts
-node scripts/release-integrity.mjs
-node scripts/orchestrate-sdk.mjs --doctor
-```
-
-Dependencies are restored from the lockfile; local `node_modules` and previous run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` directory name: the release manifest validates path casing as well as file content. Doctor checks installation and CLI discovery, not provider access or task completion. Register and enable the plugin in Codex separately if you want its skill loaded into conversations. Keep existing Codex credentials and any active workspace state when replacing the plugin directory.
+Use Windows with Node 22+ and an installed, authenticated native Codex CLI. The following block is safe to re-run: it fast-forwards an existing clean checkout, or clones it on the first run, then restores locked dependencies and runs the integrity and doctor checks. A dirty checkout is left untouched and the `git pull --ff-only` error is shown for review.
 
 ```powershell
-node scripts/orchestrate-sdk.mjs --doctor
-$env:WORKSPACE_DIR = 'D:\your-project'
-node scripts/orchestrate-sdk.mjs --exec 'Your authorized multi-part task'
+$InstallRoot = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator'
+if (Test-Path (Join-Path $InstallRoot '.git')) {
+  git -C $InstallRoot pull --ff-only
+} elseif (Test-Path $InstallRoot) {
+  throw "InstallRoot exists but is not a Git checkout: $InstallRoot. Choose another path or move that directory aside first."
+} else {
+  git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
+}
+npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
+node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
+node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
 ```
+
+Dependencies are restored from the lockfile; local `node_modules` and previous run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` directory name: the release manifest validates path casing as well as file content. Doctor checks installation and CLI discovery, not provider access or task completion. Direct script execution does not require plugin-manager registration. If you want the skill loaded automatically into Codex conversations, enable the plugin once in the Codex Plugins manager and start a new conversation; this is the only manual step outside the command block. Keep existing Codex credentials and any active workspace state when replacing the plugin directory.
+
+From any initiating workspace, run the installed script by absolute path; no `cd` into the plugin directory is needed:
+
+```powershell
+$Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
+node $Orch --exec 'Your authorized multi-part task'       # default: headless, no popup
+node $Orch --run-windows 'Your authorized multi-part task' # visible interactive TUI
+```
+
+Use `--exec`/`--headless` for no-popup execution and `--run-windows`/`--visible` when you want to watch or interact with a window. Both modes keep the same task list, checkpoints, recovery and verification; switching the choice only affects the next task.
 
 ### Automatic retry and resume
 

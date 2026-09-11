@@ -13,25 +13,37 @@ Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or 
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
-### 从 GitHub 重新安装
+### 从 GitHub 安装或更新
 
-需要 Windows、Node 22+，以及已安装并完成登录的原生 Codex CLI。在选定的安装父目录内下载到新目录：
-
-```powershell
-git clone https://github.com/yechang1450/codex-tui-orchestrator.git
-cd codex-tui-orchestrator
-npm ci --prefix scripts --omit=optional --ignore-scripts
-node scripts/release-integrity.mjs
-node scripts/orchestrate-sdk.mjs --doctor
-```
-
-依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写；发布清单同时校验路径和文件内容。doctor（安装诊断，检查依赖和 CLI 发现）不代表服务商可用或任务已完成。需要在 Codex 对话中加载技能时，还要通过插件管理器注册并启用。替换插件目录时保留 Codex 登录配置与仍在执行的工作区状态。
+需要 Windows、Node 22+，以及已安装并完成登录的原生 Codex CLI。下面整段命令可以重复执行：已有干净副本时只做快进更新，首次执行时自动克隆；随后按锁文件恢复依赖，并自动完成完整性检查和 doctor（安装诊断，检查依赖与 CLI 发现）。如果本地副本有改动，`git pull --ff-only` 会原样报错并保留现场，不会覆盖用户文件。
 
 ```powershell
-node scripts/orchestrate-sdk.mjs --doctor
-$env:WORKSPACE_DIR = 'D:\your-project'
-node scripts/orchestrate-sdk.mjs --exec 'Your authorized multi-part task'
+$InstallRoot = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator'
+if (Test-Path (Join-Path $InstallRoot '.git')) {
+  git -C $InstallRoot pull --ff-only
+} elseif (Test-Path $InstallRoot) {
+  throw "InstallRoot 已存在但不是 Git 副本：$InstallRoot。请改用其他路径，或先人工处理该目录。"
+} else {
+  git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
+}
+npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
+node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
+node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
 ```
+
+如果要放到其他安装父目录，也可以把 `$InstallRoot` 改成目标路径后执行同一段命令。
+
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写；发布清单同时校验路径和文件内容。doctor（安装诊断，检查依赖与 CLI 发现）不代表服务商可用或任务已完成。直接运行脚本不需要插件管理器注册；只有希望在 Codex 对话中自动加载技能时，才需在 Codex 的 Plugins（插件管理器）中启用一次，并新开对话。这是命令块之外唯一需要手动完成的步骤。替换插件目录时保留 Codex 登录配置与仍在执行的工作区状态。
+
+从发起任务的工作区直接调用绝对路径，不需要先 `cd` 到插件目录：
+
+```powershell
+$Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
+node $Orch --exec 'Your authorized multi-part task'        # 默认 headless（无弹窗）
+node $Orch --run-windows 'Your authorized multi-part task'  # 可见交互式 TUI
+```
+
+`--exec`/`--headless` 选择无弹窗执行，`--run-windows`/`--visible` 选择可见交互终端。两种模式共用任务清单、检查点、恢复和验收；切换选项只影响下一次任务，不会重启当前任务。
 
 ### 自动重试与继续
 
