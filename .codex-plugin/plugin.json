@@ -1,6 +1,6 @@
 {
   "name": "codex-tui-orchestrator",
-  "version": "0.5.0-rc.1+codex.20260912085903",
+  "version": "0.5.0-rc.1+codex.20260912122405",
   "description": "Windows 上的 Codex 并发编排插件：默认无弹窗执行，可选可见 TUI，按冲突和依赖分块，持续同步任务状态，支持独立验收与检查点恢复。只读分析与编排器自身修改留在主对话。",
   "author": {
     "name": "Yang Wenchàng"

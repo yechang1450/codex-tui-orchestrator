@@ -28,7 +28,7 @@
     "status-events.mjs": "b0e382b902c1a201df53468cc1622f6be4e7e6cf1cff1d0dfa1600fd36107fd9"
   },
   "runtimeFiles": {
-    ".codex-plugin/plugin.json": "227fe48ddacec7c3ab3f7d94d94d01dccc54e212fcd319b599517da3db781ce3",
+    ".codex-plugin/plugin.json": "069103dae79a9f67fd7392dff48e480df0b842ce82e02b9a297032f98f1ff65a",
     "repair.mjs": "5d1d72de7f93942543422dc545d8228ccf63a98f2bda066c3165f22b8b136554",
     "scripts/agent-auth-prompt.txt": "18fa9c01972cd99a2fe2b1b74a440b34921a051ba6c0d54daf2f5bf1096457b0",
     "scripts/agent.mjs": "7aec825e3b32b637844c352401aaf06a66daeee7cdc8e2ecbebc4d4816abd910",
