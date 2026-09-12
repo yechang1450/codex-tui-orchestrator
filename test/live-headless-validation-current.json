@@ -15,5 +15,5 @@
   "summarySuccess": true,
   "taskStatus": "verified",
   "receiptAnswer": 42,
-  "receiptCwd": "C:\\Users\\fixture-user\\.codex\\plugins\\codex-tui-orchestrator"
+  "receiptCwdMatchesWorkspace": true
 }

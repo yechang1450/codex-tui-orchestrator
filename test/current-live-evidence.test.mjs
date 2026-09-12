@@ -36,3 +36,13 @@ test('historical 1.3.4 live evidence retains focus, adoption and blocked capacit
  assert.equal(concurrency.plannerBlocks,12);
  assert.equal(concurrency.block.status,'needs-reconciliation');
 });
+
+test('current live evidence proves workspace consistency without exposing a local path',()=>{
+ const current=JSON.parse(fs.readFileSync(new URL('./live-headless-validation-current.json',import.meta.url),'utf8'));
+ assert.equal(current.schema,1);
+ assert.equal(current.mode,'headless');
+ assert.equal(current.passed,true);
+ assert.equal(current.receiptCwdMatchesWorkspace,true);
+ assert.equal('receiptCwd' in current,false);
+ assert.doesNotMatch(JSON.stringify(current),/[A-Za-z]:\\\\Users\\\\/i);
+});
