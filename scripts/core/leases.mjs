@@ -7,8 +7,9 @@ import {keysOverlap} from './contracts.mjs';
 
 export function processSnapshot(timeoutMs=15000) {
   if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
-  const result=spawnSync('powershell.exe',['-NoProfile','-Command',
-    '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference="Stop"; Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine,@{n="Started";e={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress'],
+  const waitMs=Math.max(1000,Math.min(30000,Math.ceil(timeoutMs)));
+  const script=`$m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false;try{try{$held=$m.WaitOne(${waitMs})}catch [Threading.AbandonedMutexException]{$held=$true};if(-not $held){throw 'Process snapshot mutex timeout'};[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$ErrorActionPreference="Stop";Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine,@{n="Started";e={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
+  const result=spawnSync('powershell.exe',['-NoProfile','-Command',script],
     {encoding:'utf8',windowsHide:true,timeout:Math.max(1,Math.min(15000,Math.ceil(timeoutMs)))});
   if(result.status!==0)throw new Error('Cannot verify process identities');
   return new Map(JSON.parse(result.stdout).map(p=>[p.ProcessId,p]));
