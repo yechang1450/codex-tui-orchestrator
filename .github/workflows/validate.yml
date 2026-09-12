@@ -21,6 +21,11 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - name: Install locked dependencies
         run: npm ci --prefix scripts
+      - name: Configure offline test host
+        shell: pwsh
+        run: |
+          "ORCH_AGENT=codex" >> $env:GITHUB_ENV
+          "PATH=$env:GITHUB_WORKSPACE\scripts;$env:PATH" >> $env:GITHUB_ENV
       - name: Run offline regression suite
         run: node --test --test-concurrency=1 test/*.test.mjs
       - name: Verify release integrity
