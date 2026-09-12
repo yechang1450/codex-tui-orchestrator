@@ -114,7 +114,7 @@ $Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestra
 node $Orch --doctor
 ```
 
-从发起工作区调用绝对脚本路径。用 `--plan` 只规划，`--status` 查看状态。底层 `--spawn <title> <prompt-or-file>` 只启动单个可见会话；需要任务验收时使用带验收文件的 `--exec` 或 `--run-windows`。只读请求和编排器自身修改留在当前对话；`--run` 与裸请求遵循 `ORCH_EXEC_MODE`（默认 headless）。资源清单不确定时，两种执行模式都会保留全部任务并串行兜底。
+从发起工作区调用绝对脚本路径。用 `--plan` 只规划，`--status` 查看状态。底层 `--spawn <title> <prompt-or-file>` 启动单个可见会话，并只在捕获到该会话的结果报告后返回成功；窗口自闭但没有报告会返回失败。需要任务验收时使用带验收文件的 `--exec` 或 `--run-windows`。只读请求和编排器自身修改留在当前对话；`--run` 与裸请求遵循 `ORCH_EXEC_MODE`（默认 headless）。资源清单不确定时，两种执行模式都会保留全部任务并串行兜底。
 
 ## 双通道实时状态
 

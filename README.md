@@ -116,7 +116,7 @@ $Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestra
 node $Orch --doctor
 ```
 
-Invoke the absolute script path from the initiating workspace. Use `--plan` for planning and `--status` to inspect state. The low-level `--spawn <title> <prompt-or-file>` launches one visible session; use the checked `--exec` or `--run-windows` flow for task acceptance. Read-only and orchestrator-self-modification requests remain inline. `--run` and a bare request respect `ORCH_EXEC_MODE` (headless by default). Either execution mode preserves all tasks in a serial fallback when inventory coverage is uncertain.
+Invoke the absolute script path from the initiating workspace. Use `--plan` for planning and `--status` to inspect state. The low-level `--spawn <title> <prompt-or-file>` launches one visible session and returns success only after capturing that session's result report; a self-closed window without a report returns failure. Use the checked `--exec` or `--run-windows` flow for task acceptance. Read-only and orchestrator-self-modification requests remain inline. `--run` and a bare request respect `ORCH_EXEC_MODE` (headless by default). Either execution mode preserves all tasks in a serial fallback when inventory coverage is uncertain.
 
 ## 双通道实时状态
 

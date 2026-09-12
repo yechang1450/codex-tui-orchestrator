@@ -1351,24 +1351,26 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
     if (pidf) {
       if (!existsSync(pidf)) {
         // pid 文件已被清理 = 窗生命周期已结束（正常关窗/被收尾清理），视为该块执行结束。
-        return annotateCapacity({ done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
+        return annotateCapacity({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
       const lp = readPidFile(pidf);
       if (lp > 0 && !pidAliveCheck(lp)) {
-        return annotateCapacity({ done: true, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
+        return annotateCapacity({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
     }
     if (exitMarkerFile && existsSync(exitMarkerFile)) {
-      const rep = readReportFromResult(exitMarkerFile, matchToken);
-      if (rep) return annotateCapacity({ done: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
+      const rep = await waitForCapturedReport(exitMarkerFile, matchToken, 15000);
+      if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
       const code = readExitCode(exitMarkerFile);
       const base = matchToken ? { text: extractOwnResult(file, matchToken) } : extractResult(file);
-      if (base.text) return annotateCapacity({ done: true, text: base.text, exitCode: code }, file);
-      return annotateCapacity({ done: true, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code }, file);
+      if (base.text) return annotateCapacity({ done: true, verified: true, text: base.text, exitCode: code }, file);
+      return annotateCapacity({ done: true, verified: false, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code }, file);
     }
     if (exitMarkerFile && existsSync(exitMarkerFile + ".self-closed")) {
       // watchdog 已写自关标记 = 窗收尾并关闭；即时视为执行结束（无汇报文本，主控按落盘核对）。
-      return annotateCapacity({ done: true, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
+      const rep = await waitForCapturedReport(exitMarkerFile, matchToken, 15000);
+      if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
+      return annotateCapacity({ done: true, verified: false, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
     }
     let tail = "";
     try {
@@ -1384,17 +1386,17 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
     // TUI open while showing its countdown. Surface them immediately so the runner
     // can close this empty attempt and honor the bounded retry policy.
     if (isCapacityError(tail)) {
-      return annotateCapacity({ done: true, text: tail.slice(-4000), exitCode: readExitCode(exitMarkerFile) }, file);
+      return annotateCapacity({ done: true, verified: false, text: tail.slice(-4000), exitCode: readExitCode(exitMarkerFile) }, file);
     }
     const completion = scanTaskComplete(tail, matchToken, ownerTurnId);
     ownerTurnId = completion.ownerTurnId;
     if (completion.done) {
       // exit code non-zero but task_complete seen -> still a completed turn
-      return annotateCapacity({ done: true, text: (matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text), exitCode: readExitCode(exitMarkerFile) }, file);
+      return annotateCapacity({ done: true, verified: true, text: (matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text), exitCode: readExitCode(exitMarkerFile) }, file);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return annotateCapacity({ done: false, text: "" }, file);
+  return annotateCapacity({ done: false, verified: false, text: "" }, file);
 }
 function annotateCapacity(result, file) {
   let evidence = String(result?.text || "");
@@ -1478,6 +1480,15 @@ function readReportFromResult(resultFile, token) {
     if (rep && String(rep).trim()) return rep;
   } catch { /* ignore */ }
   return "";
+}
+async function waitForCapturedReport(resultFile, token, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const report = readReportFromResult(resultFile, token);
+    if (report) return report;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return readReportFromResult(resultFile, token);
 }
 // 在（可能混合了多窗消息的）rollout 里，取“含本块唯一 token 的最后一条消息”（真正的本块完成汇报），
 // 避免混合会话下 extractResult 取到别的窗的“全局最后一条”而跨窗串号。
@@ -2002,15 +2013,24 @@ export async function main() {
     if (sessionFile) {
       res = AGENT.agent==='pi'?await waitPiResult(rf,POLL_TIMEOUT_MS,pidf):await waitTaskComplete(sessionFile, POLL_TIMEOUT_MS, rf, matchToken, pidf);
     } else if (existsSync(rf)) {
-      res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
+      const report = await waitForCapturedReport(rf, matchToken);
+      res = report
+        ? { done: true, verified: true, text: report, exitCode: readExitCode(rf) }
+        : { done: false, verified: false, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
+    }
+    if (res.verified !== true && existsSync(rf)) {
+      const report = await waitForCapturedReport(rf, matchToken);
+      if (report) res = { done: true, verified: true, text: report, exitCode: readExitCode(rf) };
     }
     const summaryPath = path.join(TMP, "win-summary.json");
     let summary = {};
     try { summary = JSON.parse(readFileSync(summaryPath, "utf8")); } catch {}
-    summary["spawn-" + rid] = { title, status: res.done ? "done" : "timeout", exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
+    const captured = Boolean(res.done && res.verified === true && res.text && !/^\(.*(?:no report captured|no rollout matched|no result captured|before task_complete captured)/i.test(String(res.text).trim()));
+    summary["spawn-" + rid] = { title, status: captured ? "done" : (res.done ? "uncaptured" : "timeout"), exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
     writeFileSync(summaryPath, JSON.stringify(summary, null, 2), "utf8");
     console.log("=== spawn result ===");
-    console.log("done=" + res.done);
+    console.log("done=" + captured);
+    console.log("lifecycleDone=" + res.done);
     console.log("final=" + trunc(res.text || "(none)", 500));
     // Wait for launcher to exit on its own, then force close if needed.
     if (res.done) {
@@ -2028,6 +2048,7 @@ export async function main() {
     } else {
       console.log("spawn window still running (manual interactive); registry record kept for tracking/enforcement.");
     }
+    if (!captured) process.exitCode = 1;
     return;
   }
   if (mode === "--selftest-close") {
@@ -2065,7 +2086,12 @@ export async function main() {
     let res = { done: false, text: "" };
     const sessionFile = await waitForSessionFile(matchToken, 120000, rf);
     if (sessionFile) res = await waitTaskComplete(sessionFile, 180000, rf, matchToken, pidf);
-    else if (existsSync(rf)) res = { done: true, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
+    else if (existsSync(rf)) {
+      const report = await waitForCapturedReport(rf, matchToken);
+      res = report
+        ? { done: true, verified: true, text: report, exitCode: readExitCode(rf) }
+        : { done: false, verified: false, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
+    }
     const tComplete = Date.now();
     console.log("=== selftest-close result ===");
     console.log("sessionFile=" + sessionFile);
