@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "generatedAt": "2026-09-12T11:10:00Z",
-  "commit": "1748f457c0e59b98291abcda38db2db939062eb5",
+  "commit": "8a6f4fffbd7e879d04c22bce4b641cb0420f2c89",
   "coreVersion": "1.4.0-rc.1",
   "flows": {
     "doctor": { "passed": true, "executionMode": "headless", "agent": "codex" },
