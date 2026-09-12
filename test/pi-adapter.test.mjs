@@ -1,7 +1,8 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {resolveHost,launchArgs} from '../scripts/core/host-cli.mjs';
-test('installed pi resolves its own CLI and never receives Codex flags',()=>{
+const piAvailable=(()=>{try{resolveHost({env:{...process.env,ORCH_AGENT:'pi'}});return true;}catch(error){if(/CLI_MISSING/.test(String(error?.message||error)))return false;throw error;}})();
+test('installed pi resolves its own CLI and never receives Codex flags',{skip:!piAvailable},()=>{
  const host=resolveHost({env:{...process.env,ORCH_AGENT:'pi'}});
  assert.equal(host.agent,'pi');assert.ok(host.config.prefixArgs.at(-1).endsWith('cli.js'));
  assert.match(host.config.version,/^\d+\.\d+\.\d+$/);
