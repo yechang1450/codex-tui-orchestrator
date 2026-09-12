@@ -40,7 +40,7 @@
       "danger-full-access",
       "--dangerously-bypass-approvals-and-sandbox",
       "-c",
-      "projects.\"C:\\\\Users\\\\fixture-user\\\\.codex\\\\plugins\\\\<temp>\\\\codex-tui-orchestrator-rc-20260909-214858\\\\codex-tui-orchestrator\".trust_level=\"trusted\"",
+      "projects.\"<USER_HOME_ESCAPED>\\\\.codex\\\\plugins\\\\<temp>\\\\codex-tui-orchestrator-rc-20260909-214858\\\\codex-tui-orchestrator\".trust_level=\"trusted\"",
       "-c",
       "model_provider=\"orchestrator-openai-https\"",
       "-c",

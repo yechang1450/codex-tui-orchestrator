@@ -69,10 +69,10 @@
         },
         "dependsOn": [],
         "keys": [
-          "dir:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1/<temp>/recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
-          "file:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1/<temp>/recovery-61cfd5ec-babe-47b5-b191-d50a13adb040/probe.mjs",
-          "dir:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1",
-          "file:c:/Users/fixture-user/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1"
+          "dir:<USER_HOME>/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1/<temp>/recovery-61cfd5ec-babe-47b5-b191-d50a13adb040",
+          "file:<USER_HOME>/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1/<temp>/recovery-61cfd5ec-babe-47b5-b191-d50a13adb040/probe.mjs",
+          "dir:<USER_HOME>/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1",
+          "file:<USER_HOME>/.codex/plugins/cache/personal/codex-tui-orchestrator/0.4.43-rc.1"
         ]
       }
     ],

@@ -4,6 +4,8 @@
 
 # codex-tui-orchestrator
 
+> 当前版本为 `0.5.0-rc.1` 候选版。它优先支持 Windows + Node.js 22 + Codex CLI；未验证的跨机器、插件管理器升级/回滚和长时间断网场景不会被当作稳定保证。
+
 Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, default headless exec, optional visible TUI, durable checkpoints and independent result verification.
 
 版本：`0.5.0-rc.1`。当前 RC 验收范围、结果与限制见 [RC 验收记录](docs/rc-validation.md)。

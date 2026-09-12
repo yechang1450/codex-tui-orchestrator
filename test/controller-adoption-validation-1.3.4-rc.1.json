@@ -78,9 +78,9 @@
         },
         "dependsOn": [],
         "keys": [
-          "file:c:/Users/fixture-user/.codex/plugins/codex-tui-orchestrator/<temp>/recovery-642f7288-1469-449b-add2-34a79346424e/probe.mjs",
-          "dir:c:/Users/fixture-user/.codex/plugins/codex-tui-orchestrator/<temp>/recovery-642f7288-1469-449b-add2-34a79346424e",
-          "dir:c:/Users/fixture-user/.codex/plugins/codex-tui-orchestrator"
+          "file:<USER_HOME>/.codex/plugins/codex-tui-orchestrator/<temp>/recovery-642f7288-1469-449b-add2-34a79346424e/probe.mjs",
+          "dir:<USER_HOME>/.codex/plugins/codex-tui-orchestrator/<temp>/recovery-642f7288-1469-449b-add2-34a79346424e",
+          "dir:<USER_HOME>/.codex/plugins/codex-tui-orchestrator"
         ]
       }
     ],
