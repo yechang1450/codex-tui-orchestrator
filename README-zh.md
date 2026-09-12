@@ -26,7 +26,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话，副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份，结果不明则停在 `needs-reconciliation` |
 
-因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。当前版本已用真实 Codex 完成一次 headless 单任务验收（回执、独立验收和进程关闭均通过），记录在 [当前证据](test/live-headless-validation-current.json)；这不替代容量级多任务验收。当前提交也通过了覆盖 162 个文件的离线安全审计，未发现报告项；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
+因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。当前版本已用真实 Codex 完成 headless、可见 TUI、恢复接管、监督器和独立复核流程，逐项结果见 [当前流程证据](test/live-process-validation-current.json)；这不替代容量级多任务验收。当前提交也通过了覆盖 162 个文件的离线安全审计，未发现报告项；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
