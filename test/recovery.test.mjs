@@ -26,6 +26,23 @@ test('recovery rechecks partial work and never repeats verified or uncertain sid
   assert.deepEqual(result.verified,['T1']);assert.deepEqual(result.pending,['T3','T4']);assert.deepEqual(result.uncertain,['T2']);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+test('an unknown saved checkpoint state cannot verify work or enable a safe retry',()=>{
+ const result=runner.recoveryTasks([{id:'T1'}],{T1:{state:'unexpected'}},
+  {T1:{retrySafe:true,checks:[{type:'file',path:'package.json'}]}},path.resolve(family,'../scripts'));
+ assert.deepEqual(result.verified,[]);assert.deepEqual(result.pending,[]);assert.deepEqual(result.uncertain,['T1']);
+ assert.equal(result.results.T1.status,'needs-reconciliation');
+});
+test('a started task needs explicit reconciliation even when its acceptance already passes',()=>{
+ const checkpoint={id:'T1',runId:'r',token:'attempt',state:'started'};
+ const tasks=[{id:'T1'}],checks={T1:{retrySafe:true,checks:[{type:'file',path:'package.json'}]}},workspace=path.resolve(family,'../scripts');
+ const result=runner.recoveryTasks(tasks,{T1:checkpoint},checks,workspace);
+ assert.deepEqual(result.verified,[]);assert.deepEqual(result.pending,[]);assert.deepEqual(result.uncertain,['T1']);
+ const prior={T1:{status:'verified',reconciled:true,checkpoint}};
+ const reconciled=runner.recoveryTasks(tasks,{T1:checkpoint},checks,workspace,prior);
+ assert.deepEqual(reconciled.verified,['T1']);assert.equal(reconciled.results.T1.reconciled,true);
+ const foreign={T1:{...prior.T1,checkpoint:{...checkpoint,token:'foreign'}}};
+ assert.deepEqual(runner.recoveryTasks(tasks,{T1:checkpoint},checks,workspace,foreign).uncertain,['T1']);
+});
 test('new launcher preserves a failed CLI exit and never blindly repeats the prompt',async()=>{
  process.env.ORCH_AGENT='codex';const sdk=await import('../scripts/orchestrate-sdk.mjs');
  const la=sdk.writeInteractiveLauncher('recovery-contract','read-only probe','test-'+process.pid);

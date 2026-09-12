@@ -38,6 +38,23 @@ test('saved recovery ledger rejects a stale TodoList status',()=>{
  assert.throws(()=>validateRecoverySummary(saved),/todo list status mismatch/);
 });
 
+test('saved recovery checkpoints must belong to a recorded attempt before recovery can run',()=>{
+ const saved=fixture(process.cwd());
+ const attempt={runId:'ledger',token:'attempt-token',file:'attempt.json',taskIds:['T001']};
+ const checkpoint={id:'T001',runId:'ledger',token:'attempt-token',state:'completed'};
+ saved.results.B1={status:'failed',endedAt:1,attempts:[attempt]};
+ saved.taskResults.T001={status:'failed',checkpoint};
+ validateRecoverySummary(saved);
+ for(const change of [{id:'T002'},{runId:'foreign'},{token:'foreign'},{state:'unexpected'},{id:undefined},{token:undefined}]){
+  const damaged=structuredClone(saved);Object.assign(damaged.taskResults.T001.checkpoint,change);
+  assert.throws(()=>validateRecoverySummary(damaged),/Invalid recovery ledger/,JSON.stringify(change));
+ }
+ const unrecorded=structuredClone(saved);unrecorded.results.B1.attempts=[];
+ assert.throws(()=>validateRecoverySummary(unrecorded),/Invalid recovery ledger/);
+ const invalid=structuredClone(saved);invalid.taskResults.T001.checkpoint={state:'invalid'};
+ validateRecoverySummary(invalid);
+});
+
 test('safe retry clears an old failed or verified task status before composing receipts',()=>{
  const dir=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'retry-receipt-'));
  try {

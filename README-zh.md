@@ -6,18 +6,18 @@
 
 Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, default headless exec, optional visible TUI, durable checkpoints and independent result verification.
 
-版本：`0.5.0-rc.1`。当前 RC 验收范围、结果与限制见 [RC 验收记录](docs/rc-validation.md)。
+版本：`0.5.0-rc.1`。验收记录按实际封存快照区分，见 [RC 验收记录](docs/rc-validation.md)；相同版本号不代表不同哈希之间的实测证据可通用。
 
 ## Current support / 当前支持
 
-Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or missing native CLI fails closed: no automatic install and no fallback to Codex.
+专用入口默认使用 Codex。显式 `--agent` / `ORCH_AGENT` 指定非 Codex、CLI 覆盖路径无效或原生 CLI 缺失时，会在执行前报错，不自动安装 CLI 或切换适配器。
 目前仅接通 Codex；其它 agent 不能冒充 Codex 运行。接入新宿主必须同时实现规划、交互参数、会话输出解析和完成/清理协议，不能只添加一个命令名。
 
 ## 在 Codex 中的实际体验
 
-正常路径很短：启用一次插件；如果当前对话还没有加载技能，就新开一个对话；然后把完整且已授权的多任务请求交给 Codex。技能会从发起目录调用插件的绝对路径，不需要切换到安装目录。默认使用 `--exec`，后台执行且不弹出终端；只有需要观察或交互时才用 `--run-windows`。
+插件已经在宿主中注册并启用后，如果当前对话还没有加载技能，就新开一个对话，再把完整且已授权的多任务请求交给 Codex。技能会先准备独立验收条件，再从发起工作区调用插件的绝对路径。默认使用 `--exec`，需要观察或交互时才用 `--run-windows`。仅克隆仓库不会自动注册或启用插件。
 
-运行开始后，插件先按冲突和依赖拆块，再按容量与锁调度。TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数和等待原因。任务必须依次出现 `started`、`completed`，并通过主控的独立验收，才会成为 `verified`；关窗、结束标记或子窗口自报都不能单独证明成功。
+运行开始后，插件先按冲突和依赖拆块，再按容量与锁调度。TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数和等待原因。普通执行必须依次出现 `started`、`completed`，并通过主控独立验收，才会成为 `verified`；关窗、结束标记或子窗口自报不能单独证明成功。只有 `started` 的任务保留为待对账；主控显式使用 `--verify-run` 核对真实结果后，才可完成这类中断任务的对账。
 
 | 场景 | 入口 | 体验与边界 |
 | --- | --- | --- |
@@ -32,60 +32,89 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 ### 从 GitHub 安装或更新
 
-需要 Windows、Node 22+，以及已安装并完成登录的原生 Codex CLI。下面整段命令可以重复执行：已有干净副本时只做快进更新，首次执行时自动克隆；随后按锁文件恢复依赖，并自动完成完整性检查和 doctor（安装诊断，检查依赖与 CLI 发现）。如果本地副本有改动，`git pull --ff-only` 会原样报错并保留现场，不会覆盖用户文件。
+需要 Windows、Node 22+，以及已安装并完成登录的原生 Codex CLI。更新该副本前先结束活动运行。下面命令会显式检查并拒绝已跟踪或未跟踪的本地改动；干净副本只做快进更新，首次使用则克隆，再恢复锁文件依赖、检查完整性并运行 doctor（安装诊断，检查依赖与 CLI 发现）。每条原生命令失败都会停止整段，处理失败原因后再重试。
 
 ```powershell
-$InstallRoot = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator'
-if (Test-Path (Join-Path $InstallRoot '.git')) {
-  git -C $InstallRoot pull --ff-only
-} elseif (Test-Path $InstallRoot) {
-  throw "InstallRoot 已存在但不是 Git 副本：$InstallRoot。请改用其他路径，或先人工处理该目录。"
-} else {
-  git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
+& {
+  $ErrorActionPreference = 'Stop'
+  $InstallRoot = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator'
+  if (Test-Path -LiteralPath $InstallRoot) {
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
+      throw "InstallRoot 已存在但不是 Git 副本：$InstallRoot。请改用其他路径。"
+    }
+    $LocalChanges = @(git -C $InstallRoot status --porcelain)
+    if ($LASTEXITCODE -ne 0) { throw '无法检查现有 Git 副本。' }
+    if ($LocalChanges.Count -gt 0) { throw '发现本地改动，请提交或处理后再更新。' }
+    git -C $InstallRoot pull --ff-only
+    if ($LASTEXITCODE -ne 0) { throw 'Git 更新失败，尚未修改依赖。' }
+  } else {
+    git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Git 克隆失败，安装已停止。' }
+  }
+  npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
+  if ($LASTEXITCODE -ne 0) { throw '依赖安装失败。' }
+  node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
+  if ($LASTEXITCODE -ne 0) { throw '发布完整性检查失败。' }
+  node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
+  if ($LASTEXITCODE -ne 0) { throw '安装诊断失败。' }
 }
-npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
-node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
-node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
 ```
 
 如果要放到其他安装父目录，也可以把 `$InstallRoot` 改成目标路径后执行同一段命令。
 
-依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写；发布清单同时校验路径和文件内容。doctor（安装诊断，检查依赖与 CLI 发现）不代表服务商可用或任务已完成。直接运行脚本不需要插件管理器注册；只有希望在 Codex 对话中自动加载技能时，才需在 Codex 的 Plugins（插件管理器）中启用一次，并新开对话。这是命令块之外唯一需要手动完成的步骤。替换插件目录时保留 Codex 登录配置与仍在执行的工作区状态。
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
 
-从发起任务的工作区直接调用绝对路径，不需要先 `cd` 到插件目录：
+从发起工作区调用绝对路径。以下最小示例先定义验收条件，再创建带本次运行身份的 JSON 结果；执行会使用已配置模型的额度：
 
 ```powershell
-$Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
-node $Orch --exec 'Your authorized multi-part task'        # 默认 headless（无弹窗）
-node $Orch --run-windows 'Your authorized multi-part task'  # 可见交互式 TUI
+& {
+  $ErrorActionPreference = 'Stop'
+  $Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
+  $Workspace = (Get-Location).Path
+  $RunId = 'readme-' + [guid]::NewGuid().ToString('N')
+  $ExampleDir = Join-Path $Workspace "temp\orchestrator\examples\$RunId"
+  [void](New-Item -ItemType Directory -Path $ExampleDir)
+  $Receipt = Join-Path $ExampleDir 'result.json'
+  $Acceptance = Join-Path $ExampleDir 'acceptance.json'
+  $Checks = @{ T001 = @(@{ type = 'json'; path = $Receipt; equals = @{ answer = 42; runId = $RunId } }) }
+  [IO.File]::WriteAllText($Acceptance, ($Checks | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+  $Request = "创建 JSON 文件 `"$Receipt`"，其中 answer 为 42，runId 为 $RunId。按提供的任务检查点执行并核对内容。"
+  node $Orch --workspace $Workspace --run-id $RunId --acceptance-file $Acceptance --exec $Request
+  if ($LASTEXITCODE -ne 0) { throw "本次运行未通过，请先检查 temp/orchestrator/runs/$RunId/summary.json。" }
+  Get-Content -LiteralPath (Join-Path $Workspace "temp\orchestrator\runs\$RunId\summary.json")
+}
 ```
 
-`--exec`/`--headless` 选择无弹窗执行，`--run-windows`/`--visible` 选择可见交互终端。两种模式共用任务清单、检查点、恢复和验收；切换选项只影响下一次任务，不会重启当前任务。
+把上例同一条调用的 `--exec` 改为 `--run-windows` 即可选择可见执行；两种模式共用任务清单、检查点、恢复和验收。实际多任务请求要为每个原始任务 ID（`T001`、`T002` 等）定义内容或行为检查，格式见[验收协议](docs/execution-contract.md#execution-and-verification)。缺少验收条件时，已完成工作仍停在 `awaiting-verification`（等待主控验收），入口返回非零，不会当作成功。可以用 `--verify-run` 补充检查而不重做任务。读回 summary 和结果后，再清理本示例已结束的产物。
 
 ### 自动重试与继续
 
 单个任务需要经受网络断开或 Codex 进程崩溃时，可以使用独立监督器（监督器，独立监测并恢复 Codex 会话的进程）：
 
 ```powershell
-node scripts/supervise.mjs --workspace D:\your-project --prompt 'Your authorized task' --max-attempts 3
+$Supervisor = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\supervise.mjs'
+node $Supervisor --workspace (Get-Location).Path --prompt 'Your authorized task' --max-attempts 3
 ```
 
 监督器会把会话 ID 和尝试记录保存到 `workspace/temp/orchestrator/supervisor/runs/<runId>`，只对传输错误、超时、容量不足、限流和服务端错误进行有限重试；已有会话 ID 时会继续同一个会话。保存的任务可以这样继续：
 
 ```powershell
-node scripts/supervise.mjs --workspace D:\your-project --run-id <runId> --resume
+$Supervisor = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\supervise.mjs'
+$RunId = 'replace-with-the-saved-run-id'
+node $Supervisor --workspace (Get-Location).Path --run-id $RunId --resume
 ```
 
-这是一种有上限的恢复机制，不能保证外部副作用恰好执行一次。如果错误可能发生在外部操作之后，继续提示会要求 Codex 先检查并验证当前状态，再决定是否重复操作。需要多任务检查点和验收条件时，继续使用现有的 `--resume-run` 流程。
+监督器报告成功只表示 Codex 会话结束，不会运行编排器的独立任务验收。它提供有上限的会话恢复，不能保证外部副作用恰好执行一次。如果错误可能发生在外部操作之后，继续提示会要求 Codex 先检查当前状态，再决定是否重复操作。需要任务验收时，使用带验收文件的 `--exec` 和现有 `--resume-run` 流程。
 
 如果你要接入本地重试代理（例如 `steady-relay`），先用可信的 OpenAI 兼容上游启动它，然后把编排器指向它打印出来的本地 `/v1` 地址。常见地址是 `http://127.0.0.1:8080/v1`。
 
 ```powershell
 $env:ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
-node scripts/orchestrate-sdk.mjs --doctor
+$Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
+node $Orch --doctor
 ```
 
-从发起对话的工作区调用已安装命令或绝对脚本路径，不要切换到安装目录。用 `--plan` 只规划，用 `--spawn <title> <prompt-or-file>` 启动一个可见窗口，用 `--status` 查看状态。只读请求和编排器自身修改留在当前对话；`--run` 与裸请求遵循 `ORCH_EXEC_MODE`（默认 headless）。`--exec`/`--headless` 与 `--run-windows`/`--visible` 可明确选择模式。资源清单不确定时，两种模式都会保留全部任务并串行兜底。
+从发起工作区调用绝对脚本路径。用 `--plan` 只规划，`--status` 查看状态。底层 `--spawn <title> <prompt-or-file>` 只启动单个可见会话；需要任务验收时使用带验收文件的 `--exec` 或 `--run-windows`。只读请求和编排器自身修改留在当前对话；`--run` 与裸请求遵循 `ORCH_EXEC_MODE`（默认 headless）。资源清单不确定时，两种执行模式都会保留全部任务并串行兜底。
 
 ## 双通道实时状态
 
@@ -96,8 +125,10 @@ TodoList（原始任务清单）保留 T001 等任务身份。Execution（执行
 - manifest.json 从规划开始保存清单；summary.json 是权威快照，events.jsonl 是带序号事件，goal.json 是派生镜像。文件都归当前工作区 temp/orchestrator/runs/<ID>。
 
 ~~~powershell
-node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch
-node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch --json
+$Status = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\status.mjs'
+$RunId = 'replace-with-the-saved-run-id'
+node $Status --workspace (Get-Location).Path --run-id $RunId --watch
+# 在上一条命令追加 --json，可读取结构化输出。
 ~~~
 
 status.mjs 只读且不依赖 SDK，退出观察不会终止执行。JSONL（逐行 JSON 事件）用于接入宿主界面；重连先读最新快照再跟随事件，--after 指定已观察序号。默认每 250ms 观察检查点，系统和同步协调可能延迟显示，不承诺硬实时。
@@ -108,7 +139,7 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 
 ## Host contract / 宿主契约
 
-- Generic entry: --agent / ORCH_AGENT identifies the initiating agent. Codex session variables can identify Codex; a PATH entry alone cannot identify the host.
+- 专用入口默认 Codex；`--agent` / `ORCH_AGENT` 可显式选择 Codex，非 Codex 值会被拒绝。`--workspace` 指定任务工作区，`--cli` 指定原生 CLI 覆盖路径。
 - --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH and npm packaged native binaries, verify with --version.
 - ORCH_MODEL / ORCH_EFFORT 是显式覆盖项；TUI 窗默认使用 `gpt-5.3-codex-spark` 与最高 `xhigh` 思考强度。GUI 对话里的临时覆盖不会自动读取，调用方需显式传入。
 - 传输断开、超时、流中断，或启动器在写入任务检查点前异常退出时，执行块会在 `maxAttempts`（默认 2 次）预算内自动重试；已经写入 started 但无法证明结果的任务会停在 `needs-reconciliation`，不会盲目重做副作用。
@@ -133,7 +164,7 @@ Automated tests exercise grouping, dependency-ready scheduling, locks, native CL
 
 ## Capacity-constrained planning
 
-Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024 / 1000 * 3 / 4)`; on this machine the reported 15.64 GiB yields 12 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.
+Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024 / 1000 * 3 / 4)`; for example, 15.64 reported GiB yields 12 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.
 
 Overflow blocks are grouped into at most the calculated capacity. Tasks inside a merged block execute serially in dependency order, and all task bodies and conflict keys are retained. Capacity is a per-invocation plan limit, not a cross-process global quota; the shared coordinator applies the same calculated limit across active and reserved windows.
 
@@ -145,7 +176,7 @@ Run the opt-in live concurrency probe explicitly on Windows with the calculated 
 
 The parent measures real launcher/Codex ancestry and holds the probe set until all selected probes overlap. Acceptance requires the calculated capacity to be respected, distinct launchers, valid task receipts, and strict polling exit zero. Receipt checks include run identity, task identity, arithmetic and timestamps. The runner retains its report and isolated temporary directory for host review and scoped cleanup.
 
-Shared script paths or identical leaf names can trigger conservative conflict merging. Undeclared output paths can yield `uncaptured` despite real outputs. The fixture therefore declares distinct scripts and output files explicitly. These path-inference limitations are separate from the capacity change.
+Identical full script/output paths still merge conservatively. Bare leaf-name fragments do not infer conflict keys; path inference requires a multi-segment absolute path. Undeclared output paths can yield `uncaptured` despite real outputs. The fixture therefore declares distinct scripts and output files explicitly.
 
 Window cleanup targets only the selected launcher's descendants. It never terminates the shared Windows Terminal host: doing so can kill unfinished tasks in another window, especially a merged block with more work remaining.
 
@@ -156,9 +187,9 @@ Codex 的规划 SDK 和 TUI 窗统一使用 orchestrator-openai-https 配置（�
 审批固定为 never，旧 ORCH_APPROVAL 询问模式不再恢复询问。该参数不覆盖宿主强制策略；宿主拒绝仍须如实返回。
 
 ## 发行成熟度
-当前属于本机验证的候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；历史并发测试不代表跨机器或跨版本认证。
+当前属于候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；每次代码或封存哈希变化后，都要重新确认适用的验证证据。
 
-当前候选 core 1.4.0-rc.1 的验收以 [RC 验收记录](docs/rc-validation.md) 为准。1.3.4 的窗口、包与容量记录属于历史证据，不用于证明这次默认模式变更。
+当前候选 core 1.4.0-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前 1.4.0-rc.1 与更早版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
 
 隐私与使用条款见 [隐私说明](docs/privacy.md) 与 [使用条款](docs/terms.md)。
 

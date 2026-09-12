@@ -1,5 +1,6 @@
 import {levelWaves,verifyChecks,requestTasks,computeMaxWindows,buildTodoList} from './contracts.mjs';
 import os from 'node:os';
+import {checkpointMatches} from './checkpoint.mjs';
 
 // Validate persisted structure before recovery can change state or invoke tools.
 export function validateRecoverySummary(sum) {
@@ -30,6 +31,10 @@ export function validateRecoverySummary(sum) {
   for(const attempt of entry.attempts) {
    if(!object(attempt)||attempt.runId!==sum.runId||typeof attempt.token!=='string'||!attempt.token||typeof attempt.file!=='string'||!attempt.file||!strings(attempt.taskIds)||!attempt.taskIds.length||new Set(attempt.taskIds).size!==attempt.taskIds.length||attempt.taskIds.some(id=>!block.taskIds.includes(id)))fail('invalid attempt identity or task coverage');
   }
+  for(const id of block.taskIds) {
+   const checkpoint=sum.taskResults[id]?.checkpoint;
+   if(checkpoint!==undefined&&checkpoint?.state!=='invalid'&&!entry.attempts.some(attempt=>attempt.taskIds.includes(id)&&checkpointMatches(checkpoint,attempt,id)))fail('invalid saved task checkpoint: '+id);
+  }
  }
  if(covered.length!==ids.length||new Set(covered).size!==ids.length||covered.some(id=>!ids.includes(id)))fail('incomplete or duplicate task coverage');
  try{levelWaves(structuredClone(sum.plan));}catch(error){fail(error.message);}
@@ -53,7 +58,10 @@ export async function scheduleReady(recs,execute,status,onBlocked=()=>{}) {
 }
 
 export const taskPolicy=value=>Array.isArray(value)?{checks:value,retrySafe:false}:{checks:value?.checks||[],retrySafe:value?.retrySafe===true};
-export function recoveryTasks(tasks,checkpoints,checks,workspace) {
+export function hasReconciledCheckpoint(result,checkpoint,id) {
+  return result?.status==='verified'&&result.reconciled===true&&result.checkpoint?.state==='started'&&checkpoint?.state==='started'&&checkpointMatches(result.checkpoint,checkpoint,id);
+}
+export function recoveryTasks(tasks,checkpoints,checks,workspace,previousResults={}) {
   const result={verified:[],pending:[],uncertain:[],results:{}};
   for(const task of tasks) {
     const cp=checkpoints[task.id],policy=taskPolicy(checks[task.id]);
@@ -62,9 +70,13 @@ export function recoveryTasks(tasks,checkpoints,checks,workspace) {
       result.results[task.id]={status:'pending'};
       continue;
     }
-    if(cp.state==='invalid'){result.uncertain.push(task.id);result.results[task.id]={status:'needs-reconciliation',reason:'Invalid checkpoint',checkpoint:cp};continue;}
+    if(!['started','completed'].includes(cp.state)){result.uncertain.push(task.id);result.results[task.id]={status:'needs-reconciliation',reason:'Invalid checkpoint',checkpoint:cp};continue;}
     const verification=verifyChecks(policy.checks,workspace);
-    if(verification.status==='verified'){result.verified.push(task.id);result.results[task.id]={...verification,checkpoint:cp};}
+    const reconciled=hasReconciledCheckpoint(previousResults[task.id],cp,task.id);
+    if(verification.status==='verified'&&(cp.state==='completed'||reconciled)){result.verified.push(task.id);result.results[task.id]={...verification,checkpoint:cp,...(reconciled?{reconciled:true}:{})};}
+    else if(verification.status==='verified'){
+      result.uncertain.push(task.id);result.results[task.id]={status:'needs-reconciliation',reason:'Task has no completed checkpoint; use --verify-run for explicit reconciliation',verification,checkpoint:cp};
+    }
     else if(policy.retrySafe){
       // A failed recheck is not a verified receipt. Clear the old status before
       // composing the next prompt, otherwise the TodoList says "verified" while

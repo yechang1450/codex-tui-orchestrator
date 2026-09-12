@@ -41,6 +41,8 @@ test('clean published package runs doctor and guards its public polling entry',(
   for(const name of ['.git','temp','.plugin-eval','node_modules'])assert.equal(fs.existsSync(path.join(pkg,name)),false);
   const missing=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
   assert.notEqual(missing.status,0);assert.match(missing.stderr,/RELEASE_DEPENDENCY_MISSING.*npm ci/);
+  const missingSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
+  assert.notEqual(missingSupervisor.status,0);assert.match(missingSupervisor.stderr,/RELEASE_DEPENDENCY_MISSING.*npm ci/);
   const noSdkPoll=run(path.join(pkg,'scripts','poll-windows.mjs'),['--run-id','no-sdk-test','--timeoutMs','0']);
   assert.equal(noSdkPoll.status,1);assert.match(noSdkPoll.stderr,/timeout runId=no-sdk-test/);
   // Install the already-tested SDK fixture without downloading or copying CLI binaries.
@@ -50,6 +52,8 @@ test('clean published package runs doctor and guards its public polling entry',(
   fs.writeFileSync(sdkManifest,JSON.stringify({...JSON.parse(original),version:'0.0.0-test'}));
   const mismatch=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
   assert.notEqual(mismatch.status,0);assert.match(mismatch.stderr,/RELEASE_DEPENDENCY_VERSION/);
+  const mismatchSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
+  assert.notEqual(mismatchSupervisor.status,0);assert.match(mismatchSupervisor.stderr,/RELEASE_DEPENDENCY_VERSION/);
   fs.writeFileSync(sdkManifest,original);
   const sdkEntry=path.join(path.dirname(sdkManifest),'dist','index.js');
   const entryBytes=fs.readFileSync(sdkEntry);fs.unlinkSync(sdkEntry);
@@ -60,6 +64,8 @@ test('clean published package runs doctor and guards its public polling entry',(
    fs.writeFileSync(sdkEntry,damaged);
    const unusable=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
    assert.notEqual(unusable.status,0);assert.match(unusable.stderr,/RELEASE_DEPENDENCY_DAMAGED: SDK cannot load or lacks required interfaces.*npm ci/);
+   const unusableSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
+   assert.notEqual(unusableSupervisor.status,0);assert.match(unusableSupervisor.stderr,/RELEASE_DEPENDENCY_DAMAGED: SDK cannot load or lacks required interfaces.*npm ci/);
   }
   fs.writeFileSync(sdkEntry,entryBytes);
   fs.writeFileSync(sdkManifest,'{');
@@ -68,8 +74,12 @@ test('clean published package runs doctor and guards its public polling entry',(
   fs.writeFileSync(sdkManifest,original);
   const doctor=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
   assert.equal(doctor.status,0,doctor.stderr+'\n'+doctor.stdout);
+  const supervisorHelp=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
+  assert.equal(supervisorHelp.status,0,supervisorHelp.stderr);
   fs.appendFileSync(path.join(pkg,'scripts','host-cli.mjs'),'\n// test drift');
   const poll=run(path.join(pkg,'scripts','poll-windows.mjs'),['--status','--readonly']);
   assert.notEqual(poll.status,0);assert.match(poll.stderr,/RELEASE_INTEGRITY_FAILED/);
+  const changedSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
+  assert.notEqual(changedSupervisor.status,0);assert.match(changedSupervisor.stderr,/RELEASE_INTEGRITY_FAILED/);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

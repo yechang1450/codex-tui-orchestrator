@@ -49,15 +49,35 @@ test('checkpoint identity stays anchored to the controller ledger and rejects fo
   }
  }finally{fs.rmSync(d,{recursive:true,force:true});}
 });
+test('missing checkpoint files cannot turn a damaged saved checkpoint into verified work',()=>{
+ fs.mkdirSync(family,{recursive:true});const d=fs.mkdtempSync(path.join(family,'saved-checkpoint-identity-'));
+ try{
+  const file=path.join(d,'attempt.json'),attempt={runId:'original',token:'attempt-token',taskIds:['T1']};
+  fs.writeFileSync(file,JSON.stringify(attempt));
+  recordCheckpoint(file,'T1','started');const saved=recordCheckpoint(file,'T1','completed');
+  fs.unlinkSync(path.join(d,'checkpoints','T1.json'));
+  fs.writeFileSync(path.join(d,'evidence.json'),'{"count":1}');
+  const checks={T1:[{type:'json',path:'evidence.json',equals:{count:1}}]};
+  const summary=checkpoint=>({protocol:2,runId:'original',blocks:[{key:'B1',taskIds:['T1']}],
+   results:{B1:{status:'failed',endedAt:1,attempts:[{...attempt,file}]}},taskResults:{T1:{status:'failed',checkpoint}}});
+  const valid=summary(saved);collectVerification(valid,checks,d);
+  assert.equal(valid.taskResults.T1.status,'verified');
+  for(const change of [{id:'other'},{runId:'foreign'},{token:'foreign'},{state:'unexpected'},{id:undefined},{token:undefined}]){
+   const damaged=summary({...saved,...change});collectVerification(damaged,checks,d);
+   assert.equal(damaged.taskResults.T1.status,'needs-reconciliation',JSON.stringify(change));
+   assert.equal(damaged.results.B1.status,'needs-reconciliation');
+  }
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
 test('two controllers cannot own the same run concurrently',async()=>{
  const d=fs.mkdtempSync(path.join(family,'run-claim-'));let claim;
  try{claim=claimRun(d,'run');assert.throws(()=>claimRun(d,'run'),/live controller/);releaseRun(d,'run',claim);claim=claimRun(d,'run');}
  finally{if(claim)releaseRun(d,'run',claim);await pause(500);fs.rmSync(d,{recursive:true,force:true});}
 });
-for(const fault of ['safe-retry','response-reset','response-timeout'])test('actual recovery without duplicate side effects: '+fault,async()=>{
+for(const fault of ['safe-retry','response-reset','response-timeout','started-only'])test('actual recovery without duplicate side effects: '+fault,async()=>{
  const d=fs.mkdtempSync(path.join(family,'recover-process-')),attempts=[],children=[];
  let requests=0,server,endpoint='';
- if(fault!=='safe-retry'){
+ if(fault.startsWith('response-')){
   server=http.createServer((req,res)=>{requests++;fs.writeFileSync(path.join(d,'remote.json'),JSON.stringify({count:requests}));if(fault==='response-reset')res.destroy();});
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   endpoint='http://127.0.0.1:'+server.address().port;
@@ -69,7 +89,11 @@ for(const fault of ['safe-retry','response-reset','response-timeout'])test('actu
  while(!fs.existsSync(rf+'.go'))await new Promise(r=>setTimeout(r,20));
  for(const id of a.taskIds){recordCheckpoint(file,id,'started');
  if(id==='T001'){const f=path.join(root,'count.json');const count=fs.existsSync(f)?JSON.parse(fs.readFileSync(f)).count:0;fs.writeFileSync(f,JSON.stringify({count:count+1}));}
- if(id==='T002'&&${JSON.stringify(fault)}!=='safe-retry'){
+ if(id==='T002'&&${JSON.stringify(fault)}==='started-only'){
+  fs.writeFileSync(path.join(root,'done.json'),JSON.stringify({done:true}));
+  fs.writeFileSync(rf,JSON.stringify({exitCode:0}));process.exit(0);
+ }
+ if(id==='T002'&&${JSON.stringify(fault)}.startsWith('response-')){
   try{await fetch(${JSON.stringify(endpoint)},{method:'POST',signal:AbortSignal.timeout(500)});throw new Error('Expected transport failure');}
   catch(error){fs.writeFileSync(path.join(root,'transport-error.json'),JSON.stringify({name:error.name,message:error.message}));}
   fs.writeFileSync(rf,JSON.stringify({exitCode:23}));process.exit(23);
@@ -91,6 +115,17 @@ for(const fault of ['safe-retry','response-reset','response-timeout'])test('actu
  };
  try{const opts={workspace:d,capacity:8,runId:'partial',acceptanceFile:checks,coordinator:path.join(d,'temp','coordinator'),auth:'test'};
   const sum=await runWindows('执行甲；执行乙',hooks,opts);
+  if(fault==='started-only'){
+   assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation');
+   assert.equal(sum.taskResults.T002.checkpoint.state,'started');assert.deepEqual(attempts,[['T001','T002']]);
+   const resumed=await runWindows('',hooks,{...opts,resume:true});
+   assert.equal(resumed.success,false);assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(attempts.length,1);
+   assert.equal(verifyRun(d,'partial',checks),true);
+   const verified=await runWindows('',hooks,{...opts,resume:true});
+   assert.equal(verified.success,true);assert.equal(verified.taskResults.T002.reconciled,true);
+   assert.equal(attempts.length,1);assert.equal(JSON.parse(fs.readFileSync(path.join(d,'count.json'))).count,1);
+   return;
+  }
   if(fault!=='safe-retry'){
    assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation');
    assert.equal(requests,1);assert.deepEqual(attempts,[['T001','T002']]);

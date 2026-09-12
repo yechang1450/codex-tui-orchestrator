@@ -4,8 +4,8 @@ import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText} from './contracts.mjs';
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
-import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary} from './recovery.mjs';
-import {readCheckpoints} from './checkpoint.mjs';
+import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint} from './recovery.mjs';
+import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy,isCapacityError} from './retry-policy.mjs';
 import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
@@ -79,7 +79,14 @@ function blockCheckpoints(entry,block,sum) {
     try{for(const r of JSON.parse(fs.readFileSync(entry.receiptFile,'utf8')).tasks||[]){if(block.taskIds.includes(r.id))out[r.id]=r.runId===sum.runId&&r.token===entry.token&&r.status==='completed'?{state:'completed'}:{state:'invalid'};}}catch{}
   }
   for(const id of block.taskIds) {
-    if(!out[id]&&sum.taskResults[id]?.checkpoint)out[id]=sum.taskResults[id].checkpoint;
+    if(!out[id]&&sum.taskResults[id]?.checkpoint){
+      const saved=sum.taskResults[id].checkpoint;
+      // Protocol 2 snapshots retain the same identity as their durable attempt.
+      // Identity-free checkpoints are only compatible with historical ledgers.
+      const valid=sum.protocol===2?(entry?.attempts||[]).some(a=>a.taskIds.includes(id)&&checkpointMatches(saved,{...a,runId:sum.runId},id)):
+        ['started','completed'].includes(saved.state)&&(['id','runId','token'].every(key=>!Object.hasOwn(saved,key))||checkpointMatches(saved,{runId:sum.runId,token:entry?.token},id));
+      out[id]=valid?saved:{state:'invalid'};
+    }
     if(!out[id]&&sum.taskResults[id]?.status==='verified')out[id]={state:'invalid'};
   }
   return out;
@@ -91,7 +98,7 @@ function blockStatus(ids,results) {
   if(statuses.includes('awaiting-verification'))return 'awaiting-verification';
   return 'failed';
 }
-export function collectVerification(sum,checks,workspace) {
+export function collectVerification(sum,checks,workspace,{allowStarted=false}={}) {
   for(const b of sum.blocks) {
     const e=sum.results[b.key];if(!e?.endedAt)continue;
     if(['blocked','popup-failed','preflight-failed','cancelled'].includes(e.status)&&!e.attempts?.length)continue;
@@ -99,9 +106,10 @@ export function collectVerification(sum,checks,workspace) {
     for(const id of b.taskIds) {
       const cp=cps[id];if(!cp){sum.taskResults[id]={status:'failed',reason:'No durable task checkpoint'};continue;}
       if(cp.state==='invalid'){sum.taskResults[id]={status:'needs-reconciliation',reason:'Invalid checkpoint',checkpoint:cp};continue;}
+      const reconciled=cp.state==='started'&&(allowStarted||hasReconciledCheckpoint(sum.taskResults[id],cp,id));
       const check=verifyChecks(taskPolicy(checks[id]).checks,workspace);
-      sum.taskResults[id]=check.status==='verified'?{...check,checkpoint:cp}:
-        cp.state==='started'?{status:'needs-reconciliation',reason:'Task started but result is unproven',verification:check,checkpoint:cp}:{...check,checkpoint:cp};
+      sum.taskResults[id]=check.status==='verified'&&(cp.state==='completed'||reconciled)?{...check,checkpoint:cp,...(reconciled?{reconciled:true}:{})}:
+        cp.state==='started'?{status:'needs-reconciliation',reason:check.status==='verified'?'Task has no completed checkpoint; use --verify-run for explicit reconciliation':'Task started but result is unproven',verification:check,checkpoint:cp}:{...check,checkpoint:cp};
     }
     e.status=blockStatus(b.taskIds,sum.taskResults);
   }
@@ -119,7 +127,7 @@ export function verifyRun(workspace,runId,acceptanceFile) {
       if(keyDiff?.unknown.length)throw new Error('Acceptance keys do not match any task id: '+keyDiff.unknown.join(', ')+'（task ids: '+sum.tasks.map(t=>t.id).join(', ')+'）');
       if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
     }
-    collectVerification(sum,checks,workspace);sum.success=summaryComplete(sum,true);
+    collectVerification(sum,checks,workspace,{allowStarted:true});sum.success=summaryComplete(sum,true);
     createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed');
     writeGoalMirror(dir,sum,sum.success?'verify.completed':'verify.failed',sum.success?'completed':'failed');return sum.success;
   }
@@ -217,7 +225,7 @@ export async function runWindows(request,hooks,options={}) {
           hooks.ready?.(la);
         }else {
           const cps=blockCheckpoints(e,b,sum);
-          const recovery=recoveryTasks(tasks,cps,checks,workspace);
+          const recovery=recoveryTasks(tasks,cps,checks,workspace,sum.taskResults);
           Object.assign(sum.taskResults,recovery.results);
           if(recovery.verified.length===tasks.length){e.status='verified';e.endedAt=Date.now();persist(`block.${r.key}.verified`);return;}
           if(recovery.uncertain.length){e.status='needs-reconciliation';e.reason='Uncertain tasks: '+recovery.uncertain.join(', ');e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;}

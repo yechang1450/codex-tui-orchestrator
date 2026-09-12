@@ -8,18 +8,18 @@
 
 Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, default headless exec, optional visible TUI, durable checkpoints and independent result verification.
 
-版本：`0.5.0-rc.1`。当前 RC 验收范围、结果与限制见 [RC 验收记录](docs/rc-validation.md)。
+版本：`0.5.0-rc.1`。验收记录按实际封存快照区分，见 [RC 验收记录](docs/rc-validation.md)；相同版本号不代表不同哈希之间的实测证据可通用。
 
 ## Current support / 当前支持
 
-Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or missing native CLI fails closed: no automatic install and no fallback to Codex.
+The dedicated entry defaults to Codex. An explicit non-Codex `--agent` / `ORCH_AGENT`, invalid CLI override, or missing native CLI fails before execution; it does not install a CLI or switch adapters automatically.
 目前仅接通 Codex；其它 agent 不能冒充 Codex 运行。接入新宿主必须同时实现规划、交互参数、会话输出解析和完成/清理协议，不能只添加一个命令名。
 
 ## Using it from Codex / 在 Codex 中的实际体验
 
-The normal Codex path is deliberately short: enable the plugin once, start a new conversation if the skill is not loaded yet, and give Codex the complete authorized multi-part request. The skill routes that request to the absolute SDK entry without changing into the install directory. `--exec` is the default, so work continues without opening a terminal window; use `--run-windows` only when you need to watch or interact with a visible TUI.
+Once the plugin is registered with the host and enabled, start a new conversation if the skill is not loaded yet, then give Codex the complete authorized multi-part request. The skill prepares independent acceptance checks and calls the absolute SDK entry from the initiating workspace. `--exec` is the default; use `--run-windows` when you need to watch or interact with a visible TUI. Cloning this repository alone does not register or enable the plugin.
 
-一次实际运行会先把原始任务分成独立块和有依赖的联动块，再按容量和冲突锁调度。你看到的是同一份任务账本的两条视图：TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数与等待原因。任务只有在 `started`、`completed` 和主控独立验收都成立后才算 `verified`；关窗、结束标记或子窗口自报都不会单独宣告成功。
+一次实际运行会先把原始任务分成独立块和有依赖的联动块，再按容量和冲突锁调度。你看到的是同一份任务账本的两条视图：TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数与等待原因。普通执行必须完成 `started`、`completed` 和主控独立验收，才算 `verified`；关窗、结束标记或子窗口自报不会单独宣告成功。只有 `started` 的任务保留为待对账；主控显式使用 `--verify-run` 核对真实结果后，才可完成这类中断任务的对账。
 
 | Codex 使用场景 | 建议入口 | 体验与边界 |
 | --- | --- | --- |
@@ -34,49 +34,77 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 ### Install or update from GitHub
 
-Use Windows with Node 22+ and an installed, authenticated native Codex CLI. The following block is safe to re-run: it fast-forwards an existing clean checkout, or clones it on the first run, then restores locked dependencies and runs the integrity and doctor checks. A dirty checkout is left untouched and the `git pull --ff-only` error is shown for review.
+Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Finish active runs before updating this checkout. The block below explicitly rejects tracked or untracked local changes, fast-forwards a clean checkout or clones it, then restores locked dependencies and checks integrity and installation. Every native-command failure stops the block; resolve that failure before retrying.
 
 ```powershell
-$InstallRoot = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator'
-if (Test-Path (Join-Path $InstallRoot '.git')) {
-  git -C $InstallRoot pull --ff-only
-} elseif (Test-Path $InstallRoot) {
-  throw "InstallRoot exists but is not a Git checkout: $InstallRoot. Choose another path or move that directory aside first."
-} else {
-  git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
+& {
+  $ErrorActionPreference = 'Stop'
+  $InstallRoot = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator'
+  if (Test-Path -LiteralPath $InstallRoot) {
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot '.git'))) {
+      throw "InstallRoot exists but is not a Git checkout: $InstallRoot. Choose another path."
+    }
+    $LocalChanges = @(git -C $InstallRoot status --porcelain)
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect the existing checkout.' }
+    if ($LocalChanges.Count -gt 0) { throw 'Local changes found. Commit or resolve them before updating.' }
+    git -C $InstallRoot pull --ff-only
+    if ($LASTEXITCODE -ne 0) { throw 'Git update failed. Dependencies were not changed.' }
+  } else {
+    git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Git clone failed. Installation stopped.' }
+  }
+  npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
+  if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+  node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
+  if ($LASTEXITCODE -ne 0) { throw 'Release integrity failed.' }
+  node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
+  if ($LASTEXITCODE -ne 0) { throw 'Installation diagnostics failed.' }
 }
-npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
-node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
-node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
 ```
 
-Dependencies are restored from the lockfile; local `node_modules` and previous run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` directory name: the release manifest validates path casing as well as file content. Doctor checks installation and CLI discovery, not provider access or task completion. Direct script execution does not require plugin-manager registration. If you want the skill loaded automatically into Codex conversations, enable the plugin once in the Codex Plugins manager and start a new conversation; this is the only manual step outside the command block. Keep existing Codex credentials and any active workspace state when replacing the plugin directory.
+Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. Doctor checks installation and CLI discovery, not provider access or task completion. The command block installs a script checkout; it does not register, activate, update or roll back a plugin-manager installation. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Actual manager registration/upgrade/rollback remains a separate installation check. Preserve Codex credentials and active workspace state.
 
-From any initiating workspace, run the installed script by absolute path; no `cd` into the plugin directory is needed:
+From the initiating workspace, call the installed script by absolute path. This minimal example creates one JSON result with a unique run identity and supplies a content check before execution. It uses the configured model quota:
 
 ```powershell
-$Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
-node $Orch --exec 'Your authorized multi-part task'       # default: headless, no popup
-node $Orch --run-windows 'Your authorized multi-part task' # visible interactive TUI
+& {
+  $ErrorActionPreference = 'Stop'
+  $Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
+  $Workspace = (Get-Location).Path
+  $RunId = 'readme-' + [guid]::NewGuid().ToString('N')
+  $ExampleDir = Join-Path $Workspace "temp\orchestrator\examples\$RunId"
+  [void](New-Item -ItemType Directory -Path $ExampleDir)
+  $Receipt = Join-Path $ExampleDir 'result.json'
+  $Acceptance = Join-Path $ExampleDir 'acceptance.json'
+  $Checks = @{ T001 = @(@{ type = 'json'; path = $Receipt; equals = @{ answer = 42; runId = $RunId } }) }
+  [IO.File]::WriteAllText($Acceptance, ($Checks | ConvertTo-Json -Depth 6), [Text.UTF8Encoding]::new($false))
+  $Request = "Create the JSON file at `"$Receipt`" with answer equal to 42 and runId equal to $RunId. Follow the supplied task checkpoints and verify its content."
+  node $Orch --workspace $Workspace --run-id $RunId --acceptance-file $Acceptance --exec $Request
+  if ($LASTEXITCODE -ne 0) { throw "Run did not pass. Inspect temp/orchestrator/runs/$RunId/summary.json before retrying." }
+  Get-Content -LiteralPath (Join-Path $Workspace "temp\orchestrator\runs\$RunId\summary.json")
+}
 ```
 
-Use `--exec`/`--headless` for no-popup execution and `--run-windows`/`--visible` when you want to watch or interact with a window. Both modes keep the same task list, checkpoints, recovery and verification; switching the choice only affects the next task.
+Replace `--exec` with `--run-windows` in the same checked invocation for visible execution. Both modes use the same task list, checkpoints, recovery and verification. For a real multi-part request, define content or behavior checks for every original task ID (`T001`, `T002`, …); see [the acceptance JSON format](docs/execution-contract.md#execution-and-verification). Missing checks leave completed work at `awaiting-verification` and return nonzero, not success. Use `--verify-run` with checks to inspect an existing run without redoing its tasks. Review the summary and result before cleaning this example's completed artifacts.
 
 ### Automatic retry and resume
 
 For a single task that must survive a disconnected provider or a crashed CLI process, run the independent supervisor:
 
 ```powershell
-node scripts/supervise.mjs --workspace D:\your-project --prompt 'Your authorized task' --max-attempts 3
+$Supervisor = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\supervise.mjs'
+node $Supervisor --workspace (Get-Location).Path --prompt 'Your authorized task' --max-attempts 3
 ```
 
 The supervisor stores the thread ID and attempt history under `workspace/temp/orchestrator/supervisor/runs/<runId>`, retries only transport, timeout, capacity, rate-limit and server failures, and resumes the same thread when a thread ID is available. A saved run can be continued with:
 
 ```powershell
-node scripts/supervise.mjs --workspace D:\your-project --run-id <runId> --resume
+$Supervisor = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\supervise.mjs'
+$RunId = 'replace-with-the-saved-run-id'
+node $Supervisor --workspace (Get-Location).Path --run-id $RunId --resume
 ```
 
-This is a bounded recovery tool, not an exactly-once guarantee. When a failure may have occurred after an external side effect, the resumed prompt tells Codex to inspect and verify the current state before repeating work. Use the existing checkpoint-based `--resume-run` flow for multi-task plans that need task-level acceptance checks.
+Supervisor success means the Codex session completed; it does not run the orchestrator's independent task acceptance checks. This is bounded session recovery, not an exactly-once guarantee. When a failure may have occurred after an external side effect, the resumed prompt tells Codex to inspect the current state before repeating work. Use the checked `--exec` flow and checkpoint-based `--resume-run` for task-level acceptance.
 
 If you want to use a local retry proxy such as `steady-relay`, start it with a
 trusted OpenAI-compatible upstream first, then point the orchestrator at the
@@ -84,10 +112,11 @@ local `/v1` URL it prints. A typical relay URL is `http://127.0.0.1:8080/v1`.
 
 ```powershell
 $env:ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
-node scripts/orchestrate-sdk.mjs --doctor
+$Orch = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\orchestrate-sdk.mjs'
+node $Orch --doctor
 ```
 
-Invoke the installed command or absolute script path from the initiating conversation directory; do not change into the installation directory. Use --plan for planning, --spawn <title> <prompt-or-file> for one visible window, and --status to inspect state. Read-only and orchestrator-self-modification requests remain inline. --run and a bare request respect ORCH_EXEC_MODE (headless by default). --exec/--headless and --run-windows/--visible explicitly choose a mode. Either mode preserves all tasks in a serial fallback when inventory coverage is uncertain.
+Invoke the absolute script path from the initiating workspace. Use `--plan` for planning and `--status` to inspect state. The low-level `--spawn <title> <prompt-or-file>` launches one visible session; use the checked `--exec` or `--run-windows` flow for task acceptance. Read-only and orchestrator-self-modification requests remain inline. `--run` and a bare request respect `ORCH_EXEC_MODE` (headless by default). Either execution mode preserves all tasks in a serial fallback when inventory coverage is uncertain.
 
 ## 双通道实时状态
 
@@ -98,8 +127,10 @@ TodoList（原始任务清单）保留 T001 等任务身份。Execution（执行
 - manifest.json 从规划开始保存清单；summary.json 是权威快照，events.jsonl 是带序号事件，goal.json 是派生镜像。文件都归当前工作区 temp/orchestrator/runs/<ID>。
 
 ~~~powershell
-node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch
-node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch --json
+$Status = Join-Path $HOME '.codex\plugins\codex-tui-orchestrator\scripts\status.mjs'
+$RunId = 'replace-with-the-saved-run-id'
+node $Status --workspace (Get-Location).Path --run-id $RunId --watch
+# Add --json to the command above for structured output.
 ~~~
 
 status.mjs 只读且不依赖 SDK，退出观察不会终止执行。JSONL（逐行 JSON 事件）用于接入宿主界面；重连先读最新快照再跟随事件，--after 指定已观察序号。默认每 250ms 观察检查点，系统和同步协调可能延迟显示，不承诺硬实时。
@@ -110,7 +141,7 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 
 ## Host contract / 宿主契约
 
-- Generic entry: --agent / ORCH_AGENT identifies the initiating agent. Codex session variables can identify Codex; a PATH entry alone cannot identify the host.
+- Dedicated entry: Codex is the default. `--agent` / `ORCH_AGENT` may explicitly select Codex; non-Codex values are rejected. `--workspace` chooses the task workspace and `--cli` selects a native CLI override.
 - --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH and npm packaged native binaries, verify with --version.
 - ORCH_MODEL / ORCH_EFFORT are explicit overrides; TUI windows default to `gpt-5.3-codex-spark` with the highest `xhigh` reasoning effort. GUI conversation-only overrides are not automatically readable: callers must pass them.
 - ORCH_SANDBOX / ORCH_APPROVAL pass the caller's authorized execution policy. Authorized execution windows default to danger-full-access / never. ORCH_SANDBOX can restrict the sandbox; approval is always never, including when a legacy ORCH_APPROVAL requests prompting. For the default authorized Codex TUI path, the launcher carries the effective never + danger-full-access envelope with `--dangerously-bypass-approvals-and-sandbox`, which also suppresses the CLI's project trust confirmation. Restricted sandbox values are preserved and never elevated. The exact workspace trust setting is passed for this invocation only; global config.toml is not modified. External host policy can still reject an operation.
@@ -136,7 +167,7 @@ The focused execution acceptance suite is `node --test --test-concurrency=1 test
 
 ## Capacity-constrained planning
 
-Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024 / 1000 * 3 / 4)`; on this machine the reported 15.64 GiB yields 12 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.
+Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024 / 1000 * 3 / 4)`; for example, 15.64 reported GiB yields 12 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.
 
 Overflow blocks are grouped into at most the calculated capacity. Tasks inside a merged block execute serially in dependency order, and all task bodies and conflict keys are retained. Capacity is a per-invocation plan limit, not a cross-process global quota; the shared coordinator applies the same calculated limit across active and reserved windows.
 
@@ -159,11 +190,11 @@ Codex 的规划 SDK 和 TUI 窗统一使用 orchestrator-openai-https 配置（�
 审批固定为 never，旧 ORCH_APPROVAL 询问模式不再恢复询问。该参数不覆盖宿主强制策略；宿主拒绝仍须如实返回。
 
 ## 发行成熟度
-当前属于本机验证的候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；历史并发测试不代表跨机器或跨版本认证。
+当前属于候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；每次代码或封存哈希变化后，都要重新确认适用的验证证据。
 
 core 1.2.1、1.2.3 与 1.3.1 的记录属于历史证据，详情见对应实机验收文档。当前候选版的验收边界见 [RC 验收记录](docs/rc-validation.md)。
 
-当前候选 core 1.4.0-rc.1 的验收以 [RC 验收记录](docs/rc-validation.md) 为准。1.3.4 的窗口、包与容量记录属于历史证据，不用于证明这次默认模式变更。
+当前候选 core 1.4.0-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前 1.4.0-rc.1 与更早版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
 
 隐私与使用条款见 [隐私说明](docs/privacy.md) 与 [使用条款](docs/terms.md)。
 

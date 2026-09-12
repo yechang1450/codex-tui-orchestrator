@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {pathToFileURL} from 'node:url';
-import {Codex} from '@openai/codex-sdk';
+import './codex-entry.mjs';
+import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
 import {
   canSupervisorRetry,
   classifySupervisorError,
@@ -11,6 +12,8 @@ import {
   createSupervisorState,
   nextSupervisorDelay,
 } from './supervisor-core.mjs';
+
+const {Codex} = await import('./sdk-dependency-check.mjs').then(() => import('@openai/codex-sdk'));
 
 function usage() {
   console.error('Usage: node scripts/supervise.mjs --prompt <text> [--workspace <dir>] [--run-id <id>] [--max-attempts <n>] [--backoff-ms <n>] [--backoff-max-ms <n>] [--resume]');
@@ -38,21 +41,38 @@ function statePath(options) {
   return path.join(options.workspace, 'temp', 'orchestrator', 'supervisor', 'runs', options.runId, 'state.json');
 }
 
-function readState(file) {
-  const state = JSON.parse(fs.readFileSync(file, 'utf8'));
-  if (state?.version !== 1 || typeof state.runId !== 'string' || typeof state.workspace !== 'string' || typeof state.prompt !== 'string' || !Array.isArray(state.history)) throw new Error('Invalid supervisor state');
+function sameWorkspace(left, right) {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
+function readState(file, options) {
+  let state;
+  try { state = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (error) { throw new Error(`Invalid supervisor state: ${error.message}`); }
+  const validStatus = new Set(['starting', 'running', 'waiting', 'completed', 'failed']);
+  const validRunId = typeof state?.runId === 'string' && /^[A-Za-z0-9_-]{1,100}$/.test(state.runId);
+  const validHistory = Array.isArray(state?.history) && state.history.every((entry, index) => (
+    entry && typeof entry === 'object' && entry.attempt === index + 1 && Number.isSafeInteger(entry.startedAt) && entry.startedAt > 0 &&
+    (entry.endedAt === undefined || (Number.isSafeInteger(entry.endedAt) && entry.endedAt >= entry.startedAt)) &&
+    (entry.error === undefined || typeof entry.error === 'string') &&
+    (entry.retryable === undefined || typeof entry.retryable === 'boolean') &&
+    (entry.retryDelayMs === undefined || (Number.isSafeInteger(entry.retryDelayMs) && entry.retryDelayMs >= 0))
+  ));
+  const valid = state?.version === 1 && validRunId && state.runId === options.runId &&
+    typeof state.workspace === 'string' && sameWorkspace(state.workspace, options.workspace) &&
+    typeof state.prompt === 'string' && state.prompt.trim().length > 0 &&
+    (typeof state.threadId === 'string' || state.threadId === null);
+  const attemptsValid = Number.isSafeInteger(state?.attempts) && state.attempts >= 0;
+  if (!valid || !attemptsValid || !validStatus.has(state?.status) || !validHistory || state.history.length !== state.attempts) {
+    throw new Error('Invalid supervisor state or identity mismatch');
+  }
   return state;
 }
 
 function writeState(file, state) {
-  fs.mkdirSync(path.dirname(file), {recursive: true});
-  const temp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  try {
-    fs.writeFileSync(temp, JSON.stringify(state, null, 2), 'utf8');
-    fs.renameSync(temp, file);
-  } finally {
-    try { fs.rmSync(temp, {force: true}); } catch {}
-  }
+  atomicJson(file, state);
 }
 
 function emit(event, state) {
@@ -60,18 +80,40 @@ function emit(event, state) {
 }
 
 export async function supervise(options, {codexFactory = config => new Codex(config), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))} = {}) {
+  if (!options || typeof options !== 'object' || typeof options.runId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(options.runId) || typeof options.workspace !== 'string') throw new Error('Invalid supervisor options');
+  options = {...options, workspace: path.resolve(options.workspace), resume: Boolean(options.resume)};
   const file = statePath(options);
   let state;
-  if (fs.existsSync(file)) {
+  let preexisting = fs.existsSync(file);
+  if (preexisting) {
     if (!options.resume) throw new Error(`Run already exists; use --resume: ${options.runId}`);
-    state = readState(file);
-    if (state.status === 'completed') return state;
-  } else {
-    state = createSupervisorState({runId: options.runId, workspace: options.workspace, prompt: options.prompt});
+    state = readState(file, options);
+  } else if (options.resume) {
+    throw new Error(`Saved supervisor state not found: ${options.runId}`);
   }
-  const codex = codexFactory({});
-  let thread = state.threadId ? codex.resumeThread(state.threadId, {workingDirectory: state.workspace}) : codex.startThread({workingDirectory: state.workspace});
-  while (canSupervisorRetry(state, options.maxAttempts)) {
+  const lockDir = path.join(options.workspace, 'temp', 'orchestrator', 'supervisor', 'locks');
+  const runKey = `supervisor:${path.resolve(file).toLowerCase()}`;
+  let claim;
+  try {
+    claim = claimRun(lockDir, runKey);
+    // A contender may have written or changed the state between the initial
+    // read and acquiring the kernel-backed lease. Re-read while ownership is
+    // held so the Codex factory and any state write use one durable identity.
+    if (preexisting) {
+      state = readState(file, options);
+      if (state.status === 'completed') return state;
+    } else if (fs.existsSync(file)) {
+      preexisting = true;
+      if (!options.resume) throw new Error(`Run already exists; use --resume: ${options.runId}`);
+      state = readState(file, options);
+      if (state.status === 'completed') return state;
+    } else {
+      if (typeof options.prompt !== 'string' || options.prompt.trim().length === 0) throw new Error('--prompt is required for a new supervisor run');
+      state = createSupervisorState({runId: options.runId, workspace: options.workspace, prompt: options.prompt});
+    }
+    const codex = codexFactory({});
+    let thread = state.threadId ? codex.resumeThread(state.threadId, {workingDirectory: state.workspace}) : codex.startThread({workingDirectory: state.workspace});
+    while (canSupervisorRetry(state, options.maxAttempts)) {
     state.attempts++;
     state.status = 'running';
     state.history.push({attempt: state.attempts, startedAt: Date.now(), resumed: Boolean(state.threadId)});
@@ -89,6 +131,11 @@ export async function supervise(options, {codexFactory = config => new Codex(con
         const type = String(payload?.type || event?.type || '');
         const threadId = payload?.thread_id || payload?.threadId || event?.thread_id || event?.threadId;
         if (type === 'thread.started' && threadId) state.threadId = threadId;
+        if (['turn.failed', 'turn_failed', 'task.failed', 'task_failed', 'error'].includes(type)) {
+          const detail = payload?.message ?? payload?.error?.message ?? payload?.error ?? event?.message ?? event?.error?.message ?? event?.error;
+          const message = typeof detail === 'string' ? detail : detail == null ? type : JSON.stringify(detail);
+          throw new Error(message || type);
+        }
         if (type === 'turn.completed' || type === 'task_complete') completed = true;
         if (thread.id) state.threadId = thread.id;
         writeState(file, state);
@@ -119,10 +166,13 @@ export async function supervise(options, {codexFactory = config => new Codex(con
       await sleep(delayMs);
       thread = state.threadId ? codex.resumeThread(state.threadId, {workingDirectory: state.workspace}) : codex.startThread({workingDirectory: state.workspace});
     }
+    }
+    state.status = 'failed';
+    writeState(file, state);
+    throw new Error('Supervisor retry budget exhausted');
+  } finally {
+    if (claim) releaseRun(lockDir, runKey, claim);
   }
-  state.status = 'failed';
-  writeState(file, state);
-  throw new Error('Supervisor retry budget exhausted');
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
