@@ -48,7 +48,7 @@ export function coordinatorDir(workspace,env=process.env) {
 export function atomicJson(file,value){
   fs.mkdirSync(path.dirname(file),{recursive:true});
   if(fs.existsSync(file)&&fs.statSync(file).isDirectory()){
-    const error=new Error(`Cannot replace directory with JSON file: ${file}`);error.code='EISDIR';throw error;
+    const error=new Error(`EISDIR: cannot replace directory with JSON file: ${file}`);error.code='EISDIR';throw error;
   }
   const tmp=file+'.'+process.pid+'.tmp',deadline=performance.now()+5000;
   try {
