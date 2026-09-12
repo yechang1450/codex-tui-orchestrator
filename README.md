@@ -104,7 +104,7 @@ $RunId = 'replace-with-the-saved-run-id'
 node $Supervisor --workspace (Get-Location).Path --run-id $RunId --resume
 ```
 
-Supervisor success means the Codex session completed; it does not run the orchestrator's independent task acceptance checks. This is bounded session recovery, not an exactly-once guarantee. When a failure may have occurred after an external side effect, the resumed prompt tells Codex to inspect the current state before repeating work. Use the checked `--exec` flow and checkpoint-based `--resume-run` for task-level acceptance.
+Supervisor success means the Codex session completed; it does not run the orchestrator's independent task acceptance checks. It now uses the same native Codex executable, HTTPS Responses configuration, model and reasoning defaults as the main runner. This is bounded session recovery, not an exactly-once guarantee. When a failure may have occurred after an external side effect, the resumed prompt tells Codex to inspect the current state before repeating work. Use the checked `--exec` flow and checkpoint-based `--resume-run` for task-level acceptance.
 
 If you want to use a local retry proxy such as `steady-relay`, start it with a
 trusted OpenAI-compatible upstream first, then point the orchestrator at the

@@ -4,6 +4,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import './codex-entry.mjs';
+import {resolveHost} from './core/host-cli.mjs';
+import {networkConfig,resolveOpenAIBaseUrl} from './core/network-policy.mjs';
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
 import {
   canSupervisorRetry,
@@ -14,6 +16,14 @@ import {
 } from './supervisor-core.mjs';
 
 const {Codex} = await import('./sdk-dependency-check.mjs').then(() => import('@openai/codex-sdk'));
+
+const supervisorCodexOptions = Object.freeze({
+  codexPathOverride: resolveHost({agent:'codex'}).config.bin,
+  baseUrl: resolveOpenAIBaseUrl(),
+  config: networkConfig,
+  model: process.env.ORCH_MODEL || 'gpt-5.3-codex-spark',
+  modelReasoningEffort: process.env.ORCH_EFFORT || 'xhigh',
+});
 
 function usage() {
   console.error('Usage: node scripts/supervise.mjs --prompt <text> [--workspace <dir>] [--run-id <id>] [--max-attempts <n>] [--backoff-ms <n>] [--backoff-max-ms <n>] [--resume]');
@@ -79,7 +89,7 @@ function emit(event, state) {
   process.stdout.write(`${JSON.stringify({event, runId: state.runId, attempt: state.attempts, threadId: state.threadId})}\n`);
 }
 
-export async function supervise(options, {codexFactory = config => new Codex(config), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))} = {}) {
+export async function supervise(options, {codexFactory = config => new Codex({...supervisorCodexOptions,...config}), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))} = {}) {
   if (!options || typeof options !== 'object' || typeof options.runId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(options.runId) || typeof options.workspace !== 'string') throw new Error('Invalid supervisor options');
   options = {...options, workspace: path.resolve(options.workspace), resume: Boolean(options.resume)};
   const file = statePath(options);

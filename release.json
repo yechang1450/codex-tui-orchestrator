@@ -70,7 +70,7 @@
     "scripts/runtime-context.mjs": "deb2671a6f36e428e452c9dc03b1add6f94ccbb4533c0018efc8e3c778a55045",
     "scripts/sdk-dependency-check.mjs": "a5d0114cabf82ec7effc60289594c2f898b241c774946be9f6adf6ced5e6fa48",
     "scripts/status.mjs": "ff99a4a921bb33f821535eeb76436dfcc855e03b98f69e57dfd07427c6214e65",
-    "scripts/supervise.mjs": "ed56e4fbfb71cdc768a1eb6c8b855617a8796e7c8b86ed55c3701d74410baa0d",
+    "scripts/supervise.mjs": "91db77e2042b0cfa10f39d8cda9d2b5597b6d0fe1c3166d67b9be58ae06e1c87",
     "scripts/supervisor-core.mjs": "3454e3216f7f8eb2b47f7a0d1a3b46ea1d3085b82ac30411080fc70a182d1f3f",
     "scripts/todo-list.mjs": "050234b9e5cb1220d2a3f2f4da8fb6372472d22c81e67fdeb995864a1556a228",
     "skills/codex-tui-orchestrator/SKILL.md": "c7387cba6e608ff0295a904f21d37c8ec7d270d754ed9442a2f7b23ca47f5e95",
