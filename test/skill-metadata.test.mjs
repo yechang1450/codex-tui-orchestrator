@@ -11,6 +11,7 @@ const name = /^name:\s*(.+)$/m.exec(skill)?.[1]?.trim() || '';
 test('skill metadata uses a canonical identifier and preserves the legacy invocation name', () => {
   assert.match(description, /Use when/i);
   assert.equal(name, 'codex-tui-orchestrator');
+  assert.match(description, /codex-tui-orchestrator/);
   assert.match(description, /codex-TUI-orchestrator/);
   assert.match(description, /只读|read-only/i);
 });

@@ -1,5 +1,5 @@
 {
-  "name": "codex-TUI-orchestrator",
+  "name": "codex-tui-orchestrator",
   "version": "0.5.0-rc.1",
   "description": "Codex 专用并发编排：默认 exec+headless，可选可见 TUI，按冲突和依赖分块，实时同步任务与执行块状态并独立验收。只读分析与编排器自身修改留在主对话。",
   "author": {

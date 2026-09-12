@@ -1,6 +1,6 @@
 ---
 name: codex-tui-orchestrator
-description: Use when codex-TUI-orchestrator receives an authorized multi-part request needing conflict/dependency-based Codex execution with live task and block status with independent verification; 只读分析和修改编排器自身留在主对话。
+description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) receives an authorized multi-part request needing conflict/dependency-based Codex execution with live task and block status with independent verification; 只读分析和修改编排器自身留在主对话。
 ---
 
 # Codex TUI Orchestrator

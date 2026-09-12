@@ -28,7 +28,7 @@
     "status-events.mjs": "b0e382b902c1a201df53468cc1622f6be4e7e6cf1cff1d0dfa1600fd36107fd9"
   },
   "runtimeFiles": {
-    ".codex-plugin/plugin.json": "7f07611f62177ab60d33c616e203edadd2849708d2275146fe639fe20df1edd4",
+    ".codex-plugin/plugin.json": "c17da9c0c404e4d188bbc3aedd543cbf774d67cc580c89b1755f20aab7d9ce4e",
     "repair.mjs": "5d1d72de7f93942543422dc545d8228ccf63a98f2bda066c3165f22b8b136554",
     "scripts/agent-auth-prompt.txt": "18fa9c01972cd99a2fe2b1b74a440b34921a051ba6c0d54daf2f5bf1096457b0",
     "scripts/agent.mjs": "7aec825e3b32b637844c352401aaf06a66daeee7cdc8e2ecbebc4d4816abd910",
@@ -72,7 +72,7 @@
     "scripts/supervise.mjs": "68fb3e44116aed87d67a9c226d9b07818f80afbdfb0145ee62b418d982433e4d",
     "scripts/supervisor-core.mjs": "3454e3216f7f8eb2b47f7a0d1a3b46ea1d3085b82ac30411080fc70a182d1f3f",
     "scripts/todo-list.mjs": "050234b9e5cb1220d2a3f2f4da8fb6372472d22c81e67fdeb995864a1556a228",
-    "skills/codex-tui-orchestrator/SKILL.md": "e7b00deb466e102c662fec1d2f924efb7ad345dee959df90505acf15a64b097b",
+    "skills/codex-tui-orchestrator/SKILL.md": "c7387cba6e608ff0295a904f21d37c8ec7d270d754ed9442a2f7b23ca47f5e95",
     "skills/codex-tui-orchestrator/agents/openai.yaml": "b9002589fac6d51cf9f38f183f49f65eb74815a12e8a409175e249fbfd000e90",
     "skills/codex-tui-orchestrator/assets/icon.png": "4029152ad0a4840e249694ec618bce4990818bbb650ff31625875ae900e08502",
     "skills/codex-tui-orchestrator/assets/icon.svg": "090187303b3f4d4e4f4a3459e9c33b2072ef0b1f88cf4123ab194809512e9ec5"

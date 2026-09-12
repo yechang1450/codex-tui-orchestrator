@@ -15,6 +15,21 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 Only the Codex CLI adapter is implemented. Unknown host, unsupported adapter or missing native CLI fails closed: no automatic install and no fallback to Codex.
 目前仅接通 Codex；其它 agent 不能冒充 Codex 运行。接入新宿主必须同时实现规划、交互参数、会话输出解析和完成/清理协议，不能只添加一个命令名。
 
+## Using it from Codex / 在 Codex 中的实际体验
+
+The normal Codex path is deliberately short: enable the plugin once, start a new conversation if the skill is not loaded yet, and give Codex the complete authorized multi-part request. The skill routes that request to the absolute SDK entry without changing into the install directory. `--exec` is the default, so work continues without opening a terminal window; use `--run-windows` only when you need to watch or interact with a visible TUI.
+
+一次实际运行会先把原始任务分成独立块和有依赖的联动块，再按容量和冲突锁调度。你看到的是同一份任务账本的两条视图：TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数与等待原因。任务只有在 `started`、`completed` 和主控独立验收都成立后才算 `verified`；关窗、结束标记或子窗口自报都不会单独宣告成功。
+
+| Codex 使用场景 | 建议入口 | 体验与边界 |
+| --- | --- | --- |
+| 想让多项工作在后台推进 | `--exec` / `--headless` | 主对话保持清爽；仍可用 `status.mjs --watch` 观察进度 |
+| 需要看窗口或临时交互 | `--run-windows` / `--visible` | 使用 Windows Terminal；只影响下一次任务，不重启当前运行 |
+| 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话；外部副作用仍需核对 |
+| 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份；结果不明的任务停在 `needs-reconciliation` |
+
+这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。代价也很明确：当前只支持 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测，离线回归不会替它们背书。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
+
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
 ### Install or update from GitHub
