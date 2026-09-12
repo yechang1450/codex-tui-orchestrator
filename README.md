@@ -64,6 +64,8 @@ Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Fini
 
 Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. Doctor checks installation and CLI discovery, not provider access or task completion. The command block installs a script checkout; it does not register, activate, update or roll back a plugin-manager installation. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Actual manager registration/upgrade/rollback remains a separate installation check. Preserve Codex credentials and active workspace state.
 
+The current personal marketplace registration is an external dependency. Its entry must use the canonical lowercase name `codex-tui-orchestrator` and point at this repository; an older mixed-case entry such as `codex-TUI-orchestrator` is rejected by the Codex CLI because it does not match `.codex-plugin/plugin.json`. Until that registration is refreshed, use the direct script entry above and do not treat a failed `codex plugin add` as a repository runtime failure.
+
 From the initiating workspace, call the installed script by absolute path. This minimal example creates one JSON result with a unique run identity and supplies a content check before execution. It uses the configured model quota:
 
 ```powershell

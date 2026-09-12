@@ -64,6 +64,8 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
 
+当前个人 marketplace 注册属于仓库外部依赖。条目必须使用规范小写名称 `codex-tui-orchestrator` 并指向本仓库；旧的 `codex-TUI-orchestrator` 条目会因名称与 `.codex-plugin/plugin.json` 不一致而被 Codex CLI 拒绝。注册刷新前可直接使用上面的脚本入口；`codex plugin add` 失败不能据此判断仓库运行时失败。
+
 从发起工作区调用绝对路径。以下最小示例先定义验收条件，再创建带本次运行身份的 JSON 结果；执行会使用已配置模型的额度：
 
 ```powershell
