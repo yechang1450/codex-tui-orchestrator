@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-13T06:57:43Z",
+  "generatedAt": "2026-09-13T07:08:59Z",
   "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
@@ -117,10 +117,32 @@
     "networkStateChanged": false,
     "verifiedAt": "2026-09-13T06:57:43Z"
   },
+  "cleanUserAttempt": {
+    "status": "passed",
+    "isolatedCodexHome": "temp/clean-user-plugin-validation-v6/codex-home",
+    "marketplace": "clean-validation",
+    "marketplaceAddExitCode": 0,
+    "installExitCode": 0,
+    "installed": true,
+    "enabled": true,
+    "version": "0.5.0-rc.1+codex.20260913045703",
+    "doctorExitCode": 0,
+    "releaseIntegrityPresent": true,
+    "uninstallExitCode": 0,
+    "uninstalledReadback": true,
+    "verifiedAt": "2026-09-13T06:57:43Z"
+  },
+  "managerUpgradeAttempt": {
+    "status": "unsupported_for_local_marketplace",
+    "marketplace": "clean-validation",
+    "upgradeExitCode": 1,
+    "error": "marketplace is not configured as a Git marketplace",
+    "rollback": "not-executable-without-a-second-version-and-Git-marketplace",
+    "verifiedAt": "2026-09-13T06:57:43Z"
+  },
   "remainingGates": [
     "continuous input foreground readiness",
     "capacity-level multi-task receipts",
-    "clean-user install",
     "manager upgrade/rollback",
     "prolonged outage and reboot recovery"
   ],
