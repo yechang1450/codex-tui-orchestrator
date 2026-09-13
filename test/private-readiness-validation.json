@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-13T05:45:30Z",
+  "generatedAt": "2026-09-13T06:57:43Z",
   "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
@@ -79,6 +79,43 @@
     "reason": "owned initiator did not acquire foreground before launch",
     "evidenceRoot": "temp/inactive-window-fc61dfca4f6b4705be05efa556bd00e6",
     "verifiedAt": "2026-09-13T06:18:48Z"
+  },
+  "recoveryAttempt": {
+    "status": "passed",
+    "runId": "recovery-d027fa2a-40bd-45d7-bf94-6e986373de81",
+    "controllerCrashInjected": true,
+    "adoptedSameLauncher": true,
+    "windowLaunches": 1,
+    "attempts": 1,
+    "firstTaskExecutions": 1,
+    "generation": 2,
+    "tasksVerified": 2,
+    "closed": true,
+    "verifiedAt": "2026-09-13T06:57:43Z"
+  },
+  "networkFaultAttempt": {
+    "status": "controlled_faults_passed",
+    "test": "test/recovery-runtime.test.mjs",
+    "tests": 9,
+    "passedTests": 9,
+    "failedTests": 0,
+    "faults": ["response-reset", "response-timeout", "started-only"],
+    "assertions": [
+      "no blind retry after an uncertain side effect",
+      "uncertain state remains needs-reconciliation",
+      "resume reconciles without duplicate side effects"
+    ],
+    "limitation": "受控本地 HTTP 故障，不等价于 provider 长断网或系统级断网",
+    "verifiedAt": "2026-09-13T06:57:43Z"
+  },
+  "firewallAttempt": {
+    "status": "blocked_by_permission",
+    "direction": "outbound",
+    "target": "codex.exe",
+    "error": "Access Denied; current Windows identity is not an administrator",
+    "ruleCreated": false,
+    "networkStateChanged": false,
+    "verifiedAt": "2026-09-13T06:57:43Z"
   },
   "remainingGates": [
     "continuous input foreground readiness",
