@@ -47,6 +47,29 @@
     "reportAvailable": true,
     "verifiedAt": "2026-09-13T05:21:15.356Z"
   },
+  "capacityAttempt": {
+    "status": "failed",
+    "runId": "acceptance-9a5c9a7b-0843-4cf9-8d2b-adbce09011af",
+    "executionMode": "headless",
+    "calculatedCapacity": 12,
+    "taskCount": 13,
+    "peakObserved": 11,
+    "windowLaunches": 19,
+    "uniqueLaunchers": 19,
+    "receiptsValid": false,
+    "ordered": false,
+    "overlap": false,
+    "engineExitCode": 1,
+    "pollExitCode": 1,
+    "observedProviderSignals": [
+      "429 Too Many Requests",
+      "model refresh timeout",
+      "rollout thread not found"
+    ],
+    "interpretation": "服务侧并发承载不足导致部分任务无有效回执；未观察到超过计算容量的窗口，插件按规则拒绝将不确定任务标记为成功。",
+    "evidenceRoot": "temp/codex-live-headless-dbefbdceaacbbf",
+    "verifiedAt": "2026-09-13T05:38:39Z"
+  },
   "remainingGates": [
     "continuous input foreground readiness",
     "capacity-level multi-task receipts",
