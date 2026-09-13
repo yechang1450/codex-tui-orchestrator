@@ -11,14 +11,29 @@
 - [ ] 连续输入：本轮真实探针未取得发起窗口的前台焦点，已在启动前停止且未发送按键（`inputAttempts=0`、`inputDelivered=0`）；不能作为通过。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 已安装缓存真实 `selftest-close` 与会话归属：修复原始 token 误命中父会话；最新回执确认自检通过（正确回复、自然退出、无强制关闭、无孤儿进程）。
 - [ ] 当前快照的容量级真实 Codex 任务全部得到有效回执。本轮 12 容量/13 任务实测峰值 11，19 次启动中多块收到 provider `429 Too Many Requests`、模型刷新超时或 rollout 线程丢失，最终回执不完整；详见 [当前公开前证据](../test/private-readiness-validation.json)。
-- [ ] 实际插件管理器升级与回滚、长期断网和系统重启恢复。干净隔离 `CODEX_HOME` 的 marketplace 注册、官方安装、doctor、卸载读回已通过；控制器停止/接管已通过，受控本地 HTTP 故障恢复 9/9 已通过。当前 marketplace 是 local source，CLI 明确不支持 `marketplace upgrade`，因此升级/回滚仍未认证；防火墙注入因当前 Windows 身份非管理员被拒绝，未改变网络状态，provider 长断网与真实系统重启仍未认证。详见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
+- [ ] 实际插件管理器升级与回滚、长期断网、未完成真实模型任务跨系统重启恢复、登录后自动收集。干净隔离 `CODEX_HOME` 的注册、官方安装、doctor、卸载读回已通过；控制器停止/接管与受控本地 HTTP 故障恢复 9/9 已通过。local marketplace 不支持 `marketplace upgrade`；防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
 
 ## 跨重启验收桥接
 
-真实重启会中断当前 Codex 对话，不能靠在线观察器判定结果。`test/reboot-validation.ps1 -Mode prepare` 会在仓库 `temp/` 写入重启前记录，并在当前用户的 `HKCU\Software\Microsoft\Windows\CurrentVersion\RunOnce` 注册一次性收集器；登录后收集器自动读回启动时间、release integrity、doctor 和 marketplace 注册状态，写入同一目录的 `post-reboot.json`，随后移除自身。只有 `bootChanged=true` 且三项命令均为零退出码才算通过；这仍是持久化与启动后健康检查，不替代 provider 长断网或带未完成真实模型任务的重启恢复。
+真实重启会中断当前 Codex 对话，证据保存在仓库 `temp/reboot-validation-<ID>/`。`prepare` 要求已跟踪文件没有未提交修改，保存原始提交、启动时间、release.json 哈希以及 Node/Git 绝对路径，并尝试注册 RunOnce（登录时尝试执行一次的启动项）。注册只表示请求已保存，不能保证系统已执行；`-ManualOnly` 可只准备基线，由 Codex 在重启后补收集。
 
-执行方式：先运行 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\test\reboot-validation.ps1 -Mode prepare -Workspace <仓库绝对路径> -Id <唯一ID>`，然后重启并登录；登录后 RunOnce 会自动收集。回到 Codex 后读取 `temp/reboot-validation-<唯一ID>/post-reboot.json`，再决定是否关闭这条门槛。
-- [x] 当前代码提交 `4fdcaa3` 已完成一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现；随后仅同步了本记录与证据文件。扫描覆盖为 partial，环境与容量门槛仍需独立实测。扫描 ID 与限制记录在 [当前公开前证据](../test/private-readiness-validation.json)。
+在仓库目录执行（将 ID 换为本次唯一值）：
+
+```powershell
+powershell.exe -NoProfile -File .\test\reboot-validation.ps1 -Mode prepare -Id reboot-check-001
+```
+
+重启登录后，先读 `post-reboot.json`。如果文件缺失，先记录原 RunOnce 项是否仍存在，再用同一个 ID 补收集；不需要重复重启或重复 prepare：
+
+```powershell
+powershell.exe -NoProfile -File .\test\reboot-validation.ps1 -Mode collect -Id reboot-check-001
+```
+
+新回执区分 `collectionTrigger=Manual/RunOnce`；触发参数本身不是 Windows 登录调度的独立证据，因此不会自动认证 `automaticCollectionPassed`。通过还要求启动时间向前变化、提交和发布清单未变、工作区没有已跟踪文件修改，以及三项检查的 JSON 内容、工作目录与退出码全部符合约定。每项检查有 30 秒上限；检查失败、依赖消失等会留下失败阶段和诊断。既有基线和结果禁止覆盖，缺少基线时不创建伪回执，清理只触及本次自有 RunOnce 项。
+
+本次实际重启记录绑定旧版脚本提交 `0fca067`，原始前后文件哈希及显式补收集方式已存入公开前证据。新增桥接回归用隔离样本覆盖无重启、补收集、失败回执、提交变化和注册命令执行，不将样本中模拟的启动时间当成新的真实重启。
 
 仓库保持 Private。静态评分不替代上述运行和安装证据。
 

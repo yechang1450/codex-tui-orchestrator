@@ -1,7 +1,9 @@
 # 网络、断连和重启验收边界
 
-当前 1.3.1 的可复验记录在 [network-reboot-validation-1.3.1.json](../test/network-reboot-validation-1.3.1.json)。专用核心的响应断开、响应超时和部分进程失败场景均通过，网络副作用只执行一次；不确定状态会保留为 `needs-reconciliation`，必须有独立结果才能继续，不会盲目重试。通用核心的同类进程恢复回归也通过 4/4。
+历史 1.3.1 的可复验记录在 [network-reboot-validation-1.3.1.json](../test/network-reboot-validation-1.3.1.json)。专用核心的响应断开、响应超时和部分进程失败场景均通过，网络副作用只执行一次；不确定状态会保留为 `needs-reconciliation`，必须有独立结果才能继续，不会盲目重试。通用核心的同类进程恢复回归也通过 4/4。
 
-这些是本机可控的传输和进程场景，不能代替长期外部服务断连或操作系统重启。当前账号额度限制了真实模型回执，且本轮没有重启 Windows，因此这两项在证据中明确标为未验证；没有从受控测试推导出更强的保证。
+这些是本机可控的传输和进程场景，不能代替长期外部服务断连或操作系统重启。历史 1.3.1 验收没有重启 Windows，两项仍按当时范围保留未验证。
+
+2026-09-13 已完成一次真实 Windows 重启后的健康检查：提交 `0fca067` 的启动时间变化、发行完整性、doctor 与 marketplace 注册回执均通过。RunOnce 没有自动生成结果，回到 Codex 后显式补收集才取得回执；原始回执和哈希见 [当前公开前证据](../test/private-readiness-validation.json)。自动触发与未完成模型任务的跨重启恢复仍未通过，不能由健康检查替代。当前 [桥接使用说明](rc-validation.md#跨重启验收桥接) 提供保留基线的补收集流程。
 
 历史的 1.2.3 说明仍保留在 [历史网络恢复记录](network-recovery-validation.md)。

@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-13T07:08:59Z",
+  "generatedAt": "2026-09-13T13:00:34.725Z",
   "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
@@ -99,7 +99,11 @@
     "tests": 9,
     "passedTests": 9,
     "failedTests": 0,
-    "faults": ["response-reset", "response-timeout", "started-only"],
+    "faults": [
+      "response-reset",
+      "response-timeout",
+      "started-only"
+    ],
     "assertions": [
       "no blind retry after an uncertain side effect",
       "uncertain state remains needs-reconciliation",
@@ -141,21 +145,79 @@
     "verifiedAt": "2026-09-13T06:57:43Z"
   },
   "rebootBridge": {
-    "status": "ready_for_user_reboot",
+    "status": "manual_collection_verified_automatic_dispatch_unverified",
     "script": "test/reboot-validation.ps1",
-    "protocol": "prepare -> user reboot and logon -> RunOnce collect -> read post-reboot.json",
+    "protocol": "prepare -> reboot and logon -> best-effort RunOnce or explicit Manual collection -> independently read receipt",
     "prepareDryRun": true,
     "collectDryRun": true,
     "dryRunBootChanged": false,
     "dryRunHealthChecksPassed": true,
     "dryRunExitCode": 1,
-    "verifiedAt": "2026-09-13T07:55:03Z"
+    "verifiedAt": "2026-09-13T12:48:15.8489683Z",
+    "regression": {
+      "test": "test/reboot-bridge.test.mjs",
+      "tests": 6,
+      "passedTests": 6,
+      "failedTests": 0,
+      "scenarios": [
+        "manual collection from foreign cwd",
+        "no reboot and duplicate baseline rejection",
+        "invalid JSON and stderr failure receipt",
+        "missing pinned runtime failure receipt",
+        "changed commit and receipt overwrite rejection",
+        "registered command execution and scoped cleanup"
+      ],
+      "limitation": "Fixture boot-time simulation and explicit registered-command invocation do not prove Windows logon dispatch or another real reboot",
+      "verifiedAt": "2026-09-13T13:02:49.316Z"
+    }
   },
   "remainingGates": [
     "continuous input foreground readiness",
     "capacity-level multi-task receipts",
     "manager upgrade/rollback",
-    "prolonged outage and reboot recovery"
+    "prolonged provider outage",
+    "unfinished real model task recovery across OS reboot",
+    "automatic post-logon collector dispatch"
   ],
-  "public": false
+  "public": false,
+  "rebootAttempt": {
+    "status": "post_reboot_health_passed_manual_collection",
+    "scope": "post-reboot health; no unfinished model task was prepared across the reboot",
+    "runId": "user-reboot-20260913-155851",
+    "sourceCommit": "0fca067db11edd790ec8e24d68e7d26e8e6a9f73",
+    "bootBefore": "2026-09-11T22:10:52.5000000Z",
+    "bootAfter": "2026-09-13T11:28:19.5000000Z",
+    "bootChanged": true,
+    "collectionTrigger": "Manual",
+    "automaticCollectionPassed": false,
+    "automaticDispatchObservation": {
+      "postMissingBeforeManualCollection": true,
+      "runOncePresentBeforeManualCollection": true,
+      "rootCause": "undetermined; command length is 251; token has Administrators SID as deny-only (split token), so lack of elevation alone does not explain RunOnce failure"
+    },
+    "collectExitCode": 0,
+    "checks": [
+      {
+        "label": "release-integrity",
+        "exitCode": 0,
+        "receiptValidated": true
+      },
+      {
+        "label": "doctor",
+        "exitCode": 0,
+        "receiptValidated": true
+      },
+      {
+        "label": "marketplace-registration",
+        "exitCode": 0,
+        "receiptValidated": true
+      }
+    ],
+    "runOnceRemoved": true,
+    "preSha256": "81759baf577c540df2b0144ffee79c736166dcc65c9f41fdaad98d4a57859349",
+    "postSha256": "632a3af5e09371a69be439d77efd9e560cbf2af177a4faf62e828a7c385c4fa5",
+    "releaseSha256": "f824bcd7d7d1ee49c375857d0b89e05615ce2f9a73c28f1222f54eb15a3397f8",
+    "evidenceRoot": "temp/reboot-validation-user-reboot-20260913-155851",
+    "verifiedAt": "2026-09-13T12:48:15.8489683Z"
+  }
 }
