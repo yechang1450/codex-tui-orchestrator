@@ -8,7 +8,7 @@
 
 - [x] 窗口/焦点层探针区分系统默认终端转交与真正的传统控制台；显式 conhost 路径和 Windows Terminal 路径均完成真实启动、回执读回及关闭检查。端到端插件自检另列，不能由此项代替。见 [当前焦点证据](../test/inactive-window-validation-current.json)。
 - [x] 修正同步焦点探针的启动采样盲区、工作目录漏验和输入就绪检查；历史连续输入通过记录不再认证启动期间输入。
-- [ ] 连续输入：当前运行未取得发起窗口的前台焦点，探针在启动前停止且未发送按键；不能作为通过。
+- [ ] 连续输入：本轮真实探针未取得发起窗口的前台焦点，已在启动前停止且未发送按键（`inputAttempts=0`、`inputDelivered=0`）；不能作为通过。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 已安装缓存真实 `selftest-close` 与会话归属：修复原始 token 误命中父会话；最新回执确认自检通过（正确回复、自然退出、无强制关闭、无孤儿进程）。
 - [ ] 当前快照的容量级真实 Codex 任务全部得到有效回执。本轮 12 容量/13 任务实测峰值 11，19 次启动中多块收到 provider `429 Too Many Requests`、模型刷新超时或 rollout 线程丢失，最终回执不完整；详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [ ] 干净 Windows 用户环境、实际插件管理器升级与回滚、长期断网和系统重启恢复。

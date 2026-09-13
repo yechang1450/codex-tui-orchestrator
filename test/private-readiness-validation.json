@@ -70,6 +70,16 @@
     "evidenceRoot": "temp/codex-live-headless-dbefbdceaacbbf",
     "verifiedAt": "2026-09-13T05:38:39Z"
   },
+  "continuousInputAttempt": {
+    "status": "skipped",
+    "inputMode": true,
+    "inputReady": false,
+    "inputAttempts": 0,
+    "inputDelivered": 0,
+    "reason": "owned initiator did not acquire foreground before launch",
+    "evidenceRoot": "temp/inactive-window-fc61dfca4f6b4705be05efa556bd00e6",
+    "verifiedAt": "2026-09-13T06:18:48Z"
+  },
   "remainingGates": [
     "continuous input foreground readiness",
     "capacity-level multi-task receipts",
