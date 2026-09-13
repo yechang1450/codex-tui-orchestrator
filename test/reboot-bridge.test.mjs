@@ -44,7 +44,8 @@ function fixture(t) {
 }
 
 test('reboot collector distinguishes manual fallback and runs checks in the prepared workspace', {skip: !windows}, t => {
-  const f = fixture(t); f.prepare(); f.earlierBoot();
+  const f = fixture(t); const pre = f.prepare(); f.earlierBoot();
+  assert.equal(pre.nodePath.toLowerCase(), fs.realpathSync.native(pre.nodePath).toLowerCase(), 'Pin the installed executable, not a temporary shell alias');
   const r = f.run('collect');
   assert.equal(r.status, 0, r.stdout + r.stderr);
   const post = f.post();

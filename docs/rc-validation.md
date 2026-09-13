@@ -17,7 +17,7 @@
 
 ## 跨重启验收桥接
 
-真实重启会中断当前 Codex 对话，证据保存在仓库 `temp/reboot-validation-<ID>/`。`prepare` 要求已跟踪文件没有未提交修改，保存原始提交、启动时间、release.json 哈希以及 Node/Git 绝对路径，并尝试注册 RunOnce（登录时尝试执行一次的启动项）。注册只表示请求已保存，不能保证系统已执行；`-ManualOnly` 可只准备基线，由 Codex 在重启后补收集。
+真实重启会中断当前 Codex 对话，证据保存在仓库 `temp/reboot-validation-<ID>/`。`prepare` 要求已跟踪文件没有未提交修改，保存原始提交、启动时间、release.json 哈希以及 Node/Git 绝对路径；Node 会解析到真实安装位置，避免保存版本管理器的临时会话入口。它同时尝试注册 RunOnce（登录时尝试执行一次的启动项）。注册只表示请求已保存，不能保证系统已执行；`-ManualOnly` 可只准备基线，由 Codex 在重启后补收集。
 
 在仓库目录执行（将 ID 换为本次唯一值）：
 

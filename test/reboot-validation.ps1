@@ -100,6 +100,10 @@ if ($Mode -eq 'prepare') {
   if (Test-Path -LiteralPath $State) { throw 'Validation Id already exists; use a new Id without overwriting the baseline.' }
   $gitPath = (Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
   $nodePath = (Get-Command node -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
+  # Version managers may expose a per-shell link that does not survive reboot.
+  $installedNode = (& $nodePath -p "require('fs').realpathSync.native(process.execPath)" | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or -not $installedNode -or -not (Test-Path -LiteralPath $installedNode -PathType Leaf)) { throw 'Cannot resolve the installed Node runtime.' }
+  $nodePath = $installedNode
   $commit = Git-Text $gitPath @('rev-parse','HEAD')
   $sourceClean = -not (Git-Text $gitPath @('status','--porcelain','--untracked-files=no'))
   if (-not $sourceClean) { throw 'Commit tracked changes before preparing a reboot baseline.' }
