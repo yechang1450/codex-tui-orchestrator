@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-13T04:37:56.835Z",
+  "generatedAt": "2026-09-13T05:21:15.356Z",
   "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
@@ -30,6 +30,22 @@
     "failedTests": 0,
     "skippedTests": 1,
     "lastRun": "final full suite after session-ownership and report-reader fixes"
+  },
+  "securityScan": {
+    "status": "complete",
+    "mode": "standard",
+    "scanId": "5abc1cdf-f77a-44dd-ab60-7be81402323a",
+    "targetCommit": "4fdcaa3dbd76a11fa51d905ad8ab506275615033",
+    "findingCount": 0,
+    "severityCounts": {},
+    "sourceReviewSurfaces": 7,
+    "coverage": "partial",
+    "limitations": [
+      "不替代外部部署、恶意多用户运行、依赖供应链或宿主级安全保证",
+      "前台连续输入、容量、跨用户升级回滚、断网和重启仍需独立真实验收"
+    ],
+    "reportAvailable": true,
+    "verifiedAt": "2026-09-13T05:21:15.356Z"
   },
   "remainingGates": [
     "continuous input foreground readiness",
