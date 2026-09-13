@@ -43,7 +43,7 @@ test('focus guard keeps the initiating window while typing unless the user actua
   'PowerShell pipeline output must use UTF-8');
 });
 
-test('controlled focus acceptance continuously delivers input to the initiating window',()=>{
+test('controlled focus probe exposes opt-in input diagnostics',()=>{
  const source=fs.readFileSync(new URL('./live-inactive-window.ps1',import.meta.url),'utf8');
  assert.match(source,/\[switch\]\$ContinuousInput/,
   'the live probe must expose an explicit opt-in continuous-input mode');
@@ -57,7 +57,7 @@ test('controlled focus acceptance continuously delivers input to the initiating 
   'live probe pipeline output must use UTF-8');
 });
 
-test('current continuous-input evidence is bound to the sealed core',()=>{
+test('historical input receipt retains its original core version',()=>{
  const file=new URL('./inactive-window-validation-1.3.4-rc.1.json',import.meta.url);
  const evidence=JSON.parse(fs.readFileSync(file,'utf8'));
  assert.equal(evidence.coreVersion,'1.3.4-rc.1');

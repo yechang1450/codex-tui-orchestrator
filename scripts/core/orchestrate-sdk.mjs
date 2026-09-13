@@ -742,7 +742,8 @@ function spawnVisibleWindow(lp, title) {
     return;
   }
   const powershell=path.join(process.env.SystemRoot||process.env.WINDIR||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-  spawnInactiveWindow(powershell,['-NoProfile','-ExecutionPolicy','Bypass','-File',lp],WORKSPACE);
+  const conhost=path.join(process.env.SystemRoot||process.env.WINDIR||'C:\\Windows','System32','conhost.exe');
+  spawnInactiveWindow(conhost,[powershell,'-NoProfile','-ExecutionPolicy','Bypass','-File',lp],WORKSPACE);
   console.log("spawned visible " + AGENT.agent + " TUI (inactive console): " + title);
 }
 // 弹窗后精准检测：pid 文件存在 + launcher(WT pane 宿主)进程存活 => 窗口真弹出（见 windowGenuinelyPopped）。
@@ -873,7 +874,7 @@ async function retryBlock(rec, rid, auth, maxRetry, closeDelayMs) {
 // message containing this block token + 完成 appears, it writes the strong `.self-closed` marker and
 // kills the full codex descendant tree (hit-to-close, no stability wait), so the launcher runs `exit 0` and the
 // pane auto-closes. `Write-Result` then uses `Get-LastReport` to persist the window last assistant output
-// into `win-<s>.result.json` (no token/完成 required), so even a report lacking the token is captured.
+// into `win-<s>.result.json`, accepting a tokenless report only when it belongs to the token-bearing turn.
 // The launcher ALWAYS reaches `exit 0` (a non-zero exit is the "process exited, code X" stuck-pane bug).
 // Encoding + Windows Terminal hosting set here (see ORCH_TUI and the chcp 65001 + InputEncoding UTF-8) for CJK/IME.
 
@@ -984,6 +985,50 @@ function isOrchestratorSelfMod(text) {
   return modifyIntent;
 }
 
+// Shared by the launcher and its isolated watchdog job. Parse message envelopes rather
+// than searching raw JSON, which may contain copied events inside parent tool output.
+function psRolloutReaderLines() {
+  return String.raw`function Get-EventTurnId($ev) {
+  if ($ev.turn_id) { return [string]$ev.turn_id }
+  if ($ev.payload.turn_id) { return [string]$ev.payload.turn_id }
+  if ($ev.payload.internal_chat_message_metadata_passthrough.turn_id) { return [string]$ev.payload.internal_chat_message_metadata_passthrough.turn_id }
+  if ($ev.internal_chat_message_metadata_passthrough.turn_id) { return [string]$ev.internal_chat_message_metadata_passthrough.turn_id }
+  return ''
+}
+function Test-MessageToken([string]$msg, [string]$tok) {
+  return ($tok -and $msg -cmatch ('(?<![A-Za-z0-9_-])' + [regex]::Escape($tok) + '(?![A-Za-z0-9_-])'))
+}
+function Read-OwnedRollout([string]$raw, [string]$tok, [string]$ownerTurnId = '') {
+  $owner = $ownerTurnId; $bound = [bool]$owner; $current = ''; $report = ''; $done = $false
+  foreach ($line in ($raw -split "\r?\n")) {
+    try { $ev = $line | ConvertFrom-Json -ErrorAction Stop } catch { continue }
+    $p = $ev.payload; $turn = Get-EventTurnId $ev
+    if ($ev.type -eq 'turn_context' -or $ev.type -eq 'task_started' -or ($ev.type -eq 'event_msg' -and $p.type -eq 'task_started')) { $current = $turn }
+    $role = ''; $msg = ''; $isFinal = $false
+    if ($ev.type -eq 'response_item' -and $p.type -eq 'message') {
+      $role = [string]$p.role
+      $msg = (($p.content | ForEach-Object { if ($_.text -is [string]) { $_.text } elseif ($_.content -is [string]) { $_.content } elseif ($_.value -is [string]) { $_.value } }) -join '')
+      $isFinal = ($p.phase -eq 'final_answer')
+    } elseif ($ev.type -eq 'event_msg' -or $ev.t -eq 'event_msg') {
+      if ($p.type -eq 'user_message') { $role = 'user'; $msg = [string]$p.message }
+      if ($p.type -eq 'agent_message') { $role = 'assistant'; $msg = [string]$p.message; $isFinal = $true }
+    }
+    if (-not $bound -and $role -eq 'user' -and (Test-MessageToken $msg $tok)) {
+      $bound = $true; $owner = if ($turn) { $turn } else { $current }
+    }
+    if (-not $bound) { continue }
+    $own = if ($owner) { $turn -eq $owner -or (-not $turn -and $current -eq $owner) } else { Test-MessageToken $msg $tok }
+    if ($role -eq 'assistant' -and $own -and $msg.Trim()) {
+      $report = $msg
+      if ($isFinal -and (Test-MessageToken $msg $tok) -and ($msg.Contains('__ORCH_DONE__') -or $msg.Contains('完成'))) { $done = $true }
+    }
+    $isTaskComplete = $ev.type -eq 'task_complete' -or ($ev.type -eq 'event_msg' -and $p.type -eq 'task_complete')
+    if ($isTaskComplete -and (($owner -and $turn -eq $owner) -or (-not $owner -and (Test-MessageToken ([string]$p.last_agent_message) $tok)))) { $done = $true }
+  }
+  return @{ matched = $bound; turnId = $owner; report = $report; done = $done }
+}`.split('\n');
+}
+
 function writeInteractiveLauncher(title, prompt, sfx) {
   if(AGENT.agent==='pi')return writePiLauncher(AGENT.config,{key:title,prompt,suffix:sfx,workspace:WORKSPACE,temp:TMP});
   const s = safe(title) + (sfx ? "-" + sfx : "");
@@ -1041,26 +1086,17 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "function Ensure-ResultDir {",
     "  try { $d = Split-Path -Parent $resultFile; if ($d -and -not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null } } catch { }",
     "}",
+    ...psRolloutReaderLines(),
+    "$rolloutNotBefore = [datetime]::UtcNow.AddSeconds(-2)",
     "function Get-LastReport {",
     "  param([string]$dir,[string]$tok)",
-    "  $res = ''",
-    "  $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }",
+    "  $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.CreationTimeUtc -ge $rolloutNotBefore } | Sort-Object CreationTimeUtc -Descending",
     "  foreach ($f in $files) {",
     "    $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
-    "    if ($raw -and $raw.Contains($tok)) {",
-    "      foreach ($line in ($raw -split \"`n\")) {",
-    "        try {",
-    "          $o = $line | ConvertFrom-Json -ErrorAction SilentlyContinue",
-    "          $p = $o.payload",
-    "          $msg = ''",
-    "          if ($p -and $p.type -eq 'agent_message' -and $p.message) { $msg = $p.message }",
-    "          elseif ($o.type -eq 'response_item' -and $p -and $p.type -eq 'message' -and $p.role -eq 'assistant' -and $p.content) { $msg = (($p.content | ForEach-Object { if ($_.text) { $_.text } elseif ($_.content) { $_.content } elseif ($_.value) { $_.value } }) -join '') }",
-    "          if ($msg -and $msg.Trim()) { $res = $msg }",
-    "        } catch { }",
-    "      }",
-    "    }",
+    "    $owned = Read-OwnedRollout $raw $tok",
+    "    if ($owned.matched -and $owned.report) { return [string]$owned.report }",
     "  }",
-    "  return $res",
+    "  return ''",
     "}",
     "function Write-Result {",
     "  param([int]$code)",
@@ -1070,7 +1106,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "    $dir = $env:ORCH_SDIR",
     "    $report = Get-LastReport -dir $dir -tok $token",
     "    $line = '__EXIT__=' + $code",
-    "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
+    "    $json = '{\"__EXIT__\":' + $code + ',\"__DONE__\":true,\"__LAUNCHER_PID__\":' + $PID + ',\"__TOKEN__\":' + (ConvertTo-Json $token -Compress) + ',\"__REPORT__\":' + (ConvertTo-Json $report -Compress) + ',\"ts\":\"' + (Get-Date -Format o) + '\"}'",
     "    Ensure-ResultDir",
     "    Set-Content -LiteralPath $resultFile -Value ($json + \"`r`n\" + $line) -Encoding UTF8",
     "    Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { /* ignore */ }",
@@ -1086,12 +1122,13 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     // on its own), and the recursive kill skips when no descendants remain. Never touches the launcher,
     // the watchdog job itself, or other windows.
     "$watch = Start-Job -ScriptBlock {",
-    "  param($token, $rootPid, $resultFile)",
+    "  param($token, $rootPid, $resultFile, $rolloutNotBefore)",
     "  if ([string]::IsNullOrWhiteSpace($token)) { return }",
     "  # 独立 runspace：本 job 看不到主作用域的 Ensure-ResultDir，需在此自行复刻（与主作用域实现一致）。",
     "  function Ensure-ResultDir {",
     "    try { $d = Split-Path -Parent $resultFile; if ($d -and -not (Test-Path -LiteralPath $d)) { New-Item -ItemType Directory -Force -Path $d | Out-Null } } catch { }",
     "  }",
+    ...psRolloutReaderLines().map(ln => "  " + ln),
     "  function Stop-LauncherDescendants {",
     "    param([int]$root)",
     ...psKillDescendantsLines().map((ln) => "    " + ln),
@@ -1116,7 +1153,9 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "  try { if ($env:ORCH_WATCHDOG_MAX_MIN) { $watchdogMaxMin = [double]$env:ORCH_WATCHDOG_MAX_MIN } } catch { }",
     "  $deadline = (Get-Date).AddMinutes($watchdogMaxMin)",
     "  while ((Get-Date) -lt $deadline) {",
-    "    if (Test-Path -LiteralPath $resultFile) {",
+    "    $resultOwned = $false",
+    "    try { $saved = (Get-Content -LiteralPath $resultFile -Encoding UTF8 -TotalCount 1 -ErrorAction Stop) | ConvertFrom-Json -ErrorAction Stop; $resultOwned = $saved.__TOKEN__ -ceq $token -and $saved.__DONE__ -eq $true -and $saved.__LAUNCHER_PID__ -eq $rootPid } catch { }",
+    "    if ($resultOwned) {",
     "      $n = Stop-LauncherDescendants $rootPid",
     "      if ($n -gt 0) { $sawChild = $true }",
     "      # 加固：陈旧/旧块 result 文件可能在 codex 尚未生成后代时误触发提前退出；故仅当确曾观测到本窗 codex",
@@ -1124,59 +1163,17 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "      if ($n -eq 0 -and $sawChild) { Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }; exit 0 }",
     "    }",
     "    try {",
-    "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt (Get-Date).AddMinutes(-30) }",
+    "      $files = Get-ChildItem -LiteralPath $dir -Recurse -Filter 'rollout-*.jsonl' -ErrorAction SilentlyContinue | Where-Object { $_.CreationTimeUtc -ge $rolloutNotBefore } | Sort-Object CreationTimeUtc -Descending",
     "      foreach ($f in $files) {",
     "        if ($match) {",
     "          if ($f.FullName -ne $match) { continue }",
     "          try {",
-            "            $tail = Get-Content -LiteralPath $f.FullName -Tail 200 -Encoding UTF8 -ErrorAction SilentlyContinue",
-            "            # 自动关闭设计 = watchdog 检测到【本块 agent 的完成汇报】(agent_message/assistant 行含本块 token 且含 完成) 才关窗。",
-            "            # 计划/中间消息不带“完成”，不会被误关；仅真正的完成汇报触发。稳定~1.5s 后关，确保父进程已抓到汇报。",
-    "            # 加固：__ORCH_DONE__ 分支必须同时命中「agent/assistant 消息」，绝不能匹配到被注入的【任务/执行纪律提示词】——",
-    "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
-    "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
-            "            # 加固：__ORCH_DONE__ 分支必须同时命中「agent/assistant 消息」，绝不能匹配到被注入的【任务/执行纪律提示词】——",
-            "            # 该提示词里原文含 '__ORCH_DONE__ <本窗token>'（教 agent 最后怎么汇报），若不过滤 role/type，watchdog 会",
-            "            # 在窗口刚拿到任务 prompt、agent 还没产出任何结果时就把这条『用户消息』误判成完成汇报，随即自关窗、丢任务。",
-            "            # 层级化：watchdog(爷爷)只认 TUI 窗(儿子)是否完成任务——只要 TUI 窗输出 __ORCH_DONE__ <token> 就认为收尾。",
-            "            # watchdog 只认 TUI 窗(儿子)输出 __ORCH_DONE__ <token> 即收尾；不再有任何 SUBAGENTS_DONE 后缀。",
-            "            $done = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains('__ORCH_DONE__') -and $_.Contains($token) } | Select-Object -Last 1)",
-    "            if ($done) {",
-    "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
-    "                # 递归杀净 launcher 的全部后代（agent 树）：绝不强杀 launcher 自身；agent 已退出(无后代)则函数直接跳过。",
-    "                Kill-LauncherTree $rootPid",
-    "                exit 0",
-    "            }",
-            "            $report = ($tail | Where-Object { ($_ -match 'agent_message|\"role\":\"assistant\"') -and $_.Contains($token) -and $_.Contains('完成') } | Select-Object -Last 1)",
-    "            if ($report) {",
-    "                # 命中即收窗：rollout 中最后一条含本窗 token+完成 的 assistant 消息即最终汇报（模板要求最终汇报以 token 开头、禁止中途输出未完状态），出现即写强标记并结束，无需等 1.5s 稳定。",
-    "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
-    "                # 同上：递归杀净 launcher 的全部后代（agent 树），绝不强杀 launcher 自身，agent 已退出则自动跳过。",
-    "                Kill-LauncherTree $rootPid",
-    "                exit 0",
-    "            }",
-    "            # 兜底：若本窗 rollout 已达到结构化 task_complete，但既无 __ORCH_DONE__ 也无『完成』汇报（如 selftest/纯只读窗），",
-    "            # 也立即关窗——否则会落到下方依赖 $sawChild 的陈旧 result 分支，拖到 orchestrator 的 15s 兜底才收窗（慢/易卡）。",
-    "            # 只解析 JSONL 事件，拒绝把普通提示词/消息中的 task_complete 字样当作生命周期信号。",
-    "            # token 所在的 prompt 行提供 owner turn_id；若完成事件带 turn_id，必须与 owner 相同；无 turn_id 的 CLI 只有在事件行自带 token 时才兼容放行。",
-    "            $tcDone = $false",
-    "            foreach ($line in $tail) {",
-    "              try {",
-    "                $ev = $line | ConvertFrom-Json -ErrorAction Stop",
-    "                $payload = $ev.payload",
-    "                $turnId = ''",
-    "                if ($ev.turn_id) { $turnId = [string]$ev.turn_id } elseif ($payload -and $payload.turn_id) { $turnId = [string]$payload.turn_id }",
-    "                if ($line.Contains($token) -and $turnId -and -not $ownerTurnId) { $ownerTurnId = $turnId }",
-    "                $eventType = if ($ev.type) { [string]$ev.type } else { '' }",
-    "                $payloadType = if ($payload -and $payload.type) { [string]$payload.type } else { '' }",
-    "                $isTaskComplete = ($eventType -eq 'task_complete' -or $payloadType -eq 'task_complete')",
-    "                if ($isTaskComplete -and (($line.Contains($token)) -or ($turnId -and $ownerTurnId -and $turnId -eq $ownerTurnId))) { $tcDone = $true; break }",
-    "              } catch { }",
-    "            }",
-    "            if ($tcDone) {",
-    "                Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
-    "                Kill-LauncherTree $rootPid",
-    "                exit 0",
+    "            $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
+    "            $owned = Read-OwnedRollout $raw $token $ownerTurnId",
+    "            if ($owned.done) {",
+    "              Ensure-ResultDir; try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
+    "              Kill-LauncherTree $rootPid",
+    "              exit 0",
     "            }",
     "          } catch { }",
     "          continue",
@@ -1188,20 +1185,10 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "        $sizes[$f.FullName] = $cur",
     "        try {",
     "          $raw = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 -ErrorAction SilentlyContinue",
-    "          if ($raw -and $raw.Contains($token)) {",
+    "          $owned = Read-OwnedRollout $raw $token",
+    "          if ($owned.matched) {",
     "            $match = $f.FullName",
-    "            # 首次命中时从完整 JSONL 中提取 token 所属 turn，避免长 rollout 把 prompt 滚出尾部后无法绑定完成事件。",
-    "            if (-not $ownerTurnId) {",
-    "              foreach ($line in ($raw -split \"`n\")) {",
-    "                if (-not $line.Contains($token)) { continue }",
-    "                try {",
-    "                  $ev0 = $line | ConvertFrom-Json -ErrorAction Stop",
-    "                  $p0 = $ev0.payload",
-    "                  if ($ev0.turn_id) { $ownerTurnId = [string]$ev0.turn_id } elseif ($p0 -and $p0.turn_id) { $ownerTurnId = [string]$p0.turn_id }",
-    "                  if ($ownerTurnId) { break }",
-    "                } catch { }",
-    "              }",
-    "            }",
+    "            $ownerTurnId = $owned.turnId",
     "            break",
     "          }",
     "        } catch { }",
@@ -1216,7 +1203,7 @@ function writeInteractiveLauncher(title, prompt, sfx) {
     "  try { Set-Content -LiteralPath ($resultFile + '.self-closed') -Value '1' -Encoding ASCII } catch { }",
     "  Kill-LauncherTree $rootPid",
     "  exit 0",
-    "} -ArgumentList $token, $PID, $resultFile",
+    "} -ArgumentList $token, $PID, $resultFile, $rolloutNotBefore",
     "$code = 1",
     "try {",
     "  $agentArgs = " + buildPsArrayLit(AGENT_ARGS_LIST) + " + $p",
@@ -1268,13 +1255,15 @@ function sessionDir() {
   // 通用化：优先 CODEX_HOME（可被环境变量覆盖），而非硬编码 USERPROFILE\.codex。
   return process.env.ORCH_SESSION_DIR || path.join(CODEX_HOME, "sessions");
 }
-function listRollouts(dir) {
+function listRollouts(dir, notBeforeMs = 0) {
   const res = [];
   try {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) res.push(...listRollouts(p));
-      else if (e.isFile() && /^rollout-.*\.jsonl$/.test(e.name)) res.push(p);
+      if (e.isDirectory()) res.push(...listRollouts(p, notBeforeMs));
+      else if (e.isFile() && /^rollout-.*\.jsonl$/.test(e.name)) {
+        if (!notBeforeMs || statSync(p).birthtimeMs >= notBeforeMs) res.push(p);
+      }
     }
   } catch { /* ignore */ }
   return res;
@@ -1285,32 +1274,49 @@ function listRollouts(dir) {
 // `exitMarkerFile` (the launcher's `win-<s>.result.json`) aborts the wait as soon as codex has exited
 // on its own (crash / non-zero exit): the caller then reclaims the session immediately instead of
 // polling for a rollout that may never appear ("codex 进程先退出" -> no launcher hang).
-function rolloutKeys(matchKey) {
-  // JSON.stringify 不转义 CJK（输出 raw），但 codex rollout 会把 prompt 的 CJK 存成 \uXXXX 转义，
-  // 导致仅凭 raw 匹配会漏。ASCII token 在 raw/转义两种形式中都原样存在，最可靠。
-  const escaped = JSON.stringify(matchKey).slice(1, -1);
-  const ascii = String(matchKey).replace(/[^\x00-\x7F]/g, "");
-  return [escaped, ascii].filter(Boolean);
+function tokenInMessage(text, token) {
+  const key = resultTokenValue(token);
+  if (!key) return false;
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("(?<![A-Za-z0-9_-])" + escaped + "(?![A-Za-z0-9_-])").test(String(text || ""));
 }
-function rolloutHit(text, keys) { return keys.some((k) => text.includes(k)); }
+function rolloutTurnId(ev) {
+  return String(ev?.turn_id ?? ev?.payload?.turn_id ?? ev?.payload?.internal_chat_message_metadata_passthrough?.turn_id ?? ev?.internal_chat_message_metadata_passthrough?.turn_id ?? "");
+}
+function rolloutMessage(ev, role) {
+  const p = ev?.payload;
+  if (ev?.type === "response_item" && p?.type === "message" && p.role === role && Array.isArray(p.content))
+    return p.content.map(c => typeof c.text === "string" ? c.text : "").join("");
+  if ((ev?.type === "event_msg" || ev?.t === "event_msg") && p?.type === (role === "user" ? "user_message" : "agent_message")) return String(p.message || "");
+  return "";
+}
+function rolloutEvents(text) {
+  return String(text || "").replace(/^\uFEFF/, "").split(/\r?\n/).flatMap(line => {
+    try { const ev = JSON.parse(line); return ev && typeof ev === "object" ? [ev] : []; } catch { return []; }
+  });
+}
+// Only a structured user task can own a rollout. Tool output in the parent conversation
+// routinely contains the same token, paths and copied child events.
+function findOwnedTurn(text, token) {
+  let current = "";
+  for (const ev of rolloutEvents(text)) {
+    const turn = rolloutTurnId(ev);
+    if (ev.type === "turn_context" || ev.type === "task_started" || (ev.type === "event_msg" && ev.payload?.type === "task_started")) current = turn;
+    if (tokenInMessage(rolloutMessage(ev, "user"), token)) return { matched: true, turnId: turn || current };
+  }
+  return { matched: false, turnId: "" };
+}
 // Parse a rollout tail and accept only a structured task_complete event belonging to this block.
 // The token normally appears in the user prompt while the terminal event carries the turn_id, so
 // retain the owner turn across polling iterations and reject text mentions or foreign turns.
 function scanTaskComplete(text, matchToken = "", ownerTurnId = "") {
-  const keys = matchToken ? rolloutKeys(matchToken) : [];
-  let owner = String(ownerTurnId || "");
-  for (const line of String(text || "").split(/\r?\n/)) {
-    if (!line.trim()) continue;
-    let ev;
-    try { ev = JSON.parse(line); } catch { continue; }
-    const payload = ev && ev.payload && typeof ev.payload === "object" && !Array.isArray(ev.payload) ? ev.payload : {};
-    const turnId = ev && ev.turn_id != null ? String(ev.turn_id) : (payload.turn_id != null ? String(payload.turn_id) : "");
-    const lineOwn = keys.length ? rolloutHit(line, keys) : true;
-    if (lineOwn && turnId && !owner) owner = turnId;
-    const eventType = ev && typeof ev.type === "string" ? ev.type : "";
-    const payloadType = typeof payload.type === "string" ? payload.type : "";
-    const typedComplete = eventType === "task_complete" || payloadType === "task_complete";
-    if (typedComplete && (!keys.length || lineOwn || (turnId && owner && turnId === owner))) return { done: true, ownerTurnId: owner };
+  const found = matchToken ? findOwnedTurn(text, matchToken) : { matched: true, turnId: "" };
+  const owner = String(ownerTurnId || found.turnId);
+  for (const ev of rolloutEvents(text)) {
+    const turnId = rolloutTurnId(ev);
+    const typedComplete = ev.type === "task_complete" || (ev.type === "event_msg" && ev.payload?.type === "task_complete");
+    const own = owner ? turnId === owner : found.matched && tokenInMessage(ev.payload?.last_agent_message, matchToken);
+    if (typedComplete && (!matchToken || own)) return { done: true, ownerTurnId: owner };
   }
   return { done: false, ownerTurnId: owner };
 }
@@ -1321,16 +1327,16 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
   // The rollout is JSONL: backslashes (Windows paths) are doubled (`\` -> `\\`) and quotes escaped,
   // so we must match against the JSON-escaped form, not the raw text. The task prompt sits after the
   // (large) AGENTS.md/context block, so we read the whole file (once per new candidate), not just the head.
-  const keys = rolloutKeys(matchKey);
+  const notBeforeMs = start - 5000;
   while (Date.now() - start < timeoutMs) {
     // 完成信号优先认窗内自关：result 落盘或窗内 watchdog 写入 .self-closed（即 agent 已报 __ORCH_DONE__）都视为本窗完成，
     // 立即转入回收路径，避免父进程靠 session 文本匹配去等一个可能永远匹配不到的会话（慢速 agent 时长期 HOLDING）。
     if (exitMarkerFile && (existsSync(exitMarkerFile) || existsSync(exitMarkerFile + ".self-closed"))) return null; // codex already exited -> reclaim path
-    for (const f of listRollouts(sessionDir())) {
+    for (const f of listRollouts(sessionDir(), notBeforeMs)) {
       if (seen.has(f)) continue;
       seen.add(f);
       try {
-        if (rolloutHit(readFileSync(f, "utf8"), keys)) return f;
+        if (findOwnedTurn(readFileSync(f, "utf8"), matchKey).matched) return f;
       } catch { /* ignore */ }
     }
     if (Date.now() - lastReset > 15000) { seen.clear(); lastReset = Date.now(); } // 周期重扫：防 rollout 先建后写 token 被永久错过
@@ -1345,16 +1351,21 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
 async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pidf) {
   const start = Date.now();
   let ownerTurnId = "";
+  try { ownerTurnId = findOwnedTurn(readFileSync(file, "utf8"), matchToken).turnId; } catch { /* unreadable rollout remains unverified */ }
   while (Date.now() - start < timeoutMs) {
     // 根治 run 卡死：窗（launcher 进程）已死 = 该块执行结束。用户方案=完成与否由主控关窗后按任务 prompt
     // 核对真实落盘（零报告原则），父进程绝不因"窗未写 result 汇报 / rollout 无 task_complete"而无限等待。
     if (pidf) {
       if (!existsSync(pidf)) {
         // pid 文件已被清理 = 窗生命周期已结束（正常关窗/被收尾清理），视为该块执行结束。
+        const rep = exitMarkerFile ? await waitForCapturedReport(exitMarkerFile, matchToken, 1500) : "";
+        if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
         return annotateCapacity({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
       const lp = readPidFile(pidf);
       if (lp > 0 && !pidAliveCheck(lp)) {
+        const rep = exitMarkerFile ? await waitForCapturedReport(exitMarkerFile, matchToken, 1500) : "";
+        if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
         return annotateCapacity({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
     }
@@ -1392,7 +1403,14 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
     ownerTurnId = completion.ownerTurnId;
     if (completion.done) {
       // exit code non-zero but task_complete seen -> still a completed turn
-      return annotateCapacity({ done: true, verified: true, text: (matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text), exitCode: readExitCode(exitMarkerFile) }, file);
+      let text = matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text;
+      // task_complete can be observed just before the final assistant message is flushed.
+      // Give the same rollout a short bounded window before declaring evidence verified.
+      for (let i = 0; !text && i < 15; i++) {
+        await new Promise((r) => setTimeout(r, 100));
+        text = matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text;
+      }
+      return annotateCapacity({ done: true, verified: Boolean(text), text, exitCode: readExitCode(exitMarkerFile) }, file);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
@@ -1469,15 +1487,24 @@ function extractUsage(file) {
   }
   return u;
 }
-// 确定性结果文件：读 launcher 写入的 __REPORT__（本块自己的完成汇报），含本块 token+完成 才返回；否则 ""。
+// Deterministic report: require a complete, token-bound launcher receipt before reading its text.
+function resultTokenValue(token) {
+  const raw = String(token || "");
+  const marker = raw.match(/【本块唯一标识】\s*([A-Za-z0-9][A-Za-z0-9_\-]*)/);
+  return marker ? marker[1] : raw;
+}
 function readReportFromResult(resultFile, token) {
   if (!resultFile || !existsSync(resultFile)) return "";
   try {
     const raw = String(readFileSync(resultFile, "utf8")).replace(/^\uFEFF/, "");
     const m = raw.match(/\{[\s\S]*\}/);
     const j = JSON.parse(m ? m[0] : raw);
-    const rep = String(j.__REPORT__ || "");
-    if (rep && String(rep).trim()) return rep;
+    if (!j || j.__DONE__ !== true) return "";
+    if (!Number.isInteger(j.__EXIT__)) return "";
+    if (token && String(j.__TOKEN__ || "") !== resultTokenValue(token)) return "";
+    if (typeof j.__REPORT__ !== "string") return "";
+    const rep = j.__REPORT__;
+    if (rep.trim()) return rep;
   } catch { /* ignore */ }
   return "";
 }
@@ -1507,7 +1534,7 @@ function extractOwnResult(file, token) {
       let msg = "";
       if (p.type === "agent_message" && p.message) msg = p.message;
       else if (o.type === "response_item" && p.type === "message" && p.role === "assistant" && Array.isArray(p.content)) msg = p.content.map((c) => c.text || c.content || c.value || "").join("");
-      if (msg && msg.includes(token)) last = msg;
+      if (msg && tokenInMessage(msg, token)) last = msg;
     } catch { /* ignore */ }
   }
   return last;
@@ -1517,14 +1544,14 @@ function extractOwnResult(file, token) {
 // instead of blind-grace timing. Bounded by `timeoutMs`.
 async function waitForReportText(matchKey, exitMarkerFile, timeoutMs) {
   const start = Date.now();
-  const seen = new Set();
-  const keys = rolloutKeys(matchKey);
+  const seen = new Map();
   while (Date.now() - start < timeoutMs) {
     for (const f of listRollouts(sessionDir())) {
-      if (seen.has(f)) continue;
-      seen.add(f);
+      let size = 0; try { size = statSync(f).size; } catch { continue; }
+      if (seen.get(f) === size) continue;
+      seen.set(f, size);
       try {
-        if (rolloutHit(readFileSync(f, "utf8"), keys)) {
+        if (findOwnedTurn(readFileSync(f, "utf8"), matchKey).matched) {
           const t = extractOwnResult(f, matchKey);
           if (t) return t;
         }
@@ -1731,9 +1758,22 @@ function resultFileOf(pidf) {
 // Read the recorded codex exit code from a launcher result marker (null if absent/unparseable).
 function readExitCode(rf) {
   try {
-    const m = String(readFileSync(rf, "utf8")).match(/__EXIT__=(-?\d+)/);
-    return m ? Number(m[1]) : null;
-  } catch { return null; }
+    const raw = String(readFileSync(rf, "utf8")).replace(/^\uFEFF/, "");
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) {
+      try {
+        const j = JSON.parse(m[0]);
+        if (j && Number.isInteger(j.__EXIT__)) return j.__EXIT__;
+      } catch { /* fall through to the explicit marker line */ }
+    }
+    const lines = raw.split(/\r?\n/);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      const marker = line.match(/^__EXIT__=(-?\d+)$/);
+      if (marker) return Number(marker[1]);
+    }
+  } catch { /* ignore */ }
+  return null;
 }
 // A window is "alive" if its launcher PID still exists (window still open).
 function windowAlive(win) {
@@ -1995,6 +2035,7 @@ export async function main() {
     if (claimBlocker) {
       console.log("spawn REFUSED: atomic claim blocked by [" + claimBlocker + "]; not opening another window.");
       for (const f of [pf, lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      process.exitCode = 1;
       return;
     }
     const popped = await spawnWindowWithRetry(lp, title, pidf, 3, stok);
@@ -2002,6 +2043,7 @@ export async function main() {
       cancelReservation(claim.id);
       for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
       console.log("spawn POPUP-FAILED: window did not appear.");
+      process.exitCode = 1;
       return;
     }
     commitReservation(claim.id, readPidFile(pidf) || 0);
@@ -2018,7 +2060,7 @@ export async function main() {
         ? { done: true, verified: true, text: report, exitCode: readExitCode(rf) }
         : { done: false, verified: false, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     }
-    if (res.verified !== true && existsSync(rf)) {
+    if (res.verified !== true) {
       const report = await waitForCapturedReport(rf, matchToken);
       if (report) res = { done: true, verified: true, text: report, exitCode: readExitCode(rf) };
     }
@@ -2026,13 +2068,8 @@ export async function main() {
     let summary = {};
     try { summary = JSON.parse(readFileSync(summaryPath, "utf8")); } catch {}
     const captured = Boolean(res.done && res.verified === true && res.text && !/^\(.*(?:no report captured|no rollout matched|no result captured|before task_complete captured)/i.test(String(res.text).trim()));
-    summary["spawn-" + rid] = { title, status: captured ? "done" : (res.done ? "uncaptured" : "timeout"), exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
-    writeFileSync(summaryPath, JSON.stringify(summary, null, 2), "utf8");
-    console.log("=== spawn result ===");
-    console.log("done=" + captured);
-    console.log("lifecycleDone=" + res.done);
-    console.log("final=" + trunc(res.text || "(none)", 500));
     // Wait for launcher to exit on its own, then force close if needed.
+    let launcherAliveAfter = true;
     if (res.done) {
       const pid = Number(String(readFileSync(pidf, "utf8")).trim());
       let alive = true;
@@ -2043,12 +2080,24 @@ export async function main() {
       }
       if (alive) { await closeWindow(pidf); }
       await new Promise((r) => setTimeout(r, Number(process.env.ORCH_CLOSE_DELAY_MS) || 6000));
-      cancelReservation(claim.id);
-      for (const fp of [pidf, lp, pf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(fp)) rmSync(fp, { force: true }); } catch {} }
+      try { process.kill(pid, 0); } catch (e) { if (!e || e.code !== "EPERM") alive = false; }
+      launcherAliveAfter = alive;
+      if (!launcherAliveAfter) {
+        cancelReservation(claim.id);
+        for (const fp of [pidf, lp, pf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(fp)) rmSync(fp, { force: true }); } catch {} }
+      }
     } else {
       console.log("spawn window still running (manual interactive); registry record kept for tracking/enforcement.");
     }
-    if (!captured) process.exitCode = 1;
+    const spawnPassed = captured && !launcherAliveAfter;
+    summary["spawn-" + rid] = { title, status: spawnPassed ? "done" : (captured ? "close-failed" : (res.done ? "uncaptured" : "timeout")), reportCaptured: captured, closed: !launcherAliveAfter, exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
+    writeFileSync(summaryPath, JSON.stringify(summary, null, 2), "utf8");
+    console.log("=== spawn result ===");
+    console.log("done=" + spawnPassed);
+    console.log("lifecycleDone=" + res.done);
+    console.log("closed=" + !launcherAliveAfter);
+    console.log("final=" + trunc(res.text || "(none)", 500));
+    if (!spawnPassed) process.exitCode = 1;
     return;
   }
   if (mode === "--selftest-close") {
@@ -2063,14 +2112,15 @@ export async function main() {
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
     const prompt =
-      "这是 codex-tui-orchestrator 的自动关闭自检窗。请只回复四个字：“自检OK”。不要执行任何其它动作，回复完即结束本窗。\n\n" +
-      "【本块唯一标识】selftest-" + rid + "\n（最终汇报请以「【本块唯一标识】selftest-" + rid + " 完成」开头，并说明本块完成情况）";
+      "这是 codex-tui-orchestrator 的自动关闭自检窗。不要执行任何其它动作，只输出一行：\n" +
+      "【本块唯一标识】selftest-" + rid + " 完成 自检OK\n回复后即结束本窗。";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     const claim = { id: "claim-" + rid + "-selftest", title: "selftest-close", keys: ["selftest:" + rid], pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
     const claimBlocker = tryReserveWindow(claim);
     if (claimBlocker) {
       console.log("selftest REFUSED: atomic claim blocked by [" + claimBlocker + "].");
       for (const f of [pf, lp]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      process.exitCode = 1;
       return;
     }
     const popped = await spawnWindowWithRetry(lp, "selftest-close", pidf, 3, "selftest-" + rid);
@@ -2078,6 +2128,7 @@ export async function main() {
       cancelReservation(claim.id);
       for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
       console.log("selftest POPUP-FAILED: window did not appear.");
+      process.exitCode = 1;
       return;
     }
     commitReservation(claim.id, readPidFile(pidf) || 0);
@@ -2092,6 +2143,10 @@ export async function main() {
         ? { done: true, verified: true, text: report, exitCode: readExitCode(rf) }
         : { done: false, verified: false, text: "(launcher exit marker seen; no rollout matched)", exitCode: readExitCode(rf) };
     }
+    if (res.verified !== true) {
+      const report = await waitForCapturedReport(rf, matchToken, 15000);
+      if (report) res = { done: true, verified: true, text: report, exitCode: readExitCode(rf) };
+    }
     const tComplete = Date.now();
     console.log("=== selftest-close result ===");
     console.log("sessionFile=" + sessionFile);
@@ -2101,6 +2156,7 @@ export async function main() {
     // Wait for the LAUNCHER to exit on its own (watchdog self-close, expect ~1s after completion).
     // If it is still alive after 15s, fall back to the graceful closeWindow() (last resort cleanup).
     let launcherAlive = true;
+    let forcedClose = false;
     const tWait = Date.now();
     while (Date.now() - tWait < 15000) {
       try { process.kill(pid, 0); } catch (e) { if (!e || e.code !== "EPERM") { launcherAlive = false; break; } }
@@ -2108,6 +2164,7 @@ export async function main() {
     }
     if (launcherAlive) {
       console.log("  !! launcher still alive after task_complete; calling graceful closeWindow() fallback...");
+      forcedClose = true;
       await closeWindow(pidf);
       try { process.kill(pid, 0); launcherAlive = true; } catch (e) { if (!e || e.code !== "EPERM") launcherAlive = false; }
     }
@@ -2116,16 +2173,40 @@ export async function main() {
     // Settle briefly so a just-exiting watchdog job can't count as an orphan.
     await new Promise((r) => setTimeout(r, 1500));
     let orphanAgent = false;
+    let orphanCheckSucceeded = false;
     try {
-      const spid = Number(pid); const kids = spawnSync("powershell.exe", ["-NoProfile", "-Command", "Get-CimInstance Win32_Process -Filter \"ParentProcessId=" + (Number.isFinite(spid) ? spid : -1) + "\" | Measure-Object | Select-Object -ExpandProperty Count"], { windowsHide: true, encoding: "utf8" });
-      orphanAgent = Number(String(kids.stdout || "0").trim()) > 0;
-    } catch { /* ignore */ }
+      orphanAgent = [...processSnapshot().values()].some(child => child.ParentProcessId === pid);
+      orphanCheckSucceeded = true;
+    } catch (error) { console.error("selftest process verification failed: " + error.message); }
     console.log("launcherPid=" + pid + " launcherStillAlive=" + launcherAlive + " (expect false => pane auto-closed)");
     console.log("elapsedAfterDetectMs=" + elapsedAfterDetectMs + " (orchestrator-detect -> launcher gone; launcher watchdog itself polls every 500ms, expect ~1s from task_complete)");
     console.log("orphanChildren=" + orphanAgent + " (expect false => no orphan agent)");
+    let selftestOk = Boolean(res.done && res.verified === true && res.text && !launcherAlive && orphanCheckSucceeded && !orphanAgent && !forcedClose);
+    console.log("selftestPassed=" + selftestOk + " (requires verified own report, launcher closed, and no orphan children)");
+    const selftestEvidence = {
+      schema: 1,
+      token: matchToken,
+      done: Boolean(res.done),
+      reportCaptured: Boolean(res.verified === true && res.text && String(res.text).trim()),
+      final: String(res.text || "").trim().slice(0, 2000),
+      launcherAlive,
+      orphanAgent,
+      orphanCheckSucceeded,
+      forcedClose,
+      passed: selftestOk,
+      exitCode: selftestOk ? 0 : 1,
+      agentExitCode: res.exitCode ?? readExitCode(rf),
+      sessionFile,
+      generatedAt: new Date().toISOString(),
+    };
+    try { writeFileSync(path.join(TMP, "selftest-close.json"), JSON.stringify(selftestEvidence, null, 2), "utf8"); }
+    catch (e) { selftestOk = false; console.error("selftest evidence write failed: " + (e?.message || e)); }
     console.log("=== selftest-close done ===");
-    cancelReservation(claim.id);
-    for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
+    if (!launcherAlive && orphanCheckSucceeded && !orphanAgent) {
+      cancelReservation(claim.id);
+      for (const f of (selftestOk ? [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"] : [pf, lp, pidf])) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
+    }
+    process.exitCode = selftestOk ? 0 : 1;
     return;
   }
   if (mode === '--verify-run') {
@@ -2195,4 +2276,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy };
+export { findOwnedTurn, waitForSessionFile, classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy };

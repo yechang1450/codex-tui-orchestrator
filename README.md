@@ -28,7 +28,7 @@ Once the plugin is registered with the host and enabled, start a new conversatio
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话；外部副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份；结果不明的任务停在 `needs-reconciliation` |
 
-这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。当前版本已用真实 Codex 完成 headless、可见 TUI、恢复接管、监督器和独立复核流程，逐项结果见 [当前流程证据](test/live-process-validation-current.json)；这不替代容量级多任务验收。当前提交也通过了覆盖 162 个文件的离线安全审计，未发现报告项；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前只支持 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测，离线回归不会替它们背书。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
+这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。此前流程证据覆盖 headless、可见 TUI、恢复接管、监督器和独立复核；当前候选仍须以最新真实自检和 RC 清单为准，不能把历史流程证据当作当前版本全流程通过。历史提交 `dea90f4` 曾完成覆盖 162 个文件的离线安全审计，未发现报告项；该结果不认证之后的修改；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前只支持 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测，离线回归不会替它们背书。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
@@ -64,7 +64,23 @@ Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Fini
 
 Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. Doctor checks installation and CLI discovery, not provider access or task completion. The command block installs a script checkout; it does not register, activate, update or roll back a plugin-manager installation. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Actual manager registration/upgrade/rollback remains a separate installation check. Preserve Codex credentials and active workspace state.
 
-The current personal marketplace registration is an external dependency. Its entry must use the canonical lowercase name `codex-tui-orchestrator` and point at this repository; an older mixed-case entry such as `codex-TUI-orchestrator` is rejected by the Codex CLI because it does not match `.codex-plugin/plugin.json`. Until that registration is refreshed, use the direct script entry above and do not treat a failed `codex plugin add` as a repository runtime failure.
+An existing personal marketplace entry must use the canonical lowercase name `codex-tui-orchestrator` and resolve to this repository. For an older mixed-case entry, the command below checks the source and repairs only its name before using the official installer. It preserves entry order, source paths, policies, and other plugins. A missing, duplicated, remote, or mismatched entry stops with a diagnostic; this command does not create a new marketplace. Run it from this repository after dependency installation and release verification. Start a new Codex conversation after reinstalling so the host loads the updated skill.
+
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $registration = node scripts/repair-plugin-registration.mjs --check | ConvertFrom-Json
+  if ($registration.status -eq 'repairable') {
+    $registration = node scripts/repair-plugin-registration.mjs --repair | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $registration.ok) { throw 'Registration repair failed.' }
+  } elseif (-not $registration.ok) {
+    throw $registration.reason
+  }
+  codex plugin add "$($registration.pluginName)@$($registration.marketplaceName)" --json
+  if ($LASTEXITCODE -ne 0) { throw 'Plugin installation failed.' }
+}
+```
+
 
 From the initiating workspace, call the installed script by absolute path. This minimal example creates one JSON result with a unique run identity and supplies a content check before execution. It uses the configured model quota:
 

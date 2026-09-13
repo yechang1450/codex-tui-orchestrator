@@ -26,7 +26,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话，副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份，结果不明则停在 `needs-reconciliation` |
 
-因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。当前版本已用真实 Codex 完成 headless、可见 TUI、恢复接管、监督器和独立复核流程，逐项结果见 [当前流程证据](test/live-process-validation-current.json)；这不替代容量级多任务验收。当前提交也通过了覆盖 162 个文件的离线安全审计，未发现报告项；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
+因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。此前流程证据覆盖 headless、可见 TUI、恢复接管、监督器和独立复核；当前候选仍须以最新真实自检和 RC 清单为准，不能把历史流程证据当作当前版本全流程通过。历史提交 `dea90f4` 曾完成覆盖 162 个文件的离线安全审计，未发现报告项；该结果不认证之后的修改；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
 
@@ -64,7 +64,23 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
 
-当前个人 marketplace 注册属于仓库外部依赖。条目必须使用规范小写名称 `codex-tui-orchestrator` 并指向本仓库；旧的 `codex-TUI-orchestrator` 条目会因名称与 `.codex-plugin/plugin.json` 不一致而被 Codex CLI 拒绝。注册刷新前可直接使用上面的脚本入口；`codex plugin add` 失败不能据此判断仓库运行时失败。
+已有个人 marketplace（插件目录）条目必须使用规范小写名称 `codex-tui-orchestrator`，并实际指向本仓库。下面的命令先核对源码位置，只修正旧条目的名称大小写，再调用官方安装器；保留原顺序、源码路径、策略和其他插件。条目缺失、重复、属于远端或指向其他源码时会停止，不会新建 marketplace。从本仓库完成依赖安装和完整性验证后运行；重装后在新的 Codex 对话中加载更新的技能。
+
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $registration = node scripts/repair-plugin-registration.mjs --check | ConvertFrom-Json
+  if ($registration.status -eq 'repairable') {
+    $registration = node scripts/repair-plugin-registration.mjs --repair | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or -not $registration.ok) { throw 'Registration repair failed.' }
+  } elseif (-not $registration.ok) {
+    throw $registration.reason
+  }
+  codex plugin add "$($registration.pluginName)@$($registration.marketplaceName)" --json
+  if ($LASTEXITCODE -ne 0) { throw 'Plugin installation failed.' }
+}
+```
+
 
 从发起工作区调用绝对路径。以下最小示例先定义验收条件，再创建带本次运行身份的 JSON 结果；执行会使用已配置模型的额度：
 

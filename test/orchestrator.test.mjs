@@ -144,7 +144,46 @@ const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = awa
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { readTail } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
-const { scanTaskComplete } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { findOwnedTurn, scanTaskComplete, waitTaskComplete } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+test('rollout ownership rejects parent tools, copied messages and token prefixes in JS and PowerShell', () => {
+  const token = 'OWN-abc';
+  const event = (type, payload) => ({type, payload});
+  const msg = (role, text, turn) => event('response_item', {type:'message',role,content:[{text}],internal_chat_message_metadata_passthrough: {turn_id:turn}});
+  const complete = turn => event('event_msg', {type:'task_complete',turn_id:turn});
+  const fixtures = [
+    {events:[event('response_item',{type:'function_call_output',turn_id:'parent',output:JSON.stringify(msg('user',token,'child'))}),complete('parent')],matched:false,done:false,turn:''},
+    {events:[msg('assistant',token,'parent'),complete('parent')],matched:false,done:false,turn:''},
+    {events:[msg('user',token+'-suffix','other'),complete('other')],matched:false,done:false,turn:''},
+    {events:[msg('user','【本块唯一标识】'+token,'child'),complete('parent')],matched:true,done:false,turn:'child'},
+    {events:[msg('user','【本块唯一标识】'+token,'child'),msg('assistant','verified final','child'),complete('child')],matched:true,done:true,turn:'child',report:'verified final'},
+    {events:[event('event_msg',{type:'task_started',turn_id:'child'}),msg('user',token),msg('assistant',token+' 完成','child'),complete('child')],matched:true,done:true,turn:'child',report:token+' 完成'},
+    {events:[msg('user',token,'child'),msg('assistant',token+' 完成','foreign'),complete('foreign')],matched:true,done:false,turn:'child'},
+  ];
+  for (const f of fixtures) {
+    const raw = f.events.map(JSON.stringify).join('\n');
+    assert.deepEqual(findOwnedTurn(raw, token), {matched:f.matched,turnId:f.turn});
+    assert.deepEqual(scanTaskComplete(raw, token), {done:f.done,ownerTurnId:f.turn});
+  }
+  const {lp,pidf,pf} = writeInteractiveLauncher('ownership','【本块唯一标识】'+token,'parser');
+  const fixture = path.join(path.dirname(lp),'ownership-fixtures.json');
+  const harness = path.join(path.dirname(lp),'ownership-parser.ps1');
+  try {
+    const body = fs.readFileSync(lp,'utf8');
+    const helper = body.slice(body.indexOf('function Get-EventTurnId('),body.indexOf('function Get-LastReport {'));
+    fs.writeFileSync(fixture,JSON.stringify(fixtures.map(f=>({raw:f.events.map(JSON.stringify).join('\n'),token}))), 'utf8');
+    fs.writeFileSync(harness,'\uFEFF[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n'+helper+`\n$data=Get-Content -LiteralPath '${fixture.replace(/'/g,"''")}' -Raw -Encoding UTF8 | ConvertFrom-Json\n@($data | ForEach-Object { Read-OwnedRollout $_.raw $_.token }) | ConvertTo-Json -Depth 5 -Compress`, 'utf8');
+    const out=spawnSync('powershell.exe',['-NoProfile','-File',harness],{windowsHide:true,encoding:'utf8'});
+    assert.equal(out.status,0,out.stderr);
+    const results=JSON.parse(out.stdout.replace(/^\uFEFF/,''));
+    fixtures.forEach((f,i)=>{
+      assert.equal(results[i].matched,f.matched,`PS ownership case ${i}`);
+      assert.equal(results[i].done,f.done,`PS completion case ${i}`);
+      assert.equal(results[i].turnId,f.turn);
+      if(f.report) assert.equal(results[i].report,f.report);
+    });
+  } finally { for(const f of [lp,pidf,pf,fixture,harness]) fs.rmSync(f,{force:true}); }
+});
+
 test('scanTaskComplete: 只接受当前 turn 的结构化 task_complete', () => {
   const token = '【本块唯一标识】TC2-abc';
   const user = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', turn_id: 'turn-owner', content: [{ text: 'diagnostic task_complete TC2-abc' }] } });
@@ -154,6 +193,14 @@ test('scanTaskComplete: 只接受当前 turn 的结构化 task_complete', () => 
   assert.deepEqual(scanTaskComplete(user + '\n' + foreign + '\n' + own, token), { done: true, ownerTurnId: 'turn-owner' });
   assert.equal(scanTaskComplete(JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ text: 'task_complete TC2-abc' }] } }), token).done, false);
 });
+test('task completion binds native passthrough turn metadata and rejects a later turn', () => {
+  const user = {type:'response_item',internal_chat_message_metadata_passthrough:{turn_id:'owned'},payload:{type:'message',role:'user',content:[{text:'【本块唯一标识】native-metadata'}]}};
+  const event = turn_id => ({type:'event_msg',payload:{type:'task_complete',turn_id}});
+  const prefix = JSON.stringify(user)+'\n'+JSON.stringify(event('foreign'));
+  assert.deepEqual(scanTaskComplete(prefix,'【本块唯一标识】native-metadata'),{done:false,ownerTurnId:'owned'});
+  assert.deepEqual(scanTaskComplete(prefix+'\n'+JSON.stringify(event('owned')),'【本块唯一标识】native-metadata'),{done:true,ownerTurnId:'owned'});
+});
+
 test('orchestrate-sdk classifyBlockComplexity', () => {
   // "修复" 命中分析/决策正则 -> 复杂（可能走 LLM 原型）
   assert.equal(classifyBlockComplexity('修复A'), true);
@@ -393,14 +440,31 @@ test('runtime: extractResult takes last assistant text (token/content/value tole
     assert.equal(extractResult(f).text, 'v1');
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
-test('runtime: readReportFromResult returns non-empty __REPORT__ even without token', () => {
+test('runtime: readReportFromResult binds report to a completed marker and token', () => {
   const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-rt4-'));
   try {
     const rf = path.join(d, 'w.result.json');
-    fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 0, __DONE__: true, __REPORT__: '窗口最终文本' }) + '\n__EXIT__=0', 'utf8');
-    assert.equal(readReportFromResult(rf, 'whatever-token'), '窗口最终文本');
-    fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 0, __DONE__: true, __REPORT__: '' }), 'utf8');
+    fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 0, __DONE__: true, __TOKEN__: 'tok', __REPORT__: '窗口最终文本' }) + '\n__EXIT__=0', 'utf8');
+    assert.equal(readReportFromResult(rf, '【本块唯一标识】tok'), '窗口最终文本');
+    assert.equal(readReportFromResult(rf, 'foreign'), '', 'foreign token must not bind');
+    fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 0, __DONE__: false, __TOKEN__: 'tok', __REPORT__: '未完成' }), 'utf8');
+    assert.equal(readReportFromResult(rf, 'tok'), '', 'incomplete marker must not bind');
+    fs.writeFileSync(rf, JSON.stringify({ __EXIT__: 0, __DONE__: true, __TOKEN__: 'tok', __REPORT__: '' }), 'utf8');
     assert.equal(readReportFromResult(rf, 'tok'), '');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+test('runtime: task_complete without own assistant evidence is not verified', async () => {
+  const d = fs.mkdtempSync(path.join(fixtureFamily, 'orch-tc-empty-'));
+  try {
+    const f = path.join(d, 'rollout.jsonl');
+    const token = '【本块唯一标识】tc-empty';
+    const owner = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', turn_id: 'turn-owner', content: [{ text: token }] } });
+    const complete = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-owner' } });
+    fs.writeFileSync(f, owner + '\n' + complete + '\n', 'utf8');
+    const result = await waitTaskComplete(f, 100, '', token, undefined);
+    assert.equal(result.done, true);
+    assert.equal(result.verified, false);
+    assert.equal(result.text, '');
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 test('hygiene: pidFileOfTransient maps every artifact family to its pid file', () => {
@@ -440,7 +504,7 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
   try {
     const body = fs.readFileSync(lp, 'utf8');
     assert.match(body, /Get-LastReport/);
-    assert.match(body, /\$res = \$msg/);
+    assert.match(body, /\$report = \$msg/);
     assert.match(body, /__ORCH_DONE__/);
     assert.match(body, /\$_\.content/);
     assert.match(body, /\$_\.value/);
@@ -509,13 +573,13 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     // 6) 加固（本轮新增）：rollout 达到 task_complete（但既无 __ORCH_DONE__ 也无『完成』汇报，如 selftest/纯只读窗）
     //    时，watchdog 也立即写 .self-closed + 杀净 codex 并 exit 0——避免落到依赖 $sawChild 的陈旧 result 分支，
     //    拖到 orchestrator 的 15s 兜底才收窗（慢/易卡）。层级化：watchdog 只认 __ORCH_DONE__ <token>，不再依赖 SUBAGENTS_DONE。
-    assert.ok(body.includes('$tcDone = $false'), 'watchdog must initialize structured task_complete detection');
+    assert.ok(body.includes('function Read-OwnedRollout'), 'watchdog must share the structured ownership reader');
     assert.match(body, /ConvertFrom-Json -ErrorAction Stop/, 'watchdog must parse JSONL before accepting task_complete');
-    assert.ok(body.includes('$payloadType = if ($payload -and $payload.type)'), 'watchdog must inspect the typed payload event');
+    assert.ok(body.includes("$ev.type -eq 'event_msg' -and $p.type -eq 'task_complete'"), 'watchdog must inspect the typed event envelope');
     assert.match(body, /\$isTaskComplete = .*task_complete/, 'watchdog must recognize the typed task_complete event');
     assert.match(body, /\$ownerTurnId/, 'watchdog must bind completion to the token owner turn');
     assert.doesNotMatch(body, /\$tail \| Where-Object \{ \$_ -match 'task_complete' \}/, 'watchdog must not use raw task_complete substring matching');
-    assert.ok(body.includes("if ($tcDone) {"), 'watchdog task_complete branch must close on task_complete alone (no SUBAGENTS_DONE dependency)');
+    assert.ok(body.includes("if ($owned.done) {"), 'watchdog task_complete branch must close on task_complete alone (no SUBAGENTS_DONE dependency)');
     assert.doesNotMatch(body, /if \(Test-Path -LiteralPath \$resultFile\) \{ exit 0 \}/, 'watchdog must not exit on a stale result file while codex is alive');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
@@ -550,7 +614,7 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
   try {
     const body = fs.readFileSync(lp, 'utf8');
     // 1) watchdog done-detection must match __ORCH_DONE__ <token> without requiring SUBAGENTS_DONE
-    assert.ok(body.includes("$_.Contains('__ORCH_DONE__') -and $_.Contains($token)"), 'watchdog must close on __ORCH_DONE__ <token> alone');
+    assert.ok(body.includes("(Test-MessageToken $msg $tok) -and ($msg.Contains('__ORCH_DONE__')"), 'watchdog must close on __ORCH_DONE__ <token> alone');
     assert.doesNotMatch(body, /\$spawnedAgent -eq \$false -or \$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not require SUBAGENTS_DONE suffix');
     // 2) the done-detection must NOT be gated on a SUBAGENTS_DONE marker
     assert.doesNotMatch(body, /Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not depend on SUBAGENTS_DONE in the rollout');
@@ -558,7 +622,7 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
     const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
     assert.doesNotMatch(src, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'TUI prompt must NOT instruct sub-agent usage (route removed)');
     assert.doesNotMatch(src, /update_goal complete|能力探测/, 'TUI prompt must NOT mention codex goal mechanisms (goal route removed)');
-    assert.match(src, /__ORCH_DONE__ <本窗token>/, 'TUI prompt must instruct the bare __ORCH_DONE__ <token> exit marker');
+    assert.match(fs.readFileSync(path.join(scripts,'core','agent-auth-prompt.txt'),'utf8'), /__ORCH_DONE__ <本执行块token>/, 'the actual auth prompt must instruct the bare completion marker');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
 test('orchestrate-sdk: window completion delegates to independent parent verification',async()=>{
@@ -604,8 +668,9 @@ test('runtime: launcher survives a vanished result dir (plugin upgrade wipe) -> 
 $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $token='${tok}'
+$userLine='{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"${tok}"}]}}'
 $report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
-Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $report -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value @($userLine,$report) -Encoding UTF8
 $PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 $psi=New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName='powershell.exe'; $psi.Arguments='-NoProfile -Command "Start-Sleep -Seconds 600"'; $psi.UseShellExecute=$false
@@ -622,6 +687,7 @@ while($true){Start-Sleep -Seconds 600}`);
   ps = ps.replace(/& 'C:\/Windows\/System32\/WindowsPowerShell\/v1\.0\/powershell\.exe'/g, "Remove-Item -LiteralPath (Split-Path -Parent $resultFile) -Recurse -Force -ErrorAction SilentlyContinue; & 'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'");
   fs.writeFileSync(lp, ps, 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(path.join(sdir,'rollout-000-parent.jsonl'), JSON.stringify({type:'response_item',payload:{type:'function_call_output',turn_id:'parent',output:'__ORCH_DONE__ '+tok+' 完成'}})+'\n'+JSON.stringify({type:'event_msg',payload:{type:'task_complete',turn_id:'parent'}}));
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -673,6 +739,7 @@ while($true){Start-Sleep -Seconds 600}`);
   ps = ps.replace(/&\s*'[^']+'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(path.join(sdir,'rollout-000-parent.jsonl'), JSON.stringify({type:'response_item',payload:{type:'function_call_output',turn_id:'parent',output:'__ORCH_DONE__ '+tok+' 完成'}})+'\n'+JSON.stringify({type:'event_msg',payload:{type:'task_complete',turn_id:'parent'}}));
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -719,6 +786,7 @@ while($true){Start-Sleep -Seconds 600}`);
   ps = ps.replace(/&\s*'[^']+'\s*@agentArgs/g, "& '" + psExe + "' -NoProfile -ExecutionPolicy Bypass -File '" + fakeAgent.replace(/\\/g, '/') + "' @agentArgs");
   fs.writeFileSync(lp, ps, 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(path.join(sdir,'rollout-000-parent.jsonl'), JSON.stringify({type:'response_item',payload:{type:'function_call_output',turn_id:'parent',output:'__ORCH_DONE__ '+tok+' 完成'}})+'\n'+JSON.stringify({type:'event_msg',payload:{type:'task_complete',turn_id:'parent'}}));
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -846,8 +914,9 @@ test('runtime: watchdog self-close reaps codex even when a stale result file pre
 $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $token='${tok}'
+$userLine='{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"${tok}"}]}}'
 $report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
-Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value $report -Encoding UTF8
+Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value @($userLine,$report) -Encoding UTF8
 $PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 $psi=New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName='powershell.exe'; $psi.Arguments='-NoProfile -Command "Start-Sleep -Seconds 600"'; $psi.UseShellExecute=$false
@@ -863,6 +932,7 @@ while($true){Start-Sleep -Seconds 600}`);
   // Simulate a STALE result from a prior window sharing this block path BEFORE the launcher runs.
   fs.writeFileSync(rf, '{"__EXIT__":0,"__DONE__":true,"__REPORT__":"STALE prior run"}', 'utf8');
   const sdir = path.join(ws, 'sdir'); fs.mkdirSync(sdir, { recursive: true });
+  fs.writeFileSync(path.join(sdir,'rollout-000-parent.jsonl'), JSON.stringify({type:'response_item',payload:{type:'function_call_output',turn_id:'parent',output:'__ORCH_DONE__ '+tok+' 完成'}})+'\n'+JSON.stringify({type:'event_msg',payload:{type:'task_complete',turn_id:'parent'}}));
   const env = { ...process.env, ORCH_SESSION_DIR: sdir, ORCH_WATCHDOG_MAX_MIN: '5' };
   const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lp], { env, windowsHide: true, stdio: 'ignore' });
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1032,6 +1102,7 @@ test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', (
     assert.doesNotMatch(body, /AGENT_ARGS\.split\(" "\)/, 'launcher must NOT split AGENT_ARGS by space (would split space-containing values)');
     assert.ok(body.includes("@('--cd'"), 'launcher must start agentArgs with @(--cd...) array literal');
     assert.ok(body.includes('--dangerously-bypass-approvals-and-sandbox'), 'authorized Codex TUI must carry the inherited no-prompt permission envelope');
+    assert.ok(body.includes('"__TOKEN__"'), 'result marker must self-describe its block token');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } } }
 });
 ﻿

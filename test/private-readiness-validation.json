@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-09-13T04:37:56.835Z",
+  "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
+  "coreVersion": "1.4.0-rc.1",
+  "releaseSchema": 2,
+  "runtimeFiles": 50,
+  "installed": "codex-tui-orchestrator@personal",
+  "marketplaceRegistration": "passed",
+  "officialInstall": "passed",
+  "doctor": "passed (previously read back)",
+  "cacheReleaseHashMatch": true,
+  "selftestClose": {
+    "passed": true,
+    "done": true,
+    "reportCaptured": true,
+    "final": "【本块唯一标识】selftest-mtzbox98 完成 自检OK",
+    "launcherAlive": false,
+    "forcedClose": false,
+    "orphanAgent": false,
+    "orphanCheckSucceeded": true,
+    "agentExitCode": 0,
+    "sessionDiscovery": "receipt fast path; owned rollout parser verified against native JSONL",
+    "verifiedBy": "installed cache"
+  },
+  "offlineRegression": {
+    "passed": true,
+    "tests": 241,
+    "passedTests": 240,
+    "failedTests": 0,
+    "skippedTests": 1,
+    "lastRun": "final full suite after session-ownership and report-reader fixes"
+  },
+  "remainingGates": [
+    "continuous input foreground readiness",
+    "capacity-level multi-task receipts",
+    "clean-user install",
+    "manager upgrade/rollback",
+    "prolonged outage and reboot recovery"
+  ],
+  "public": false
+}
