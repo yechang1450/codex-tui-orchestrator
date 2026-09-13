@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-13T05:21:15.356Z",
+  "generatedAt": "2026-09-13T05:45:30Z",
   "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
@@ -29,7 +29,7 @@
     "passedTests": 240,
     "failedTests": 0,
     "skippedTests": 1,
-    "lastRun": "final full suite after session-ownership and report-reader fixes"
+    "lastRun": "2026-09-13T05:45:30Z; node --test --test-concurrency=1 test/*.test.mjs"
   },
   "securityScan": {
     "status": "complete",
