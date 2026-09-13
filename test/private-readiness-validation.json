@@ -140,6 +140,17 @@
     "rollback": "not-executable-without-a-second-version-and-Git-marketplace",
     "verifiedAt": "2026-09-13T06:57:43Z"
   },
+  "rebootBridge": {
+    "status": "ready_for_user_reboot",
+    "script": "test/reboot-validation.ps1",
+    "protocol": "prepare -> user reboot and logon -> RunOnce collect -> read post-reboot.json",
+    "prepareDryRun": true,
+    "collectDryRun": true,
+    "dryRunBootChanged": false,
+    "dryRunHealthChecksPassed": true,
+    "dryRunExitCode": 1,
+    "verifiedAt": "2026-09-13T07:55:03Z"
+  },
   "remainingGates": [
     "continuous input foreground readiness",
     "capacity-level multi-task receipts",
