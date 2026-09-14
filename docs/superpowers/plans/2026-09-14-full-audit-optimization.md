@@ -48,4 +48,4 @@
 
 - [x] Update evidence only from current hashes and real output.
 - [x] List remaining provider, foreground, network, reboot and automatic-dispatch gates explicitly.
-- [ ] Commit and push only the verified changes; keep visibility Private until the release policy permits publication.
+- [x] Commit and push only the verified changes; keep visibility Private until the release policy permits publication.
