@@ -1,9 +1,7 @@
 {
   "generatedAt": "2026-09-14T03:56:34.865Z",
-  "commit": "c28bb0beb239bdb4835487dac9889adf9f15b044",
-  "worktree": [
-    "M release.json M skills/codex-tui-orchestrator/SKILL.md?? docs/superpowers/plans/2026-09-14-full-audit-optimization.md?? test/full-audit-powershell.json?? test/full-audit-syntax.json?? test/plugin-eval-current.md?? test/plugin-eval-skill-current.md"
-  ],
+  "commit": "020808d98f5ef229978758a917307843d87ccca3",
+  "worktree": [],
   "repository": {
     "remote": "https://github.com/yechang1450/codex-tui-orchestrator",
     "visibility": "PRIVATE",
