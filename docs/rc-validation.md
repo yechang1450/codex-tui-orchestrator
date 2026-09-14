@@ -12,7 +12,7 @@
 - [x] 已安装缓存真实 `selftest-close` 与会话归属：修复原始 token 误命中父会话；最新回执确认自检通过（正确回复、自然退出、无强制关闭、无孤儿进程）。
 - [ ] 当前快照的容量级真实 Codex 任务全部得到有效回执。本轮 12 容量/13 任务实测峰值 11，19 次启动中多块收到 provider `429 Too Many Requests`、模型刷新超时或 rollout 线程丢失，最终回执不完整；详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
-- [ ] 实际插件管理器升级与回滚、长期断网、未完成真实模型任务跨系统重启恢复、登录后自动收集。干净隔离 `CODEX_HOME` 的注册、官方安装、doctor、卸载读回已通过；控制器停止/接管与受控本地 HTTP 故障恢复 9/9 已通过。local marketplace 不支持 `marketplace upgrade`；防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
 
 ## 跨重启验收桥接
@@ -68,7 +68,7 @@ powershell.exe -NoProfile -File .\test\reboot-validation.ps1 -Mode collect -Id r
 | 已安装缓存的 12 块 / 13 任务 headless | 容量 12、峰值 11、19 次尝试；provider 429 导致 4 项无有效回执，严格未通过 |
 | exec/TUI 状态专项验收 | 离线 5/5，通过；真实 headless + 可见 TUI 2/2，通过；覆盖 model/effort、TodoList、spawn 群及宿主边界 |
 
-历史汇总在 `test/exec-headless-validation-1.4.0-rc.1.json`，生成时间为 2026-09-11。它没有记录本次修改后的封存哈希，不能单独证明当前快照通过。当前 core 1.4.0-rc.1 的历史流程逐项记录在 [当前流程证据](../test/live-process-validation-current.json)：headless、可见 TUI、控制器中断后恢复接管、监督器、低层 `--spawn` 结果捕获、`--verify-run`、受控网络恢复和发行包流程均有实际结果；Legacy 控制台焦点保护、连续输入探针和个人 marketplace 注册及官方安装已通过；升级/回滚仍未验证。这些证据不替代容量级多任务验收。提交 `dea90f4a3d5e482b70e4cc9bea694133ad82615a` 还完成了覆盖 162 个文件的离线安全审计，报告项为 0；审计范围是当前源代码、PowerShell 启动器、清单、CI、文档、测试和已跟踪证据，限制是未进行外部部署或恶意多用户运行。仓库中的进程级回归覆盖主控崩溃接管、未完成副作用不重放、启动准入失败、日志故障、输出截断、非零退出和任务逐项状态。
+历史汇总在 `test/exec-headless-validation-1.4.0-rc.1.json`，生成时间为 2026-09-11。它没有记录本次修改后的封存哈希，不能单独证明当前快照通过。当前 core 1.4.0-rc.1 的历史流程逐项记录在 [当前流程证据](../test/live-process-validation-current.json)：headless、可见 TUI、控制器中断后恢复接管、监督器、低层 `--spawn` 结果捕获、`--verify-run`、受控网络恢复和发行包流程均有实际结果；Legacy 控制台焦点保护、连续输入探针和个人 marketplace 注册及官方安装已通过；当前隔离官方 Git 管理器生命周期见 [管理器证据](../test/manager-lifecycle-validation.json)。这些证据不替代容量级多任务验收。提交 `dea90f4a3d5e482b70e4cc9bea694133ad82615a` 还完成了覆盖 162 个文件的离线安全审计，报告项为 0；审计范围是当前源代码、PowerShell 启动器、清单、CI、文档、测试和已跟踪证据，限制是未进行外部部署或恶意多用户运行。仓库中的进程级回归覆盖主控崩溃接管、未完成副作用不重放、启动准入失败、日志故障、输出截断、非零退出和任务逐项状态。
 
 历史 GitHub 重装检查直接使用远端全新克隆与锁文件依赖安装，没有复制旧 SDK 或运行档案；沿用本机已安装的 Codex CLI。它只验证所记提交的分发与脚本安装，不替代插件管理器注册/重新启用、跨用户安装或真实模型服务验收。验证副本与临时运行记录不纳入 Git。
 

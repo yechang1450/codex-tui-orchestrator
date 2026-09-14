@@ -72,7 +72,7 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 
 ## 诊断和发布
 
-- --doctor 检查依赖；--plan 仅规划；--status --readonly 检查窗口与锁。
+- --doctor 检查依赖；--plan 仅规划；--status --readonly 检查窗口与锁。插件管理器每次安装、升级或回退都会建立没有 `node_modules` 的新缓存；对 manager 返回的安装路径先运行 `npm ci --prefix <installed>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`，再运行完整性检查和 doctor。缺少 SDK 时 doctor 会给出同一条带安全引号的修复命令。
 - node <插件绝对路径>/scripts/release-integrity.mjs 校验发布核心。
 - 开发改动经回归与相关真实验收后才能发布。修改核心前确认没有活动窗口，不热替换正在运行的版本。
 - Codex 使用现有登录的 HTTPS Responses 配置，避免 WebSocket 首次超时回退；HTTPS 仍可能遇到断网。

@@ -62,7 +62,7 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 如果要放到其他安装父目录，也可以把 `$InstallRoot` 改成目标路径后执行同一段命令。
 
-依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；每次 `codex plugin add`、升级或回退后，都要对该次安装返回的插件路径运行 `npm ci --prefix <安装路径>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`，再用同一个安装路径运行完整性检查和 doctor。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
 
 已有个人 marketplace（插件目录）条目必须使用规范小写名称 `codex-tui-orchestrator`，并实际指向本仓库。下面的命令先核对源码位置，只修正旧条目的名称大小写，再调用官方安装器；保留原顺序、源码路径、策略和其他插件。条目缺失、重复、属于远端或指向其他源码时会停止，不会新建 marketplace。从本仓库完成依赖安装和完整性验证后运行；重装后在新的 Codex 对话中加载更新的技能。
 

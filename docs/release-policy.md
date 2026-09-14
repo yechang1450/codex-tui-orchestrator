@@ -13,13 +13,13 @@ Maintainer procedure:
 5. Use `node repair.mjs --target <fresh-version-parent>` to create a clean distribution. Source and copied package must pass integrity verification. Existing targets are rejected to avoid stale mixed releases. Runtime temp, dependencies, evaluation state and git metadata are excluded. Core directory links are rejected rather than materialized.
 6. Verify the copied release before activation. The plugin manager remains responsible for version activation and rollback; never hot-replace a running core.
 
-Runtime upgrades must retain the task ledger, calculated memory capacity, independent acceptance, process identity and bounded recovery contracts. Uncertain external effects cannot be made exactly-once by a local retry mechanism.
+Runtime upgrades must retain the task ledger, calculated memory capacity, independent acceptance, process identity and bounded recovery contracts. Uncertain external effects cannot be made exactly-once by a local retry mechanism. Git marketplace installs are checked after checkout with LF-only text, locked dependency restoration in the manager-created cache, release integrity and doctor; sealing rejects CRLF runtime text so a Windows working copy cannot produce a package whose hashes change after Git checkout.
 
 The legacy mixed-case invocation remains documented for existing local references, while the canonical manifest and skill identifiers use lowercase hyphen-case. On Windows the existing marketplace source path remains compatible; any non-Windows migration must update that path explicitly.
 
 ## Current candidate: core 1.4.0-rc.1
 
-Plugin 0.5.0-rc.1 introduces default headless exec, optional visible TUI and a shared task/block status stream. The current candidate remains Private until the installed selftest-close, capacity run and environment gates are recorded as passed. See [RC validation](rc-validation.md) for fresh source/package and live results. Publication still requires the complete source and fresh package gates. The personal marketplace registration and official install now read back successfully, while upgrade/rollback remains unverified; native Codex UI cards are a host integration interface, not injected by the skill.
+Plugin 0.5.0-rc.1 introduces default headless exec, optional visible TUI and a shared task/block status stream. The current candidate remains Private until the installed selftest-close, capacity run and environment gates are recorded as passed. See [RC validation](rc-validation.md) for fresh source/package and live results. Publication still requires the complete source and fresh package gates. The official manager Git lifecycle (add, install, upgrade, rollback, remove and uninstall) is recorded in [manager lifecycle evidence](../test/manager-lifecycle-validation.json) using an isolated local Git transport; it validates manager/cache behavior, not external GitHub reachability. Native Codex UI cards are a host integration interface, not injected by the skill.
 
 ## Earlier validation (core 1.3.4-rc.1)
 
@@ -35,7 +35,7 @@ The 153/153 and 149/149 figures in this historical section are 1.3.1 evidence, n
 
 Codex Security completed standard scans with zero findings: dedicated scan `2350bc0e-afa1-451e-a746-8b36e917ee8c` remains bound to the current dedicated core, while generic scan `7f121996-73fe-4b81-bbce-2d02c9cdc0f6` is explicitly retained as a historical baseline because the generic core changed afterward. The reports are marked partial because an independent baseline worker was unavailable and long-running environment gates remain separate; a generic current-core rescan is required before calling that evidence current. The current 153/153 and 149/149 regressions are recorded in [security evidence](../test/security-validation-1.3.1.json), along with the explicit follow-up limits.
 
-Clean-user install, actual plugin-manager activation/rollback, a model-backed current-core eight-window/nine-task run with receipts and serial overflow, controller adoption after interruption, a prolonged provider outage and an operating-system reboot remain separate acceptance gates. They must be recorded with current hashes before calling this a broad stable release.
+Clean-user install, a model-backed current-core eight-window/nine-task run with receipts and serial overflow, controller adoption after interruption, a prolonged provider outage and an operating-system reboot remain separate acceptance gates. The manager lifecycle is covered by an isolated official Git transport fixture; a public GitHub fetch should be rechecked after the repository is public. These gates must be recorded with current hashes before calling this a broad stable release.
 
 ## Historical validation (core 1.2.0)
 

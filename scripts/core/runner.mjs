@@ -16,7 +16,13 @@ export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100
   const deadline=Date.now()+timeout;
   while(true){
     let current;
-    try{current=snapshot(Math.min(3000,Math.max(1,deadline-Date.now())));}catch{return false;}
+    try{current=snapshot(Math.min(3000,Math.max(1,deadline-Date.now())));}catch{
+      // Process enumeration can briefly fail while a launcher exits. Retry within
+      // the same bounded window; an exhausted or continuously unreadable snapshot
+      // remains unproven and must retain the lease.
+      if(Date.now()>=deadline)return false;
+      await pause(Math.min(interval,Math.max(1,deadline-Date.now())));continue;
+    }
     if(!sameProcess(expected,current?.get(Number(expected.ProcessId))))return true;
     if(Date.now()>=deadline)return false;
     await pause(Math.min(interval,Math.max(1,deadline-Date.now())));
@@ -301,7 +307,14 @@ export async function runWindows(request,hooks,options={}) {
         finally {
           if(!identity&&la)identity=identify(hooks.readPid(la.pidf),la.pidf);
           if(identity)await hooks.close(identity.ProcessId,identity);
-          if(identity&&!(await waitExit(identity))){e.status='failed';e.reason='Launcher still alive; lease retained';persist();return;}
+          if(identity&&!(await waitExit(identity))){
+            // Keep the lease for resume/adoption, but never leave tasks at their
+            // initial pending state when a durable checkpoint is already present.
+            refreshTaskProgress(sum);
+            const uncertain=blockCheckpoints(e,b,sum);
+            for(const id of b.taskIds)if(uncertain[id]?.state==='started')sum.taskResults[id]={status:'needs-reconciliation',reason:'Launcher exit is unproven; reconcile before retrying',checkpoint:uncertain[id]};
+            e.status='failed';e.reason='Launcher still alive; lease retained';e.endedAt=Date.now();persist();return;
+          }
           await coordinate(()=>release(coordinator,e.leaseId||leaseId),Date.now()+30000);
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;

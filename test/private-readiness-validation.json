@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-13T13:00:34.725Z",
+  "generatedAt": "2026-09-14T03:05:56.527Z",
   "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
@@ -25,11 +25,11 @@
   },
   "offlineRegression": {
     "passed": true,
-    "tests": 241,
-    "passedTests": 240,
+    "tests": 248,
+    "passedTests": 247,
     "failedTests": 0,
     "skippedTests": 1,
-    "lastRun": "2026-09-13T05:45:30Z; node --test --test-concurrency=1 test/*.test.mjs"
+    "lastRun": "2026-09-14; node --test --test-concurrency=1 test/*.test.mjs"
   },
   "securityScan": {
     "status": "complete",
@@ -94,7 +94,7 @@
     "verifiedAt": "2026-09-13T06:57:43Z"
   },
   "networkFaultAttempt": {
-    "status": "controlled_faults_passed",
+    "status": "controlled_faults_passed_after_recovery-finalization-fix",
     "test": "test/recovery-runtime.test.mjs",
     "tests": 9,
     "passedTests": 9,
@@ -110,7 +110,8 @@
       "resume reconciles without duplicate side effects"
     ],
     "limitation": "受控本地 HTTP 故障，不等价于 provider 长断网或系统级断网",
-    "verifiedAt": "2026-09-13T06:57:43Z"
+    "verifiedAt": "2026-09-14T03:05:56.531Z",
+    "repeatedResponseTimeoutRounds": 5
   },
   "firewallAttempt": {
     "status": "blocked_by_permission",
@@ -137,12 +138,19 @@
     "verifiedAt": "2026-09-13T06:57:43Z"
   },
   "managerUpgradeAttempt": {
-    "status": "unsupported_for_local_marketplace",
-    "marketplace": "clean-validation",
-    "upgradeExitCode": 1,
-    "error": "marketplace is not configured as a Git marketplace",
-    "rollback": "not-executable-without-a-second-version-and-Git-marketplace",
-    "verifiedAt": "2026-09-13T06:57:43Z"
+    "status": "passed_isolated_official_git_lifecycle",
+    "evidence": "test/manager-lifecycle-validation.json",
+    "transport": "scoped local Git transport fixture; external GitHub fetch not claimed",
+    "operations": [
+      "add",
+      "install",
+      "upgrade",
+      "rollback",
+      "remove",
+      "uninstall"
+    ],
+    "cacheRequirement": "每次 manager add/upgrade/rollback 后需对新缓存 npm ci，再做 integrity/doctor",
+    "verifiedAt": "2026-09-14T03:05:56.531Z"
   },
   "rebootBridge": {
     "status": "manual_collection_verified_automatic_dispatch_unverified",
@@ -174,7 +182,6 @@
   "remainingGates": [
     "continuous input foreground readiness",
     "capacity-level multi-task receipts",
-    "manager upgrade/rollback",
     "prolonged provider outage",
     "unfinished real model task recovery across OS reboot",
     "automatic post-logon collector dispatch"
@@ -219,5 +226,11 @@
     "releaseSha256": "f824bcd7d7d1ee49c375857d0b89e05615ce2f9a73c28f1222f54eb15a3397f8",
     "evidenceRoot": "temp/reboot-validation-user-reboot-20260913-155851",
     "verifiedAt": "2026-09-13T12:48:15.8489683Z"
+  },
+  "implementationChanges": {
+    "recoveryExitEvidence": "passed: bounded process snapshot retry and durable started checkpoint no longer remain pending when launcher exit is unproven",
+    "ledgerRunId": "passed: strict protocol-2 runId validation",
+    "releaseEol": "passed: seal rejects CRLF runtime text before replacing release manifest",
+    "managerLifecycle": "passed in isolated official Git marketplace fixture; external GitHub reachability remains unclaimed"
   }
 }

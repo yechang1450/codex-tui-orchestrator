@@ -36,8 +36,17 @@ export function runtimeInventory(pluginRoot){
  for(const rel of ['.codex-plugin','repair.mjs','scripts','skills'])walk(rel);
  return files;
 }
+function assertCanonicalTextLineEndings(pluginRoot){
+ const textExt=/\.(?:cjs|json|mjs|md|ps1|py|txt|yaml|yml)$/i;
+ for(const rel of Object.keys(runtimeInventory(pluginRoot))){
+  if(!textExt.test(rel))continue;
+  const bytes=fs.readFileSync(path.join(pluginRoot,rel));
+  if(bytes.includes(13))throw new Error('RELEASE_NONCANONICAL_LINE_ENDINGS: '+rel+' contains CRLF; normalize to LF before sealing');
+ }
+}
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  if(process.argv.includes('--seal')){
+  assertCanonicalTextLineEndings(root);
   const files=coreInventory(root),text=fs.readFileSync(path.join(root,'scripts','core','contracts.mjs'),'utf8');
   const coreVersion=/CORE_VERSION\s*=\s*'([^']+)'/.exec(text)?.[1];if(!coreVersion)throw new Error('Missing core version');
   fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion,files,runtimeFiles:runtimeInventory(root)},null,2)+'\n','utf8');

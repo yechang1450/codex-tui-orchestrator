@@ -22,7 +22,7 @@ test('saved recovery ledger rejects inconsistent inventories without mutating in
  const changes=[s=>s.tasks.pop(),s=>s.tasks[0].prompt='changed',s=>s.blocks[0].taskIds.pop(),
   s=>s.blocks[0].taskIds.push('T001'),s=>s.plan=[],s=>s.plan[0].b.tasks[0].sourceIds.reverse(),
   s=>delete s.results.B1,s=>s.results.extra={},s=>delete s.taskResults.T001,
-  s=>s.generation=0,s=>s.history=null,s=>s.executionMode='unknown',s=>s.plan[0].dependsOn=['B1'],
+  s=>s.generation=0,s=>s.history=null,s=>delete s.runId,s=>s.runId='',s=>s.runId='../foreign',s=>s.runId=123,s=>s.executionMode='unknown',s=>s.plan[0].dependsOn=['B1'],
   s=>s.results.B1.status='running',s=>s.results.B1.launcherFiles={pidf:'window.pid'},
   s=>s.results.B1.attempts=null,s=>s.results.B1.attempts=[{runId:'foreign',token:'t',file:'x',taskIds:['T001']}]];
  for(const change of changes){const value=structuredClone(valid);change(value);const saved=JSON.stringify(value);

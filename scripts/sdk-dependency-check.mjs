@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 const scripts=fileURLToPath(new URL('.',import.meta.url));
-const instruction='npm ci --prefix '+JSON.stringify(scripts);
+// Keep the repair command copy/paste-safe in PowerShell and shell environments.
+const instruction='npm ci --prefix '+(process.platform==='win32'?`'${scripts.replaceAll("'","''")}'`:JSON.stringify(scripts))+' --omit=optional --ignore-scripts --no-audit --no-fund';
 let entry;
 try{entry=fileURLToPath(import.meta.resolve('@openai/codex-sdk'));}
 catch(error){

@@ -16,6 +16,11 @@ test('launcher exit verification tolerates a short process teardown race',async(
  assert.equal(gone,true);
  const stuck=await waitForProcessExit(expected,{timeoutMs:20,intervalMs:10,snapshot:()=>new Map([[7,expected]])});
  assert.equal(stuck,false);
+ let transientCalls=0;
+ const transient=await waitForProcessExit(expected,{timeoutMs:200,intervalMs:10,snapshot:()=>{if(transientCalls++===0)throw new Error('snapshot unavailable');return new Map();}});
+ assert.equal(transient,true,'retry a transient process snapshot failure within the existing deadline');
+ const unreadable=await waitForProcessExit(expected,{timeoutMs:20,intervalMs:10,snapshot:()=>{throw new Error('snapshot unavailable');}});
+ assert.equal(unreadable,false,'unavailable process evidence must never prove exit');
 });
 test('checkpoint refuses duplicate execution and completion without a start record',()=>{
  fs.mkdirSync(family,{recursive:true});const d=fs.mkdtempSync(path.join(family,'checkpoints-'));
@@ -116,7 +121,7 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
  try{const opts={workspace:d,capacity:8,runId:'partial',acceptanceFile:checks,coordinator:path.join(d,'temp','coordinator'),auth:'test'};
   const sum=await runWindows('执行甲；执行乙',hooks,opts);
   if(fault==='started-only'){
-   assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation');
+   assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation',JSON.stringify(sum));
    assert.equal(sum.taskResults.T002.checkpoint.state,'started');assert.deepEqual(attempts,[['T001','T002']]);
    const resumed=await runWindows('',hooks,{...opts,resume:true});
    assert.equal(resumed.success,false);assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(attempts.length,1);

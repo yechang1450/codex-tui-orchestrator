@@ -5,6 +5,24 @@ import path from 'node:path';
 import {coreInventory,verifyRelease,runtimeInventory} from '../scripts/release-integrity.mjs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+
+test('sealing rejects CRLF runtime text before replacing the release manifest',()=>{
+ const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-eol-'));
+ try{
+  for(const dir of ['.codex-plugin','scripts/core','skills'])fs.mkdirSync(path.join(root,dir),{recursive:true});
+  fs.copyFileSync(fileURLToPath(new URL('../scripts/release-integrity.mjs',import.meta.url)),path.join(root,'scripts/release-integrity.mjs'));
+  fs.writeFileSync(path.join(root,'scripts/core/contracts.mjs'),"export const CORE_VERSION='test';\n");
+  fs.writeFileSync(path.join(root,'scripts/core/orchestrate-sdk.mjs'),'// entry\n');
+  fs.writeFileSync(path.join(root,'repair.mjs'),'// repair\n');
+  const manifest=path.join(root,'.codex-plugin/plugin.json');fs.writeFileSync(manifest,'{\r\n  "name": "fixture"\r\n}\r\n');
+  fs.writeFileSync(path.join(root,'release.json'),'previous seal');
+  const seal=()=>spawnSync(process.execPath,[path.join(root,'scripts/release-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});
+  const rejected=seal();assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/RELEASE_NONCANONICAL_LINE_ENDINGS.*plugin\.json/);
+  assert.equal(fs.readFileSync(path.join(root,'release.json'),'utf8'),'previous seal');
+  fs.writeFileSync(manifest,fs.readFileSync(manifest,'utf8').replaceAll('\r\n','\n'));
+  const accepted=seal();assert.equal(accepted.status,0,accepted.stderr);assert.equal(verifyRelease(root).schema,2);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 test('release verification rejects changed and injected core files',()=>{
  const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-test-'));
  try{const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});
