@@ -1,0 +1,30 @@
+﻿[
+    {
+        "file":  "scripts/core/inactive-window.ps1",
+        "ok":  true,
+        "errors":  [
+
+                   ]
+    },
+    {
+        "file":  "scripts/core/lease-lock.ps1",
+        "ok":  true,
+        "errors":  [
+
+                   ]
+    },
+    {
+        "file":  "test/live-inactive-window.ps1",
+        "ok":  true,
+        "errors":  [
+
+                   ]
+    },
+    {
+        "file":  "test/reboot-validation.ps1",
+        "ok":  true,
+        "errors":  [
+
+                   ]
+    }
+]

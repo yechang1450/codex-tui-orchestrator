@@ -1,0 +1,116 @@
+{
+  "generatedAt": "2026-09-14T03:56:34.865Z",
+  "commit": "c28bb0beb239bdb4835487dac9889adf9f15b044",
+  "worktree": [
+    "M release.json M skills/codex-tui-orchestrator/SKILL.md?? docs/superpowers/plans/2026-09-14-full-audit-optimization.md?? test/full-audit-powershell.json?? test/full-audit-syntax.json?? test/plugin-eval-current.md?? test/plugin-eval-skill-current.md"
+  ],
+  "repository": {
+    "remote": "https://github.com/yechang1450/codex-tui-orchestrator",
+    "visibility": "PRIVATE",
+    "isPrivate": true,
+    "defaultBranch": "master"
+  },
+  "static": {
+    "javascript": {
+      "files": 39,
+      "passed": 39,
+      "failed": 0
+    },
+    "json": {
+      "files": 35,
+      "passed": 35,
+      "failed": 0
+    },
+    "powershell": {
+      "files": 4,
+      "passed": 4,
+      "failed": 0
+    },
+    "release": {
+      "schema": 2,
+      "coreFiles": 24,
+      "runtimeFiles": 50,
+      "verified": true
+    }
+  },
+  "offlineSuite": {
+    "tests": 248,
+    "passed": 247,
+    "failed": 0,
+    "skipped": 1,
+    "command": "node --test --test-concurrency=1 test/*.test.mjs"
+  },
+  "pluginEval": {
+    "pluginRoot": {
+      "score": 86,
+      "grade": "B",
+      "risk": "high",
+      "note": "deferred budget counts repository docs/tests; not runtime load"
+    },
+    "skill": {
+      "score": 95,
+      "grade": "A",
+      "risk": "medium",
+      "invokeTokens": 633
+    }
+  },
+  "realSingleTaskModes": {
+    "runs": [
+      {
+        "mode": "headless",
+        "runId": "mode-headless-9c4b5ece-272b-41fa-9281-3b6aa3fee48c",
+        "exitCode": 1,
+        "closed": true,
+        "passed": false,
+        "receiptKeys": [
+          "answer",
+          "cwd",
+          "nonce"
+        ],
+        "answer": 42,
+        "finalStatus": "needs-reconciliation",
+        "taskStatus": "needs-reconciliation",
+        "checkpoint": "started",
+        "verification": "verified",
+        "reportPath": "temp/mode-headless-9c4b5ece-272b-41fa-9281-3b6aa3fee48c/report.json",
+        "engineLogPath": "temp/mode-headless-9c4b5ece-272b-41fa-9281-3b6aa3fee48c/engine.log"
+      },
+      {
+        "mode": "visible",
+        "runId": "mode-visible-3fb4f990-23c3-4ff9-b91f-b7bbdabb9bad",
+        "exitCode": 1,
+        "closed": true,
+        "passed": false,
+        "receiptKeys": [
+          "answer",
+          "cwd",
+          "nonce"
+        ],
+        "answer": 42,
+        "finalStatus": "needs-reconciliation",
+        "taskStatus": "needs-reconciliation",
+        "checkpoint": "started",
+        "verification": "verified",
+        "reportPath": "temp/mode-visible-3fb4f990-23c3-4ff9-b91f-b7bbdabb9bad/report.json",
+        "engineLogPath": "temp/mode-visible-3fb4f990-23c3-4ff9-b91f-b7bbdabb9bad/engine.log"
+      }
+    ],
+    "normalizedParity": {
+      "sameReceiptShape": true,
+      "sameAnswer": true,
+      "sameFinalStatus": true,
+      "sameTaskStatus": true,
+      "sameCheckpointState": true,
+      "sameVerificationStatus": true,
+      "userLevelOutcome": "both fail closed as needs-reconciliation; headless exposes provider 429, visible exposes no structured provider error"
+    }
+  },
+  "coverageBoundaries": {
+    "capacityMultiTaskReceipts": "not accepted; earlier 12-block/13-task run had provider 429 and incomplete receipts",
+    "foregroundContinuousInput": "not accepted",
+    "prolongedOfflineRecovery": "not accepted",
+    "unfinishedTaskCrossReboot": "not accepted",
+    "runOnceAutomaticCollection": "not accepted",
+    "computerUsePhase": "pending by user direction"
+  }
+}

@@ -15,6 +15,12 @@
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
 
+### 2026-09-14 全量离线与双模式审计
+
+本轮对当前工作树重新执行了 248 项离线回归（247 通过、1 跳过、0 失败），并对 39 个 JavaScript、35 个 JSON、4 个 PowerShell 文件完成语法/解析检查；release integrity 当前为 schema 2、24 个核心文件与 50 个运行时文件，均已重新 seal 并验证。汇总账本见 [full-audit-current.json](../test/full-audit-current.json)。
+
+同一单任务分别以 `exec + headless` 与可见 Windows Terminal TUI 实跑：两次都生成 `answer: 42` 回执，最终都在 provider `429`/不确定副作用下 fail-closed 为 `needs-reconciliation`，退出码均为 1，用户可感知的最终状态一致。该证据只证明单任务模式契约与失败收敛，不替代容量级并发回执、连续前台输入、长期断网、未完成任务跨重启和 RunOnce 自动收集；这些门槛继续保持未通过，computer-use 阶段尚未开始。
+
 ## 跨重启验收桥接
 
 真实重启会中断当前 Codex 对话，证据保存在仓库 `temp/reboot-validation-<ID>/`。`prepare` 要求已跟踪文件没有未提交修改，保存原始提交、启动时间、release.json 哈希以及 Node/Git 绝对路径；Node 会解析到真实安装位置，避免保存版本管理器的临时会话入口。它同时尝试注册 RunOnce（登录时尝试执行一次的启动项）。注册只表示请求已保存，不能保证系统已执行；`-ManualOnly` 可只准备基线，由 Codex 在重启后补收集。

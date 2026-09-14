@@ -74,7 +74,7 @@
     "scripts/supervise.mjs": "91db77e2042b0cfa10f39d8cda9d2b5597b6d0fe1c3166d67b9be58ae06e1c87",
     "scripts/supervisor-core.mjs": "3454e3216f7f8eb2b47f7a0d1a3b46ea1d3085b82ac30411080fc70a182d1f3f",
     "scripts/todo-list.mjs": "050234b9e5cb1220d2a3f2f4da8fb6372472d22c81e67fdeb995864a1556a228",
-    "skills/codex-tui-orchestrator/SKILL.md": "b2f87bb4b13f4943a235626a0dcd16b3fb75e100fcec3e44801fdcf1a0dbb624",
+    "skills/codex-tui-orchestrator/SKILL.md": "97e9fd5089c59f6c800ceee325b9e92123ab92b613d95e88b0cc7fc063fc556a",
     "skills/codex-tui-orchestrator/agents/openai.yaml": "b9002589fac6d51cf9f38f183f49f65eb74815a12e8a409175e249fbfd000e90",
     "skills/codex-tui-orchestrator/assets/icon.png": "4029152ad0a4840e249694ec618bce4990818bbb650ff31625875ae900e08502",
     "skills/codex-tui-orchestrator/assets/icon.svg": "090187303b3f4d4e4f4a3459e9c33b2072ef0b1f88cf4123ab194809512e9ec5"
