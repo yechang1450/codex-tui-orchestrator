@@ -5,6 +5,13 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {runWindows,runDirectory,verifyRun} from '../scripts/core/runner.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+test('runWindows rejects malformed capacity before creating run state',async()=>{
+ const workspace=fs.mkdtempSync(path.join(family,'runner-capacity-'));
+ try {
+  await assert.rejects(()=>runWindows('执行任务',{}, {workspace,runId:'invalid-capacity',capacity:0}),/capacity must be a positive integer/);
+  assert.equal(fs.existsSync(path.join(workspace,'temp','orchestrator','runs','invalid-capacity')),false);
+ } finally { fs.rmSync(workspace,{recursive:true,force:true}); }
+});
 test('failed prerequisite retains both original tasks and never starts its dependent',async()=>{
  fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'runner-'));
  let launches=0;const prompts=[];
@@ -27,7 +34,7 @@ test('failed prerequisite retains both original tasks and never starts its depen
   const goal=JSON.parse(fs.readFileSync(path.join(runDirectory(workspace,'failure'),'goal.json'),'utf8'));
   assert.equal(goal.status,'failed');
   assert.deepEqual(goal.tasks.map(t=>t.id),['T001','T002']);
-  await assert.rejects(()=>runWindows('执行甲',hooks,{workspace,runId:'failure'}),/already exists/);
+  await assert.rejects(()=>runWindows('执行甲',hooks,{workspace,capacity:8,runId:'failure'}),/already exists/);
   assert.throws(()=>verifyRun(workspace,'other-run'),/ENOENT/);
  }finally{await new Promise(r=>setTimeout(r,500));fs.rmSync(workspace,{recursive:true,force:true});}
 });

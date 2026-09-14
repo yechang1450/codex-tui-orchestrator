@@ -36,6 +36,15 @@ test('clean published package runs doctor and guards its public polling entry',(
    assert.ok(fs.readFileSync(path.join(pkg,'release.json')).equals(previousManifest));
    assert.deepEqual(verifyRelease(pkg),verifyRelease(source),'previous release remains valid');
   }
+  for(const required of ['docs/privacy.md','docs/terms.md']){
+   const omit='import fs from "node:fs";const copy=fs.copyFileSync;fs.copyFileSync=(...args)=>{if(String(args[0]).replaceAll("\\\\","/").endsWith('+JSON.stringify(required)+'))return;return copy(...args)};';
+   const destination=path.join(root,'missing-'+path.basename(required,'.md'));
+   const incomplete=spawnSync(process.execPath,['--import','data:text/javascript,'+encodeURIComponent(omit),path.join(fixture,'repair.mjs'),'--target',destination],{cwd:root,encoding:'utf8',windowsHide:true,timeout:30000});
+   assert.equal(incomplete.status,2,'must reject staged package without '+required);
+   assert.match(incomplete.stderr,/Staged package missing required/);
+   assert.deepEqual(fs.readdirSync(destination),[],'failed stage must be removed');
+   assert.deepEqual(verifyRelease(pkg),verifyRelease(source),'previous release remains valid');
+  }
   const next=run(path.join(fixture,'repair.mjs'),['--target',path.join(root,'next-version')]);
   assert.equal(next.status,0,next.stderr);assert.deepEqual(verifyRelease(path.join(root,'next-version','candidate')),verifyRelease(pkg));
   for(const name of ['.git','temp','.plugin-eval','node_modules'])assert.equal(fs.existsSync(path.join(pkg,name)),false);

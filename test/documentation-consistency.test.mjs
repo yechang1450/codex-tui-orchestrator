@@ -13,6 +13,8 @@ test('current documentation points at the sealed core and labels older evidence 
   const versionRe = new RegExp(`\\b${version.replaceAll('.', '\\.') }\\b`);
   const readme = read('README.md');
   const readmeZh = read('README-zh.md');
+  const skill = read('skills/codex-tui-orchestrator/SKILL.md');
+  const contract = read('docs/execution-contract.md');
   const policy = read('docs/release-policy.md');
   const compatibility = read('docs/compatibility.md');
   const manifest = JSON.parse(read('.codex-plugin/plugin.json'));
@@ -34,4 +36,17 @@ test('current documentation points at the sealed core and labels older evidence 
   assert.match(read('docs/live-validation-1.2.1.md'), /历史|historical/i);
   assert.match(read('docs/live-validation-1.2.3.md'), /历史|historical/i);
   assert.doesNotMatch(readme + readmeZh + policy + compatibility, new RegExp(['blocked', 'by', 'policy'].join('\\s+'), 'i'));
+
+  // The active release surface must describe the current free-memory contract.
+  // Historical implementation plans intentionally retain the formula that was
+  // in effect when they were written and are excluded from this assertion.
+  const activeDocs = [readme, readmeZh, skill, contract, policy].join('\n');
+  assert.doesNotMatch(activeDocs, /reported\s*GiB|1024\s*\/\s*1000|3\s*\/\s*4/i);
+  const capacitySources = [
+    read('scripts/core/contracts.mjs'),
+    read('scripts/core/orchestrate-sdk.mjs'),
+    read('scripts/core/recovery.mjs'),
+    read('test/live-codex.mjs'),
+  ].join('\n');
+  assert.doesNotMatch(capacitySources, /os\.totalmem\s*\(/);
 });

@@ -142,6 +142,10 @@ export function verifyRun(workspace,runId,acceptanceFile) {
 
 export async function runWindows(request,hooks,options={}) {
   const workspace=path.resolve(options.workspace),capacity=options.capacity;
+  // Capacity is a safety boundary shared by planning, admission and recovery.
+  // Reject malformed direct API calls before creating any run state; otherwise
+  // an undefined/zero value can leave a partially initialized ledger behind.
+  if(!Number.isInteger(capacity)||capacity<1)throw new RangeError('capacity must be a positive integer');
   const runId=options.runId||crypto.randomUUID(),dir=runDirectory(workspace,runId),summaryFile=path.join(dir,'summary.json');
   const deadline=Date.now()+(options.timeoutMs||21600000);
   // A resumed run must stay attached to the coordinator recorded in its

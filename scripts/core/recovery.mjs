@@ -1,5 +1,4 @@
-import {levelWaves,verifyChecks,requestTasks,computeMaxWindows,buildTodoList} from './contracts.mjs';
-import os from 'node:os';
+import {levelWaves,verifyChecks,requestTasks,buildTodoList} from './contracts.mjs';
 import {checkpointMatches} from './checkpoint.mjs';
 
 // Validate persisted structure before recovery can change state or invoke tools.
@@ -17,7 +16,10 @@ export function validateRecoverySummary(sum) {
   const expected=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
   if(!Array.isArray(sum.todoList)||!same(sum.todoList,expected))fail('todo list status mismatch');
  }
- if(!Array.isArray(sum.blocks)||!sum.blocks.length||sum.blocks.length>computeMaxWindows(os.freemem() / 1024 ** 2)||!Array.isArray(sum.plan)||sum.plan.length!==sum.blocks.length)fail('block inventory mismatch');
+ // Keep ledger validation deterministic. The caller enforces the current
+ // system-free-memory capacity before resume; re-reading a transient OS
+ // sample here would make verifyRun/recovery fail based on machine load.
+ if(!Array.isArray(sum.blocks)||!sum.blocks.length||!Array.isArray(sum.plan)||sum.plan.length!==sum.blocks.length)fail('block inventory mismatch');
  const ids=tasks.map(t=>t.id),blockIds=sum.blocks.map(b=>b?.key);
  if(!strings(blockIds)||!exact(blockIds,sum.results)||!exact(ids,sum.taskResults))fail('result inventory mismatch');
  const covered=[];

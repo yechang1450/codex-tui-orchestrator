@@ -5,6 +5,7 @@
  * A skill folder is self-contained & publishable when it carries:
  *   SKILL.md + README.md + LICENSE                (must exist)
  *   plus optional docs (README-zh.md, CHANGELOG.md)
+ *   manifest-advertised privacy/terms pages are required when their URLs are present
  *   plus source dirs (scripts/, automations/, references/, data/)
  *   - all free of runtime debris.
  *
@@ -31,6 +32,26 @@ const SKILL = path.basename(__dirname);
 
 const REQUIRED_FILES = ['README.md', 'LICENSE'];
 const OPTIONAL_FILES = ['README-zh.md', 'CHANGELOG.md'];
+
+// If the plugin manifest advertises repository-hosted privacy/terms pages,
+// those pages are part of the publish contract.  Keep the generic repair
+// workflow compatible with older skill roots whose manifest has no such URLs.
+function requiredPublishedFiles(root = __dirname) {
+  const required = [...REQUIRED_FILES];
+  const manifest = path.join(root, '.codex-plugin', 'plugin.json');
+  if (!isRegularFile(manifest)) return required;
+  try {
+    const metadata = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    const urls = [metadata?.interface?.privacyPolicyURL, metadata?.interface?.termsOfServiceURL]
+      .filter(value => typeof value === 'string');
+    if (urls.some(url => /\/docs\/privacy\.md(?:$|[#?])/i.test(url))) required.push('docs/privacy.md');
+    if (urls.some(url => /\/docs\/terms\.md(?:$|[#?])/i.test(url))) required.push('docs/terms.md');
+  } catch {
+    // Manifest validity is handled by the release-integrity snapshot; avoid
+    // making this compatibility helper reject legacy fixture roots.
+  }
+  return required;
+}
 
 const DEBRIS_DIRS = new Set([
   'node_modules',
@@ -110,7 +131,7 @@ function check() {
     console.log('  MISSING skill  SKILL.md (expected under skills/<name>/SKILL.md)');
     problems++;
   }
-  for (const name of REQUIRED_FILES) {
+  for (const name of requiredPublishedFiles()) {
     const full = path.join(__dirname, name);
     const ok = isRegularFile(full);
     const isLink = fs.existsSync(full) && !ok; // 存在但非常规（如符号链接）→ 一致性校验失败
@@ -202,7 +223,7 @@ function publish(targetRoot) {
       process.exit(2);
     }
     // publish 前必须验证必需文件
-    const missing = REQUIRED_FILES.filter((nf) => !isRegularFile(path.join(__dirname, nf)));
+    const missing = requiredPublishedFiles().filter((nf) => !isRegularFile(path.join(__dirname, nf)));
     if (missing.length || !findSkillFile()) { console.error("[" + SKILL + "] publish aborted: missing " + (missing.length ? missing.join(", ") : "skill SKILL.md (under skills/<name>/)")); process.exit(2); }
     const dest = path.join(path.resolve(targetRoot), SKILL);
     if(fs.existsSync(dest))throw new Error('Publish target already exists; choose a fresh version directory');
@@ -229,7 +250,7 @@ function publish(targetRoot) {
       copied++;
     }
     verifyRelease(staging);
-    const missingStaged = REQUIRED_FILES.filter(name => !isRegularFile(path.join(staging, name)));
+    const missingStaged = requiredPublishedFiles(staging).filter(name => !isRegularFile(path.join(staging, name)));
     if(missingStaged.length || !findSkillFile(staging))throw new Error('Staged package missing required: '+(missingStaged.length?missingStaged.join(', '):'skill SKILL.md'));
     if(fs.existsSync(dest))throw new Error('Publish target appeared during publication');
     renamePublishedStaging(staging,dest);staging=undefined;
