@@ -17,7 +17,7 @@ export function validateRecoverySummary(sum) {
   const expected=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
   if(!Array.isArray(sum.todoList)||!same(sum.todoList,expected))fail('todo list status mismatch');
  }
- if(!Array.isArray(sum.blocks)||!sum.blocks.length||sum.blocks.length>computeMaxWindows(os.totalmem()/1024**3)||!Array.isArray(sum.plan)||sum.plan.length!==sum.blocks.length)fail('block inventory mismatch');
+ if(!Array.isArray(sum.blocks)||!sum.blocks.length||sum.blocks.length>computeMaxWindows(os.freemem() / 1024 ** 2)||!Array.isArray(sum.plan)||sum.plan.length!==sum.blocks.length)fail('block inventory mismatch');
  const ids=tasks.map(t=>t.id),blockIds=sum.blocks.map(b=>b?.key);
  if(!strings(blockIds)||!exact(blockIds,sum.results)||!exact(ids,sum.taskResults))fail('result inventory mismatch');
  const covered=[];

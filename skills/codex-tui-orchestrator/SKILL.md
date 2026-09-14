@@ -16,7 +16,7 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 
 ## 规划与执行
 
-- 从发起工作区调用绝对入口，临时文件只进 `workspace/temp/orchestrator`。容量为 `floor(报告 GiB × 1024/1000 × 3/4)`；总块数不得超限，溢出任务在已有块内串行。
+- 从发起工作区调用绝对入口，临时文件只进 `workspace/temp/orchestrator`。容量为 `floor(系统空闲内存MB / 1000)`；总块数不得超限，溢出任务在已有块内串行。
 - 保留原始任务 ID 和原文。按冲突、父子路径锁和依赖拆块；未知、自指、循环依赖在启动前报错，覆盖不确定时保留全部任务并串行兜底。
 - 先生成唯一 run ID 和 acceptance JSON（每个 T001 等任务都要有内容或行为检查），再执行：
   `node <SDK绝对路径> --run-id <ID> --acceptance-file <JSON绝对路径> --exec "<完整请求>"`

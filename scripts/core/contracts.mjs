@@ -15,10 +15,11 @@ export function acceptanceKeyDiff(checks,tasks) {
   return (unknown.length||missing.length)?{unknown,missing}:null;
 }
 
-// 报告 GiB → 最大并发 TUI 窗数：先按 1024/1000 换算，再取四分之三并向下取整。
-// fresh 规划与 --resume-run 的恢复校验共用同一容量；不再额外设置 8 窗硬上限。
-export function computeMaxWindows(memGb) {
-  return Math.floor(memGb * 1024 / 1000 * 3 / 4);
+// 系统空闲内存（MB）→ 最大并发 TUI 窗数：每个窗口预留 1000 MB，向下取整。
+// fresh 规划与 --resume-run 的恢复校验共用同一容量；不再额外设置固定窗口上限。
+export function computeMaxWindows(freeMemoryMb) {
+  const mb = Number(freeMemoryMb);
+  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb / 1000) : 0;
 }
 
 export function summaryComplete(sum, strict = true) {

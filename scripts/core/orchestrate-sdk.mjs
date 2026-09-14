@@ -314,7 +314,7 @@ function fallbackPlan(request) {
  * 重试耗尽仍无合法 JSON 时回退到 fallbackPlan —— 单串行窗，确保整批一定落地。
  * 返回已 normalize + split 的 blocks；绝不因拆块失败而抛错中止整批。
  */
-async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalmem() / 1024 ** 3)) {
+async function decomposeSafely(request, maxWindows = computeMaxWindows(os.freemem() / 1024 ** 2)) {
   const finalize = plan => capPlanBlocks(normalizePlan(plan), maxWindows);
   const hints = resolveHints(); // hints 参与缓存键（moduleToProj/foldRules/tail），防跨项目映射撞缓存
   // 0) 缓存优先：相同请求+相同 hints 的拆块结果永不自动失效（仅 --clear-cache 或删除缓存文件才重置），
@@ -813,7 +813,7 @@ async function warmupWindow(pidf, token) {
 }
 async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token, reservedByRunner = false) {
   const auxiliaryId="aux-"+path.basename(lp); let coordinator;
-  if(!reservedByRunner){coordinator=coordinatorDir(WORKSPACE);const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},computeMaxWindows(os.totalmem()/1024**3));if(!claim.ok)throw new Error("Window admission waiting: "+claim.reason);}
+  if(!reservedByRunner){coordinator=coordinatorDir(WORKSPACE);const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},computeMaxWindows(os.freemem() / 1024 ** 2));if(!claim.ok)throw new Error("Window admission waiting: "+claim.reason);}
   // 恢复调用方传入的重试上限（默认 3）：同步拉起后每次尝试约 2.5s，重试成本可控，兜底 WT 偶发不弹窗。
   for (let attempt = 1; attempt <= maxRetry; attempt++) {
     // 同步拉起（no-activate helper 经 spawnSync 完成 CreateProcessW 再返回）：实测 async 路径窗口经常不弹。
@@ -2242,7 +2242,7 @@ export async function main() {
     if(isOrchestratorSelfMod(request)){console.log(JSON.stringify({mode:'inline',reason:'Modify the orchestrator in the initiating conversation before opening windows'}));return;}
     if(!resume&&await classifyExecutionMode(request)==='inline'){console.log(JSON.stringify({mode:'inline',reason:'Read-only analysis'}));return;}
     if(!checkDiskSpace()) {process.exitCode=1;return;}
-    const capacity=computeMaxWindows(os.totalmem()/1024**3);
+    const capacity=computeMaxWindows(os.freemem() / 1024 ** 2);
     if(capacity<1)throw new Error('Insufficient memory for an execution block');
     let savedMode;
     if(resume){

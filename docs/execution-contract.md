@@ -4,7 +4,7 @@ The dedicated Codex plugin uses a physical release snapshot of scripts/core and 
 
 ## Planning and capacity
 
-Detect memory first: floor(reported memoryGiB * 1024 / 1000 * 3 / 4). The complete plan contains at most this many blocks. Overflow tasks run serially inside existing blocks; no additional capacity waves. Each block starts as soon as its own prerequisites are verified and a capacity/resource lease is available. A dependent of A does not wait for unrelated B. Reject unknown, self and cyclic dependencies before launching. Merge transitive resource conflicts and preserve dependency order. Windows file locks normalize case, separators and existing junction ancestors, and account for directory containment.
+Detect memory first: floor(systemFreeMemoryMB / 1000). The complete plan contains at most this many blocks. Overflow tasks run serially inside existing blocks; no additional capacity waves. Each block starts as soon as its own prerequisites are verified and a capacity/resource lease is available. A dependent of A does not wait for unrelated B. Reject unknown, self and cyclic dependencies before launching. Merge transitive resource conflicts and preserve dependency order. Windows file locks normalize case, separators and existing junction ancestors, and account for directory containment.
 
 The parent persists manifest.json with the original request, the structured TodoList and T001... task identities before asking the planner. Model already_done/feasible flags never authorize omission. Uncertain model coverage falls back to the complete original inventory in a serial block. Each block receives the global TodoList plus its current block view.
 

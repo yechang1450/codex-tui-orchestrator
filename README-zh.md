@@ -182,7 +182,7 @@ Automated tests exercise grouping, dependency-ready scheduling, locks, native CL
 
 ## Capacity-constrained planning
 
-Memory is detected before decomposition. Capacity uses `floor(reportedGiB * 1024 / 1000 * 3 / 4)`; for example, 15.64 reported GiB yields 12 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.
+Memory is detected before decomposition. Capacity uses `floor(systemFreeMemoryMB / 1000)`; for example, 15,640 MB of free memory yields 15 execution blocks. Capacity limits the TOTAL number of execution blocks, not only the size of each launch wave. Every planning path, including cached plans and fallback plans, applies the current capacity before execution.
 
 Overflow blocks are grouped into at most the calculated capacity. Tasks inside a merged block execute serially in dependency order, and all task bodies and conflict keys are retained. Capacity is a per-invocation plan limit, not a cross-process global quota; the shared coordinator applies the same calculated limit across active and reserved windows.
 

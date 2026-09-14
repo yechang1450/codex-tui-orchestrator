@@ -512,14 +512,14 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
-test('orchestrate-sdk computeMaxWindows: reported GiB converted through 1024/1000 then floors three quarters', () => {
-  assert.equal(computeMaxWindows(2), 1, '2 GiB -> floor(2*1024/1000*3/4) -> 1');
-  assert.equal(computeMaxWindows(4), 3, '4 GiB -> floor(4*1024/1000*3/4) -> 3 windows');
-  assert.equal(computeMaxWindows(8), 6, '8 GiB -> floor(8*1024/1000*3/4) -> 6 windows');
-  assert.equal(computeMaxWindows(12), 9, '12 GiB -> floor(12*1024/1000*3/4) -> 9 windows');
-  assert.equal(computeMaxWindows(16), 12, '16 GiB -> floor(16*1024/1000*3/4) -> 12 windows');
-  assert.equal(computeMaxWindows(32), 24, '32 GiB -> floor(32*1024/1000*3/4) -> 24 windows');
-  assert.equal(computeMaxWindows(64), 49, '64 GiB -> floor(64*1024/1000*3/4) -> 49 windows');
+test('orchestrate-sdk computeMaxWindows: floors free memory MB divided by 1000', () => {
+  assert.equal(computeMaxWindows(2_000), 2, '2000 MB -> 2 windows');
+  assert.equal(computeMaxWindows(4_000), 4, '4000 MB -> 4 windows');
+  assert.equal(computeMaxWindows(8_000), 8, '8000 MB -> 8 windows');
+  assert.equal(computeMaxWindows(12_000), 12, '12000 MB -> 12 windows');
+  assert.equal(computeMaxWindows(16_000), 16, '16000 MB -> 16 windows');
+  assert.equal(computeMaxWindows(32_000), 32, '32000 MB -> 32 windows');
+  assert.equal(computeMaxWindows(64_999), 64, '64999 MB -> 64 windows');
 });
 test('orchestrate-sdk applyAuthPromptPolicy: 不注入子代理指令 + 三遍检查 ①②③ -> 1)2)3)（修复 WT CJK 重叠）', () => {
   // 旧 auth 片段：子代理「无超时上限」+ 三遍检查用 ①②③（Windows Terminal CJK 宽度歧义会导致序号与文字重叠）。
@@ -1148,14 +1148,14 @@ test('readReportFromResult: 畸形 JSON/无 REPORT/损坏文件 返回空, 不�
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
-test('computeMaxWindows: reported GiB conversion and floor boundaries', () => {
-  assert.equal(computeMaxWindows(2), 1, '2 GiB -> floor(2*1024/1000*3/4) -> 1');
-  assert.equal(computeMaxWindows(3.9), 2, '3.9 GiB -> floor(3.9*1024/1000*3/4) -> 2');
-  assert.equal(computeMaxWindows(4), 3, '4 GiB -> floor(4*1024/1000*3/4) -> 3');
-  assert.equal(computeMaxWindows(7), 5, '7 GiB -> floor(7*1024/1000*3/4) -> 5');
-  assert.equal(computeMaxWindows(16), 12, '16 GiB -> floor(16*1024/1000*3/4) -> 12');
-  assert.equal(computeMaxWindows(64), 49, '64 GiB -> floor(64*1024/1000*3/4) -> 49');
-  assert.equal(computeMaxWindows(0), 0, '0 -> floor(0) -> 0 (caller refuses unsupported memory)');
+test('computeMaxWindows: free memory MB floor boundaries', () => {
+  assert.equal(computeMaxWindows(2_000), 2, '2000 MB -> 2');
+  assert.equal(computeMaxWindows(3_999), 3, '3999 MB -> 3');
+  assert.equal(computeMaxWindows(4_000), 4, '4000 MB -> 4');
+  assert.equal(computeMaxWindows(7_999), 7, '7999 MB -> 7');
+  assert.equal(computeMaxWindows(16_000), 16, '16000 MB -> 16');
+  assert.equal(computeMaxWindows(64_999), 64, '64999 MB -> 64');
+  assert.equal(computeMaxWindows(0), 0, '0 MB -> 0');
 });
 test('Codex entry rejects unsupported hosts without fallback', async () => {
   const { resolveAgent } = await import(importUrl(path.join(scripts, 'agent.mjs')));
