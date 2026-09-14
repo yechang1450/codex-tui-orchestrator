@@ -139,7 +139,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
@@ -563,6 +563,7 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     assert.match(body, /function Stop-LauncherDescendants/, 'watchdog must define a recursive descendant-kill helper');
     assert.match(body, /Stop-LauncherDescendants \$rootPid/, 'watchdog must invoke the recursive descendant kill');
     assert.match(body, /taskkill \/PID \$v \/F/, 'watchdog must kill each enumerated descendant individually');
+    assert.match(body, /taskkill \/PID \$v \/F \/T/, 'watchdog must atomically reap descendants that appear between process snapshots');
     assert.doesNotMatch(body, /ParentProcessId -eq \$rootPid/, 'watchdog must not be limited to direct children');
     assert.ok(!body.includes('taskkill /PID $PID'), 'watchdog must never force-kill the launcher pid');
     // 4) 加固：watchdog 用连续重扫的 Kill-LauncherTree 兜底（codex 重新生成子进程也一并回收），两个完成分支都调用它
@@ -584,7 +585,7 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
   const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
-  const idxGrace = src.indexOf('const deadline = Date.now() + 60000');
+  const idxGrace = src.search(/const closeGrace = [\s\S]*?const deadline = Date\.now\(\) \+/);
   const idxLeave = src.indexOf('leaving it to self-exit 0');
   assert.ok(idxGrace > -1, 'closeWindowByPid must poll/grace before giving up on a launcher');
   assert.ok(idxLeave > -1, 'closeWindowByPid must leave a stuck launcher to self-exit 0 (no code-1 pane)');
@@ -600,12 +601,25 @@ test('runtime: spawnWindowWithRetry warms up after popup so the parent never rac
   // 1) warmupWindow must be defined
   assert.match(src, /async function warmupWindow/, 'warmupWindow must exist');
   // 2) spawnWindowWithRetry must invoke warmupWindow after confirming popup
-  const idxConfirmed = src.indexOf('windowGenuinelyPopped(pidf, token)) { ok = true; break; }');
+  const idxConfirmed = src.indexOf('windowGenuinelyPopped(pidf, token, lp)) { ok = true; break; }');
   const idxWarmup = src.indexOf('await warmupWindow(pidf, token);');
   assert.ok(idxConfirmed > -1 && idxWarmup > -1, 'spawnWindowWithRetry must confirm popup then warm up');
   assert.ok(idxWarmup > idxConfirmed, 'warmup must run AFTER the popup is confirmed');
   // 3) agentDescendantAlive helper must exist (the durable child detection used by warmup)
   assert.match(src, /function agentDescendantAlive/, 'agentDescendantAlive must exist');
+  assert.match(src, /windowGenuinelyPopped\(pidf, token, lp\)/, 'popup confirmation must recover a late pid by unique launcher path');
+  const runnerSrc = fs.readFileSync(path.join(scripts, 'core', 'runner.mjs'), 'utf8');
+  assert.match(runnerSrc, /runId\+'-a'\+number/, 'retries must use unique launcher/result paths');
+});
+test('runner does not abort healthy visible windows during a 90-second session cold start', () => {
+  const src = fs.readFileSync(path.join(scripts, 'core', 'runner.mjs'), 'utf8');
+  assert.doesNotMatch(src, /hooks\.session\([^\n]*Math\.min\(90000/, 'session discovery must not use a fixed 90-second cutoff');
+  assert.match(src, /hooks\.session\([^\n]*Math\.max\(0,deadline-Date\.now\(\)\)/, 'session discovery must use the remaining run deadline');
+});
+test('CLI hardening covers arbitrary spawn files and every mutually exclusive mode', () => {
+  const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
+  assert.match(src, /existsSync\(probablyFile\).*statSync\(probablyFile\)\.isFile\(\)/, 'spawn must read any regular prompt file');
+  assert.match(src, /modeFlags = new Set\(\[[^\]]*--verify-run/, 'verify-run must participate in mode conflict detection');
 });
 test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent completion is the TUI window\'s own job (层级化)', () => {
   // 层级化（用户设计）：watchdog(爷爷)只认 TUI 窗(儿子)输出 __ORCH_DONE__ <token> 即关窗；
@@ -614,7 +628,8 @@ test('runtime: watchdog closes on __ORCH_DONE__ <token> alone; sub-agent complet
   try {
     const body = fs.readFileSync(lp, 'utf8');
     // 1) watchdog done-detection must match __ORCH_DONE__ <token> without requiring SUBAGENTS_DONE
-    assert.ok(body.includes("(Test-MessageToken $msg $tok) -and ($msg.Contains('__ORCH_DONE__')"), 'watchdog must close on __ORCH_DONE__ <token> alone');
+    assert.match(body, /Test-MessageToken \$msg \$tok\) -and \(\$msg -match .*__ORCH_DONE__/, 'watchdog must close only on a standalone __ORCH_DONE__ <token> marker');
+    assert.doesNotMatch(body, /\$msg\.Contains\('__ORCH_DONE__'\) -or \$msg\.Contains\('完成'\)/, 'watchdog must not close on arbitrary assistant text');
     assert.doesNotMatch(body, /\$spawnedAgent -eq \$false -or \$_.Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not require SUBAGENTS_DONE suffix');
     // 2) the done-detection must NOT be gated on a SUBAGENTS_DONE marker
     assert.doesNotMatch(body, /Contains\('SUBAGENTS_DONE'\)/, 'watchdog must not depend on SUBAGENTS_DONE in the rollout');
@@ -669,7 +684,7 @@ $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $token='${tok}'
 $userLine='{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"${tok}"}]}}'
-$report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
+$report='{"t":"event_msg","payload":{"type":"agent_message","message":"__ORCH_DONE__ ${tok}"}}'
 Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value @($userLine,$report) -Encoding UTF8
 $PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 $psi=New-Object System.Diagnostics.ProcessStartInfo
@@ -915,7 +930,7 @@ $dir=$env:ORCH_SDIR; if(-not $dir){$dir=Join-Path $env:TEMP 'orch-sdir'}
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 $token='${tok}'
 $userLine='{"type":"response_item","payload":{"type":"message","role":"user","content":[{"text":"${tok}"}]}}'
-$report='{"t":"event_msg","payload":{"type":"agent_message","message":"done __ORCH_DONE__ ${tok}"}}'
+$report='{"t":"event_msg","payload":{"type":"agent_message","message":"__ORCH_DONE__ ${tok}"}}'
 Set-Content -LiteralPath (Join-Path $dir ('rollout-'+[guid]::NewGuid().ToString('N').Substring(0,8)+'.jsonl')) -Value @($userLine,$report) -Encoding UTF8
 $PID | Set-Content -LiteralPath '${agentPidFile}' -Encoding UTF8
 $psi=New-Object System.Diagnostics.ProcessStartInfo
@@ -1304,6 +1319,32 @@ test('registry malformed state fails closed instead of bypassing capacity checks
     );
   } finally {
     __setOrchHooks(null);
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
+test('registry lock fails closed and reclaims only a dead stale owner', async () => {
+  const fs = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = fs.mkdtempSync(path2.join(fixtureFamily, 'orch-reg-lock-'));
+  const lockPath = path2.join(root, 'registry.lock');
+  try {
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, startedAt: Date.now() }), 'utf8');
+    let ran = false;
+    assert.throws(
+      () => withRegistryLock(() => { ran = true; }, { lockPath, attempts: 1, retryMs: 0 }),
+      /Registry lock acquisition failed/,
+    );
+    assert.equal(ran, false, 'lock contention must not execute the protected transaction');
+
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 99999999, startedAt: 1 }), 'utf8');
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(lockPath, old, old);
+    let reclaimed = false;
+    withRegistryLock(() => { reclaimed = true; }, { lockPath, attempts: 2, retryMs: 0 });
+    assert.equal(reclaimed, true, 'dead stale lock may be reclaimed');
+    assert.equal(fs.existsSync(lockPath), false, 'lock is released after transaction');
+  } finally {
     try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 });

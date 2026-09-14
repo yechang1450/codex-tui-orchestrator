@@ -11,10 +11,11 @@ export const summaryTerminal=sum=>summaryComplete(sum,false);
 export const failures=sum=>Object.entries(sum?.taskResults||{}).filter(([,r])=>!SUCCESS.has(r.status)).map(([id,r])=>id+':'+r.status);
 export function loadSummary(workspace,runId){try{return JSON.parse(fs.readFileSync(path.join(runDirectory(workspace,runId),'summary.json'),'utf8'));}catch{return null;}}
 export function parsePollingOptions(argv,env=process.env){
-  const result={runId:env.ORCH_RUN_ID,timeoutMs:1800000,intervalMs:5000};
+  const result={runId:env.ORCH_RUN_ID,timeoutMs:1800000,intervalMs:5000,requireAllSuccess:true};
   const fields={'--run-id':'runId','--timeoutMs':'timeoutMs','--intervalMs':'intervalMs'};
   for(let i=0;i<argv.length;i++){
-    const flag=argv[i];if(flag==='--require-all-success')continue;
+    const flag=argv[i];
+    if(flag==='--require-all-success'){result.requireAllSuccess=true;continue;}
     const field=Object.hasOwn(fields,flag)?fields[flag]:null,value=argv[++i];
     if(!field||value===undefined||!value.trim()||value.startsWith('--'))throw new Error('POLL_ARGUMENT_INVALID: '+flag);
     result[field]=field==='runId'?value:Number(value);
@@ -24,7 +25,7 @@ export function parsePollingOptions(argv,env=process.env){
   result.intervalMs=Math.max(500,result.intervalMs);return result;
 }
 export async function main(argv=process.argv.slice(2),hooks={}) {
-  const {runId,timeoutMs,intervalMs:interval}=parsePollingOptions(argv);
+  const {runId,timeoutMs,intervalMs:interval,requireAllSuccess}=parsePollingOptions(argv);
   const {workspace}=resolveRuntimeContext();runDirectory(workspace,runId);
   const now=hooks.now||(()=>performance.now()),sleep=hooks.sleep||(ms=>new Promise(r=>setTimeout(r,ms)));
   const snapshot=hooks.snapshot||processSnapshot,load=hooks.load||loadSummary,log=hooks.log||console.log,error=hooks.error||console.error;
@@ -37,7 +38,7 @@ export async function main(argv=process.argv.slice(2),hooks={}) {
       const processes=snapshot(Math.max(1,Math.ceil(remaining)));
       if(now()>=deadline)break;
       const alive=Object.values(sum.results).some(r=>r.launcher&&sameProcess(r.launcher,processes.get(r.launcher.ProcessId)));
-      if(!alive&&++stable>=2){const ok=summaryComplete(sum,true);log(JSON.stringify({runId,success:ok,failures:failures(sum)}));process.exitCode=ok?0:1;return;}
+      if(!alive&&++stable>=2){const ok=summaryComplete(sum,requireAllSuccess);log(JSON.stringify({runId,success:ok,requireAllSuccess,failures:failures(sum)}));process.exitCode=ok?0:1;return;}
       if(alive)stable=0;
     }else stable=0;
     log('[poll-windows] runId='+runId+' waiting for finalized inventory and closed windows');

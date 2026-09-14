@@ -286,7 +286,11 @@ export async function runWindows(request,hooks,options={}) {
         try {
           if(identity&&!e.launchFailed) {
             e.status='running';refreshTaskProgress(sum);persist(`block.${r.key}.running`);
-            const session=await hooks.session('【本块唯一标识】'+active.token,Math.min(90000,Math.max(0,deadline-Date.now())),la.rf);
+            // Session rollouts can be created well after the visible window is
+            // confirmed (provider/model cold start). Bound discovery by the
+            // run deadline, not an arbitrary 90-second cutoff that closes a
+            // healthy task before its first rollout event exists.
+            const session=await hooks.session('【本块唯一标识】'+active.token,Math.max(0,deadline-Date.now()),la.rf);
             const result=session?await hooks.wait(session,Math.max(0,deadline-Date.now()),la.rf,'【本块唯一标识】'+active.token,la.pidf):{done:fs.existsSync(la.rf),exitCode:hooks.exitCode(la.rf)};
             e.exitCode=result.exitCode??hooks.exitCode(la.rf);e.status=result.done?'awaiting-verification':'timeout';
             if(result.threadId)active.threadId=result.threadId;

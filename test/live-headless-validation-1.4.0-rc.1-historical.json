@@ -15,5 +15,6 @@
   "summarySuccess": true,
   "taskStatus": "verified",
   "receiptAnswer": 42,
-  "receiptCwdMatchesWorkspace": true
+  "receiptCwdMatchesWorkspace": true,
+  "evidenceStatus": "historical"
 }

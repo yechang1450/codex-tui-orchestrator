@@ -1,4 +1,10 @@
 const EXECUTION_MODES=new Set(['headless','visible']);
+const TUI_MODES=new Set(['wt','conhost','inactive']);
+export function resolveTuiMode(value='wt') {
+  const mode=String(value||'wt').trim().toLowerCase();
+  if(!TUI_MODES.has(mode))throw new Error('Invalid ORCH_TUI: '+mode+'; expected wt, conhost or inactive');
+  return mode;
+}
 
 export function resolveExecutionMode(command='',env=process.env,savedMode) {
   let mode;

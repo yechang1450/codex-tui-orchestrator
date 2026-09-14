@@ -14,6 +14,13 @@ test('execution defaults to headless while explicit window commands override cal
   assert.equal(modes.resolveExecutionMode('--headless',{ORCH_EXEC_MODE:'visible'}),'headless');
 });
 
+test('ORCH_TUI accepts only the documented visible hosts and fails closed otherwise',()=>{
+  assert.equal(modes.resolveTuiMode('WT'),'wt');
+  assert.equal(modes.resolveTuiMode(' conhost '),'conhost');
+  assert.equal(modes.resolveTuiMode('INACTIVE'),'inactive');
+  assert.throws(()=>modes.resolveTuiMode('bogus'),/Invalid ORCH_TUI/);
+});
+
 test('doctor reports windowless execution without probing a terminal and preserves explicit visible diagnostics',()=>{
   const entry=fileURLToPath(new URL('../scripts/core/orchestrate-sdk.mjs',import.meta.url));
   for(const mode of ['headless','visible']){

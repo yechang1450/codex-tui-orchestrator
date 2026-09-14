@@ -1,11 +1,11 @@
 {
-    "name":  "codex-tui-orchestrator",
-    "private":  true,
-    "version":  "0.2.0",
-    "scripts":  {
-                    "supervise":  "node supervise.mjs"
-                },
-    "dependencies":  {
-                         "@openai/codex-sdk":  "0.149.0"
-                     }
+  "name": "codex-tui-orchestrator",
+  "private": true,
+  "version": "0.5.0-rc.1+codex.20260913045703",
+  "scripts": {
+    "supervise": "node supervise.mjs"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.149.0"
+  }
 }
