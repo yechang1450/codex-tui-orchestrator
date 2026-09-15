@@ -29,8 +29,10 @@ export const networkConfig = Object.freeze({
   },
 });
 
-export function networkArgs() {
-  const provider = networkConfig.model_providers[networkConfig.model_provider];
+export function networkArgs(env = process.env) {
+  const baseUrl = resolveOpenAIBaseUrl(env);
+  const provider = { ...networkConfig.model_providers[networkConfig.model_provider],
+    ...(baseUrl ? { base_url: baseUrl } : {}) };
   return ['-c', `model_provider=${JSON.stringify(networkConfig.model_provider)}`,
     ...Object.entries(provider).flatMap(([key, value]) =>
       ['-c', `model_providers.${networkConfig.model_provider}.${key}=${JSON.stringify(value)}`])];

@@ -5,9 +5,11 @@ import path from 'node:path';
 export function configureEntryArgs(argv,env=process.env,cwd=process.cwd()){
   const fields={'--agent':'ORCH_AGENT','--cli':'ORCH_CLI','--workspace':'WORKSPACE_DIR',
     '--run-id':'ORCH_RUN_ID','--acceptance-file':'ORCH_ACCEPTANCE_FILE','--acceptance':'ORCH_ACCEPTANCE_FILE'};
-  const remaining=[],values={};
+  const remaining=[],values={};let idCommand=false;
   for(let i=0;i<argv.length;i++){
     const flag=argv[i];
+    if(['--verify-run','--resume-run','--status'].includes(flag))idCommand=true;
+    if((!flag.startsWith('--')&&!idCommand)||flag==='--'){remaining.push(...argv.slice(i));break;}
     if(!Object.hasOwn(fields,flag)){remaining.push(flag);continue;}
     if(Object.hasOwn(values,fields[flag]))throw new Error('Duplicate option: '+flag);
     const value=argv[++i];
@@ -17,4 +19,10 @@ export function configureEntryArgs(argv,env=process.env,cwd=process.cwd()){
   }
   Object.assign(env,values);
   return remaining;
+}
+
+export function leadingModeFlags(argv,modeFlags) {
+  const modes=[];
+  for(const arg of argv){if(!arg.startsWith('--')||arg==='--')break;if(modeFlags.has(arg))modes.push(arg);}
+  return modes;
 }

@@ -13,6 +13,45 @@ export function isCapacityError(value) {
   return /selected\s+model\s+is\s+at\s+capacity|model\s+is\s+at\s+capacity|try\s+a\s+different\s+model|server[_ -]?overloaded|service\s+(?:is\s+)?overloaded|temporarily\s+overloaded|capacity[_ -]?exceeded/.test(text);
 }
 
+/** Return true only for typed account quota/usage-limit responses. */
+export function isProviderQuotaError(value) {
+  const text = errorText(value).toLowerCase();
+  return /usage[_ -]?limit(?:[_ -]?exceeded)?|you['’]?ve\s+hit\s+your\s+usage\s+limit|quota[_ -]?exceeded/.test(text);
+}
+
+// Rollout messages and tool output are task data. Only typed provider errors
+// may interrupt execution or authorize a capacity retry. Codex can emit the
+// provider error directly as `error`/`turn.failed`, or nest it under the
+// structured `task_complete.error` event when the turn closes immediately.
+function* typedProviderErrors(text) {
+  for(const line of String(text||'').split(/\r?\n/)) {
+    let event;try{event=JSON.parse(line);}catch{continue;}
+    const payload=event.type==='event_msg'?event.payload:event;
+    if(!payload)continue;
+    if(['error','turn.failed'].includes(payload.type)) {
+      yield payload;
+      continue;
+    }
+    if(payload.type==='task_complete' && payload.error && typeof payload.error==='object') yield payload.error;
+  }
+}
+export function rolloutCapacityError(text) {
+  for(const payload of typedProviderErrors(text)) {
+    if(isCapacityError(payload))return JSON.stringify(payload);
+  }
+  return '';
+}
+
+// Account quota errors are terminal for this invocation. They are kept
+// separate from transient provider capacity so the runner never reopens a
+// window that cannot succeed until the account window resets.
+export function rolloutQuotaError(text) {
+  for(const payload of typedProviderErrors(text)) {
+    if(isProviderQuotaError(payload))return JSON.stringify(payload);
+  }
+  return '';
+}
+
 function retryAfterMs(value) {
   const text = errorText(value);
   const patterns = [

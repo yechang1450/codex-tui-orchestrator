@@ -6,6 +6,10 @@ import crypto from 'node:crypto';
 import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
+import {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest} from './live-acceptance-utils.mjs';
+import {requestTasks} from '../scripts/core/contracts.mjs';
+import {coreInventory,verifyRelease} from '../scripts/release-integrity.mjs';
 
 const exec = promisify(execFile);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -13,8 +17,8 @@ const workspace = process.cwd();
 const agent=process.env.ORCH_LIVE_AGENT||'codex';
 const executionMode=process.env.ORCH_LIVE_MODE||'visible';
 if(!['headless','visible'].includes(executionMode))throw new Error('Invalid ORCH_LIVE_MODE');
-const coreFiles=fs.readdirSync(path.join(repo,'scripts','core')).filter(n=>/\.(mjs|ps1|txt)$/.test(n)).sort();
-const coreHash=()=>crypto.createHash('sha256').update(coreFiles.map(n=>n+':'+crypto.createHash('sha256').update(fs.readFileSync(path.join(repo,'scripts','core',n))).digest('hex')).join('\n')).digest('hex');
+verifyRelease(repo);
+const coreHash=()=>crypto.createHash('sha256').update(JSON.stringify(coreInventory(repo))).digest('hex');
 const coreHashAtLaunch=coreHash();
 const parent = path.join(workspace, 'temp');
 const name = 'codex-live-'+executionMode+'-' + crypto.randomUUID().replace(/[^a-z]/g, '');
@@ -65,7 +69,8 @@ for (const id of config.ids) {
 // Validate the generated program before spending provider quota on the fixture.
 const syntax=spawnSync(process.execPath,['--check',path.join(root,'project-'+config.ids[0],'probe'+config.ids[0]+'.mjs')],{encoding:'utf8',windowsHide:true});
 if(syntax.status!==0)throw new Error('Invalid live probe: '+syntax.stderr);
-const request = config.ids.map(id => `项目${id}：执行 node ${root.replaceAll('\\', '/')}/project-${id}/probe${id}.mjs 创建 ${root.replaceAll('\\', '/')}/project-${id}/result${id}.json 并等待命令完成后读回该结果文件核验成功，按主持提供的命令逐项记录检查点，禁止另开窗口禁止提交或写记忆`).join('；');
+const request = capacityRequest({ids:config.ids,root,workspace,nonce});
+if(requestTasks(request).length!==config.ids.length)throw new Error('Generated request changed the acceptance task inventory');
 fs.writeFileSync(path.join(root, 'request.txt'), request, 'utf8');
 console.log(JSON.stringify({ root, capacity, tasks: config.ids.length, nonce }));
 const children = [];
@@ -81,7 +86,7 @@ function launch(script, args, label) {
   });
   const done = new Promise(resolve => {
     child.on('error', e => resolve({ code: -1, error: String(e) }));
-    child.on('exit', code => resolve({ code }));
+    child.on('close', code => resolve({ code }));
   });
   return { child, done, output: () => output };
 }
@@ -96,9 +101,14 @@ engine.done.then(() => {
 });
 const samples = [];
 let peak = 0;
+let monitorError=null,runnerCapacity=null;
 const deadline = Date.now() + 970000;
 while (!engineEnded && Date.now() < deadline) {
   try {
+    if(fs.existsSync(summaryFile)){
+      const current=JSON.parse(fs.readFileSync(summaryFile,'utf8'));
+      runnerCapacity=current.capacity;validateCapacitySample(current,capacity);
+    }
     const { stdout } = await exec('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'], { windowsHide: true, timeout: 15000 });
     const processes = JSON.parse(stdout);
     const byPid = new Map(processes.map(p => [p.ProcessId, p]));
@@ -126,16 +136,37 @@ while (!engineEnded && Date.now() < deadline) {
     const sample = { at: Date.now(), live, ready };
     samples.push(sample);
     if (live.length > peak) { peak = live.length; console.log('[measure] peak=' + peak + ' ready=' + ready.length); }
-    if (live.length === capacity && config.ids.slice(0, capacity).every(id => ready.includes(id)) && !fs.existsSync(path.join(root, 'release'))) {
+    validateCapacitySample(null,capacity,live.length);
+    if (runnerCapacity===capacity&&live.length === capacity && config.ids.slice(0, capacity).every(id => ready.includes(id)) && !fs.existsSync(path.join(root, 'release'))) {
       fs.writeFileSync(path.join(root, 'release'), String(Date.now()));
       console.log('[measure] verified calculated live '+agent+' descendants and running probes; barrier released');
     }
-    if (live.length > capacity) throw new Error('Capacity exceeded');
-  } catch (e) { console.log('[measure] ' + String(e)); }
+  } catch (e) { monitorError=String(e);console.log('[measure] ' + monitorError);break; }
   await new Promise(r => setTimeout(r, 3000));
 }
-const engineResult = await engine.done;
-const pollResult = await poll.done;
+if(!engineEnded){
+  monitorError ||= 'Acceptance monitor deadline exhausted';
+  // End only the controllers owned by this harness, then reconcile their workers.
+  for(const child of children)if(child.exitCode===null)child.kill();
+  fs.writeFileSync(path.join(root,'release'),'acceptance aborted');
+  if(fs.existsSync(summaryFile)){
+    const current=JSON.parse(fs.readFileSync(summaryFile,'utf8'));
+    for(const block of Object.values(current.results||{})){
+      if(executionMode==='headless'){
+        const file=block.launcherFiles?.lp;
+        if(file&&path.resolve(file).startsWith(path.resolve(path.dirname(summaryFile))+path.sep)){
+          const worker=JSON.parse(fs.readFileSync(file,'utf8'));
+          if(worker.runId===runId&&worker.token===block.token)fs.writeFileSync(worker.cancel,'cancel');
+        }
+      }else if(block.launcher){
+        const {closeWindowByPid}=await import('../scripts/core/orchestrate-sdk.mjs');
+        await closeWindowByPid(block.launcher.ProcessId,block.launcher);
+      }
+    }
+  }
+}
+const engineResult = await boundedChildResult(engine,20000);
+const pollResult = await boundedChildResult(poll,20000);
 const results = config.ids.map(id => {
   const f = path.join(root, 'project-' + id, 'result' + id + '.json');
   return fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : { id, missing: true };
@@ -147,11 +178,14 @@ const ordered = receiptsValid && results[capacity].started >= results[capacity -
 const windowLaunches = executionMode==='headless'?Object.values(summary?.results||{}).reduce((n,r)=>n+(r.attempts?.length||0),0):(engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
 const uniqueLaunchers = new Set(samples.flatMap(s => s.live.map(w => w.launcherPid))).size;
 const overlap = receiptsValid && Math.max(...results.slice(0, capacity).map(r => r.started)) < Math.min(...results.slice(0, capacity).map(r => r.finished));
-const passed = engineResult.code === 0 && pollResult.code === 0 && peak === capacity && receiptsValid && ordered && overlap
-  && windowLaunches === capacity && uniqueLaunchers === capacity
-  && Object.keys(summary?.results || {}).length === capacity && Object.values(summary.results).every(r => r.status === 'verified');
-const equivalentToCurrentCodexPlugin = passed && windowLaunches <= capacity;
-const report = { coreHashAtLaunch, coreHashAtEnd:coreHash(), coreUnchanged:coreHashAtLaunch===coreHash(), coreVersion:summary?.version, executionMode, passed, equivalentToCurrentCodexPlugin, runId, entry: process.env.ORCH_LIVE_ENTRY||path.join(repo, 'scripts', 'orchestrate-sdk.mjs'), terminal: executionMode==='headless'?null:'wt', workspace, root, nonce, capacity, peak, windowLaunches, uniqueLaunchers, engineResult, pollResult, receiptsValid, ordered, overlap, results, summary, samples };
+const coreHashAtEnd=coreHash();let coreUnchanged=coreHashAtLaunch===coreHashAtEnd;
+try{verifyRelease(repo);}catch(error){coreUnchanged=false;monitorError ||= String(error);}
+const terminal=observedTerminal(executionMode,engine.output());
+let closed=false;
+try{const snapshot=processSnapshot();closed=!!summary&&Object.values(summary.results).every(r=>!sameProcess(r.launcher,snapshot.get(r.launcher?.ProcessId)));}
+catch(error){monitorError ||= String(error);}
+const report = { coreHashAtLaunch,coreHashAtEnd,coreUnchanged,coreVersion:summary?.version,executionMode,runId,entry:process.env.ORCH_LIVE_ENTRY||path.join(repo,'scripts','orchestrate-sdk.mjs'),terminal,workspace,root,nonce,capacity,runnerCapacity,peak,windowLaunches,uniqueLaunchers,engineResult,pollResult,receiptsValid,ordered,overlap,results,summary,samples,monitorError,closed };
+const passed=capacityAcceptancePassed(report);report.passed=passed;report.equivalentToCurrentCodexPlugin=passed;
 fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify(report, null, 2));
 fs.writeFileSync(path.join(root, 'engine.log'), engine.output());
 fs.writeFileSync(path.join(root, 'poll.log'), poll.output());

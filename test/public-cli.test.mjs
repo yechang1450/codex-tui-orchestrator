@@ -57,3 +57,16 @@ test('run and acceptance options cannot consume a mode or silently override each
   assert.equal(env.ORCH_RUN_ID,'demo');
   assert.equal(env.ORCH_ACCEPTANCE_FILE,path.join(repo,'checks.json'));
 });
+
+test('option-like words inside a request remain task data',()=>{
+  const env={};
+  const args=['--exec','修复','--workspace','参数与','--acceptance-file','文档'];
+  assert.deepEqual(configureEntryArgs(args,env,repo),args);
+  assert.deepEqual(env,{});
+});
+
+test('verification options after the positional run ID remain supported',()=>{
+  const env={};
+  assert.deepEqual(configureEntryArgs(['--verify-run','saved','--acceptance-file','replacement.json'],env,repo),['--verify-run','saved']);
+  assert.equal(env.ORCH_ACCEPTANCE_FILE,path.join(repo,'replacement.json'));
+});

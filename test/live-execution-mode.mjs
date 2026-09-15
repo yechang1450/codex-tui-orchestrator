@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
+import {verifyRelease} from '../scripts/release-integrity.mjs';
 const repo=fileURLToPath(new URL('../',import.meta.url)),workspace=process.cwd();
 const mode=process.env.ORCH_LIVE_MODE||'headless';
 const entry=path.resolve(process.env.ORCH_LIVE_ENTRY||path.join(repo,'scripts','orchestrate-sdk.mjs'));
@@ -13,6 +14,7 @@ if(!['headless','visible'].includes(mode))throw new Error('Invalid ORCH_LIVE_MOD
 const runId='mode-'+mode+'-'+crypto.randomUUID(),root=path.join(workspace,'temp',runId);
 const runDir=path.join(workspace,'temp','orchestrator','runs',runId),nonce=crypto.randomUUID();
 const releaseFile=path.resolve(path.dirname(entry),'..','release.json');
+verifyRelease(path.dirname(releaseFile));
 const hash=()=>crypto.createHash('sha256').update(fs.readFileSync(releaseFile)).digest('hex');
 const releaseJsonSha256=hash();fs.mkdirSync(root,{recursive:true});
 const probe=path.join(root,'probe.mjs'),output=path.join(root,'receipt.json'),checks=path.join(root,'acceptance.json');
@@ -32,7 +34,8 @@ const events=fs.existsSync(eventsFile)?fs.readFileSync(eventsFile,'utf8').trim()
 const processes=processSnapshot();
 const closed=!!summary&&Object.values(summary.results).every(r=>!sameProcess(r.launcher,processes.get(r.launcher?.ProcessId)));
 const receipt=fs.existsSync(output)?JSON.parse(fs.readFileSync(output)):null;
-const coreUnchanged=hash()===releaseJsonSha256;
+let coreUnchanged=hash()===releaseJsonSha256;
+try{verifyRelease(path.dirname(releaseFile));}catch{coreUnchanged=false;}
 const report={mode,runId,root,workspace,entry,releaseJsonSha256,coreUnchanged,startedAt,elapsedMs:Date.now()-startedMs,exitCode,closed,
   passed:exitCode===0&&summary?.success===true&&closed&&coreUnchanged&&receipt?.nonce===nonce&&receipt?.cwd===workspace&&receipt?.answer===42,
   receipt,summary,events};

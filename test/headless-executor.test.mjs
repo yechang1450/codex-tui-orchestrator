@@ -42,12 +42,39 @@ test('a busy controller checks the durable readiness PID before declaring elapse
   }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
 });
 
-test('provider capacity diagnostics from stderr remain available to the shared retry policy',async()=>{
+test('unstructured stderr remains diagnostic and cannot authorize capacity replay',async()=>{
   const f=fixture("console.error('Selected model is at capacity; retry after 1 seconds');process.exitCode=1;");
   try{
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
-    assert.equal(result.done,false);assert.match(result.text,/model is at capacity/);
+    assert.equal(result.done,false);assert.match(result.text,/model is at capacity/);assert.equal(result.retryable,undefined);
+  }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
+});
+
+test('headless worker marks a typed provider capacity failure as retryable',async()=>{
+  const f=fixture("console.log(JSON.stringify({type:'turn.failed',error:{message:'Selected model is at capacity'}}));process.exitCode=1;");
+  try{
+    await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
+    const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
+    assert.equal(result.done,false);assert.equal(result.retryable,'capacity');assert.match(result.capacityError,/model is at capacity/);
+  }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
+});
+
+test('headless worker marks an account usage limit as terminal quota',async()=>{
+  const f=fixture("console.log(JSON.stringify({type:'turn.failed',error:{codex_error_info:'usage_limit_exceeded',message:\"You've hit your usage limit\"}}));process.exitCode=1;");
+  try{
+    await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
+    const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
+    assert.equal(result.done,false);assert.equal(result.retryable,'quota');assert.match(result.quotaError,/usage_limit_exceeded/);
+  }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
+});
+
+test('recovered reconnect notifications do not invalidate a successful terminal event',async()=>{
+  const f=fixture("console.log(JSON.stringify({type:'error',message:'Reconnecting... waiting for network (Connection failed: error sending request)'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'recovered'}}));console.log(JSON.stringify({type:'turn.completed'}));");
+  try{
+    await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
+    const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
+    assert.equal(result.done,true);assert.equal(result.text,'recovered');assert.equal(result.retryable,undefined);
   }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
 });
 

@@ -31,3 +31,16 @@ test('relay base URL is optional, normalized, and must end in /v1', () => {
     if (prevRelay === undefined) delete process.env.ORCH_STEADY_RELAY_BASE_URL; else process.env.ORCH_STEADY_RELAY_BASE_URL = prevRelay;
   }
 });
+
+test('configured provider base URL is carried into spawned Codex argv', () => {
+  const previous = process.env.ORCH_OPENAI_BASE_URL;
+  try {
+    process.env.ORCH_OPENAI_BASE_URL = 'https://proxy.example/v1';
+    const args = launchArgs({id:'codex'}, {cwd:'C:/tmp'});
+    assert.ok(args.includes('model_providers.orchestrator-openai-https.base_url="https://proxy.example/v1"'),
+      'visible/headless Codex workers must use the same configured provider endpoint as the SDK planner');
+  } finally {
+    if (previous === undefined) delete process.env.ORCH_OPENAI_BASE_URL;
+    else process.env.ORCH_OPENAI_BASE_URL = previous;
+  }
+});

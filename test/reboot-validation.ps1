@@ -5,6 +5,8 @@ param(
   [string]$Workspace = '',
   [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$')]
   [string]$Id = '',
+  [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$')]
+  [string]$RecoveryId = '',
   [switch]$ManualOnly,
   [ValidateSet('Manual','RunOnce')]
   [string]$Trigger = 'Manual'
@@ -20,6 +22,7 @@ if (-not $Id) {
 $State = Join-Path $Workspace ("temp\reboot-validation-{0}" -f $Id)
 $PrePath = Join-Path $State 'pre-reboot.json'
 $PostPath = Join-Path $State 'post-reboot.json'
+$DispatchPath = Join-Path $State 'dispatch.json'
 $Collector = (Resolve-Path -LiteralPath $PSCommandPath).Path
 $RunOnceKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
 $RunOnceName = "CodexTuiOrchestrator-RebootValidation-$Id"
@@ -59,7 +62,7 @@ function Remove-OwnedRegistration {
   }
 }
 
-function Invoke-Check([string]$Label, [string]$Command, [string[]]$Arguments) {
+function Invoke-Check([string]$Label, [string]$Command, [string[]]$Arguments, [int]$TimeoutMs = 30000) {
   $process = [Diagnostics.Process]::new()
   $result = [ordered]@{ label = $Label; exitCode = $null; output = ''; stderr = ''; valid = $false; error = $null }
   try {
@@ -76,10 +79,10 @@ function Invoke-Check([string]$Label, [string]$Command, [string[]]$Arguments) {
     [void]$process.Start()
     $stdout = $process.StandardOutput.ReadToEndAsync()
     $stderr = $process.StandardError.ReadToEndAsync()
-    if (-not $process.WaitForExit(30000)) {
+    if (-not $process.WaitForExit($TimeoutMs)) {
       $process.Kill()
       $process.WaitForExit()
-      throw 'Health check timed out after 30 seconds.'
+      throw "Check timed out after $TimeoutMs milliseconds."
     }
     $result.exitCode = $process.ExitCode
     $result.output = $stdout.GetAwaiter().GetResult().Trim()
@@ -90,6 +93,7 @@ function Invoke-Check([string]$Label, [string]$Command, [string[]]$Arguments) {
       'release-integrity' { $result.valid = ($receipt.schema -in @(1,2)) -and $receipt.files -gt 0 -and [bool]$receipt.coreVersion }
       'doctor' { $result.valid = $receipt.agent -eq 'codex' -and $receipt.workspace -eq $Workspace -and (Test-Path -LiteralPath $receipt.cli -PathType Leaf) }
       'marketplace-registration' { $result.valid = $receipt.ok -eq $true -and $receipt.status -eq 'matched' -and $receipt.pluginReal -eq $Workspace }
+      'task-recovery' { $result.valid = $receipt.passed -eq $true -and $receipt.runId -eq ('reboot-' + $preRecord.recoveryId) }
     }
     if (-not $result.valid) { throw 'Health check receipt does not match its contract or workspace.' }
   } catch { $result.error = $_.Exception.Message } finally { $process.Dispose() }
@@ -107,10 +111,15 @@ if ($Mode -eq 'prepare') {
   $commit = Git-Text $gitPath @('rev-parse','HEAD')
   $sourceClean = -not (Git-Text $gitPath @('status','--porcelain','--untracked-files=no'))
   if (-not $sourceClean) { throw 'Commit tracked changes before preparing a reboot baseline.' }
+  if ($RecoveryId) {
+    $recovery = Get-Content -Raw -LiteralPath (Join-Path $Workspace "temp\reboot-recovery-$RecoveryId\pre-reboot.json") | ConvertFrom-Json
+    if ($recovery.id -ne $RecoveryId -or $recovery.runId -ne ('reboot-' + $RecoveryId) -or $recovery.workspace -ne $Workspace -or $recovery.ready -ne $true) { throw 'Task recovery baseline is not ready or belongs to another run.' }
+  }
   $preRecord = [ordered]@{
     schema = 2; id = $Id; workspace = $Workspace; commit = $commit
     user = [Environment]::UserName; bootBefore = BootTime; preparedAt = [DateTime]::UtcNow.ToString('o')
     releaseSha256 = Release-Hash
+    recoveryId = $RecoveryId
     nodePath = $nodePath; gitPath = $gitPath; runOnceName = $RunOnceName; collector = $Collector
     registration = [ordered]@{ status = 'manual-only'; error = $null }
   }
@@ -136,6 +145,18 @@ if ($Mode -eq 'prepare') {
 
 if (-not (Test-Path -LiteralPath $PrePath)) { throw "Missing pre-reboot record: $PrePath" }
 if (Test-Path -LiteralPath $PostPath) { throw 'A collection receipt already exists; read it without overwriting the evidence.' }
+# This marker is the first durable receipt of a dispatched collector.  It
+# distinguishes "RunOnce was never launched" from "collector launched but a
+# later health check failed" without overwriting an existing first dispatch.
+if (-not (Test-Path -LiteralPath $DispatchPath)) {
+  try {
+    Write-NewJson $DispatchPath ([ordered]@{
+      schema = 1; id = $Id; trigger = $Trigger; pid = $PID
+      user = [Environment]::UserName; host = [Environment]::MachineName
+      dispatchedAt = [DateTime]::UtcNow.ToString('o')
+    })
+  } catch { }
+}
 $post = [ordered]@{
   schema = 2; id = $Id; workspace = $Workspace; scope = 'post-reboot-health'
   collectionTrigger = $Trigger; automaticCollectionPassed = $false
@@ -168,6 +189,13 @@ try {
     (Invoke-Check 'doctor' $node @((Join-Path $Workspace 'scripts\orchestrate-sdk.mjs'), '--doctor')),
     (Invoke-Check 'marketplace-registration' $node @((Join-Path $Workspace 'scripts\repair-plugin-registration.mjs'), $Workspace, '--check'))
   )
+  if ($preRecord.recoveryId) {
+    $post.scope = 'post-reboot-health-and-task-recovery'
+    if ($post.bootChanged -and $post.commitMatches -and $post.sourceClean -and $post.releaseMatches -and @($post.checks | Where-Object { -not $_.valid }).Count -eq 0) {
+      $stage = 'task-recovery'
+      $post.checks += Invoke-Check 'task-recovery' $node @((Join-Path $Workspace 'test\live-reboot-recovery.mjs'), 'collect', $preRecord.recoveryId) 930000
+    } else { throw 'Task recovery requires a validated later boot and unchanged healthy source.' }
+  }
   $post.passed = $post.bootChanged -and $post.commitMatches -and $post.sourceClean -and $post.releaseMatches -and @($post.checks | Where-Object { -not $_.valid }).Count -eq 0
   # Invocation metadata alone is not independent proof of Windows logon dispatch.
   $post.automaticCollectionPassed = $false

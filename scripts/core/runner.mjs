@@ -6,7 +6,7 @@ import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
-import {capacityRetryPolicy,isCapacityError} from './retry-policy.mjs';
+import {capacityRetryPolicy} from './retry-policy.mjs';
 import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -210,7 +210,7 @@ export async function runWindows(request,hooks,options={}) {
     };
     const mark=(r,status,reason)=>{
       sum.results[r.key]={...sum.results[r.key],status,reason};
-      if(!['waiting','launching','running','reserved','retrying'].includes(status))for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(sum.taskResults[id]?.status!=='verified')sum.taskResults[id]={...sum.taskResults[id],status,reason};
+      if(!['waiting','launching','running','reserved','retrying'].includes(status))for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(!['verified','needs-reconciliation','awaiting-verification'].includes(sum.taskResults[id]?.status))sum.taskResults[id]={...sum.taskResults[id],status,reason};
       persist(`block.${r.key}.${status}`);
     };
     persist(options.resume?'run.resumed':'plan.created');
@@ -295,8 +295,12 @@ export async function runWindows(request,hooks,options={}) {
             // run deadline, not an arbitrary 90-second cutoff that closes a
             // healthy task before its first rollout event exists.
             const session=await hooks.session('【本块唯一标识】'+active.token,Math.max(0,deadline-Date.now()),la.rf);
-            const result=session?await hooks.wait(session,Math.max(0,deadline-Date.now()),la.rf,'【本块唯一标识】'+active.token,la.pidf):{done:fs.existsSync(la.rf),exitCode:hooks.exitCode(la.rf)};
-            e.exitCode=result.exitCode??hooks.exitCode(la.rf);e.status=result.done?'awaiting-verification':'timeout';
+            // The visible watchdog can close before session discovery returns.
+            // Its exit marker proves execution ended; task success still requires
+            // the independent checkpoint and receipt checks below.
+            const result=session?await hooks.wait(session,Math.max(0,deadline-Date.now()),la.rf,'【本块唯一标识】'+active.token,la.pidf):{done:fs.existsSync(la.rf)||fs.existsSync(la.rf+'.self-closed'),exitCode:hooks.exitCode(la.rf)};
+            e.exitCode=result.exitCode??hooks.exitCode(la.rf);
+            e.status=result.done?'awaiting-verification':e.exitCode!=null?'failed':'timeout';
             if(result.threadId)active.threadId=result.threadId;
             if(!result.done&&result.text)e.reason=result.text;
             // The worker may have flushed its final completed checkpoint just
@@ -305,10 +309,14 @@ export async function runWindows(request,hooks,options={}) {
             // never miss that live task state.
             refreshTaskProgress(sum);
             persist(`block.${r.key}.${e.status}`);
-            if (result.retryable === 'capacity' || isCapacityError(result.text)) {
+            if (result.retryable === 'capacity') {
               e.retryable = 'capacity';
               e.capacityError = result.capacityError || result.text || 'provider capacity';
               capacityRetry = capacityRetryPolicy(e.capacityError, capacityRetries + 1);
+            }
+            if (result.retryable === 'quota') {
+              e.retryable = 'quota';
+              e.quotaError = result.quotaError || result.text || 'provider usage limit';
             }
           }
         }catch(error){e.status='failed';e.reason=error.message;}
@@ -344,8 +352,9 @@ export async function runWindows(request,hooks,options={}) {
           await pause(Math.min(capacityRetry.delayMs,Math.max(0,deadline-Date.now())));
           continue;
         }
-        if(e.retryable==='capacity') { mark(r,'failed','Provider capacity retry budget exhausted');return; }
         if(e.status==='verified')return;
+        if(e.retryable==='quota') { mark(r,'failed',e.quotaError||'Provider usage limit; retry after quota reset');return; }
+        if(e.retryable==='capacity') { mark(r,'failed',retryUnsafe?'Provider capacity after a task checkpoint; reconcile before retrying':'Provider capacity retry budget exhausted');return; }
         // Popup/launcher interruptions have no task checkpoint, so the bounded controller
         // attempt budget retries the block automatically. Only started or completed checkpoints
         // can move a task into needs-reconciliation and stop blind replay.

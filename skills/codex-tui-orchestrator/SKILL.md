@@ -12,7 +12,7 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 - 只读分析、方案和编排器自身修改留在主对话；用户已授权时直接执行，不重复询问窗口批准。
 - 默认用 `--exec`（headless，无弹窗）执行；需要观察或交互时用 `--run-windows` / `--visible`。`--run` 和裸请求遵循 `ORCH_EXEC_MODE`，显式参数优先。
 - 可见模式默认 `ORCH_TUI=wt`（Windows Terminal）；`ORCH_TUI=inactive` 只在显式指定时使用，仍不能保证焦点不变。
-- TUI 默认 `gpt-5.3-codex-spark` + `xhigh`；`ORCH_MODEL`、`ORCH_EFFORT` 可覆盖。执行块不得递归编排、调用子代理或另开窗口。
+- 两种执行模式默认继承原生 Codex 的模型与推理配置；需要沿用当前对话的临时设置时，由调用方显式传入 `ORCH_MODEL`、`ORCH_EFFORT`。执行块不得递归编排、调用子代理或另开窗口。
 
 ## 规划与执行
 
@@ -33,6 +33,8 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 - 已开始但副作用不明的任务进入 `needs-reconciliation`（需核对真实结果），不能盲目重跑；只有预先声明 `retrySafe:true` 的任务可安全重试。恢复不会重放整个块。
 - 传输、超时、容量和服务端错误只做有上限的退避；容量错误发生在检查点前才自动重试。单任务可用 `supervise.mjs`，多任务使用 `--resume-run`。
 - 核对真实结果时运行 `node <SDK绝对路径> --verify-run <ID> --acceptance-file <JSON>`；不保证外部副作用恰好一次。
+
+provider 明确返回账户用量上限（如 usage_limit_exceeded）时立即失败并保留错误；结构化 `error`/`turn.failed` 或 `task_complete.error` 才是配额信号，任务文本与工具输出不具备该权限。此类失败不消耗普通失败预算或重开窗口；等待额度恢复后再用原运行身份恢复。
 
 ## 诊断与发布
 

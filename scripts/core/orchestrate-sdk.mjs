@@ -17,9 +17,10 @@ import {runWindows,verifyRun} from "./runner.mjs";
 import {resolveExecutionMode,resolveTuiMode,buildExecArgs} from './execution-mode.mjs';
 import {createHeadlessHooks} from './headless-executor.mjs';
 import {renderRunStatus} from './status-events.mjs';
-import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind} from "./leases.mjs";
+import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind,release} from "./leases.mjs";
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
-import {isCapacityError, capacityRetryPolicy} from './retry-policy.mjs';
+import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
+import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
 import { networkConfig, resolveOpenAIBaseUrl } from "./network-policy.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
@@ -66,10 +67,11 @@ const CODEX = AGENT.config.bin;
 // PowerShell 单引号字符串内嵌路径：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
 const CODEX_Q = CODEX.replace(/'/g, "''");
 const PY = process.env.PYTHON || "python";
-// TUI 窗默认使用指定的 Codex Spark 模型与最高思考强度；调用方显式传入
-// ORCH_MODEL / ORCH_EFFORT 时保留其覆盖权。
-const MODEL = process.env.ORCH_MODEL || "gpt-5.3-codex-spark";
-const EFFORT = process.env.ORCH_EFFORT || "xhigh";
+// Absent explicit overrides, let the native CLI and SDK use the caller's
+// Codex configuration. A hard-coded model can become unavailable independently
+// of the installed plugin and must not replace the user's selected default.
+const MODEL = process.env.ORCH_MODEL || undefined;
+const EFFORT = process.env.ORCH_EFFORT || undefined;
 // A caller may pass its effective permissions; never elevate implicitly.
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = "never";
@@ -85,7 +87,7 @@ function appendModelEffortArgs(arr, agentConfig) {
   const id = String(cfg.id || "codex");
   const modelEnv = cfg.modelEnv || "ORCH_MODEL";
   const effortEnv = cfg.effortEnv || "ORCH_EFFORT";
-  // Codex TUI 默认使用 Spark + xhigh；显式环境变量优先。
+  // Explicit environment overrides take precedence over native configuration.
   const model = process.env[modelEnv] || (id === "codex" ? MODEL : "");
   const effort = process.env[effortEnv] || (id === "codex" ? EFFORT : "");
   if (id !== "codex") {
@@ -462,11 +464,14 @@ function genericProjectSplit(request) {
   // 保守、确定性拆分（权威修复）：仅当请求能被可靠切成"每个编号各有一个专属句子"时才拆，
   // 且每个块 prompt 只针对该项目（绝不整段重复）。混合/歧义请求返回 null 交给 LLM 语义拆块。
   const dirs = new Set();
-  const re = /(?:^|[\s,/\\：:])(?:项目|project|proj|build|app|src|workspace|web|site|game)[\s/\\-：:]*(\d{1,3})(?=\D|$)/gi;
+  const re = /(?:^|[\s,/\\：:])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\s/\\：:]*(\d{1,3})(?=\D|$)/gi;
   let m;
   while ((m = re.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
-  // fallback: bare standalone 2-digit project numbers (e.g. "给80的前端", "81登录页")
-  const bareRe = /(?<![0-9])(\d{2,3})(?![0-9])/g;
+  // fallback: bare 2-3 digit project numbers only in a task/action context
+  // (e.g. "给80的前端", "修复81的空白").  Do not scan every standalone number:
+  // UUID nonces, ids embedded in filenames, and numeric acceptance values are
+  // data, not project references, and must not change the parallel plan.
+  const bareRe = /(?:^|[\s，,、:：;；])(?:(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)\s*)?(\d{2,3})(?=\D|$)/g;
   while ((m = bareRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   if (dirs.size < 2) return null;
   const sentences = requestTasks(request).map(t=>t.prompt);
@@ -493,8 +498,11 @@ function genericProjectSplit(request) {
   return blocks.length ? { blocks } : null;
 }
 function projectRef(s, n) {
-  // 无正则的确定匹配：检查句子是否含 "build\N" / "build/N" / 关键词N，避免转义坑
-  return new RegExp("(?:项目|project|proj|build|app|src|workspace|web|site|game)?[\\s/\\\\-：:]*" + n + "(?![0-9])", "i").test(s);
+  // Require a project keyword/path or an action-context bare number.  A loose
+  // optional prefix would also match UUID chunks, receipt ids, and sums.
+  const named = new RegExp("(?:^|[\\s,/\\\\：:])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\\s/\\\\：:]*" + n + "(?![0-9])", "i");
+  const bare = new RegExp("(?:^|[\\s，,、:：;；])(?:(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)\\s*)?" + n + "(?![0-9])", "i");
+  return named.test(s) || bare.test(s);
 }
 // 通用单任务快速判定（不写死 build/N）：无"多动作/多目标"标记、且命中明确动作词 -> 生成单一独立块。
 function trySingleBlock(request) {
@@ -812,39 +820,57 @@ async function warmupWindow(pidf, token) {
   await new Promise((r) => setTimeout(r, 800));
 }
 async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token, reservedByRunner = false) {
-  const auxiliaryId="aux-"+path.basename(lp); let coordinator;
-  if(!reservedByRunner){coordinator=coordinatorDir(WORKSPACE);const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},computeMaxWindows(os.freemem() / 1024 ** 2));if(!claim.ok)throw new Error("Window admission waiting: "+claim.reason);}
-  // 恢复调用方传入的重试上限（默认 3）：同步拉起后每次尝试约 2.5s，重试成本可控，兜底 WT 偶发不弹窗。
-  for (let attempt = 1; attempt <= maxRetry; attempt++) {
-    // 同步拉起（no-activate helper 经 spawnSync 完成 CreateProcessW 再返回）：实测 async 路径窗口经常不弹。
-    try {
-      spawnVisibleWindow(lp, title);
-    } catch (error) {
-      console.log("  !! [window] launch error (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]: " + error.message);
-      continue;
+  const auxiliaryId="aux-"+path.basename(lp); let coordinator,admitted=false,bound=false;
+  try {
+    if(!reservedByRunner){
+      coordinator=coordinatorDir(WORKSPACE);
+      const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},computeMaxWindows(os.freemem() / 1024 ** 2));
+      if(!claim.ok)throw new Error("Window admission waiting: "+claim.reason);
+      admitted=true;
     }
-    const deadline = Date.now() + 35000;
-    let ok = false;
-    const t0 = Date.now();
-    while (Date.now() < deadline) {
-      // The launcher writes its pid file as its first action, but Windows Terminal
-      // can delay process startup. Discover the still-running launcher by its
-      // unique script path before retrying; otherwise a late first attempt and a
-      // retry can open two panes while sharing one pid/result file.
-      if (windowGenuinelyPopped(pidf, token, lp)) { ok = true; break; }
-      await new Promise((r) => setTimeout(r, 500));
+    // 恢复调用方传入的重试上限（默认 3）：同步拉起后每次尝试约 2.5s，重试成本可控，兜底 WT 偶发不弹窗。
+    for (let attempt = 1; attempt <= maxRetry; attempt++) {
+      // 同步拉起（no-activate helper 经 spawnSync 完成 CreateProcessW 再返回）：实测 async 路径窗口经常不弹。
+      try {
+        spawnVisibleWindow(lp, title);
+      } catch (error) {
+        console.log("  !! [window] launch error (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]: " + error.message);
+        continue;
+      }
+      const deadline = Date.now() + 35000;
+      let ok = false;
+      const t0 = Date.now();
+      while (Date.now() < deadline) {
+        // The launcher writes its pid file as its first action, but Windows Terminal
+        // can delay process startup. Discover the still-running launcher by its
+        // unique script path before retrying; otherwise a late first attempt and a
+        // retry can open two panes while sharing one pid/result file.
+        if (windowGenuinelyPopped(pidf, token, lp)) { ok = true; break; }
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (ok) {
+        // 加固②：弹窗确认后再等 agent 子进程真正拉起（冷启动），确保父进程随后去等 session rollout 时不会起跑太早。
+        await warmupWindow(pidf, token);
+        if(!reservedByRunner){bind(coordinator,auxiliaryId,launcherIdentity(readPidFile(pidf),pidf));bound=true;}
+        if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+" + AGENT.agent + " child) for [" + title + "]");
+        return true;
+      }
+      console.log("  [window] popup NOT confirmed (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
     }
-    if (ok) {
-      // 加固②：弹窗确认后再等 agent 子进程真正拉起（冷启动），确保父进程随后去等 session rollout 时不会起跑太早。
-      await warmupWindow(pidf, token);
-      if(!reservedByRunner)bind(coordinator,auxiliaryId,launcherIdentity(readPidFile(pidf),pidf));
-      if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+" + AGENT.agent + " child) for [" + title + "]");
-      return true;
+    console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");
+    return false;
+  } finally {
+    // A failed admission/popup/bind must release its coordinator lease. A
+    // successful auxiliary window remains leased until its caller closes it.
+    if(admitted&&!bound){
+      try{release(coordinator,auxiliaryId);}
+      catch(error){console.warn("[orchestrator] auxiliary lease cleanup failed: "+error.message);}
     }
-    console.log("  [window] popup NOT confirmed (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
   }
-  console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");
-  return false;
+}
+function releaseAuxiliaryWindow(lp) {
+  try { release(coordinatorDir(WORKSPACE), "aux-" + path.basename(lp)); }
+  catch(error) { console.warn("[orchestrator] auxiliary lease cleanup failed: "+error.message); }
 }
 // Interactive-TUI launcher. The interactive `codex "prompt"` window does not exit on its own; a
 // background watchdog in the launcher scans THIS window session rollout: as soon as the LAST assistant
@@ -1010,8 +1036,12 @@ function Read-OwnedRollout([string]$raw, [string]$tok, [string]$ownerTurnId = ''
 }`.split('\n');
 }
 
-function writeInteractiveLauncher(title, prompt, sfx) {
+function writeInteractiveLauncher(title, prompt, sfx, metadata={}) {
   if(AGENT.agent==='pi')return writePiLauncher(AGENT.config,{key:title,prompt,suffix:sfx,workspace:WORKSPACE,temp:TMP});
+  // Runner metadata is authoritative. Legacy direct callers append their own
+  // marker after task text, so its last occurrence is the compatibility fallback.
+  const token=metadata.token??[...String(prompt||'').matchAll(/【本块唯一标识】\s*([A-Za-z0-9][A-Za-z0-9_\-]*)/g)].at(-1)?.[1]??'';
+  if(typeof token!=='string'||(token&&!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(token)))throw new Error('Invalid launcher ownership token');
   const s = safe(title) + (sfx ? "-" + sfx : "");
   mkdirSync(TMP, { recursive: true });
   const pf = path.join(TMP, `agent-win-${s}.md`);
@@ -1033,8 +1063,6 @@ function writeInteractiveLauncher(title, prompt, sfx) {
   // empty $token, which silently disabled the launcher's self-close watchdog (thence the stuck
   // "[进程已退出，代码为 1]" pane). Requiring an ASCII-leading token skips the CJK boilerplate and
   // lands on the true block token.
-  const tokenMatch = String(prompt || "").match(/【本块唯一标识】\s*([A-Za-z0-9][A-Za-z0-9_\-]*)/);
-  const token = tokenMatch ? String(tokenMatch[1]) : "";
   const BOM = "\uFEFF";
   // PowerShell 单引号字符串内嵌路径/变量：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
   const pidfQ = String(pidf || "").replace(/'/g, "''");
@@ -1313,7 +1341,15 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
   while (Date.now() - start < timeoutMs) {
     // 完成信号优先认窗内自关：result 落盘或窗内 watchdog 写入 .self-closed（即 agent 已报 __ORCH_DONE__）都视为本窗完成，
     // 立即转入回收路径，避免父进程靠 session 文本匹配去等一个可能永远匹配不到的会话（慢速 agent 时长期 HOLDING）。
-    if (exitMarkerFile && (existsSync(exitMarkerFile) || existsSync(exitMarkerFile + ".self-closed"))) return null; // codex already exited -> reclaim path
+    if (exitMarkerFile && (existsSync(exitMarkerFile) || existsSync(exitMarkerFile + ".self-closed"))) {
+      // The launcher may have exited just after writing the final provider
+      // event. Do one last ownership scan before taking the reclaim path so
+      // typed quota/capacity diagnostics survive a fast self-close.
+      for (const f of listRollouts(sessionDir(), notBeforeMs)) {
+        try { if (findOwnedTurn(readFileSync(f, "utf8"), matchKey).matched) return f; } catch { /* ignore */ }
+      }
+      return null;
+    }
     for (const f of listRollouts(sessionDir(), notBeforeMs)) {
       if (seen.has(f)) continue;
       seen.add(f);
@@ -1341,29 +1377,29 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
       if (!existsSync(pidf)) {
         // pid 文件已被清理 = 窗生命周期已结束（正常关窗/被收尾清理），视为该块执行结束。
         const rep = exitMarkerFile ? await waitForCapturedReport(exitMarkerFile, matchToken, 1500) : "";
-        if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
-        return annotateCapacity({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
+        if (rep) return annotateCapacityAfterClose({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
+        return annotateCapacityAfterClose({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
       const lp = readPidFile(pidf);
       if (lp > 0 && !pidAliveCheck(lp)) {
         const rep = exitMarkerFile ? await waitForCapturedReport(exitMarkerFile, matchToken, 1500) : "";
-        if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
-        return annotateCapacity({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
+        if (rep) return annotateCapacityAfterClose({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
+        return annotateCapacityAfterClose({ done: true, verified: false, text: "(window closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
       }
     }
     if (exitMarkerFile && existsSync(exitMarkerFile)) {
       const rep = await waitForCapturedReport(exitMarkerFile, matchToken, 15000);
-      if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
+      if (rep) return annotateCapacityAfterClose({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
       const code = readExitCode(exitMarkerFile);
       const base = matchToken ? { text: extractOwnResult(file, matchToken) } : extractResult(file);
-      if (base.text) return annotateCapacity({ done: true, verified: true, text: base.text, exitCode: code }, file);
-      return annotateCapacity({ done: true, verified: false, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code }, file);
+      if (base.text) return annotateCapacityAfterClose({ done: true, verified: true, text: base.text, exitCode: code }, file);
+      return annotateCapacityAfterClose({ done: true, verified: false, text: "(launcher exited code " + (code === null ? "?" : code) + " before task_complete captured)", exitCode: code }, file);
     }
     if (exitMarkerFile && existsSync(exitMarkerFile + ".self-closed")) {
       // watchdog 已写自关标记 = 窗收尾并关闭；即时视为执行结束（无汇报文本，主控按落盘核对）。
       const rep = await waitForCapturedReport(exitMarkerFile, matchToken, 15000);
-      if (rep) return annotateCapacity({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
-      return annotateCapacity({ done: true, verified: false, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
+      if (rep) return annotateCapacityAfterClose({ done: true, verified: true, text: rep, exitCode: readExitCode(exitMarkerFile) }, file);
+      return annotateCapacityAfterClose({ done: true, verified: false, text: "(window self-closed; no report captured)", exitCode: readExitCode(exitMarkerFile) }, file);
     }
     let tail = "";
     try {
@@ -1378,8 +1414,13 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
     // Provider capacity errors are actionable before task_complete and may leave the
     // TUI open while showing its countdown. Surface them immediately so the runner
     // can close this empty attempt and honor the bounded retry policy.
-    if (isCapacityError(tail)) {
-      return annotateCapacity({ done: true, verified: false, text: tail.slice(-4000), exitCode: readExitCode(exitMarkerFile) }, file);
+    const capacityError=rolloutCapacityError(tail);
+    if (capacityError) {
+      return { done: true, verified: false, text: capacityError, retryable:'capacity',capacityError,exitCode: readExitCode(exitMarkerFile) };
+    }
+    const quotaError=rolloutQuotaError(tail);
+    if (quotaError) {
+      return { done: true, verified: false, text: quotaError, retryable:'quota',quotaError,exitCode: readExitCode(exitMarkerFile) };
     }
     const completion = scanTaskComplete(tail, matchToken, ownerTurnId);
     ownerTurnId = completion.ownerTurnId;
@@ -1392,17 +1433,33 @@ async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pid
         await new Promise((r) => setTimeout(r, 100));
         text = matchToken ? extractOwnResult(file, matchToken) : extractResult(file).text;
       }
-      return annotateCapacity({ done: true, verified: Boolean(text), text, exitCode: readExitCode(exitMarkerFile) }, file);
+      return annotateCapacityAfterClose({ done: true, verified: Boolean(text), text, exitCode: readExitCode(exitMarkerFile) }, file);
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  return annotateCapacity({ done: false, verified: false, text: "" }, file);
+  return annotateCapacityAfterClose({ done: false, verified: false, text: "" }, file);
 }
 function annotateCapacity(result, file) {
-  let evidence = String(result?.text || "");
-  if (file) evidence += "\n" + String(readTail(file, 65536) || "");
-  if (!isCapacityError(evidence)) return result;
+  const quota = file ? rolloutQuotaError(readTail(file, 65536)) : '';
+  if (quota) return { ...result, retryable: "quota", quotaError: quota.slice(-4000) };
+  const evidence = file ? rolloutCapacityError(readTail(file, 65536)) : '';
+  if (!evidence) return result;
   return { ...result, retryable: "capacity", capacityError: evidence.slice(-4000) };
+}
+// A launcher can write its self-close marker a few milliseconds before the
+// provider flushes the terminal `task_complete.error` event. Re-scan briefly
+// after the close so the final result keeps typed quota/capacity diagnostics
+// without reopening a window or waiting for an unbounded session poll.
+async function annotateCapacityAfterClose(result, file, timeoutMs = 2000) {
+  let current = annotateCapacity(result, file);
+  if (!file || current.retryable) return current;
+  const deadline = Date.now() + Math.max(0, Number(timeoutMs) || 0);
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    current = annotateCapacity(current, file);
+    if (current.retryable) break;
+  }
+  return current;
 }
 // 只读文件尾部窗口(UTF-8, 最多 maxBytes 字节), 用于从超大 rollout 提取末尾的完成汇报。
 // 完成标记/最终消息总在文件末尾, 全量 readFileSync 读 160MB+ rollout 是纯浪费。
@@ -1738,7 +1795,15 @@ function tryReserveWindow(rec) {
   let conflictTitle = null;
   testLock(() => {
     const ws = loadJson(testDb(), []);
-    const cleaned = ws.filter((w) => !(w && w.pending === true && !testFresh(w))); // 顺手回收死占位
+    const cleaned = ws.filter((w) => {
+      if (w && w.pending === true) return testFresh(w);
+      // A committed window with a pid file is authoritative only while that
+      // exact launcher identity is alive. Prune dead records here so a failed
+      // popup or an orderly close cannot leave the registry growing forever.
+      // Legacy records without a pid file are retained because their owner
+      // identity cannot be rechecked safely.
+      return !w?.pidFile || testAlive()(w);
+    });
     for (const w of cleaned) {
       if (testAlive()(w) || testFresh(w)) {
         const wk = Array.isArray(w.keys) ? w.keys.map(String) : (w.title ? ["__" + w.title] : []);
@@ -2010,11 +2075,11 @@ async function classifyExecutionMode(request) {
   return "execute"; // fail-safe
 }
 export async function main() {
-  for(const [flag,key] of [["--run-id","ORCH_RUN_ID"],["--acceptance-file","ORCH_ACCEPTANCE_FILE"],["--acceptance","ORCH_ACCEPTANCE_FILE"]]){const index=process.argv.indexOf(flag);if(index>=0){if(!process.argv[index+1])throw new Error(flag+" needs a value");process.env[key]=process.argv[index+1];process.argv.splice(index,2);}}
+  process.argv=[...process.argv.slice(0,2),...configureEntryArgs(process.argv.slice(2))];
   const bareRequest=process.argv[2]&&!process.argv[2].startsWith('--');
   const mode = bareRequest?'--run':process.argv[2];
   const modeFlags = new Set(['--run-windows','--visible','--run','--exec','--headless','--resume-run','--spawn','--selftest-close','--doctor','--plan','--status','--clear-cache','--verify-run']);
-  const requestedModes = process.argv.slice(2).filter((arg) => modeFlags.has(arg));
+  const requestedModes = leadingModeFlags(process.argv.slice(2),modeFlags);
   if (requestedModes.length > 1) throw new Error('Conflicting execution modes: ' + requestedModes.join(', '));
   if (mode === "--doctor") {
     const executionMode=resolveExecutionMode('',process.env),visible=executionMode==='visible';
@@ -2058,9 +2123,19 @@ export async function main() {
       process.exitCode = 1;
       return;
     }
-    const popped = await spawnWindowWithRetry(lp, title, pidf, 3, stok);
+    let popped;
+    try { popped = await spawnWindowWithRetry(lp, title, pidf, 3, stok); }
+    catch (error) {
+      cancelReservation(claim.id);
+      releaseAuxiliaryWindow(lp);
+      for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      console.log("spawn ADMISSION-FAILED: " + error.message);
+      process.exitCode = 1;
+      return;
+    }
     if (!popped) {
       cancelReservation(claim.id);
+      releaseAuxiliaryWindow(lp);
       for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
       console.log("spawn POPUP-FAILED: window did not appear.");
       process.exitCode = 1;
@@ -2104,6 +2179,7 @@ export async function main() {
       launcherAliveAfter = alive;
       if (!launcherAliveAfter) {
         cancelReservation(claim.id);
+        releaseAuxiliaryWindow(lp);
         for (const fp of [pidf, lp, pf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(fp)) rmSync(fp, { force: true }); } catch {} }
       }
     } else {
@@ -2144,9 +2220,19 @@ export async function main() {
       process.exitCode = 1;
       return;
     }
-    const popped = await spawnWindowWithRetry(lp, "selftest-close", pidf, 3, "selftest-" + rid);
+    let popped;
+    try { popped = await spawnWindowWithRetry(lp, "selftest-close", pidf, 3, "selftest-" + rid); }
+    catch (error) {
+      cancelReservation(claim.id);
+      releaseAuxiliaryWindow(lp);
+      for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
+      console.log("selftest ADMISSION-FAILED: " + error.message);
+      process.exitCode = 1;
+      return;
+    }
     if (!popped) {
       cancelReservation(claim.id);
+      releaseAuxiliaryWindow(lp);
       for (const f of [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"]) { try { if (existsSync(f)) rmSync(f, { force: true }); } catch { /* ignore */ } }
       console.log("selftest POPUP-FAILED: window did not appear.");
       process.exitCode = 1;
@@ -2217,6 +2303,8 @@ export async function main() {
       passed: selftestOk,
       exitCode: selftestOk ? 0 : 1,
       agentExitCode: res.exitCode ?? readExitCode(rf),
+      retryable: res.retryable || null,
+      providerError: res.quotaError || res.capacityError || null,
       sessionFile,
       generatedAt: new Date().toISOString(),
     };
@@ -2225,6 +2313,7 @@ export async function main() {
     console.log("=== selftest-close done ===");
     if (!launcherAlive && orphanCheckSucceeded && !orphanAgent) {
       cancelReservation(claim.id);
+      releaseAuxiliaryWindow(lp);
       for (const f of (selftestOk ? [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"] : [pf, lp, pidf])) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
     }
     process.exitCode = selftestOk ? 0 : 1;
@@ -2299,4 +2388,4 @@ if (isMain) main().catch((e) => {
   console.error("[orchestrator] FATAL: " + e.message);
   process.exitCode = 1;
 });
-export { findOwnedTurn, waitForSessionFile, classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy };
+export { findOwnedTurn, waitForSessionFile, classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy, isProviderQuotaError, rolloutQuotaError };

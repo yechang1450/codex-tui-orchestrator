@@ -1,5 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs';
+import {isDeepStrictEqual} from 'node:util';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 
@@ -160,7 +161,7 @@ export function verifyChecks(checks,workspace) {
         let value;try{value=JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){throw new Error('Acceptance JSON parse failed: '+file+': '+e.message);}
         for(const [key,expected] of Object.entries(check.equals||{})){
           if(!(key in value))throw new Error('JSON field missing: '+file+' key="'+key+'" expected='+JSON.stringify(expected));
-          if(JSON.stringify(value[key])!==JSON.stringify(expected))throw new Error('JSON mismatch: '+file+' key="'+key+'" expected='+JSON.stringify(expected)+' actual='+JSON.stringify(value[key]));}}
+          if(!isDeepStrictEqual(value[key],expected))throw new Error('JSON mismatch: '+file+' key="'+key+'" expected='+JSON.stringify(expected)+' actual='+JSON.stringify(value[key]));}}
       else if(check.type==='absent') {if(fs.existsSync(file))throw new Error('Unexpected path: '+file);}
       else throw new Error('Unsupported acceptance check: '+check.type);
       evidence.push({type:check.type,path:file,sha256:check.type==='absent'?undefined:sha256(file)});

@@ -19,7 +19,7 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
   spawn:async(...args)=>{spawnRetries.push(args[3]);live=true;return true;},
   readPid:()=>1,identity:()=>live?identity:null,waitForExit:async()=>true,
   close:async()=>{live=false;},session:async()=>true,
-  wait:async()=>({done:true,exitCode:1,text:mixed&&launches>1?'Unrecoverable CLI startup failure':'Selected model is at capacity.'}),
+  wait:async()=>({done:true,exitCode:1,...(mixed&&launches>1?{text:'Unrecoverable CLI startup failure'}:{text:'Selected model is at capacity.',retryable:'capacity'})}),
   exitCode:()=>1,
  };
  try {
@@ -37,4 +37,26 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
   if(original.ORCH_CAPACITY_RETRY_MS===undefined)delete process.env.ORCH_CAPACITY_RETRY_MS;else process.env.ORCH_CAPACITY_RETRY_MS=original.ORCH_CAPACITY_RETRY_MS;
   fs.rmSync(workspace,{recursive:true,force:true});
  }
+});
+
+test('terminal provider quota does not consume the ordinary failure budget',async()=>{
+ const workspace=fs.mkdtempSync(path.join(os.tmpdir(),'orch-quota-run-'));
+ let launches=0;
+ const identity={ProcessId:9002,Name:'powershell.exe',Started:'test',CommandLine:'test launcher'};
+ const hooks={
+  plan:async()=>[{title:'quota',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],
+  prompt:p=>p,launcher:key=>({key,pidf:path.join(workspace,'window-'+(++launches)+'.pid')}),
+  register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
+  spawn:async()=>true,readPid:()=>1,identity:()=>identity,waitForExit:async()=>true,
+  close:async()=>{},session:async()=>true,
+  wait:async()=>({done:true,exitCode:1,text:'usage_limit_exceeded',retryable:'quota',quotaError:'usage_limit_exceeded'}),
+  exitCode:()=>1,
+ };
+ try {
+  const sum=await runWindows('执行任务',hooks,{workspace,capacity:8,runId:'quota',auth:'test',maxAttempts:3,coordinator:path.join(workspace,'coordinator')});
+  assert.equal(launches,1,'quota failures must stop before a second window');
+  assert.equal(sum.success,false);
+  assert.equal(sum.results.B1.status,'failed');
+  assert.match(sum.results.B1.reason,/quota|usage_limit_exceeded/i);
+ } finally { fs.rmSync(workspace,{recursive:true,force:true}); }
 });

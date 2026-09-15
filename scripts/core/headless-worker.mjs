@@ -4,6 +4,7 @@ import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {atomicJson,processSnapshot,sameProcess} from './leases.mjs';
+import {isCapacityError,isProviderQuotaError} from './retry-policy.mjs';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function tail(file){
   const fd=fs.openSync(file,'r');
@@ -31,7 +32,14 @@ export async function runHeadlessWorker(configFile){
     const type=payload?.type||event?.type;
     if(type==='thread.started')runtime.threadId=payload.thread_id||payload.threadId||null;
     if(type==='turn.completed'||type==='task_complete')completed=true;
-    if(type==='turn.failed'||type==='error'){failed=true;result.text=payload.message||payload.error?.message||JSON.stringify(payload);}
+    if(type==='turn.failed'||type==='error'){
+      // `error` also reports recoverable reconnect notifications. A terminal
+      // turn.failed, corrupt stream, nonzero exit or cancellation remains fatal.
+      if(type==='turn.failed')failed=true;
+      result.text=payload.message||payload.error?.message||JSON.stringify(payload);
+      if(isProviderQuotaError(payload)){result.retryable='quota';result.quotaError=JSON.stringify(payload);}
+      else if(isCapacityError(payload)){result.retryable='capacity';result.capacityError=result.text;}
+    }
     if(type==='item.completed'&&payload.item?.type==='agent_message')lastMessage=payload.item.text||'';
     runtime.updatedAt=Date.now();runtime.event=type;atomicJson(config.runtime,runtime);
   };
@@ -67,6 +75,7 @@ export async function runHeadlessWorker(configFile){
     const {code,signal}=await closed;if(buffer.trim())eventLine(buffer);
     result.exitCode=code;result.signal=signal;result.threadId=runtime.threadId;
     result.done=code===0&&completed&&!failed&&!cancelled;
+    if(result.done){result.text=lastMessage;delete result.retryable;delete result.capacityError;}
     if(!result.text)result.text=cancelled?'Headless execution cancelled':lastMessage||(!completed?'Exec stream ended before turn.completed':'');
   }catch(error){fault(error);result.done=false;}
   finally{

@@ -9,7 +9,7 @@ export const {main,buildPsArrayLit,capPlanBlocks,buildWindowWaves,applyAuthPromp
  buildBlockPrompt,levelWaves,decomposeHash,checkDiskSpace,readPidFile,pidAliveCheck,closeWindowByPid,
  windowGenuinelyPopped,extractResult,extractUsage,readReportFromResult,sessionDir,writeInteractiveLauncher,
  staleTransientFiles,pidFileOfTransient,tryReserveWindow,commitReservation,cancelReservation,computeMaxWindows,
- blockKeys,keysOverlap,findOwnedTurn,waitForSessionFile,scanTaskComplete,waitTaskComplete,isCapacityError,capacityRetryPolicy,withRegistryLock,__setOrchHooks,isOrchestratorSelfMod,resolveCodexHome}=await import('./core/orchestrate-sdk.mjs');
+ blockKeys,keysOverlap,findOwnedTurn,waitForSessionFile,scanTaskComplete,waitTaskComplete,isCapacityError,capacityRetryPolicy,isProviderQuotaError,rolloutQuotaError,withRegistryLock,__setOrchHooks,isOrchestratorSelfMod,resolveCodexHome}=await import('./core/orchestrate-sdk.mjs');
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 if(process.argv[1]&&path.resolve(process.argv[1]).toLowerCase()===fileURLToPath(import.meta.url).toLowerCase())main().catch(e=>{console.error(e.stack||e.message);process.exitCode=1;});

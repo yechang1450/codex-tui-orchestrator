@@ -14,10 +14,20 @@ Task parsing preserves ordinary comma continuations and quoted command separator
 
 The initiating agent chooses a unique run ID and defines independent acceptance checks before launch. This is automatic parent preparation, not a user approval prompt.
 
+Global CLI options precede the free-form execution request. Option-like words after the request begins remain task text. Commands that take a run ID, such as `--verify-run`, also accept their options after that ID. JSON acceptance compares nested object contents structurally, so object key order does not change the result; array order and actual values still matter.
+
 - Execute: node <absolute-entry> --run-id <id> --acceptance-file <absolute-json> --exec <request>
 - Poll: node <absolute-scripts>/poll-windows.mjs --run-id <id> --require-all-success
 - Recheck outputs without rerunning tasks: node <absolute-entry> --verify-run <id> --acceptance-file <absolute-json>
 - Recover the saved plan after interruption: node <absolute-entry> --resume-run <id>
+
+Capacity retries require a structured provider error. A user prompt, tool result, final answer or unstructured stderr containing an overload phrase is not permission to replay work. A completed checkpoint with independently verified output remains successful even if the provider subsequently reports overload. A started task with an unproven result keeps `needs-reconciliation` in task status when its execution block times out or exhausts retries.
+
+Recoverable reconnect notifications do not invalidate a later successful `turn.completed` and zero CLI exit. A terminal `turn.failed`, invalid stream, nonzero exit or cancellation still fails execution. Completed tasks without parent checks keep `awaiting-verification`; neither network recovery nor capacity handling supplies missing acceptance conditions.
+
+A known failed CLI exit is published as `failed`, not as a polling timeout. The planner and both execution modes inherit native Codex model/reasoning configuration unless the caller supplies explicit `ORCH_MODEL` / `ORCH_EFFORT` overrides; GUI-only conversation overrides still require explicit forwarding.
+
+Visible watchdog self-close is an execution exit rather than a timeout; it still requires independent task verification. An explicitly configured `ORCH_OPENAI_BASE_URL` (or legacy `ORCH_STEADY_RELAY_BASE_URL`) is normalized and passed to both the SDK planner and the visible/headless workers. Changing that address affects the explicitly selected service route for the entire run.
 
 Each run owns workspace/temp/orchestrator/runs/<id>/{manifest.json,summary.json,acceptance.json,attempts/}. Every attempt records its exact remaining task IDs and a unique token. The TUI runs the supplied checkpoint command before and immediately after each task. The start record is created exclusively; a duplicate start fails. Poll requires the exact run ID, every planned block, every original task, verified statuses and closed launcher identities. An unrelated or previous run never satisfies this check. Failed prerequisites block dependants and remain in the task ledger. A completion marker or window closure alone is not success. Missing acceptance checks produce awaiting-verification, never a false pass. The parent can supply checks and recheck the same run without another TUI execution.
 
@@ -28,6 +38,8 @@ Acceptance JSON maps T001, T002... to arrays of parent-defined checks. Supported
 file checks require a regular file and optionally sha256; json checks compare specified top-level values; absent checks confirm deletion. command checks run an explicit executable with an args array, shell disabled, from the initiating workspace; they check exitCode (default 0) and optional stdout. Checks may run repeatedly, so they must be read-only. The parent must choose checks that establish the intended result: file existence alone is insufficient for semantic correctness. Checkpoint tokens identify this execution; they are not a security boundary against an intentionally malicious agent.
 
 ## Interruption and recovery
+
+Typed provider account-quota errors such as usage_limit_exceeded are terminal for the invocation. The adapter accepts them from a typed `error`/`turn.failed` event or a structured `task_complete.error`; task text and tool output remain data. The runner records the provider error, closes the owned window, and skips both capacity backoff and the ordinary replacement-window budget; a later invocation may retry after the provider quota resets.
 
 The launcher invokes the CLI once. It preserves failure evidence instead of blindly replaying a whole block. The controller independently rechecks every checkpoint and retries only remaining work, with a bounded attempt count (default two per block per controller) and backoff. Replacement windows use the same planned block and cannot exceed global concurrent capacity; verified tasks are omitted from their prompts.
 

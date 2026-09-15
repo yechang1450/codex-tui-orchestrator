@@ -9,19 +9,31 @@
 - [x] 窗口/焦点层探针区分系统默认终端转交与真正的传统控制台；显式 conhost 路径和 Windows Terminal 路径均完成真实启动、回执读回及关闭检查。端到端插件自检另列，不能由此项代替。见 [当前焦点证据](../test/inactive-window-validation-current.json)。
 - [x] 修正同步焦点探针的启动采样盲区、工作目录漏验和输入就绪检查；历史连续输入通过记录不再认证启动期间输入。
 - [ ] 连续输入：本轮真实探针未取得发起窗口的前台焦点，已在启动前停止且未发送按键（`inputAttempts=0`、`inputDelivered=0`）；不能作为通过。详见 [当前公开前证据](../test/private-readiness-validation.json)。
-- [x] 已安装缓存真实 `selftest-close` 与会话归属：修复原始 token 误命中父会话；最新回执确认自检通过（正确回复、自然退出、无强制关闭、无孤儿进程）。
-- [ ] 当前快照的容量级真实 Codex 任务全部得到有效回执。本轮 12 容量/13 任务实测峰值 11，19 次启动中多块收到 provider `429 Too Many Requests`、模型刷新超时或 rollout 线程丢失，最终回执不完整；详见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [ ] 最终封存快照的已安装缓存真实 `selftest-close`。当前版本已重新安装并启动可见窗口；窗口自然退出且无孤儿进程，证据文件已明确记录 `retryable: "quota"` 与 provider 原始 `usage_limit_exceeded`，但没有有效回执，插件按契约返回失败，不能把这次限额响应算作通过。
+- [ ] 最终封存快照的容量级真实 Codex 任务全部得到有效回执。当前源码 headless 与可见模式均按当时容量 3 弹出并观测到 3 个并发窗口，4 个任务计划收缩为 3 个块；provider 限额使两次实测都没有有效任务回执，且各块按有限预算重试后 fail-closed。最终修复后的容量回执仍未通过；详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
 
-### 2026-09-14 全量离线与双模式审计
+### 2026-09-15 本轮修复和证据边界
+
+本轮修复了已验收任务被容量处理覆盖、任意任务文本误触发容量重试、待对账/待验收状态被覆盖、命令行选项边界、JSON 键顺序误判、网络地址在规划器与执行器之间不一致、连接恢复后仍被标为失败、窗口正常退出被误记超时、任务文本抢占启动器归属标识，以及 UUID 数字污染确定性项目拆分。规划器和两种执行模式默认继承原生 Codex 配置，调用方仍能显式覆盖。明确的失败退出显示为 `failed`，不会冒充轮询超时。Windows 版本刷新脚本曾写出 CRLF，封存检查已拦截并在重新生成包前正规化为 LF。
+
+同一中间快照的单任务 headless 与可见 TUI 都得到 `answer:42` 回执、`verified` 状态、退出码 0 和已关闭进程。五分钟的进程范围代理断网也曾观察到 43 次被阻断连接，恢复后两项回执有效且副作用各一次。这些通过记录均保留哈希；后续核心修复使它们成为历史证据。当前版本的新一轮容量 headless/可见实测均达到计算出的 3 窗并发峰值，但真实 provider 返回 `usage_limit_exceeded`，因此没有进入有效回执或长断网阶段，不能登记为通过。
+
+当前版本源码离线回归为 284 项（283 通过、0 失败、1 跳过）；同一套 284 项从 plugin manager 安装缓存自身目录重跑也为 283 通过、0 失败、1 跳过。静态检查、安装副本与发布完整性结果统一记录在 [公开前账本](../test/private-readiness-validation.json)。仓库继续保持 Private。真实前台连续输入、当前容量验收、当前长断网、未完成任务跨系统重启与 RunOnce 自动调度仍是独立门槛。
+
+### 2026-09-14 较早一轮全量离线与双模式审计（历史快照）
 
 本轮对当前工作树重新执行了 248 项离线回归（247 通过、1 跳过、0 失败），并对 39 个 JavaScript、35 个 JSON、4 个 PowerShell 文件完成语法/解析检查；release integrity 当前为 schema 2、24 个核心文件与 50 个运行时文件，均已重新 seal 并验证。汇总账本见 [full-audit-current.json](../test/full-audit-current.json)。
 
 同一单任务分别以 `exec + headless` 与可见 Windows Terminal TUI 实跑：两次都生成 `answer: 42` 回执，最终都在 provider `429`/不确定副作用下 fail-closed 为 `needs-reconciliation`，退出码均为 1，用户可感知的最终状态一致。该证据只证明单任务模式契约与失败收敛，不替代容量级并发回执、连续前台输入、长期断网、未完成任务跨重启和 RunOnce 自动收集；这些门槛继续保持未通过，computer-use 阶段尚未开始。
 
 ## 跨重启验收桥接
+
+需要验证未完成任务恢复时，使用 `node test/live-reboot-recovery.mjs prepare <唯一ID>`。该脚本要求已提交的干净源码，实际运行两个 headless 任务：第一项完成并保存不可重复写入的回执，第二项进入可安全重试的幂等等待。只有读到第一项 `completed`、第二项 `started` 且原执行进程仍存活，才保存基线并交给下述收集器注册；脚本自身不重启 Windows。
+
+真实重启后，收集器仅在启动时间增加、源码提交和封存哈希相同、健康检查通过时执行 `collect <同一ID>`。它续接原运行，验证第一项回执字节未变、两项副作用各一次、全部任务 `verified` 和执行进程已退出。可用 `--manual-only` 只准备显式收集。离线样本只验证拒绝同次启动、身份错配、重复副作用、失败状态和收集顺序，不算真实重启证据。
 
 真实重启会中断当前 Codex 对话，证据保存在仓库 `temp/reboot-validation-<ID>/`。`prepare` 要求已跟踪文件没有未提交修改，保存原始提交、启动时间、release.json 哈希以及 Node/Git 绝对路径；Node 会解析到真实安装位置，避免保存版本管理器的临时会话入口。它同时尝试注册 RunOnce（登录时尝试执行一次的启动项）。注册只表示请求已保存，不能保证系统已执行；`-ManualOnly` 可只准备基线，由 Codex 在重启后补收集。
 
@@ -38,6 +50,8 @@ powershell.exe -NoProfile -File .\test\reboot-validation.ps1 -Mode collect -Id r
 ```
 
 新回执区分 `collectionTrigger=Manual/RunOnce`；触发参数本身不是 Windows 登录调度的独立证据，因此不会自动认证 `automaticCollectionPassed`。通过还要求启动时间向前变化、提交和发布清单未变、工作区没有已跟踪文件修改，以及三项检查的 JSON 内容、工作目录与退出码全部符合约定。每项检查有 30 秒上限；检查失败、依赖消失等会留下失败阶段和诊断。既有基线和结果禁止覆盖，缺少基线时不创建伪回执，清理只触及本次自有 RunOnce 项。
+
+收集器还会在有效基线目录写入首次 `dispatch.json`（记录收集器开始执行的时间与触发方式）。它帮助区分“未启动收集器”和“收集器启动后健康检查失败”，仍不能单独证明 Windows 登录自动调度已经成功。当前脚本沿用系统执行策略。
 
 本次实际重启记录绑定旧版脚本提交 `0fca067`，原始前后文件哈希及显式补收集方式已存入公开前证据。新增桥接回归用隔离样本覆盖无重启、补收集、失败回执、提交变化和注册命令执行，不将样本中模拟的启动时间当成新的真实重启。
 

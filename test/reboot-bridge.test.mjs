@@ -28,6 +28,7 @@ function fixture(t) {
   fs.writeFileSync(path.join(root, 'scripts/release-integrity.mjs'), 'console.log(JSON.stringify({schema:2,coreVersion:"test",files:24,runtimeFiles:50}));');
   fs.writeFileSync(path.join(root, 'scripts/orchestrate-sdk.mjs'), 'console.log(JSON.stringify({agent:"codex",workspace:process.cwd(),cli:process.execPath}));');
   fs.writeFileSync(path.join(root, 'scripts/repair-plugin-registration.mjs'), 'console.log(JSON.stringify({ok:true,status:"matched",pluginReal:process.argv[2]}));');
+  fs.writeFileSync(path.join(root, 'test/live-reboot-recovery.mjs'), 'import fs from "node:fs";fs.writeFileSync("recovery-called",process.argv[3]);console.log(JSON.stringify({passed:true,runId:"reboot-"+process.argv[3]}));');
   fs.writeFileSync(path.join(root, 'release.json'), '{"schema":2}');
   for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=Reboot Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture']]) {
     const r = spawnSync('git', args, {cwd: root, encoding: 'utf8', windowsHide: true});
@@ -36,12 +37,26 @@ function fixture(t) {
   const state = path.join(root, 'temp', 'reboot-validation-' + id);
   const prePath = path.join(state, 'pre-reboot.json');
   const postPath = path.join(state, 'post-reboot.json');
+  const dispatchPath = path.join(state, 'dispatch.json');
   const run = (mode, extra = [], cwd = repo) => spawnSync(ps, ['-NoProfile', '-File', path.join(root, 'test/reboot-validation.ps1'), '-Mode', mode, '-Workspace', root, '-Id', id, ...extra], {cwd, encoding: 'utf8', windowsHide: true, timeout: 30000});
   const prepare = () => { const r = run('prepare', ['-ManualOnly']); assert.equal(r.status, 0, r.stdout + r.stderr); return JSON.parse(fs.readFileSync(prePath, 'utf8')); };
   const earlierBoot = () => { const pre = JSON.parse(fs.readFileSync(prePath, 'utf8')); pre.bootBefore = '2000-01-01T00:00:00.0000000Z'; fs.writeFileSync(prePath, JSON.stringify(pre)); };
   const post = () => JSON.parse(fs.readFileSync(postPath, 'utf8'));
-  return {root, state, prePath, postPath, run, prepare, earlierBoot, post, registryValue};
+  return {id,root, state, prePath, postPath, dispatchPath, run, prepare, earlierBoot, post, registryValue};
 }
+
+for(const rebooted of [false,true])test('task recovery collector starts only after a validated later boot: '+rebooted,{skip:!windows},t=>{
+  const f=fixture(t),recoveryRoot=path.join(f.root,'temp','reboot-recovery-'+f.id);
+  fs.mkdirSync(recoveryRoot,{recursive:true});
+  fs.writeFileSync(path.join(recoveryRoot,'pre-reboot.json'),JSON.stringify({id:f.id,runId:'reboot-'+f.id,workspace:f.root,ready:true}));
+  const prepared=f.run('prepare',['-ManualOnly','-RecoveryId',f.id]);
+  assert.equal(prepared.status,0,prepared.stdout+prepared.stderr);
+  if(rebooted)f.earlierBoot();
+  const collected=f.run('collect');assert.equal(collected.status,rebooted?0:1,collected.stdout+collected.stderr);
+  assert.equal(fs.existsSync(path.join(f.root,'recovery-called')),rebooted);
+  assert.equal(f.post().automaticCollectionPassed,false);
+  assert.equal(f.post().checks.some(check=>check.label==='task-recovery'&&check.valid),rebooted);
+});
 
 test('reboot collector distinguishes manual fallback and runs checks in the prepared workspace', {skip: !windows}, t => {
   const f = fixture(t); const pre = f.prepare(); f.earlierBoot();
@@ -55,6 +70,13 @@ test('reboot collector distinguishes manual fallback and runs checks in the prep
   assert.equal(post.scope, 'post-reboot-health');
   assert.equal(post.commitBefore, post.commitAfter);
   assert.equal(JSON.parse(post.checks.find(c => c.label === 'doctor').output).workspace.toLowerCase(), f.root.toLowerCase());
+});
+
+test('collection without a prepared baseline creates no dispatch or fake state', {skip:!windows},t=>{
+  const f=fixture(t);
+  const result=f.run('collect');
+  assert.equal(result.status,1);assert.match(result.stderr,/Missing pre-reboot record/);
+  assert.equal(fs.existsSync(f.state),false);
 });
 
 test('no reboot is not a pass and prepare cannot replace its original baseline', {skip: !windows}, t => {
@@ -99,11 +121,19 @@ test('changed commit cannot certify the old baseline and collection never overwr
   assert.deepEqual(fs.readFileSync(f.postPath), before);
 });
 
-test('registered command runs from a foreign working directory and cleans only its one-shot entry', {skip: !windows}, t => {
+test('registered command runs from a foreign directory or reports the Windows command-length limit', {skip: !windows}, t => {
   const f = fixture(t);
   const prepare = f.run('prepare');
   assert.equal(prepare.status, 0, prepare.stdout + prepare.stderr);
   const pre = JSON.parse(fs.readFileSync(f.prePath, 'utf8'));
+  if(pre.registration.status==='unavailable'){
+    assert.match(pre.registration.error,/260-character limit/,'Only the explicit Windows command-length boundary may use manual collection');
+    assert.equal(f.registryValue(),'');
+    assert.equal(f.run('collect').status,1,'An unchanged boot cannot pass manual fallback either');
+    assert.equal(f.post().collectionTrigger,'Manual');
+    assert.equal(f.post().automaticCollectionPassed,false);
+    return;
+  }
   assert.equal(pre.registration.status, 'registered-unverified');
   const command = f.registryValue();
   assert.ok(command.length > 0 && command.length <= 260);
@@ -116,5 +146,9 @@ test('registered command runs from a foreign working directory and cleans only i
   assert.equal(post.bootChanged, false);
   assert.equal(post.checks.length, 3);
   assert.ok(post.checks.every(c => c.valid));
+  assert.ok(fs.existsSync(f.dispatchPath), 'collector dispatch marker must survive a failed post-reboot health gate');
+  const dispatch = JSON.parse(fs.readFileSync(f.dispatchPath, 'utf8'));
+  assert.equal(dispatch.trigger, 'RunOnce');
+  assert.equal(dispatch.id, pre.id);
   assert.equal(f.registryValue(), '');
 });

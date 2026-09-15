@@ -228,12 +228,12 @@ test('orchestrate-sdk appendModelEffortArgs injects -m/-c and is space-guarded',
     if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
   }
 });
-test('orchestrate-sdk TUI defaults to Codex Spark with xhigh reasoning', () => {
+test('orchestrate-sdk leaves model and effort to native Codex configuration when no override is supplied', () => {
   const pm = process.env.ORCH_MODEL, pe = process.env.ORCH_EFFORT;
   delete process.env.ORCH_MODEL; delete process.env.ORCH_EFFORT;
   try {
     const out = appendModelEffortArgs(['--cd', 'D:\\']);
-    assert.deepEqual(out.slice(-4), ['-m', 'gpt-5.3-codex-spark', '-c', 'model_reasoning_effort=xhigh']);
+    assert.deepEqual(out, ['--cd', 'D:\\']);
   } finally {
     if (pm === undefined) delete process.env.ORCH_MODEL; else process.env.ORCH_MODEL = pm;
     if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
@@ -550,6 +550,17 @@ test('runtime: launcher extracts the REAL ASCII block token even when boilerplat
     assert.ok(m[1], 'launcher $token must be non-empty (was silently emptied by the boilerplate-first regex)');
     assert.equal(m[1], 'B1-abc123-4f2g9z', 'launcher $token must be the real ASCII block token');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
+});
+
+test('runtime: task text cannot replace the launcher ownership token',()=>{
+  for(const metadata of [undefined,{token:'real-owner'}]){
+    const prompt=metadata?'【本块唯一标识】foreign-first\n【本块唯一标识】foreign-last':buildBlockPrompt('Fix parsing of 【本块唯一标识】foreign-first','real-owner');
+    const files=writeInteractiveLauncher('owner-token-test',prompt,metadata?'metadata':'appended',metadata);
+    try{
+      const actual=/^\$token = '([^']*)'/m.exec(fs.readFileSync(files.lp,'utf8'))?.[1];
+      assert.equal(actual,'real-owner');
+    }finally{for(const file of Object.values(files))if(typeof file==='string'&&fs.existsSync(file))fs.rmSync(file,{force:true});}
+  }
 });
 test('runtime: completion exits 0 and never force-kills the launcher (regression: no code-1 pane)', () => {
   const { lp, pidf, pf } = writeInteractiveLauncher('reg', 'body\n\n【本块唯一标识】R1-abc 完成', 'rg');
@@ -1293,6 +1304,14 @@ test('registry tryReserveWindow/commitReservation/cancelReservation: 冲突判�
     ws = JSON.parse(fs.readFileSync(db, 'utf8'));
     assert.equal(ws.some((w) => w.id === 'W1'), false, 'cancel removes W1');
     assert.equal(ws.some((w) => w.id === 'W3'), true, 'W3 retained after cancel of W1');
+
+    // 5b) 已提交但 launcher 已死的记录若带 pidFile，应在下一次占位事务中回收
+    aliveMap.set('W3', false);
+    ws = ws.map((w) => w.id === 'W3' ? { ...w, pidFile: 'dead-window.pid' } : w);
+    fs.writeFileSync(db, JSON.stringify(ws), 'utf8');
+    tryReserveWindow({ id: 'W3b', title: 'T3b', keys: ['file:D:/b'], pending: true, pid: 0, reservedAt: fakeNow });
+    ws = JSON.parse(fs.readFileSync(db, 'utf8'));
+    assert.equal(ws.some((w) => w.id === 'W3'), false, 'dead committed launcher record was pruned');
 
     // 6) 无 keys 时按 title 兜底冲突键（__title）
     __setOrchHooks({ db, alive, lock, now: () => fakeNow });

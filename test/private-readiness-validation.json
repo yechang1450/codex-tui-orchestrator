@@ -1,14 +1,14 @@
 {
   "schema": 1,
-  "generatedAt": "2026-09-14T03:05:56.527Z",
-  "sourceVersion": "0.5.0-rc.1+codex.20260913045703",
+  "generatedAt": "2026-09-15T10:41:29.261Z",
+  "sourceVersion": "0.5.0-rc.1+codex.20260915102724",
   "coreVersion": "1.4.0-rc.1",
   "releaseSchema": 2,
   "runtimeFiles": 50,
   "installed": "codex-tui-orchestrator@personal",
   "marketplaceRegistration": "passed",
   "officialInstall": "passed",
-  "doctor": "passed (previously read back)",
+  "doctor": "passed on final source, fresh package and installed cache",
   "cacheReleaseHashMatch": true,
   "selftestClose": {
     "passed": true,
@@ -21,15 +21,32 @@
     "orphanCheckSucceeded": true,
     "agentExitCode": 0,
     "sessionDiscovery": "receipt fast path; owned rollout parser verified against native JSONL",
-    "verifiedBy": "installed cache"
+    "verifiedBy": "installed cache",
+    "latestAttempt": {
+      "status": "failed_provider_usage_limit",
+      "token": "【本块唯一标识】selftest-mu2jjlfh",
+      "done": true,
+      "reportCaptured": false,
+      "launcherAlive": false,
+      "orphanAgent": false,
+      "forcedClose": false,
+      "agentExitCode": 0,
+      "exitCode": 1,
+      "providerSignal": "usage_limit_exceeded",
+      "retryable": "quota",
+      "providerError": "usage_limit_exceeded",
+      "evidence": "temp/selftest-close.json",
+      "verifiedAt": "2026-09-15T10:41:29.261Z"
+    }
   },
   "offlineRegression": {
     "passed": true,
-    "tests": 248,
-    "passedTests": 247,
+    "tests": 284,
+    "passedTests": 283,
     "failedTests": 0,
     "skippedTests": 1,
-    "lastRun": "2026-09-14; node --test --test-concurrency=1 test/*.test.mjs"
+    "lastRun": "2026-09-15; node --test --test-concurrency=1 test/*.test.mjs (temp/final-regression-20260915-r3.log)",
+    "releaseSha256": "037ed257e0f72305bf5abc43c63f89cb4990c266fde3f5f1b81f8b0307aaa79e"
   },
   "securityScan": {
     "status": "complete",
@@ -48,27 +65,26 @@
     "verifiedAt": "2026-09-13T05:21:15.356Z"
   },
   "capacityAttempt": {
-    "status": "failed",
-    "runId": "acceptance-9a5c9a7b-0843-4cf9-8d2b-adbce09011af",
-    "executionMode": "headless",
-    "calculatedCapacity": 12,
-    "taskCount": 13,
-    "peakObserved": 11,
-    "windowLaunches": 19,
-    "uniqueLaunchers": 19,
+    "status": "failed_before_final_source_changes",
+    "runId": "acceptance-8e34ce5e-957c-4d34-a7aa-815b1350d5f1",
+    "executionMode": "visible",
+    "calculatedCapacity": 3,
+    "taskCount": 4,
+    "peakObserved": 3,
+    "windowLaunches": 3,
     "receiptsValid": false,
     "ordered": false,
     "overlap": false,
+    "closed": true,
+    "coreUnchanged": true,
+    "coreHash": "b66689f19d51cb48c648c0f8bb8520df51a6c063fa20581c46442ce6807ea87a",
     "engineExitCode": 1,
     "pollExitCode": 1,
+    "reportSha256": "a9dadf7b1ea8a58a0bc034980a9aa7b1251a6860c698b7c74abce186f1c7e135",
     "observedProviderSignals": [
-      "429 Too Many Requests",
-      "model refresh timeout",
-      "rollout thread not found"
+      "429 Too Many Requests"
     ],
-    "interpretation": "服务侧并发承载不足导致部分任务无有效回执；未观察到超过计算容量的窗口，插件按规则拒绝将不确定任务标记为成功。",
-    "evidenceRoot": "temp/codex-live-headless-dbefbdceaacbbf",
-    "verifiedAt": "2026-09-13T05:38:39Z"
+    "interpretation": "Three visible Windows Terminal workers were observed concurrently; two ended with incomplete checkpoints after provider rate limiting. Final source still needs a fresh full-capacity pass."
   },
   "continuousInputAttempt": {
     "status": "skipped",
@@ -231,6 +247,239 @@
     "recoveryExitEvidence": "passed: bounded process snapshot retry and durable started checkpoint no longer remain pending when launcher exit is unproven",
     "ledgerRunId": "passed: strict protocol-2 runId validation",
     "releaseEol": "passed: seal rejects CRLF runtime text before replacing release manifest",
-    "managerLifecycle": "passed in isolated official Git marketplace fixture; external GitHub reachability remains unclaimed"
+    "managerLifecycle": "passed in isolated official Git marketplace fixture; external GitHub reachability remains unclaimed",
+    "verifiedStatePrecedence": "preserve verified, awaiting-verification and needs-reconciliation",
+    "typedCapacityEvidence": "task text and tool output cannot authorize retries",
+    "nativeConfiguration": "explicit overrides otherwise inherit native Codex configuration",
+    "jsonAcceptance": "structural comparison independent of object-key order",
+    "entryOptions": "request text boundary and trailing run-ID options",
+    "networkRoute": "configured base URL reaches planner and both executors",
+    "reconnect": "a recovered transport notification does not invalidate a successful terminal event",
+    "exitStatus": "known failed exit is failed, not polling timeout",
+    "ownershipToken": "runner metadata is authoritative",
+    "numericProjectReferences": "passed: generic project splitting ignores UUID, receipt and checksum numbers"
+    ,"quotaTerminal": "passed: typed provider usage-limit errors fail closed without reopening a replacement window"
+    ,"providerDiagnosticRescan": "passed: a bounded post-close rollout rescan captures task_complete.error quota/capacity diagnostics"
+    ,"auxiliaryLeaseCleanup": "passed: popup/admission failures release their coordinator lease and owned reservation"
+    ,"registryPrune": "passed: dead committed launcher records with pid files are pruned on the next reservation"
+  },
+  "sourceReleaseSha256": "037ed257e0f72305bf5abc43c63f89cb4990c266fde3f5f1b81f8b0307aaa79e",
+  "installedValidation": {
+    "version": "0.5.0-rc.1+codex.20260915102724",
+    "dependencyInstall": true,
+    "releaseIntegrity": true,
+    "doctor": true,
+    "statusReadonly": true,
+    "releaseSha256": "037ed257e0f72305bf5abc43c63f89cb4990c266fde3f5f1b81f8b0307aaa79e"
+  },
+  "freshPackageValidation": {
+    "passed": true,
+    "files": 184,
+    "dependencyPackages": 2,
+    "freshDependencyCache": true,
+    "integrity": true,
+    "doctor": true,
+    "statusReadonly": true,
+    "tests": 284,
+    "passedTests": 283,
+    "failedTests": 0,
+    "releaseSha256": "037ed257e0f72305bf5abc43c63f89cb4990c266fde3f5f1b81f8b0307aaa79e",
+    "lastRun": "2026-09-15; node --test --test-concurrency=1 test/*.test.mjs from final installed cache (temp/codex-tui-package-validation-20260915-r11.log)",
+    "scope": "package, worker lifecycle and reboot collector regression; no real provider success claimed"
+  },
+  "staticValidation": {
+    "javascript": 97,
+    "json": 38,
+    "powershell": 4,
+    "failed": 0,
+    "legacyUtf8BomJson": [
+      "test/full-audit-powershell.json"
+    ],
+    "pluginManifest": "passed"
+  },
+  "priorCapacityAttempt": {
+    "status": "failed",
+    "runId": "acceptance-9a5c9a7b-0843-4cf9-8d2b-adbce09011af",
+    "executionMode": "headless",
+    "calculatedCapacity": 12,
+    "taskCount": 13,
+    "peakObserved": 11,
+    "windowLaunches": 19,
+    "uniqueLaunchers": 19,
+    "receiptsValid": false,
+    "ordered": false,
+    "overlap": false,
+    "engineExitCode": 1,
+    "pollExitCode": 1,
+    "observedProviderSignals": [
+      "429 Too Many Requests",
+      "model refresh timeout",
+      "rollout thread not found"
+    ],
+    "interpretation": "服务侧并发承载不足导致部分任务无有效回执；未观察到超过计算容量的窗口，插件按规则拒绝将不确定任务标记为成功。",
+    "evidenceRoot": "temp/codex-live-headless-dbefbdceaacbbf",
+    "verifiedAt": "2026-09-13T05:38:39Z"
+  },
+  "capacityAttempts": [
+    {
+      "status": "passed_before_final_source_changes",
+      "runId": "acceptance-80c7ec89-4d97-48e6-a65d-3e788ee2a2ba",
+      "executionMode": "headless",
+      "calculatedCapacity": 2,
+      "taskCount": 3,
+      "peakObserved": 2,
+      "windowLaunches": 2,
+      "receiptsValid": true,
+      "ordered": true,
+      "overlap": true,
+      "closed": true,
+      "coreUnchanged": true,
+      "coreHash": "b66689f19d51cb48c648c0f8bb8520df51a6c063fa20581c46442ce6807ea87a",
+      "engineExitCode": 0,
+      "pollExitCode": 0,
+      "reportSha256": "9e8a1e8dffa0369b327cce0158711fc373a24dd1cd25fd94e4984d27ad73e7f5"
+    },
+    {
+      "status": "passed_before_final_source_changes",
+      "runId": "acceptance-a6554f17-ce63-4bc7-b880-202a090b1999",
+      "executionMode": "visible",
+      "calculatedCapacity": 2,
+      "taskCount": 3,
+      "peakObserved": 2,
+      "windowLaunches": 2,
+      "receiptsValid": true,
+      "ordered": true,
+      "overlap": true,
+      "closed": true,
+      "coreUnchanged": true,
+      "coreHash": "285033a254de82ca5bdbbe005f148ca29a37d96ca6fe72d1e9c8699beff2fc01",
+      "engineExitCode": 0,
+      "pollExitCode": 0,
+      "reportSha256": "600fac3613270d46898ebdf6e9e3984e04c1660905cfbe0708fc7714014acac4"
+    },
+    {
+      "status": "failed_before_final_source_changes",
+      "runId": "acceptance-8e34ce5e-957c-4d34-a7aa-815b1350d5f1",
+      "executionMode": "visible",
+      "calculatedCapacity": 3,
+      "taskCount": 4,
+      "peakObserved": 3,
+      "windowLaunches": 3,
+      "receiptsValid": false,
+      "ordered": false,
+      "overlap": false,
+      "closed": true,
+      "coreUnchanged": true,
+      "coreHash": "b66689f19d51cb48c648c0f8bb8520df51a6c063fa20581c46442ce6807ea87a",
+      "engineExitCode": 1,
+      "pollExitCode": 1,
+      "reportSha256": "a9dadf7b1ea8a58a0bc034980a9aa7b1251a6860c698b7c74abce186f1c7e135"
+    },
+    {
+      "status": "failed_provider_usage_limit_after_final_source_changes",
+      "runId": "acceptance-45cd5f5b-fe9a-40e6-aefc-ac3a75207c74",
+      "executionMode": "headless",
+      "calculatedCapacity": 3,
+      "runnerCapacity": 3,
+      "taskCount": 4,
+      "peakObserved": 3,
+      "windowLaunches": 6,
+      "uniqueLaunchers": 6,
+      "receiptsValid": false,
+      "ordered": false,
+      "overlap": false,
+      "closed": true,
+      "coreUnchanged": true,
+      "engineExitCode": 1,
+      "pollExitCode": 1,
+      "reportSha256": "c759e1b16dba9ef326f45653006528e6a7aec16099dcf4a62b6b32b35688a16",
+      "evidenceRoot": "temp/codex-live-headless-dfaeabcbbfadfedc",
+      "observedProviderSignals": [
+        "usage_limit_exceeded"
+      ],
+      "interpretation": "Final source scheduled three concurrent workers at the calculated capacity; the provider quota prevented valid receipts, so the run failed closed."
+    },
+    {
+      "status": "failed_provider_usage_limit_after_final_source_changes",
+      "runId": "acceptance-4671a508-e22f-4de2-9c92-9d1767fe79c9",
+      "executionMode": "visible",
+      "calculatedCapacity": 3,
+      "runnerCapacity": 3,
+      "taskCount": 4,
+      "peakObserved": 3,
+      "windowLaunches": 6,
+      "uniqueLaunchers": 6,
+      "receiptsValid": false,
+      "ordered": false,
+      "overlap": false,
+      "closed": true,
+      "coreUnchanged": true,
+      "engineExitCode": 1,
+      "pollExitCode": 1,
+      "reportSha256": "eae0fa4c73a88316d418f4f2627cdb72cd39d50fb380eda914bf9c860834ab61",
+      "evidenceRoot": "temp/codex-live-visible-cbeacafaefd",
+      "observedProviderSignals": [
+        "usage_limit_exceeded"
+      ],
+      "interpretation": "Final source opened three visible Windows Terminal workers at the calculated capacity; the provider quota prevented valid receipts, so the run failed closed."
+    }
+  ],
+  "singleTaskModes": [
+    {
+      "status": "passed_before_final_source_changes",
+      "mode": "visible",
+      "runId": "mode-visible-2b53af02-8eda-4378-98bb-3be4c73fd995",
+      "releaseSha256": "8d2754f61874c72e8aa2e9f412a1cd0bce46257db52ff15301d882fa4d0fa4bc",
+      "exitCode": 0,
+      "closed": true,
+      "answer": 42,
+      "verified": true,
+      "reportSha256": "995b912f13b8e4f7dc54644ea6991fb285f48311ad96ae647ad6391f5cfed38a"
+    },
+    {
+      "status": "passed_before_final_source_changes",
+      "mode": "headless",
+      "runId": "mode-headless-6353cc68-ffcd-4f13-8024-dc0f6c7dd984",
+      "releaseSha256": "8d2754f61874c72e8aa2e9f412a1cd0bce46257db52ff15301d882fa4d0fa4bc",
+      "exitCode": 0,
+      "closed": true,
+      "answer": 42,
+      "verified": true,
+      "reportSha256": "86ae29dc5289c50ea29fd887fa3d2f12f35809bf223059b9a0f02484414aa067"
+    }
+  ],
+  "providerOutageHistory": {
+    "status": "passed_before_final_source_changes",
+    "runId": "outage-28368ead-75ed-4317-bb39-9f77da2fc52f",
+    "durationMs": 300000,
+    "blockedConnections": 43,
+    "reconnected": true,
+    "receiptsValid": true,
+    "closed": true,
+    "releaseSha256": "5d24f924328c18d272741698506e4d9984443197f8f75a4e9b4ade9df0491a51",
+    "scope": "process-scoped TLS CONNECT interruption; no global firewall change or TLS decryption",
+    "reportSha256": "e15b4acb53fd455a66864f2c78d9abe836664404dca38cb9c4808a1efc2731f8"
+  },
+  "providerOutageAttempt": {
+    "status": "not_injected_provider_startup_failed",
+    "runId": "outage-8b640e4c-0287-4c79-aefc-39dfb92e844f",
+    "plannedDurationMs": 300000,
+    "faultStartedAt": null,
+    "providerSignals": [
+      "capacity response before task startup"
+    ],
+    "error": "Error: Timed out: real task startup",
+    "releaseSha256": "9673ba5e6196f86942341b1bebc4a5bd23c21f59c63b540e7534f2b5b6c4a9e0",
+    "reportSha256": "690f2a6b1ae9d45ed1d76e57b589fae97bb743011f49fcf7c757be5632ce3fe8"
+  },
+  "rebootRecoveryHarness": {
+    "script": "test/live-reboot-recovery.mjs",
+    "implemented": true,
+    "realRebootVerified": false,
+    "bridgeTests": 9,
+    "contractTests": 2,
+    "passedTests": 11,
+    "protocol": "prepare real T001 completed plus T002 started/idempotent wait; collect only after later boot, unchanged source, exact identity, verified receipts and process exit",
+    "automaticDispatchVerified": false
   }
 }
