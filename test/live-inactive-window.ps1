@@ -2,7 +2,8 @@ param([string]$Workspace=(Get-Location).Path,[string]$Terminal,[switch]$Legacy,[
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $OutputEncoding=[Text.UTF8Encoding]::new($false)
-chcp 65001 | Out-Null
+if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}
+try { chcp 65001 | Out-Null } catch { }
 if($ContinuousInput -and (-not [Environment]::UserInteractive -or [Threading.Thread]::CurrentThread.ApartmentState -ne 'STA')){
  @{passed=$false;skipped=$true;reason='continuous-input probe requires an interactive STA Windows desktop';inputMode=$true} | ConvertTo-Json -Compress
  exit 0

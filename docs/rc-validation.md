@@ -32,6 +32,20 @@
 
 仍未通过或未执行的门槛：本机空闲内存不足以支撑 8 并发（需要空闲内存 ≥ 8000 MB 才能按公式得到容量 8），因此「最大并发数」验收至今只在容量 2 上通过；真实前台连续输入、已安装缓存 `selftest-close`、长断网、未完成任务跨重启与 RunOnce 自动收集也仍未在本快照上执行。`docs/rc-validation.md` 中 2026-09-15 及更早的记录、容量回执与限额结论都绑定在旧快照上，不能证明当前快照，也不能再引用 OpenAI 账户额度作为通过条件。
 
+### 2026-09-18 环境（WSL）修复与功能测试台
+
+宿主把 Codex 切到 WSL 后暴露了一个真实环境缺陷：WSL 启动的 Windows 进程没有 `PATHEXT`，PowerShell 因此解析不到 `chcp`，窗口启动器在首行中止（`INACTIVE_WINDOW_LAUNCH_FAILED`）。修复方式：入口补齐 `PATHEXT`（子进程继承），启动器把 `chcp` 包进非致命兜底；回归夹具改成与父进程类型无关（`Start-Process -Wait`、`cmd.exe /c` 包裹）。同时确认一条需要使用者知道的 WSL 事实：WSL 不会把自定义环境变量传给 Windows 进程，`ORCH_*` 必须用 `WSLENV` 转发或在 Windows shell 里设置。
+
+同一轮的功能测试台结果（都是真实 deepseek 运行）：
+
+- 窗口自检：`--selftest-close` 从 WSL 发起也通过（窗口正常弹出、约 0.6 秒自动关、无孤儿进程、`selftestPassed=true`）。
+- 离线回归：Windows 原生 286 项（285 通过、0 失败、1 跳过）；修复夹具后 WSL 直接调用同样可用（`recovery`/`native-argv`/`inactive-window` 等此前的假失败消失）。
+- 可见 TUI 容量验收 `acceptance-0bae3626-870e-4f97-91f3-d0ddb87897cd`：`passed=true`、容量 2、两块（B1=[T001]、B2=[T002,T003]）、`peak=2`、`ordered=true`、`overlap=true`，证据见 `temp/codex-live-visible-ccfadefaaeeb/report.json`。
+- 断电恢复验收 `powerloss-26777d24-4138-465a-b203-e4875d77b173`：T001 检查点完成后、T002 执行中时用 `taskkill /F /T` 强杀整棵控制器进程树，再用 `--resume-run` 续跑；最终 `success=true`、generation 2、T001 尝试次数仍为 1（不可重复副作用只执行一次，`counter.json` 计数 = 1）、T002 作为 `retrySafe` 任务重试后 `verified`。证据见 `temp/powerloss-26777d24-413/report.json` 与同 run 的 `events.jsonl`（含 `run.resumed` 事件）。
+- 状态面：`status.mjs` 只读面板同时给出 TodoList（逐任务）与 Execution（逐块 + 尝试次数 + PID），`goal.json` 派生镜像包含 tasks/blocks/status，可直接被宿主或脚本消费。
+
+用例已固化为 `test/live-powerloss.mjs`（可选真机验收，默认不进离线套件）。本轮仍未覆盖：8 并发（受本机空闲内存限制）、长断网、真实重启（RunOnce）与真实前台连续输入。
+
 ### 2026-09-15 本轮修复和证据边界
 
 本轮修复了已验收任务被容量处理覆盖、任意任务文本误触发容量重试、待对账/待验收状态被覆盖、命令行选项边界、JSON 键顺序误判、网络地址在规划器与执行器之间不一致、连接恢复后仍被标为失败、窗口正常退出被误记超时、任务文本抢占启动器归属标识，以及 UUID 数字污染确定性项目拆分。规划器和两种执行模式默认继承原生 Codex 配置，调用方仍能显式覆盖。明确的失败退出显示为 `failed`，不会冒充轮询超时。Windows 版本刷新脚本曾写出 CRLF，封存检查已拦截并在重新生成包前正规化为 LF。

@@ -2,6 +2,8 @@
 
 ## 0.5.0-rc.1
 
+- 修复从 WSL 发起时可见窗启动失败：WSL 启动的进程没有 `PATHEXT`，PowerShell 因此解析不到 `chcp`，窗口启动器在首行就中止。入口现在补齐 `PATHEXT`，启动器把 `chcp` 包在非致命兜底里；回归夹具改为与父进程类型无关（`Start-Process -Wait`、`cmd.exe /c` 包裹），WSL 与 Windows 原生两种方式都能跑绿。
+- 新增可选真机用例 `test/live-powerloss.mjs`：强杀控制器进程树（模拟断电）后用 `--resume-run` 续跑，校验不可重复的副作用恰好执行一次、`retrySafe` 任务安全重试、整轮最终 `verified`。
 - 规划器与执行窗默认继承发起方的 Codex provider（含 CODEX_HOME 中的第三方 provider 与其凭据）；只有 `ORCH_PROVIDER=openai-https` 或显式配置中继地址时才改走 orchestrator-openai-https，`inherit` 之外的未知取值一律 fail-closed。此前无论本机配置如何都会强制 OpenAI HTTPS provider，导致第三方 provider 无法用于实际任务。
 - `scripts/package.json` 与 `scripts/package-lock.json` 的版本字符串与 `.codex-plugin/plugin.json` 的 cachebuster 同步，消除版本漂移。
 - provider 的账户配额错误现在只接受结构化 `error`/`turn.failed` 或 `task_complete.error`，立即 fail-closed；窗口关闭后的有界重扫会保留迟到的 provider 诊断，任务文本和工具输出不能触发重试。

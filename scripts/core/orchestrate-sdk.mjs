@@ -1087,7 +1087,8 @@ function writeInteractiveLauncher(title, prompt, sfx, metadata={}) {
     // Align BOTH console code pages to UTF-8: on a Chinese-locale Windows the default INPUT code page
     // is 936 (GBK); Codex expects UTF-8 and the Microsoft Pinyin/TSF IME composes against the console
     // code page. chcp 65001 + InputEncoding UTF-8 keep IME composition UTF-8 (best-effort for CJK).
-    "chcp 65001 | Out-Null",
+    "if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}",
+    "try { chcp 65001 | Out-Null } catch { }",
     "[Console]::InputEncoding = [System.Text.Encoding]::UTF8",
     "Write-Host '============================================='",
     "Write-Host '  TASK RUNNING - closes automatically on completion'",

@@ -2,7 +2,10 @@ param([Parameter(Mandatory=$true)][string]$Payload)
 $ErrorActionPreference='Stop'
 [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $OutputEncoding=[Text.UTF8Encoding]::new($false)
-chcp 65001 | Out-Null
+if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}
+# PowerShell 5.1 不会在启动后重新扫描 PATHEXT，所以本行在 WSL 发起的进程里可能找不到 chcp；
+# 编码已由上面的 [Console] 设置生效，chcp 只是加固，失败时不要中断窗口启动。
+try { chcp 65001 | Out-Null } catch { }
 try {
   $request=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Payload)) | ConvertFrom-Json
   Add-Type -TypeDefinition @'

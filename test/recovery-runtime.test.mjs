@@ -111,7 +111,9 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
  const hooks={plan:async()=>[{title:'linked',type:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
   launcher:(key,prompt,suffix)=>{const file=/开始前：node "[^"]+" "([^"]+)"/.exec(prompt)[1];attempts.push(JSON.parse(fs.readFileSync(file)).taskIds);
    const pidf=path.join(d,'window-'+suffix+'.pid'),lp=path.join(d,'win-launch-'+suffix+'.ps1'),rf=path.join(d,suffix+'.result');
-   fs.writeFileSync(lp,'\ufeff'+`$PID | Set-Content -LiteralPath ${lit(pidf)} -Encoding UTF8\n& ${lit(process.execPath)} ${lit(worker)} ${lit(file)} ${lit(rf)} ${lit(d)}\nexit 0`);return{pidf,lp,rf};},
+   // Start-Process -Wait 让夹具不依赖父进程类型：从 WSL 启动时，PowerShell 对 `& <控制台子进程>`
+   // 会立即返回（实测 252ms），窗口身份校验就会因为启动器已退出而失败；-Wait 在两种父进程下都等待。
+   fs.writeFileSync(lp,'\ufeff'+`$PID | Set-Content -LiteralPath ${lit(pidf)} -Encoding UTF8\nStart-Process -FilePath ${lit(process.execPath)} -ArgumentList ${lit(worker)},${lit(file)},${lit(rf)},${lit(d)} -NoNewWindow -Wait\nexit 0`);return{pidf,lp,rf};},
   spawn:async(lp,_title,pidf)=>{const child=spawn('powershell.exe',['-NoProfile','-File',lp],{windowsHide:true,stdio:'ignore'});children.push(child);const end=Date.now()+15000;while(!fs.existsSync(pidf)&&Date.now()<end)await pause(20);return fs.existsSync(pidf);},
   readPid:p=>fs.existsSync(p)?Number(fs.readFileSync(p,'utf8').replace(/^\uFEFF/,'')):0,
   session:async()=> 'controlled',wait:async(_session,_timeout,rf)=>{fs.writeFileSync(rf+'.go','go');const end=Date.now()+15000;while(!fs.existsSync(rf)&&Date.now()<end)await pause(20);return {done:fs.existsSync(rf),exitCode:JSON.parse(fs.readFileSync(rf)).exitCode};},
