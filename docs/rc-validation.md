@@ -73,7 +73,7 @@
 
 ### 2026-09-18 动态内存预算（替换固定容量公式）
 
-并发不再用固定公式估算，而是运行时按可用内存动态决定（`ORCH_CAPACITY_MODE=dynamic`，默认）：规划期用最宽并行层的预估成本判断，超预算就在同一并行层合并最贵的两块（块内串行，峰值取 max）；执行期每开新窗复检，不够先 `deferred` 暂缓、等已运行块结束后重检，全部跑完仍不满足则降级硬跑（`degraded=hard-run`），确保一轮跑完、不 fail-closed。每窗默认 256 MB 成本（实测边际成本 193 MB），按实测滚动修正（钳制 160-600 MB）；底线 `ORCH_MIN_AVAILABLE_MB` 默认 512 MB（实测 8 窗时最低可用内存 108 MB，256 MB 会被击穿）。`ORCH_CAPACITY_MODE=formula` 可回退旧公式；单任务请求不再进入编排。
+并发不再用固定公式估算，而是运行时按可用内存动态决定（`ORCH_CAPACITY_MODE=dynamic`，默认）：规划期用最宽并行层的预估成本判断，超预算就在同一并行层合并最贵的两块（块内串行，峰值取 max）；执行期每开新窗复检，不够先 `deferred` 暂缓、等已运行块结束后重检，全部跑完仍不满足则降级硬跑（`degraded=hard-run`），确保一轮跑完、不 fail-closed。每窗默认 256 MB 成本（实测边际成本 193 MB，标定原始数据见 `temp/calib/report-8.json`），按实测滚动修正（钳制 160-600 MB）；底线 `ORCH_MIN_AVAILABLE_MB` 默认 512 MB（实测 8 窗时最低可用内存 108 MB，256 MB 会被击穿）。`ORCH_CAPACITY_MODE=formula` 可回退旧公式；单任务请求不再进入编排。
 
 真机证据（deepseek，本机 16 GB）：
 
