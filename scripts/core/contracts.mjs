@@ -3,6 +3,102 @@ import fs from 'node:fs';
 import {isDeepStrictEqual} from 'node:util';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
+import {blockCostMB as budgetBlockCostMB, DEFAULT_WINDOW_COST_MB} from './memory-budget.mjs';
+
+/**
+ * 动态内存预算（dynamic capacity）：
+ *   - 先用"全部块同时运行"的预估成本判断放不放得下（available - Σcost >= floor）；
+ *   - 放不下就在同一并行层里合并成本最大的两块（块内串行，峰值取 max 而非求和），循环重判；
+ *   - 合并保持拓扑顺序：被合并块的依赖改指到保留块，绝不产生依赖环。
+ * 返回 {plan, merges, requiredMB, availableMB, floorMB, ok}。
+ */
+export function planMemoryCosts(plan, {windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}} = {}) {
+  return (plan || []).map(block => ({key: block.key, title: block.title, costMB: budgetBlockCostMB(block, windowCostMB, taskCosts)}));
+}
+
+/** 预估峰值成本 = 同一时刻最多能并发运行的块成本之和（最宽的一层）。 */
+function projectedPeakCostMB(blocks, costOf, keysOf) {
+  if (!blocks.length) return 0;
+  try {
+    const waves = levelWaves(blocks.map((block, index) => ({key: keysOf(block, index), title: block.title || ('block' + (index + 1)), b: block, dependsOn: block.memoryDeps || block.dependsOn || []})));
+    return Math.max(...waves.map(wave => wave.reduce((sum, rec) => {
+      const target = blocks.find((block, index) => keysOf(block, index) === rec.key);
+      return sum + (target ? costOf(target) : 0);
+    }, 0)));
+  } catch {
+    return blocks.reduce((sum, block) => sum + costOf(block), 0);
+  }
+}
+
+export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}} = {}) {
+  const blocks = structuredClone(input || []).map((block, index) => ({
+    ...block,
+    taskIds: [...(block.taskIds || block.tasks?.map(task => task.id) || [])],
+    conflictKeys: [...(block.conflictKeys || [])],
+    memoryKey: 'K' + (index + 1),
+    memoryTitle: block.title || ('block' + (index + 1)),
+  }));
+  const alias = new Map();
+  blocks.forEach((block, index) => {
+    alias.set(String(block.memoryTitle), block.memoryKey);
+    alias.set(String(block.memoryKey), block.memoryKey);
+    const positional = block.key || ('B' + (index + 1));
+    alias.set(String(positional), block.memoryKey);
+  });
+  for (const block of blocks) {
+    block.memoryDeps = [...new Set((block.dependsOn || [])
+      .map(dep => alias.get(String(dep)))
+      .filter(dep => dep && dep !== block.memoryKey))];
+  }
+  const costOf = block => budgetBlockCostMB(block, windowCostMB, taskCosts);
+  // 预估口径 = "同一时刻最多能并发运行的块"成本之和（最宽的一层），而不是所有块之和：
+  // 串行链（p1->p2->p3）天然只能跑一个块，不该被当成三块同时占内存。
+  const totalCost = () => projectedPeakCostMB(blocks, costOf, block => block.memoryKey);
+  const fits = () => Number(floorMB) <= 0 || (Number(availableMB) - totalCost() >= Number(floorMB));
+  const merges = [];
+  while (!fits() && blocks.length > 1) {
+    let waves;
+    try {
+      waves = levelWaves(blocks.map(block => ({key: block.memoryKey, title: block.memoryTitle, b: block, dependsOn: block.memoryDeps})));
+    } catch { break; }
+    let best = null;
+    for (const wave of waves) {
+      for (let i = 0; i < wave.length; i++) {
+        for (let j = i + 1; j < wave.length; j++) {
+          const kept = blocks.find(block => block.memoryKey === wave[i].key);
+          const merged = blocks.find(block => block.memoryKey === wave[j].key);
+          if (!kept || !merged) continue;
+          const sum = costOf(kept) + costOf(merged);
+          // 只合并同一并行层、且成本最大的两块；成本相同时保持稳定顺序。
+          if (!best || sum > best.sum) best = {kept, merged, sum};
+        }
+      }
+    }
+    if (!best) break;
+    const {kept, merged} = best;
+    kept.taskIds = [...kept.taskIds, ...merged.taskIds];
+    kept.tasks = [...(kept.tasks || []), ...(merged.tasks || [])];
+    kept.conflictKeys = [...new Set([...kept.conflictKeys, ...merged.conflictKeys])];
+    kept.memoryDeps = [...new Set([...kept.memoryDeps, ...merged.memoryDeps])].filter(dep => dep !== kept.memoryKey && dep !== merged.memoryKey);
+    kept.type = 'linked';
+    kept.memoryMergedFrom = [...(kept.memoryMergedFrom || []), merged.memoryTitle];
+    for (const block of blocks) block.memoryDeps = block.memoryDeps.map(dep => dep === merged.memoryKey ? kept.memoryKey : dep);
+    blocks.splice(blocks.indexOf(merged), 1);
+    merges.push({kept: kept.memoryTitle, merged: merged.memoryTitle, costMB: Math.round(best.sum), reason: 'memory-budget'});
+  }
+  const keyMap = new Map(blocks.map((block, index) => [block.memoryKey, 'B' + (index + 1)]));
+  const plan = blocks.map((block, index) => {
+    const out = {
+      ...block,
+      key: 'B' + (index + 1),
+      dependsOn: [...new Set(block.memoryDeps.map(dep => keyMap.get(dep)).filter(Boolean))],
+    };
+    delete out.memoryKey; delete out.memoryTitle; delete out.memoryDeps;
+    return out;
+  });
+  const requiredMB = projectedPeakCostMB(plan, costOf, (block, index) => block.key || ('B' + (index + 1)));
+  return {plan, merges, requiredMB, availableMB: Number(availableMB), floorMB: Number(floorMB), ok: Number(floorMB) <= 0 || (Number(availableMB) - requiredMB >= Number(floorMB))};
+}
 
 export const CORE_VERSION = '1.4.0-rc.1';
 export const SUCCESS = new Set(['verified']);

@@ -16,7 +16,7 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 
 ## 规划与执行
 
-- 从发起工作区调用绝对入口，临时文件只进 `workspace/temp/orchestrator`。容量为 `floor(机器内存MB / 2000)`（每块按 2 GB 预算，即 `floor(机器物理内存MB / 1000)` 再除以二取整；16 GB 机器 → 容量 8）；总块数不得超限，溢出任务在已有块内串行。
+- 从发起工作区调用绝对入口，临时文件只进 `workspace/temp/orchestrator`。并发按**运行时内存预算**（`ORCH_CAPACITY_MODE=dynamic`，默认）：规划后先判断全部块同时运行的预估成本是否会把可用内存压到 `ORCH_MIN_AVAILABLE_MB`（默认 512）以下，超了就把同一并行层里最贵的两块合并（块内串行），循环到放得下；执行期每开一个新块前复检，不够就 `deferred` 暂缓，等已运行块结束后重检，全部跑完仍不够则**降级硬跑**（记 `degraded=hard-run`，绝不 fail-closed，保证一轮跑完）。每窗成本默认 256 MB 并按实测滚动修正；单任务请求不在编排范围内，直接用 Codex 执行。`ORCH_CAPACITY_MODE=formula` 可回退旧的 `floor(机器内存MB/2000)` 公式。
 - 保留原始任务 ID 和原文。按冲突、父子路径锁和依赖拆块；未知、自指、循环依赖在启动前报错，覆盖不确定时保留全部任务并串行兜底。
 - 先生成唯一 run ID 和 acceptance JSON（每个 T001 等任务都要有内容或行为检查），再执行：
   `node <SDK绝对路径> --run-id <ID> --acceptance-file <JSON绝对路径> --exec "<完整请求>"`

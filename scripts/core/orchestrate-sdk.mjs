@@ -22,6 +22,7 @@ import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
 import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
 import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode } from "./network-policy.mjs";
+import {budgetSettings, budgetStateFile} from "./memory-budget.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, writeSync, closeSync, renameSync } from "node:fs";
@@ -2335,8 +2336,12 @@ export async function main() {
     if(isOrchestratorSelfMod(request)){console.log(JSON.stringify({mode:'inline',reason:'Modify the orchestrator in the initiating conversation before opening windows'}));return;}
     if(!resume&&await classifyExecutionMode(request)==='inline'){console.log(JSON.stringify({mode:'inline',reason:'Read-only analysis'}));return;}
     if(!checkDiskSpace()) {process.exitCode=1;return;}
-    const capacity=computeMaxWindows(os.totalmem() / 1024 ** 2);
+    // 容量模式：dynamic 用运行时内存预算（规划期同层合并 + 开窗前复检 + 暂缓/硬跑），
+    // formula 保留旧的"机器内存/2000"公式。dynamic 下 capacity 只是并发上限的安全边界。
+    const budget=budgetSettings();
+    const capacity=budget.mode==='dynamic'?64:computeMaxWindows(os.totalmem() / 1024 ** 2);
     if(capacity<1)throw new Error('Insufficient memory for an execution block');
+    const memoryBudget=budget.mode==='dynamic'?{mode:'dynamic',floorMB:budget.floorMB,windowCostMB:budget.windowCostMB,stateFile:budgetStateFile(STATE_DIR)}:undefined;
     let savedMode;
     if(resume){
       const id=process.env.ORCH_RUN_ID;
@@ -2345,6 +2350,15 @@ export async function main() {
     }
     const executionMode=resolveExecutionMode(mode,process.env,savedMode);
     if(AGENT.agent!=='codex'&&executionMode==='headless')throw new Error('Headless executor requires Codex');
+    // 单任务请求不在编排范围内：编排的价值是并发，单任务直接交给 Codex 普通执行。
+    if(!resume&&memoryBudget){
+      const preplan=await decomposeSafely(request,capacity);
+      const plannedTasks=(preplan||[]).reduce((n,block)=>n+(block.tasks?.length||0),0);
+      if((preplan||[]).length===1&&plannedTasks===1){
+        console.log(JSON.stringify({status:'out-of-scope',reason:'单任务请求：编排不带来并发收益，请直接用 Codex 执行该任务',tasks:1}));
+        return;
+      }
+    }
     armEnforcement();
     await cleanStaleWindows();
     cleanStaleTransients();
@@ -2364,7 +2378,7 @@ export async function main() {
     const result=await runWindows(request,{
       plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
       register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
-    },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt()});
+    },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
     process.exitCode=result.success?0:1;return;
   }
 

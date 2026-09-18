@@ -103,12 +103,16 @@ engine.done.then(() => {
 const samples = [];
 let peak = 0;
 let monitorError=null,runnerCapacity=null;
+// dynamic 内存预算模式下，账本记录的真实块数可能小于 harness 按公式算出的上限；
+// 屏障与峰值判定都以"账本块数"为准，否则合块内的任务会一直等屏障直到超时。
+let expectedLive=capacity;
 const deadline = Date.now() + 970000;
 while (!engineEnded && Date.now() < deadline) {
   try {
     if(fs.existsSync(summaryFile)){
       const current=JSON.parse(fs.readFileSync(summaryFile,'utf8'));
       runnerCapacity=current.capacity;validateCapacitySample(current,capacity);
+      if(Number.isInteger(current.capacity)&&current.capacity>=1)expectedLive=current.capacity;
     }
     const { stdout } = await exec('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'], { windowsHide: true, timeout: 15000 });
     const processes = JSON.parse(stdout);
@@ -138,9 +142,9 @@ while (!engineEnded && Date.now() < deadline) {
     samples.push(sample);
     if (live.length > peak) { peak = live.length; console.log('[measure] peak=' + peak + ' ready=' + ready.length); }
     validateCapacitySample(null,capacity,live.length);
-    if (runnerCapacity===capacity&&live.length === capacity && config.ids.slice(0, capacity).every(id => ready.includes(id)) && !fs.existsSync(path.join(root, 'release'))) {
+    if (runnerCapacity===expectedLive && live.length === expectedLive && config.ids.slice(0, expectedLive).every(id => ready.includes(id)) && !fs.existsSync(path.join(root, 'release'))) {
       fs.writeFileSync(path.join(root, 'release'), String(Date.now()));
-      console.log('[measure] verified calculated live '+agent+' descendants and running probes; barrier released');
+      console.log('[measure] verified '+live.length+' live '+agent+' descendants (ledger blocks '+expectedLive+') and running probes; barrier released');
     }
   } catch (e) { monitorError=String(e);console.log('[measure] ' + monitorError);break; }
   await new Promise(r => setTimeout(r, 3000));
@@ -175,10 +179,10 @@ const results = config.ids.map(id => {
 
 const summary = fs.existsSync(summaryFile) ? JSON.parse(fs.readFileSync(summaryFile, 'utf8')) : null;
 const receiptsValid = results.every((r, i) => !r.missing && r.id === config.ids[i] && r.nonce === nonce && r.sum === 50005000 && r.cwd === workspace && r.finished > r.started);
-const ordered = receiptsValid && results[capacity].started >= results[capacity - 1].finished;
+const ordered = receiptsValid && results[expectedLive].started >= results[expectedLive - 1].finished;
 const windowLaunches = executionMode==='headless'?Object.values(summary?.results||{}).reduce((n,r)=>n+(r.attempts?.length||0),0):(engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
 const uniqueLaunchers = new Set(samples.flatMap(s => s.live.map(w => w.launcherPid))).size;
-const overlap = receiptsValid && Math.max(...results.slice(0, capacity).map(r => r.started)) < Math.min(...results.slice(0, capacity).map(r => r.finished));
+const overlap = receiptsValid && Math.max(...results.slice(0, expectedLive).map(r => r.started)) < Math.min(...results.slice(0, expectedLive).map(r => r.finished));
 const coreHashAtEnd=coreHash();let coreUnchanged=coreHashAtLaunch===coreHashAtEnd;
 try{verifyRelease(repo);}catch(error){coreUnchanged=false;monitorError ||= String(error);}
 const terminal=observedTerminal(executionMode,engine.output());

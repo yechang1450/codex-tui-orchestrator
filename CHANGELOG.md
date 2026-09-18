@@ -2,6 +2,8 @@
 
 ## 0.5.0-rc.1
 
+- 容量改为**运行时内存预算**（默认 `dynamic`）：规划期按全部块同时运行的预估成本与可用内存判断，超预算就把同一并行层里最贵的两块合并（块内串行）；执行期每开窗前复检，不够先 `deferred` 暂缓、等已运行块结束后重检，全部跑完仍不够就降级硬跑（`degraded=hard-run`）保证一轮跑完。每窗默认 256 MB 并按实测滚动修正（钳制 160-600），底线默认 512 MB（`ORCH_MIN_AVAILABLE_MB`）。单任务请求不再进入编排。`ORCH_CAPACITY_MODE=formula` 可回退旧公式。
+
 - 容量公式改为每块按 2 GB 预算、取机器检测到的物理内存：`floor(机器内存MB / 1000) / 2` 向下取整（等价 `floor(机器内存MB / 2000)`，16 GB 机器 → 容量 8）。容量不再随运行时空闲内存波动，单块预算固定 2 GB。
 - 修复从 WSL 发起时可见窗启动失败：WSL 启动的进程没有 `PATHEXT`，PowerShell 因此解析不到 `chcp`，窗口启动器在首行就中止。入口现在补齐 `PATHEXT`，启动器把 `chcp` 包在非致命兜底里；回归夹具改为与父进程类型无关（`Start-Process -Wait`、`cmd.exe /c` 包裹），WSL 与 Windows 原生两种方式都能跑绿。
 - 新增可选真机用例 `test/live-powerloss.mjs`：强杀控制器进程树（模拟断电）后用 `--resume-run` 续跑，校验不可重复的副作用恰好执行一次、`retrySafe` 任务安全重试、整轮最终 `verified`。

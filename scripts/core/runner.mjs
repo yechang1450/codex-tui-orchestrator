@@ -2,11 +2,51 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText} from './contracts.mjs';
+import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,budgetMergePlan} from './contracts.mjs';
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
+import {availableMB, admissionOk, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost, HARD_RUN_GRACE_MS} from './memory-budget.mjs';
+
+const RUNNING_BLOCK_STATUSES = new Set(['launching', 'running', 'reserved', 'retrying']);
+const TERMINAL_BLOCK_STATUSES = new Set(['verified', 'failed', 'needs-reconciliation', 'timeout', 'popup-failed']);
+
+function blockCostFor(sum, key, budget) {
+  const block = (sum.blocks || []).find(item => item.key === key);
+  return budgetBlockCostMB(block, budget.windowCostMB, budget.taskCosts || {});
+}
+function runningCostMB(sum, excludeKey, budget) {
+  return Object.entries(sum.results || {}).reduce((total, [key, result]) =>
+    (key !== excludeKey && RUNNING_BLOCK_STATUSES.has(result?.status)) ? total + blockCostFor(sum, key, budget) : total, 0);
+}
+function othersCanProgress(sum, excludeKey) {
+  return Object.entries(sum.results || {}).some(([key, result]) =>
+    key !== excludeKey && !TERMINAL_BLOCK_STATUSES.has(result?.status) && result?.status !== 'deferred');
+}
+/** 启动器进程树的当前工作集合计（MB），用于滚动修正每窗成本。 */
+function treeWorkingSetMB(snapshot, rootPid) {
+  const root = Number(rootPid);
+  if (!root || !snapshot?.get?.(root)) return 0;
+  const children = new Map();
+  for (const proc of snapshot.values()) {
+    const parent = Number(proc.ParentProcessId) || 0;
+    if (!children.has(parent)) children.set(parent, []);
+    children.get(parent).push(proc);
+  }
+  let total = 0;
+  const seen = new Set();
+  const queue = [root];
+  while (queue.length) {
+    const pid = queue.shift();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    const proc = snapshot.get(pid);
+    if (proc) total += Number(proc.WorkingSet64) || 0;
+    for (const child of children.get(pid) || []) queue.push(Number(child.ProcessId));
+  }
+  return Math.round(total / 1024 ** 2);
+}
 import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
@@ -187,11 +227,24 @@ export async function runWindows(request,hooks,options={}) {
       atomicJson(path.join(dir,'manifest.json'),manifest);
       options.onEvent?.({...manifest,type:'plan.started',executionStatus:[]});
       const candidate=await hooks.plan(request,capacity);
-      const {plan,tasks}=ledgerPlan(request,candidate,capacity,hooks.compact);
+      // 动态内存预算：先按"全部块同时运行"的预估成本合并同层最贵的两块，再落账本。
+      const memoryBudget=options.memoryBudget;
+      if(memoryBudget)memoryBudget.taskCosts=Object.fromEntries(Object.entries(checks||{}).map(([id,value])=>[id,{memoryMB:Number(value?.memoryMB||0)}]));
+      const compactWithBudget=(plan,cap)=>{
+        if(!memoryBudget||memoryBudget.mode!=='dynamic')return hooks.compact(plan,cap);
+        const merged=budgetMergePlan(plan,{availableMB:availableMB(),floorMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,taskCosts:memoryBudget.taskCosts||{}});
+        memoryBudget.lastPlan=merged;
+        if(merged.merges.length)console.log('[orchestrator] memory budget merge: '+merged.merges.map(m=>m.kept+' + '+m.merged).join(', ')+' -> required '+merged.requiredMB+'MB, available '+merged.availableMB+'MB, floor '+merged.floorMB+'MB');
+        return merged.plan;
+      };
+      const {plan,tasks}=ledgerPlan(request,candidate,capacity,compactWithBudget);
       const recs=plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[],keys:[...new Set([...(b.conflictKeys||[]),...b.tasks.flatMap(t=>hooks.infer(t.prompt||''))].map(k=>canonicalKey(k,workspace)))]}));
       levelWaves(recs);
       sum={protocol:2,version:CORE_VERSION,agent:options.agent||'codex',executionMode:options.executionMode||'visible',runId,workspace,request,capacity,coordinator,generation:1,history:[],startedAt:Date.now(),tasks,plan:recs,
+        memoryBudget:memoryBudget?{mode:memoryBudget.mode,floorMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,merges:memoryBudget.lastPlan?.merges||[],requiredMB:memoryBudget.lastPlan?.requiredMB,availableMB:memoryBudget.lastPlan?.availableMB}:undefined,
         blocks:recs.map(r=>({key:r.key,title:r.title,taskIds:r.b.tasks.flatMap(t=>t.sourceIds)})),results:{},taskResults:{},todoList:[]};
+      // dynamic 模式下 capacity 只是安全边界；账本记录真实块数，便于宿主与验收读取。
+      if(memoryBudget?.mode==='dynamic')sum.capacity=sum.blocks.length;
       for(const r of recs){sum.results[r.key]={status:'pending',attempts:[]};for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)sum.taskResults[id]={status:'pending'};}
     }
     sum.owner=claim.owner;sum.coordinator=coordinator;
@@ -210,10 +263,11 @@ export async function runWindows(request,hooks,options={}) {
     };
     const mark=(r,status,reason)=>{
       sum.results[r.key]={...sum.results[r.key],status,reason};
-      if(!['waiting','launching','running','reserved','retrying'].includes(status))for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(!['verified','needs-reconciliation','awaiting-verification'].includes(sum.taskResults[id]?.status))sum.taskResults[id]={...sum.taskResults[id],status,reason};
+      if(!['waiting','launching','running','reserved','retrying','deferred'].includes(status))for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(!['verified','needs-reconciliation','awaiting-verification'].includes(sum.taskResults[id]?.status))sum.taskResults[id]={...sum.taskResults[id],status,reason};
       persist(`block.${r.key}.${status}`);
     };
     persist(options.resume?'run.resumed':'plan.created');
+    if(sum.memoryBudget?.merges?.length)persist('plan.memory-merged');
     progressTimer=setInterval(()=>{try{if(refreshTaskProgress(sum))persist('task.progress');}catch(error){progressError=error;clearInterval(progressTimer);}},250);
     console.log(`[run] runId=${runId} mode=${sum.executionMode||'visible'} blocks=${sum.blocks.length} capacity=${capacity} generation=${sum.generation} summary=${summaryFile}`);
     async function execute(r) {
@@ -224,6 +278,7 @@ export async function runWindows(request,hooks,options={}) {
       let attemptsThisController=0;
       const limit=Math.max(1,Math.min(3,Number(options.maxAttempts||2)));
       let capacityRetries=0;
+      let memTimer=null,memStats=null;
       while(Date.now()<deadline) {
         if(progressError)throw progressError;
         let e=sum.results[r.key],la=e.launcherFiles,identity;
@@ -241,6 +296,30 @@ export async function runWindows(request,hooks,options={}) {
           if(recovery.uncertain.length){e.status='needs-reconciliation';e.reason='Uncertain tasks: '+recovery.uncertain.join(', ');e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;}
           if(attemptsThisController>=limit){mark(r,'failed','Safe recovery attempt budget exhausted');return;}
           if(attemptsThisController)await pause(Math.min(2000*attemptsThisController,Math.max(0,deadline-Date.now())));
+          // 动态内存准入：不够就 deferred（暂缓，不算失败）；其它块也全都推进不了时降级硬跑，
+          // 保证"一轮要跑完"的批次不会因为内存 fail-closed。
+          const memoryBudget=options.memoryBudget;
+          if(memoryBudget&&memoryBudget.mode==='dynamic'&&Number(memoryBudget.floorMB)>0){
+            const cost=blockCostFor(sum,r.key,memoryBudget),waitStarted=Date.now();
+            while(Date.now()<deadline){
+              const available=availableMB(),running=runningCostMB(sum,r.key,memoryBudget);
+              if(admissionOk({availableMB:available,runningCostMB:running,blockCostMB:cost,floorMB:memoryBudget.floorMB}))break;
+              const canProgress=running>0||othersCanProgress(sum,r.key);
+              if(!canProgress&&Date.now()-waitStarted>=HARD_RUN_GRACE_MS){
+                console.log(`[orchestrator] memory budget unmet for ${r.key} (available ${available}MB, block ${cost}MB, floor ${memoryBudget.floorMB}MB); no other block can run -> hard-run (degraded)`);
+                e.degraded='hard-run';
+                e.degradedReason=`memory budget unmet: available ${available}MB, block ${cost}MB, floor ${memoryBudget.floorMB}MB`;
+                mark(r,'deferred',e.degradedReason);
+                persist(`block.${r.key}.hard-run`);
+                break;
+              }
+              if(e.status!=='deferred'){
+                e.reason=`memory budget: available ${available}MB, need ${cost}MB + floor ${memoryBudget.floorMB}MB`;
+                mark(r,'deferred',e.reason);
+              }
+              await pause(1000);
+            }
+          }
           let reserved=false;
           while(Date.now()<deadline) {
             const result=await coordinate(()=>reserve(coordinator,{id:leaseId,runId,keys:r.keys},capacity),deadline);
@@ -290,6 +369,15 @@ export async function runWindows(request,hooks,options={}) {
         try {
           if(identity&&!e.launchFailed) {
             e.status='running';refreshTaskProgress(sum);persist(`block.${r.key}.running`);
+            // 采样本窗进程树的工作集峰值与可用内存最低点，供滚动修正每窗成本。
+            memStats={startAvailable:availableMB(),peakProcessMB:0,minAvailable:Infinity};
+            memTimer=setInterval(()=>{
+              try{
+                const snapshot=processSnapshot();
+                memStats.peakProcessMB=Math.max(memStats.peakProcessMB,treeWorkingSetMB(snapshot,identity.ProcessId));
+                memStats.minAvailable=Math.min(memStats.minAvailable,availableMB());
+              }catch{/* 采样失败不影响执行 */}
+            },5000);
             // Session rollouts can be created well after the visible window is
             // confirmed (provider/model cold start). Bound discovery by the
             // run deadline, not an arbitrary 90-second cutoff that closes a
@@ -321,6 +409,18 @@ export async function runWindows(request,hooks,options={}) {
           }
         }catch(error){e.status='failed';e.reason=error.message;}
         finally {
+          if(memTimer){clearInterval(memTimer);memTimer=null;}
+          if(memStats&&options.memoryBudget?.mode==='dynamic'){
+            const observed=observedCostMB({processPeakMB:memStats.peakProcessMB,availableDeltaMB:(Number.isFinite(memStats.minAvailable)?memStats.startAvailable-memStats.minAvailable:0)});
+            e.peakProcessMB=memStats.peakProcessMB;
+            e.peakAvailableDropMB=Number.isFinite(memStats.minAvailable)?memStats.startAvailable-memStats.minAvailable:0;
+            if(observed>0&&identity&&!e.launchFailed){
+              e.observedCostMB=observed;
+              const stateFile=options.memoryBudget.stateFile;
+              if(stateFile){const next=updateRollingCost(loadBudgetState(stateFile),{observedMB:observed});saveBudgetState(stateFile,next);options.memoryBudget.windowCostMB=next.windowCostMB;console.log(`[orchestrator] window cost rolling update -> ${next.windowCostMB}MB (observed ${observed}MB, samples ${next.samples})`);}
+            }
+            memStats=null;
+          }
           if(!identity&&la)identity=identify(hooks.readPid(la.pidf),la.pidf);
           if(identity)await hooks.close(identity.ProcessId,identity);
           if(identity&&!(await waitExit(identity))){

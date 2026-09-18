@@ -4,7 +4,9 @@ export function capacityRequest({ids,root,workspace,nonce}) {
 
 export function validateCapacitySample(summary,expected,observed=0) {
   if(!Number.isInteger(expected)||expected<2)throw new Error('Capacity acceptance requires at least two windows');
-  if(summary&&summary.capacity!==expected)throw new Error(`Capacity snapshot changed: harness=${expected}, runner=${summary.capacity}; rerun with a fresh memory snapshot`);
+  // 旧的 formula 模式容量应等于 harness 计算值；dynamic 内存预算模式允许账本记录更小的真实块数
+  // （规划期按可用内存合并），此时只要求不超过 harness 的上限。
+  if(summary&&summary.capacity>expected)throw new Error(`Capacity snapshot changed: harness=${expected}, runner=${summary.capacity}; rerun with a fresh memory snapshot`);
   if(observed>expected)throw new Error(`Capacity exceeded: observed=${observed}, limit=${expected}`);
 }
 
@@ -16,11 +18,14 @@ export function observedTerminal(mode,output) {
 }
 
 export function capacityAcceptancePassed(r) {
+  // dynamic 内存预算模式下，账本记录的真实块数（runnerCapacity）可以小于 harness 上限；
+  // 判据改为：并发峰值 == 账本块数，且不超过 harness 上限。
+  const blocks = r.runnerCapacity ?? r.capacity;
   return !r.monitorError&&r.coreUnchanged===true&&r.closed===true&&r.engineResult.code===0&&r.pollResult.code===0
-    &&r.runnerCapacity===r.capacity&&r.peak===r.capacity&&r.receiptsValid===true&&r.ordered===true&&r.overlap===true
-    &&r.windowLaunches===r.capacity&&r.uniqueLaunchers===r.capacity
+    &&r.runnerCapacity<=r.capacity&&r.peak===blocks&&r.receiptsValid===true&&r.ordered===true&&r.overlap===true
+    &&r.windowLaunches===blocks&&r.uniqueLaunchers===blocks
     &&(r.executionMode==='headless'||['wt','conhost'].includes(r.terminal))
-    &&r.summary?.success===true&&Object.keys(r.summary.results).length===r.capacity
+    &&r.summary?.success===true&&Object.keys(r.summary.results).length===blocks
     &&Object.values(r.summary.results).every(result=>result.status==='verified');
 }
 
