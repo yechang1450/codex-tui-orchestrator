@@ -2,6 +2,7 @@
 // No global proxy/firewall change and no TLS decryption or credential logging.
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import http from 'node:http';
 import net from 'node:net';
@@ -18,6 +19,26 @@ const runId='outage-'+crypto.randomUUID(),root=path.join(workspace,'temp',runId)
 const runDir=path.join(workspace,'temp','orchestrator','runs',runId),nonce=crypto.randomUUID();
 fs.mkdirSync(root,{recursive:true});
 const read=file=>{try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch{return null;}};
+// 允许的 CONNECT 目标：默认 OpenAI/ChatGPT；ORCH_OUTAGE_ALLOW 可追加，另外自动读取
+// CODEX_HOME/config.toml 中当前 provider 的 base_url，这样换用第三方 provider 时断网测试依旧真实。
+function allowedHosts(){
+  const hosts=new Set(['chatgpt.com','openai.com']);
+  for(const h of String(process.env.ORCH_OUTAGE_ALLOW||'').split(',').map(s=>s.trim().toLowerCase()).filter(Boolean))hosts.add(h);
+  try{
+    const home=process.env.CODEX_HOME||path.join(os.homedir(),'.codex');
+    const text=fs.readFileSync(path.join(home,'config.toml'),'utf8');
+    const provider=/^\s*model_provider\s*=\s*"([^"]+)"/m.exec(text)?.[1];
+    if(provider){
+      const escaped=provider.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+      const block=new RegExp('\\[model_providers\\.'+escaped+'\\]([\\s\\S]*?)(?:\\n\\[|$)').exec(text);
+      const base=/^\s*base_url\s*=\s*"([^"]+)"/m.exec(block?.[1]||'')?.[1];
+      if(base)hosts.add(new URL(base).hostname.toLowerCase());
+    }
+  }catch{/* 配置不可读时保持默认放行表 */}
+  return [...hosts];
+}
+const proxyAllowlist=allowedHosts();
+const isAllowedHost=host=>proxyAllowlist.some(a=>host===a||host.endsWith('.'+a));
 const summary=()=>read(path.join(runDir,'summary.json'));
 const hash=()=>crypto.createHash('sha256').update(fs.readFileSync(path.join(repo,'release.json'))).digest('hex');
 const releaseJsonSha256=hash(),transport=[],sockets=new Set(),children=[];
@@ -31,7 +52,7 @@ proxy.on('connect',(req,client,head)=>{
   let target;try{target=new URL('https://'+req.url);}catch{client.destroy();return;}
   const host=target.hostname.toLowerCase(),port=Number(target.port||443);
   transport.push({at:Date.now(),host,event:'connect-request'});
-  const allowed=port===443&&(host==='chatgpt.com'||host.endsWith('.chatgpt.com')||host==='openai.com'||host.endsWith('.openai.com'));
+  const allowed=port===443&&isAllowedHost(host);
   if(!allowed){transport.push({at:Date.now(),host,event:'target-rejected'});client.end('HTTP/1.1 403 Forbidden\r\n\r\n');return;}
   if(offline){transport.push({at:Date.now(),host,event:'blocked'});client.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');return;}
   const ready=(upstream,upstreamHead=Buffer.alloc(0))=>{

@@ -90,7 +90,9 @@ try {
  while([DateTime]::UtcNow -lt $until){
   [Windows.Forms.Application]::DoEvents()
   if($inputBox){$inputDelivered=$inputBox.Text.Length;if(-not $helper.HasExited){$inputDuringLaunch=$inputDelivered}}
-  if($ContinuousInput -and $inputBox -and -not $inputLostFocus -and -not $inputError){
+  # Stop sending once the target window has exited: the final attempt would otherwise
+  # land on a text box that is being torn down and skew inputAttempts vs inputDelivered.
+  if($ContinuousInput -and $inputBox -and -not $inputLostFocus -and -not $inputError -and -not $helper.HasExited){
    if([InactiveWindowProbe]::GetForegroundWindow() -ne $initiator.Handle -or -not $inputBox.Focused){
     # Disarm permanently on focus loss; never send subsequent keys elsewhere.
     $inputLostFocus=$true;$inputLossHwnd=[InactiveWindowProbe]::GetForegroundWindow().ToInt64()
