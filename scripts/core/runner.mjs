@@ -258,10 +258,10 @@ export async function runWindows(request,hooks,options={}) {
           const todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
           const body=options.auth+'\n本执行块目录为 '+workspace+'；所有工具 workdir 保持此目录，除非原始任务明确另指定。\n'+
             'Global TodoList (controller-owned; do not rewrite):\n'+todoListText(todoList)+'\n\nCurrent block TodoList ('+r.key+'):\n'+todoListText(todoList,r.key)+'\n'+
-            '仅按顺序执行下列待办任务。每项开始前必须成功执行 started 命令，失败则停止该项，禁止重复执行。完成并自验后立即执行 completed 命令。每项都立即写检查点，不能等整块完成。任何项失败则停止后续任务，说明情况并退出本轮，不自行重跑整块。\n'+
+            '严格按下列先后顺序执行本块列出的全部待办任务：不得跳过、不得重排、不得只做其中一部分就收尾。每项开始前必须成功执行 started 命令，失败则停止该项，禁止重复执行。完成并自验后立即执行 completed 命令。每项都立即写检查点，不能等整块完成。若某项的命令需要等待（例如等待外部信号、长任务返回或前置条件出现），必须持续等待该项结束，不得因为等待而跳过它去执行后面的任务。本块列出的每一项都写上 completed 检查点之后，才允许结束本窗；任何项失败则停止后续任务，说明情况并退出本轮，不自行重跑整块。\n'+
             '已独立验收的任务禁止重做：'+recovery.verified.join(', ')+'\n'+
             recovery.pending.map(id=>`任务 ${id}\n开始前：${command(id,'started')}\n原始任务：${tasks.find(t=>t.id===id).prompt}\n完成自验后：${command(id,'completed')}`).join('\n\n')+
-            '\n全部待办完成后，最后仅输出 __ORCH_DONE__ '+token;
+            '\n本块列出的全部待办都已分别写入 completed 检查点后，最后仅输出 __ORCH_DONE__ '+token;
           try{la=hooks.launcher(r.key,hooks.prompt(body,token),runId+'-a'+number,{attemptFile,runId,token,taskIds:recovery.pending});}
           catch(error){await coordinate(()=>release(coordinator,leaseId),deadline);throw error;}
           e={...e,status:'launching',launchFailed:false,leaseId,token,launcherFiles:la,launcher:null,endedAt:null,startedAt:Date.now(),reason:'',retryAt:null};sum.results[r.key]=e;persist(`block.${r.key}.launching`);

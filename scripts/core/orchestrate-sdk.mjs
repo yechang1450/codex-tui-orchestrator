@@ -21,7 +21,7 @@ import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
 import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
-import { networkConfig, resolveOpenAIBaseUrl } from "./network-policy.mjs";
+import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode } from "./network-policy.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, writeSync, closeSync, renameSync } from "node:fs";
@@ -149,10 +149,13 @@ function wtAvailable() {
 // propagates to the spawned window processes, instead of only an implicit code default.
 process.env.ORCH_TUI = process.env.ORCH_TUI || "wt";
 const TUI_MODE = resolveTuiMode(process.env.ORCH_TUI);
+// 规划 SDK 默认继承调用方 Codex 配置（模型、provider 与凭据），只有显式选择
+// OpenAI HTTPS provider（ORCH_PROVIDER=openai-https 或配置了中继地址）时才注入，
+// 避免把使用第三方 provider 的运行强行拨回 OpenAI 登录。
+const PROVIDER_MODE = resolveProviderMode();
 const codex = AGENT.agent==='codex'?new (await import('@openai/codex-sdk')).Codex({
   codexPathOverride: CODEX,
-  baseUrl: resolveOpenAIBaseUrl(),
-  config: networkConfig,
+  ...(PROVIDER_MODE === 'openai-https' ? { baseUrl: resolveOpenAIBaseUrl(), config: networkConfig } : {}),
 }):null;
 // 让出 CPU：orchestrator（含拆解线程）以 BelowNormal 优先级跑，不抢占系统/其它任务（限速=80% 性能，慢慢跑）。
 try { process.setPriority(6); console.log("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }

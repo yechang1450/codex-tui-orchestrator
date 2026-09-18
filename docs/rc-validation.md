@@ -1,6 +1,6 @@
 # 0.5.0-rc.1 验收记录
 
-候选核心标签为 `1.4.0-rc.1`，运行协议保持 2。专用仓库仅维护 Codex；通用适配器在独立的 open-tui-orchestrator 中演进。
+候选核心标签为 `1.4.0-rc.1`，运行协议保持 2。专用仓库仅维护 Codex；通用适配器在独立的 open-tui-orchestrator 中演进。当前快照的插件版本为 `0.5.0-rc.1+codex.20260918122820`。
 
 验证证据绑定实际提交和封存哈希，不只绑定版本标签。下文保留此前快照的结果；自那次实测后代码和哈希已经变化，因此这些记录不认证当前代码、当前发布包或当前启用缓存。当前副本已重新执行本轮对应验证；未重新执行的项目仍保持未通过或未验证。
 
@@ -14,6 +14,23 @@
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
+
+### 2026-09-18 provider 继承修复与未完成的实机门槛
+
+发起方把原生 Codex 切到第三方 provider（deepseek-flash）后暴露出一个旧缺陷：规划 SDK 与两种执行模式此前无条件注入 `model_provider="orchestrator-openai-https"`（`requires_openai_auth=true`），第三方 provider 配置与凭据无法生效；本机已无 OpenAI 登录凭据时，规划与窗口都会失败。本轮改为默认继承发起方 Codex 配置（模型、provider、凭据），只有显式 `ORCH_PROVIDER=openai-https` 或配置了中继地址时才注入 OpenAI HTTPS provider，其它取值在启动前 fail-closed。
+
+同一轮还收紧了一个窗内契约缺陷：可见窗此前出现过「先做块内第 2 项、跳过第 1 项就收尾」，导致块失败并额外重开一窗。runner 现在要求严格按序执行本块全部任务、等待型命令必须等其结束、每项都写 completed 后才允许输出结束标记。
+
+离线范围：provider 选择、argv 生成、规划器选项与 supervisor 选项的单元/契约回归，窗内顺序提示的 launcher/runner 回归，以及文档一致性；当前快照完整离线回归为 286 项（285 通过、0 失败、1 跳过，跳过项是需要真实模型的可选验收）。
+
+实机范围（本机空闲内存约 2.3 GB，按公式计算容量为 2，即两个并发窗加一项串行溢出）：
+
+- 单任务通道：原生 `codex exec` 直接以 deepseek 返回 `turn.completed`，确认 CLI 与第三方 provider 通路正常。
+- headless 容量验收 `acceptance-ec4d0557-98b2-4f25-819c-fe090cd74f50`：`passed=true`、`peak=2`、`windowLaunches=2`、`receiptsValid/ordered/overlap=true`，证据见 `temp/codex-live-headless-cbcfdabbcffdb/report.json`。
+- 可见 TUI 容量验收（修复前）`acceptance-0a44205d-f36b-46af-9e47-81bbd89b1b49`：引擎最终 `success=true` 且三项全部 `verified`，但窗内顺序违例导致 `ordered=false`、多开一窗（`windowLaunches=3`），本机按契约判为未通过，证据见 `temp/codex-live-visible-eefdcfcaaeddbd/report.json`。
+- 可见 TUI 容量验收（顺序契约收紧后）`acceptance-02d01574-7c42-4cf6-a8e6-d2d343829dce`：`passed=true`、`peak=2`、`windowLaunches=2`、`uniqueLaunchers=2`、`terminal=wt`、`ordered/overlap=true`，三项任务全部 `verified`，证据见 `temp/codex-live-visible-fdfafa/report.json`。
+
+仍未通过或未执行的门槛：本机空闲内存不足以支撑 8 并发（需要空闲内存 ≥ 8000 MB 才能按公式得到容量 8），因此「最大并发数」验收至今只在容量 2 上通过；真实前台连续输入、已安装缓存 `selftest-close`、长断网、未完成任务跨重启与 RunOnce 自动收集也仍未在本快照上执行。`docs/rc-validation.md` 中 2026-09-15 及更早的记录、容量回执与限额结论都绑定在旧快照上，不能证明当前快照，也不能再引用 OpenAI 账户额度作为通过条件。
 
 ### 2026-09-15 本轮修复和证据边界
 

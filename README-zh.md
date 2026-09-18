@@ -122,9 +122,9 @@ $RunId = 'replace-with-the-saved-run-id'
 node $Supervisor --workspace (Get-Location).Path --run-id $RunId --resume
 ```
 
-监督器报告成功只表示 Codex 会话结束，不会运行编排器的独立任务验收。它现在与主运行器共用原生 Codex 可执行文件、HTTPS Responses 配置、模型和推理强度默认值。它提供有上限的会话恢复，不能保证外部副作用恰好执行一次。如果错误可能发生在外部操作之后，继续提示会要求 Codex 先检查当前状态，再决定是否重复操作。需要任务验收时，使用带验收文件的 `--exec` 和现有 `--resume-run` 流程。
+监督器报告成功只表示 Codex 会话结束，不会运行编排器的独立任务验收。它与主运行器共用原生 Codex 可执行文件，以及同一套继承来的 provider、模型和推理强度配置。它提供有上限的会话恢复，不能保证外部副作用恰好执行一次。如果错误可能发生在外部操作之后，继续提示会要求 Codex 先检查当前状态，再决定是否重复操作。需要任务验收时，使用带验收文件的 `--exec` 和现有 `--resume-run` 流程。
 
-如果你要接入本地重试代理（例如 `steady-relay`），先用可信的 OpenAI 兼容上游启动它，然后把编排器指向它打印出来的本地 `/v1` 地址。常见地址是 `http://127.0.0.1:8080/v1`。
+如果你要接入本地重试代理（例如 `steady-relay`），先用可信的 OpenAI 兼容上游启动它，然后把编排器指向它打印出来的本地 `/v1` 地址。设置该地址同时也是显式选择项：规划器和执行窗会改走 orchestrator-openai-https；不设置则继续继承发起方的 Codex provider。常见地址是 `http://127.0.0.1:8080/v1`。
 
 ```powershell
 $env:ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
@@ -159,7 +159,7 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 
 - 专用入口默认 Codex；`--agent` / `ORCH_AGENT` 可显式选择 Codex，非 Codex 值会被拒绝。`--workspace` 指定任务工作区，`--cli` 指定原生 CLI 覆盖路径。
 - --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH and npm packaged native binaries, verify with --version.
-- ORCH_MODEL / ORCH_EFFORT 是显式覆盖项；规划器和两种执行模式默认继承原生 Codex 配置。GUI 对话里的临时覆盖不会自动读取，调用方需显式传入。
+- ORCH_MODEL / ORCH_EFFORT 是显式覆盖项；规划器和两种执行模式默认继承原生 Codex 配置，包括其中的 model provider 与凭据（第三方 provider 同样沿用）。`ORCH_PROVIDER=openai-https`（或配置了中继地址，二者等价）会让规划器和执行窗改走 orchestrator-openai-https；`ORCH_PROVIDER=inherit` 保持继承，其它取值一律 fail-closed。GUI 对话里的临时覆盖不会自动读取，调用方需显式传入。
 - 传输断开、超时、流中断，或启动器在写入任务检查点前异常退出时，执行块会在 `maxAttempts`（默认 2 次）预算内自动重试；已经写入 started 但无法证明结果的任务会停在 `needs-reconciliation`，不会盲目重做副作用。
 - ORCH_SANDBOX / ORCH_APPROVAL pass the caller's authorized execution policy. Authorized execution windows default to danger-full-access / never. ORCH_SANDBOX can restrict the sandbox; approval is always never, including when a legacy ORCH_APPROVAL requests prompting. For the default authorized Codex TUI path, the launcher carries the effective never + danger-full-access envelope with `--dangerously-bypass-approvals-and-sandbox`, which also suppresses the CLI's project trust confirmation. Restricted sandbox values are preserved and never elevated. The exact workspace trust setting is passed for this invocation only; global config.toml is not modified. External host policy can still reject an operation.
 - Headless uses hidden workers and codex exec --json with stdin prompts. Visible mode prefers Windows Terminal with conhost fallback and inherited interactive stdout. ORCH_TUI applies only to visible mode. Accepted values are `wt`, `conhost` and `inactive`; any other `ORCH_TUI` value fails closed at startup.
@@ -202,7 +202,7 @@ Window cleanup targets only the selected launcher's descendants. Startup also re
 2026-09-06 早期实测（历史记录）：91 项离线测试通过；Windows Terminal 共启动 8 窗完成 9 项任务，重叠 16.621 秒；所有会话 cwd 为 D:\，审批为 never；严格轮询返回 0，窗口全部关闭。验证证据见 test/live-concurrency-result.json。测试目录的删除被宿主自动审批拒绝，已保留并记录。
 
 ## 弱网连接与免确认执行
-Codex 的规划 SDK 和 TUI 窗统一使用 orchestrator-openai-https 配置（沿用 OpenAI 登录、模型与 Responses 接口，直接用 HTTPS 流式传输）。supports_websockets=false，避免每窗先等 WebSocket 超时再回退；保留网页搜索能力声明，不设置第三方地址或额外密钥，不修改全局 Codex 配置。HTTP 请求和流式重连沿用 CLI 自身的重试机制，断网本身仍可能造成连接失败。未来接入自定义服务提供方时须单独实现传输适配，不能直接套用 OpenAI 登录配置。
+规划 SDK 和 TUI 窗默认继承发起方的 Codex 配置，包括模型、model provider 与凭据，因此第三方 provider（例如在 CODEX_HOME 中配置的 deepseek）会被原样沿用，运行期间不修改全局 Codex 配置。只有显式选择 orchestrator-openai-https 时才改走 OpenAI 登录的 Responses over HTTPS：supports_websockets=false，避免每窗先等 WebSocket 超时再回退，并保留网页搜索能力声明，不设置第三方地址或额外密钥。HTTP 请求和流式重连沿用 CLI 自身的重试机制，断网本身仍可能造成连接失败。
 审批固定为 never，旧 ORCH_APPROVAL 询问模式不再恢复询问。该参数不覆盖宿主强制策略；宿主拒绝仍须如实返回。
 
 ## 发行成熟度

@@ -122,11 +122,14 @@ $RunId = 'replace-with-the-saved-run-id'
 node $Supervisor --workspace (Get-Location).Path --run-id $RunId --resume
 ```
 
-Supervisor success means the Codex session completed; it does not run the orchestrator's independent task acceptance checks. It now uses the same native Codex executable, HTTPS Responses configuration, model and reasoning defaults as the main runner. This is bounded session recovery, not an exactly-once guarantee. When a failure may have occurred after an external side effect, the resumed prompt tells Codex to inspect the current state before repeating work. Use the checked `--exec` flow and checkpoint-based `--resume-run` for task-level acceptance.
+Supervisor success means the Codex session completed; it does not run the orchestrator's independent task acceptance checks. It uses the same native Codex executable and the same inherited provider, model and reasoning configuration as the main runner. This is bounded session recovery, not an exactly-once guarantee. When a failure may have occurred after an external side effect, the resumed prompt tells Codex to inspect the current state before repeating work. Use the checked `--exec` flow and checkpoint-based `--resume-run` for task-level acceptance.
 
 If you want to use a local retry proxy such as `steady-relay`, start it with a
 trusted OpenAI-compatible upstream first, then point the orchestrator at the
-local `/v1` URL it prints. A typical relay URL is `http://127.0.0.1:8080/v1`.
+local `/v1` URL it prints. Setting this URL is also the opt-in that switches the
+planner and the workers to the hardened OpenAI HTTPS provider; leave it unset to
+keep inheriting the initiating Codex provider. A typical relay URL is
+`http://127.0.0.1:8080/v1`.
 
 ```powershell
 $env:ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
@@ -161,7 +164,7 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 
 - Dedicated entry: Codex is the default. `--agent` / `ORCH_AGENT` may explicitly select Codex; non-Codex values are rejected. `--workspace` chooses the task workspace and `--cli` selects a native CLI override.
 - --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH and npm packaged native binaries, verify with --version.
-- ORCH_MODEL / ORCH_EFFORT are explicit overrides; the planner and both execution modes otherwise inherit native Codex configuration. GUI conversation-only overrides are not automatically readable: callers must pass them.
+- ORCH_MODEL / ORCH_EFFORT are explicit overrides; the planner and both execution modes otherwise inherit native Codex configuration, including its model provider and credentials (third-party providers included). `ORCH_PROVIDER=openai-https` — or a configured relay URL, which implies it — switches both the planner and the workers to the hardened OpenAI HTTPS provider; `ORCH_PROVIDER=inherit` keeps inheritance and any other value fails closed. GUI conversation-only overrides are not automatically readable: callers must pass them.
 - ORCH_SANDBOX / ORCH_APPROVAL pass the caller's authorized execution policy. Authorized execution windows default to danger-full-access / never. ORCH_SANDBOX can restrict the sandbox; approval is always never, including when a legacy ORCH_APPROVAL requests prompting. For the default authorized Codex TUI path, the launcher carries the effective never + danger-full-access envelope with `--dangerously-bypass-approvals-and-sandbox`, which also suppresses the CLI's project trust confirmation. Restricted sandbox values are preserved and never elevated. The exact workspace trust setting is passed for this invocation only; global config.toml is not modified. External host policy can still reject an operation.
 - Headless uses hidden workers and codex exec --json with stdin prompts. Visible mode prefers Windows Terminal with conhost fallback and inherited interactive stdout. ORCH_TUI applies only to visible mode. Accepted values are `wt`, `conhost` and `inactive`; any other `ORCH_TUI` value fails closed at startup.
 - WORKSPACE_DIR selects the task workspace. CODEX_HOME selects Codex configuration/session storage. The default workspace is the caller's current directory; --workspace / WORKSPACE_DIR explicitly overrides it. ORCH_STATE_DIR defaults to workspace/temp/orchestrator for Codex; the Codex coordinator is isolated from open-tui-orchestrator under `temp/orchestrator/codex-coordinator` and HKCU `Software/CodexTuiOrchestrator`. Cross-workspace Codex runs share that locator; run results stay in their own workspace. ORCH_COORDINATOR_DIR is an explicit advanced override for intentionally shared Codex pools.
@@ -205,7 +208,7 @@ Window cleanup targets only the selected launcher's descendants. Startup also re
 2026-09-06 早期实测（历史记录）：91 项离线测试通过；Windows Terminal 共启动 8 窗完成 9 项任务，重叠 16.621 秒；所有会话 cwd 为 D:\，审批为 never；严格轮询返回 0，窗口全部关闭。验证证据见 test/live-concurrency-result.json。测试目录的删除被宿主自动审批拒绝，已保留并记录。
 
 ## 弱网连接与免确认执行
-Codex 的规划 SDK 和 TUI 窗统一使用 orchestrator-openai-https 配置（沿用 OpenAI 登录、模型与 Responses 接口，直接用 HTTPS 流式传输）。supports_websockets=false，避免每窗先等 WebSocket 超时再回退；保留网页搜索能力声明，不设置第三方地址或额外密钥，不修改全局 Codex 配置。HTTP 请求和流式重连沿用 CLI 自身的重试机制，断网本身仍可能造成连接失败。未来接入自定义服务提供方时须单独实现传输适配，不能直接套用 OpenAI 登录配置。
+规划 SDK 和 TUI 窗默认继承发起方的 Codex 配置，包括模型、model provider 与凭据，因此第三方 provider（例如在 CODEX_HOME 中配置的 deepseek）会被原样沿用，运行期间不修改全局 Codex 配置。只有显式选择 orchestrator-openai-https 时才改走 OpenAI 登录的 Responses over HTTPS：supports_websockets=false，避免每窗先等 WebSocket 超时再回退，并保留网页搜索能力声明，不设置第三方地址或额外密钥。HTTP 请求和流式重连沿用 CLI 自身的重试机制，断网本身仍可能造成连接失败。
 审批固定为 never，旧 ORCH_APPROVAL 询问模式不再恢复询问。该参数不覆盖宿主强制策略；宿主拒绝仍须如实返回。
 
 ## 发行成熟度

@@ -2,6 +2,8 @@
 
 ## 0.5.0-rc.1
 
+- 规划器与执行窗默认继承发起方的 Codex provider（含 CODEX_HOME 中的第三方 provider 与其凭据）；只有 `ORCH_PROVIDER=openai-https` 或显式配置中继地址时才改走 orchestrator-openai-https，`inherit` 之外的未知取值一律 fail-closed。此前无论本机配置如何都会强制 OpenAI HTTPS provider，导致第三方 provider 无法用于实际任务。
+- `scripts/package.json` 与 `scripts/package-lock.json` 的版本字符串与 `.codex-plugin/plugin.json` 的 cachebuster 同步，消除版本漂移。
 - provider 的账户配额错误现在只接受结构化 `error`/`turn.failed` 或 `task_complete.error`，立即 fail-closed；窗口关闭后的有界重扫会保留迟到的 provider 诊断，任务文本和工具输出不能触发重试。
 - 弹窗/容量准入异常会释放自有协调器租约与预留；带 PID 文件的死亡窗口登记会在下一次预留时清理，避免后续窗口永久卡在 capacity waiting。
 - 发布器会根据 manifest 已声明的隐私政策和服务条款链接，拒绝缺少对应文档的阶段包；活动文档与容量实现统一使用系统空闲内存 MB 除以 1000 后向下取整。

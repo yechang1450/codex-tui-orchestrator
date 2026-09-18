@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import assert from 'node:assert/strict';
 import {fileURLToPath} from 'node:url';
 import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
+import {resolveProviderMode,OPENAI_HTTPS_PROVIDER} from '../scripts/core/network-policy.mjs';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const [capacityRoot,adoptionRoot,fallbackRoot,peer,cache]=process.argv.slice(2);
 const json=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
@@ -33,7 +34,10 @@ for(const name of fs.readdirSync(sessionDir)) {
  const rows=raw.split(/\r?\n/).filter(Boolean).map(line=>{try{return JSON.parse(line);}catch{return {};}});
  const meta=rows.find(r=>r.type==='session_meta')?.payload,turns=rows.filter(r=>r.type==='turn_context').map(r=>r.payload);
  if(!meta||!turns.length)continue;
- assert.equal(meta.cwd,capacity.workspace);assert.equal(meta.model_provider,'orchestrator-openai-https');
+ assert.equal(meta.cwd,capacity.workspace);
+ // Inherit mode records the initiating provider; the explicit relay mode records its hardened provider.
+ if(resolveProviderMode()==='openai-https')assert.equal(meta.model_provider,OPENAI_HTTPS_PROVIDER);
+ else assert.ok(typeof meta.model_provider==='string'&&meta.model_provider.length,'inherited provider must be recorded in the session');
  for(const turn of turns){assert.equal(turn.approval_policy,'never');assert.equal(turn.sandbox_policy.type,'danger-full-access');}
  policies.push({token,sessionFile:file,cwd:meta.cwd,provider:meta.model_provider,approval:'never',sandbox:'danger-full-access'});
 }

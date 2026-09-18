@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import './codex-entry.mjs';
 import {resolveHost} from './core/host-cli.mjs';
-import {networkConfig,resolveOpenAIBaseUrl} from './core/network-policy.mjs';
+import {networkConfig,resolveOpenAIBaseUrl,resolveProviderMode} from './core/network-policy.mjs';
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
 import {
   canSupervisorRetry,
@@ -17,13 +17,21 @@ import {
 
 const {Codex} = await import('./sdk-dependency-check.mjs').then(() => import('@openai/codex-sdk'));
 
-const supervisorCodexOptions = Object.freeze({
-  codexPathOverride: resolveHost({agent:'codex'}).config.bin,
-  baseUrl: resolveOpenAIBaseUrl(),
-  config: networkConfig,
-  model: process.env.ORCH_MODEL || 'gpt-5.3-codex-spark',
-  modelReasoningEffort: process.env.ORCH_EFFORT || 'xhigh',
-});
+// 默认继承调用方 Codex 配置；显式中继模式保留历史上使用的兜底模型与力度。
+const providerMode = resolveProviderMode();
+const supervisorCodexOptions = Object.freeze(providerMode === 'openai-https'
+  ? {
+    codexPathOverride: resolveHost({agent:'codex'}).config.bin,
+    baseUrl: resolveOpenAIBaseUrl(),
+    config: networkConfig,
+    model: process.env.ORCH_MODEL || 'gpt-5.3-codex-spark',
+    modelReasoningEffort: process.env.ORCH_EFFORT || 'xhigh',
+  }
+  : {
+    codexPathOverride: resolveHost({agent:'codex'}).config.bin,
+    model: process.env.ORCH_MODEL,
+    modelReasoningEffort: process.env.ORCH_EFFORT,
+  });
 
 function usage() {
   console.error('Usage: node scripts/supervise.mjs --prompt <text> [--workspace <dir>] [--run-id <id>] [--max-attempts <n>] [--backoff-ms <n>] [--backoff-max-ms <n>] [--resume]');
