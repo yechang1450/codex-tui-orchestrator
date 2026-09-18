@@ -10,7 +10,8 @@
 - [x] 修正同步焦点探针的启动采样盲区、工作目录漏验和输入就绪检查；历史连续输入通过记录不再认证启动期间输入。
 - [ ] 连续输入：本轮真实探针未取得发起窗口的前台焦点，已在启动前停止且未发送按键（`inputAttempts=0`、`inputDelivered=0`）；不能作为通过。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [ ] 最终封存快照的已安装缓存真实 `selftest-close`。当前版本已重新安装并启动可见窗口；窗口自然退出且无孤儿进程，证据文件已明确记录 `retryable: "quota"` 与 provider 原始 `usage_limit_exceeded`，但没有有效回执，插件按契约返回失败，不能把这次限额响应算作通过。
-- [ ] 最终封存快照的容量级真实 Codex 任务全部得到有效回执。当前源码 headless 与可见模式均按当时容量 3 弹出并观测到 3 个并发窗口，4 个任务计划收缩为 3 个块；provider 限额使两次实测都没有有效任务回执，且各块按有限预算重试后 fail-closed。最终修复后的容量回执仍未通过；详见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 容量级真实 Codex 任务全部得到有效回执（2026-09-18 动态内存预算快照重跑）：headless `acceptance-aeae71ac-880c-4620-a05d-a32da05d08a7` 与可见 TUI `acceptance-164be263-7c03-4744-8f7f-47034c98f2bc` 均 `passed=true`、9 项全 `verified`、回执/有序/并发证据齐全，见文末"动态内存预算下的双模式验收"。
+- [ ] 重启验收基线已就绪（`temp/reboot-validation-reboot-check-20260918/`，RunOnce 已登记），等待一次真实重启后执行 `collect`。
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
