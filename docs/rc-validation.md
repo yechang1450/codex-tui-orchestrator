@@ -51,6 +51,7 @@
 容量公式改为按机器检测到的物理内存、每块 2 GB 预算：`floor(机器内存MB / 1000) / 2` 向下取整（等价 `floor(机器内存MB / 2000)`）。本机 16,011 MB → 容量 8，且不再随运行时空闲内存波动（此前 2.3 GB 空闲时容量只有 2）。
 
 - 8 并发容量验收 `acceptance-02e54e78-e1d4-4c2f-bbfa-cf350d280642`（headless）：`passed=true`、`capacity=8`、9 个任务切成 8 块、`peak=8`、`receiptsValid/ordered/overlap=true`、全部 9 项 `verified`，证据见 `temp/codex-live-headless-beabdfccfccdfef/report.json`。
+- 8 窗可见 TUI 容量验收 `acceptance-12dc2988-16a5-439f-aead-1893ddbfea45`（Windows Terminal，非 headless）：`passed=true`、`capacity=8`、8 个窗全部弹出（`windowLaunches=8`、`uniqueLaunchers=8`、`terminal=wt`）、`peak=8`、9 个任务切 8 块（B1–B7 各 1 项，B8 串行 T008+T009）、`receiptsValid/ordered/overlap=true`、窗口全部关闭、引擎与轮询退出码 0，证据见 `temp/codex-live-visible-cbecfff/report.json`。
 - 长断网验收 `outage-d7d0424a-9281-45cb-8787-4f38adc65aa6`：进程级 CONNECT 代理（只影响本次运行自己的子进程，全程未改系统代理或防火墙），放行域名按当前 provider 配置推导（deepseek → api.deepseek.com）；5 分钟中断期间 41 次连接被真实阻断，恢复后重连成功，两项任务回执有效、整轮 `verified`，证据见 `temp/outage-d7d0424a-9281-45cb-8787-4f38adc65aa6/report.json`。
 - 真实前台连续输入：探针本轮两次运行都未能通过，原因是**桌面不空闲**——第一次尾部有一次按键落在正在销毁的输入框上（已在探针里加目标窗退出即停发守卫修掉），第二次修好后 64/64 按键全部投递、无丢焦点、无按键外泄，但目标窗被系统激活过一次（`targetForegroundEvents=1`、`foregroundSamples=5`），严格判据（目标窗全程不得进入前台）不成立。该项需要在无人使用的桌面上重跑。
 
