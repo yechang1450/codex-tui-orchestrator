@@ -2214,8 +2214,11 @@ export async function main() {
     const title = process.argv[3] || "selftest-close";
     const rid = Date.now().toString(36);
     const prompt =
-      "这是 codex-tui-orchestrator 的自动关闭自检窗。不要执行任何其它动作，只输出一行：\n" +
-      "【本块唯一标识】selftest-" + rid + " 完成 自检OK\n回复后即结束本窗。";
+      "这是 codex-tui-orchestrator 的自动关闭自检窗。不要执行任何其它动作，只输出两行：\n" +
+      "【本块唯一标识】selftest-" + rid + " 完成 自检OK\n" +
+      // 自检窗也必须给出启动器 watchdog 识别的 ASCII 结束标记；否则自查路径永不触发，
+      // 只能等编排器 15 秒兜底关窗（实测在"工作区=管理器缓存路径"时被判 forcedClose 不通过）。
+      "__ORCH_DONE__ selftest-" + rid + "\n回复后即结束本窗。";
     const { lp, pidf, pf, rf } = writeInteractiveLauncher("selftest", prompt, rid);
     const claim = { id: "claim-" + rid + "-selftest", title: "selftest-close", keys: ["selftest:" + rid], pidFile: pidf, pid: 0, locked: false, pending: true, reservedAt: Date.now() };
     const claimBlocker = tryReserveWindow(claim);
@@ -2287,7 +2290,14 @@ export async function main() {
     let orphanAgent = false;
     let orphanCheckSucceeded = false;
     try {
-      orphanAgent = [...processSnapshot().values()].some(child => child.ParentProcessId === pid);
+      // 自查秒关后，被 watchdog 杀掉的子进程可能仍处于退出过程中：给一个短暂的收敛窗口，
+      // 避免把"正在退出的后代"误判成孤儿（旧路径因为等 15 秒兜底而掩盖了这个竞态）。
+      const orphanDeadline = Date.now() + 5000;
+      do {
+        orphanAgent = [...processSnapshot().values()].some(child => child.ParentProcessId === pid);
+        if (!orphanAgent) break;
+        await new Promise(resolve => setTimeout(resolve, 500));
+      } while (Date.now() < orphanDeadline);
       orphanCheckSucceeded = true;
     } catch (error) { console.error("selftest process verification failed: " + error.message); }
     console.log("launcherPid=" + pid + " launcherStillAlive=" + launcherAlive + " (expect false => pane auto-closed)");
