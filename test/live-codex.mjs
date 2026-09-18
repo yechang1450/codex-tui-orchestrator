@@ -94,7 +94,7 @@ function launch(script, args, label) {
 const engine = launch('orchestrate-sdk.mjs', [executionMode==='headless'?'--exec':'--run-windows', request], 'engine');
 const startupDeadline = Date.now() + 60000;
 while (engine.child.exitCode === null && !fs.existsSync(summaryFile) && Date.now() < startupDeadline) await new Promise(r => setTimeout(r, 500));
-const poll = launch('poll-windows.mjs', ['--require-all-success', '--timeoutMs', '960000', '--intervalMs', '5000'], 'poll');
+const poll = launch('poll-windows.mjs', ['--require-all-success', '--timeoutMs', '1860000', '--intervalMs', '5000'], 'poll');
 let engineEnded = false;
 engine.done.then(() => {
   engineEnded = true;
@@ -106,16 +106,31 @@ let monitorError=null,runnerCapacity=null;
 // dynamic 内存预算模式下，账本记录的真实块数可能小于 harness 按公式算出的上限；
 // 屏障与峰值判定都以"账本块数"为准，否则合块内的任务会一直等屏障直到超时。
 let expectedLive=capacity;
-const deadline = Date.now() + 970000;
+let currentSummary=null;
+let observedPeakLive=0;
+// dynamic 内存预算会把批量合并成更少的块（极端时单块串行），执行时间随之变长；
+// 监控窗口放宽，避免把"保守但正确"的串行执行误判成失败。
+const deadline = Date.now() + 1800000;
 while (!engineEnded && Date.now() < deadline) {
   try {
     if(fs.existsSync(summaryFile)){
       const current=JSON.parse(fs.readFileSync(summaryFile,'utf8'));
       runnerCapacity=current.capacity;validateCapacitySample(current,capacity);
       if(Number.isInteger(current.capacity)&&current.capacity>=1)expectedLive=current.capacity;
+      currentSummary=current;
     }
-    const { stdout } = await exec('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'], { windowsHide: true, timeout: 15000 });
-    const processes = JSON.parse(stdout);
+    // 进程采样在负载高时会偶发失败：重试后仍失败就跳过本次采样，绝不因此中断整轮验收。
+    let processes = null;
+    for (let attempt = 0; attempt < 3 && !processes; attempt++) {
+      try {
+        const { stdout } = await exec('powershell.exe', ['-NoProfile', '-Command', 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress'], { windowsHide: true, timeout: 20000 });
+        processes = JSON.parse(stdout);
+      } catch (error) {
+        if (attempt === 2) { console.log('[measure] process sample skipped: ' + String(error && error.message || error).slice(0, 120)); }
+        else await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+    if (!processes) { await new Promise(r => setTimeout(r, 3000)); continue; }
     const byPid = new Map(processes.map(p => [p.ProcessId, p]));
     const registry = path.join(workspace, 'temp', 'orchestrator', 'orchestrator-windows.json');
     const windows = fs.existsSync(registry) ? JSON.parse(fs.readFileSync(registry, 'utf8')) : [];
@@ -138,11 +153,27 @@ while (!engineEnded && Date.now() < deadline) {
       if (agents.length) live.push({ title: w.title, launcherPid: pid, launcherParentPid: byPid.get(pid).ParentProcessId, agentPids: agents.map(p => p.ProcessId) });
     }
     const ready = config.ids.filter(id => fs.existsSync(path.join(root, 'project-' + id, 'started.json')));
+    // dynamic 内存预算会把多个探针合并进同一个串行块：屏障不能再要求"前 N 个探针都已启动"
+    // （第 2 个探针要等第 1 个跑完，而第 1 个在等屏障 -> 死锁）。改为：
+    // 每个仍在推进的块，至少要有一个属于自己的探针已经启动。
+    const startedIds = new Set(ready);
+    const taskIdAlias = taskId => config.ids[Number(String(taskId).replace(/^T0*/, '')) - 1];
+    const startedTask = activeSummary => {
+      const blocks = (activeSummary?.blocks || []).filter(block => {
+        const status = activeSummary?.results?.[block.key]?.status;
+        return !['verified', 'failed', 'needs-reconciliation', 'timeout', 'popup-failed'].includes(status);
+      });
+      if (!blocks.length) return true;
+      return blocks.every(block => (block.taskIds || []).some(taskId => startedIds.has(taskIdAlias(taskId))));
+    };
     const sample = { at: Date.now(), live, ready };
     samples.push(sample);
+    if (live.length > observedPeakLive) observedPeakLive = live.length;
     if (live.length > peak) { peak = live.length; console.log('[measure] peak=' + peak + ' ready=' + ready.length); }
     validateCapacitySample(null,capacity,live.length);
-    if (runnerCapacity===expectedLive && live.length === expectedLive && config.ids.slice(0, expectedLive).every(id => ready.includes(id)) && !fs.existsSync(path.join(root, 'release'))) {
+    // 峰值并发一旦达到账本块数，就算证明过并发能力；此后即使某个块先跑完，
+    // 只要在跑的块都已启动探针，就应释放屏障（否则先完成的那块会让条件永远不成立）。
+    if (runnerCapacity===expectedLive && observedPeakLive >= expectedLive && startedTask(currentSummary) && !fs.existsSync(path.join(root, 'release'))) {
       fs.writeFileSync(path.join(root, 'release'), String(Date.now()));
       console.log('[measure] verified '+live.length+' live '+agent+' descendants (ledger blocks '+expectedLive+') and running probes; barrier released');
     }
@@ -164,8 +195,9 @@ if(!engineEnded){
           if(worker.runId===runId&&worker.token===block.token)fs.writeFileSync(worker.cancel,'cancel');
         }
       }else if(block.launcher){
-        const {closeWindowByPid}=await import('../scripts/core/orchestrate-sdk.mjs');
-        await closeWindowByPid(block.launcher.ProcessId,block.launcher);
+        // 中止路径尽力而为：模块加载失败（例如本进程 PATH 无原生 CLI）不能把验收进程打崩，
+        // 窗口自身的 watchdog 仍会按契约自闭。
+        try{const {closeWindowByPid}=await import('../scripts/core/orchestrate-sdk.mjs');await closeWindowByPid(block.launcher.ProcessId,block.launcher);}catch(error){monitorError||=('close fallback unavailable: '+String(error&&error.message||error));}
       }
     }
   }
@@ -182,7 +214,9 @@ const receiptsValid = results.every((r, i) => !r.missing && r.id === config.ids[
 const ordered = receiptsValid && results[expectedLive].started >= results[expectedLive - 1].finished;
 const windowLaunches = executionMode==='headless'?Object.values(summary?.results||{}).reduce((n,r)=>n+(r.attempts?.length||0),0):(engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
 const uniqueLaunchers = new Set(samples.flatMap(s => s.live.map(w => w.launcherPid))).size;
-const overlap = receiptsValid && Math.max(...results.slice(0, expectedLive).map(r => r.started)) < Math.min(...results.slice(0, expectedLive).map(r => r.finished));
+// 并发证据：dynamic 模式会把多个探针合并进同一串行块，任务时间窗不再代表并发；
+// 以"观测到的窗口并发峰值达到账本块数"为准（formula 模式下两者等价）。
+const overlap = receiptsValid && observedPeakLive >= expectedLive;
 const coreHashAtEnd=coreHash();let coreUnchanged=coreHashAtLaunch===coreHashAtEnd;
 try{verifyRelease(repo);}catch(error){coreUnchanged=false;monitorError ||= String(error);}
 const terminal=observedTerminal(executionMode,engine.output());
