@@ -82,6 +82,12 @@
 
 ## 跨重启验收桥接
 
+### 2026-09-18 动态内存预算下的双模式验收（通过）
+
+- headless：`acceptance-aeae71ac-880c-4620-a05d-a32da05d08a7` —— 可用 1321 MB、滚动成本 800 MB → 9 项合并成 1 块串行；`passed=true`、`peak=1`、回执/有序/并发证据全真、9 项 verified（`temp/codex-live-headless-dccccddfb/report.json`）。
+- 可见 TUI：`acceptance-164be263-7c03-4744-8f7f-47034c98f2bc` —— 可用 2279 MB → 9 项合并成 2 块、2 个 Windows Terminal 窗；`passed=true`、`peak=2`、`windowLaunches=2`、回执/有序/并发全真、9 项 verified（`temp/codex-live-visible-aaeeaefcfaacadab/report.json`）。
+- 验收 harness 修复：屏障按"仍在跑的块各自是否已有探针启动"判定，并在曾观测到"峰值并发 = 账本块数"后释放，避免合块内的第二个探针因等待屏障而超时；并发证据由任务时间窗重叠改为窗口并发峰值；进程采样偶发失败改为重试+跳过；监控窗口放宽到 30 分钟以容纳保守串行执行。
+
 需要验证未完成任务恢复时，使用 `node test/live-reboot-recovery.mjs prepare <唯一ID>`。该脚本要求已提交的干净源码，实际运行两个 headless 任务：第一项完成并保存不可重复写入的回执，第二项进入可安全重试的幂等等待。只有读到第一项 `completed`、第二项 `started` 且原执行进程仍存活，才保存基线并交给下述收集器注册；脚本自身不重启 Windows。
 
 真实重启后，收集器仅在启动时间增加、源码提交和封存哈希相同、健康检查通过时执行 `collect <同一ID>`。它续接原运行，验证第一项回执字节未变、两项副作用各一次、全部任务 `verified` 和执行进程已退出。可用 `--manual-only` 只准备显式收集。离线样本只验证拒绝同次启动、身份错配、重复副作用、失败状态和收集顺序，不算真实重启证据。
