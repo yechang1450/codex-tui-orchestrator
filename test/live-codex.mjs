@@ -27,8 +27,9 @@ const nonce = crypto.randomUUID();
 const runId='acceptance-'+nonce;
 const summaryFile=path.join(workspace,'temp','orchestrator','runs',runId,'summary.json');
 const acceptanceFile=path.join(root,'acceptance.json');
-const freeMemoryMb = os.freemem() / 1024 ** 2;
-const capacity = Math.floor(freeMemoryMb / 1000);
+const memoryMb = os.totalmem() / 1024 ** 2;
+// 每个执行块按 2 GB 预算：floor(机器内存MB / 1000) / 2 向下取整。
+const capacity = Math.floor(memoryMb / 2000);
 if (process.platform !== 'win32' || capacity < 2) throw new Error('This acceptance scenario requires Windows and at least two calculated windows');
 fs.mkdirSync(root, { recursive: true });
 const env = { ...process.env, ORCH_AGENT: agent, ORCH_MAX_POLL_MS: '900000', ORCH_RUN_ID:runId, ORCH_ACCEPTANCE_FILE:acceptanceFile };

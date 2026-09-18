@@ -2,13 +2,14 @@
 
 ## 0.5.0-rc.1
 
+- 容量公式改为每块按 2 GB 预算、取机器检测到的物理内存：`floor(机器内存MB / 1000) / 2` 向下取整（等价 `floor(机器内存MB / 2000)`，16 GB 机器 → 容量 8）。容量不再随运行时空闲内存波动，单块预算固定 2 GB。
 - 修复从 WSL 发起时可见窗启动失败：WSL 启动的进程没有 `PATHEXT`，PowerShell 因此解析不到 `chcp`，窗口启动器在首行就中止。入口现在补齐 `PATHEXT`，启动器把 `chcp` 包在非致命兜底里；回归夹具改为与父进程类型无关（`Start-Process -Wait`、`cmd.exe /c` 包裹），WSL 与 Windows 原生两种方式都能跑绿。
 - 新增可选真机用例 `test/live-powerloss.mjs`：强杀控制器进程树（模拟断电）后用 `--resume-run` 续跑，校验不可重复的副作用恰好执行一次、`retrySafe` 任务安全重试、整轮最终 `verified`。
 - 规划器与执行窗默认继承发起方的 Codex provider（含 CODEX_HOME 中的第三方 provider 与其凭据）；只有 `ORCH_PROVIDER=openai-https` 或显式配置中继地址时才改走 orchestrator-openai-https，`inherit` 之外的未知取值一律 fail-closed。此前无论本机配置如何都会强制 OpenAI HTTPS provider，导致第三方 provider 无法用于实际任务。
 - `scripts/package.json` 与 `scripts/package-lock.json` 的版本字符串与 `.codex-plugin/plugin.json` 的 cachebuster 同步，消除版本漂移。
 - provider 的账户配额错误现在只接受结构化 `error`/`turn.failed` 或 `task_complete.error`，立即 fail-closed；窗口关闭后的有界重扫会保留迟到的 provider 诊断，任务文本和工具输出不能触发重试。
 - 弹窗/容量准入异常会释放自有协调器租约与预留；带 PID 文件的死亡窗口登记会在下一次预留时清理，避免后续窗口永久卡在 capacity waiting。
-- 发布器会根据 manifest 已声明的隐私政策和服务条款链接，拒绝缺少对应文档的阶段包；活动文档与容量实现统一使用系统空闲内存 MB 除以 1000 后向下取整。
+- 发布器会根据 manifest 已声明的隐私政策和服务条款链接，拒绝缺少对应文档的阶段包；活动文档与容量实现统一使用 `floor(系统空闲内存MB / 1000) / 2`（每块 2 GB）后向下取整。
 - 控制台备用路径显式使用 conhost：隐藏初始化后仅显示自有窗口，避免默认终端转交；真实焦点探针增加窗口类型、启动期间采样和回执工作目录校验。
 - 连续输入探针先确认前台就绪，观察到失焦即停止后续按键；旧同步探针结果不再作为启动期间输入连续性的证明。
 - 新增个人 marketplace 名称大小写检查与受限修复命令；仅修复已确认指向当前插件的唯一条目，默认只读。

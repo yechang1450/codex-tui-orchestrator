@@ -23,14 +23,14 @@
 
 离线范围：provider 选择、argv 生成、规划器选项与 supervisor 选项的单元/契约回归，窗内顺序提示的 launcher/runner 回归，以及文档一致性；当前快照完整离线回归为 286 项（285 通过、0 失败、1 跳过，跳过项是需要真实模型的可选验收）。
 
-实机范围（本机空闲内存约 2.3 GB，按公式计算容量为 2，即两个并发窗加一项串行溢出）：
+实机范围（当轮容量公式仍按空闲内存计算；本轮已改为按机器物理内存、每块 2 GB 预算，本机 16 GB → 容量 8）：
 
 - 单任务通道：原生 `codex exec` 直接以 deepseek 返回 `turn.completed`，确认 CLI 与第三方 provider 通路正常。
 - headless 容量验收 `acceptance-ec4d0557-98b2-4f25-819c-fe090cd74f50`：`passed=true`、`peak=2`、`windowLaunches=2`、`receiptsValid/ordered/overlap=true`，证据见 `temp/codex-live-headless-cbcfdabbcffdb/report.json`。
 - 可见 TUI 容量验收（修复前）`acceptance-0a44205d-f36b-46af-9e47-81bbd89b1b49`：引擎最终 `success=true` 且三项全部 `verified`，但窗内顺序违例导致 `ordered=false`、多开一窗（`windowLaunches=3`），本机按契约判为未通过，证据见 `temp/codex-live-visible-eefdcfcaaeddbd/report.json`。
 - 可见 TUI 容量验收（顺序契约收紧后）`acceptance-02d01574-7c42-4cf6-a8e6-d2d343829dce`：`passed=true`、`peak=2`、`windowLaunches=2`、`uniqueLaunchers=2`、`terminal=wt`、`ordered/overlap=true`，三项任务全部 `verified`，证据见 `temp/codex-live-visible-fdfafa/report.json`。
 
-仍未通过或未执行的门槛：本机空闲内存不足以支撑 8 并发（需要空闲内存 ≥ 8000 MB 才能按公式得到容量 8），因此「最大并发数」验收至今只在容量 2 上通过；真实前台连续输入、已安装缓存 `selftest-close`、长断网、未完成任务跨重启与 RunOnce 自动收集也仍未在本快照上执行。`docs/rc-validation.md` 中 2026-09-15 及更早的记录、容量回执与限额结论都绑定在旧快照上，不能证明当前快照，也不能再引用 OpenAI 账户额度作为通过条件。
+仍未通过或未执行的门槛：容量公式本轮改为「机器物理内存 MB / 2000」（16 GB 机器 → 容量 8）后，8 并发验收已具备运行条件，结果见下一节；真实前台连续输入、已安装缓存 `selftest-close`、长断网、未完成任务跨重启与 RunOnce 自动收集也仍未在本快照上执行。`docs/rc-validation.md` 中 2026-09-15 及更早的记录、容量回执与限额结论都绑定在旧快照上，不能证明当前快照，也不能再引用 OpenAI 账户额度作为通过条件。
 
 ### 2026-09-18 环境（WSL）修复与功能测试台
 
@@ -40,11 +40,11 @@
 
 - 窗口自检：`--selftest-close` 从 WSL 发起也通过（窗口正常弹出、约 0.6 秒自动关、无孤儿进程、`selftestPassed=true`）。
 - 离线回归：Windows 原生 286 项（285 通过、0 失败、1 跳过）；修复夹具后 WSL 直接调用同样可用（`recovery`/`native-argv`/`inactive-window` 等此前的假失败消失）。
-- 可见 TUI 容量验收 `acceptance-0bae3626-870e-4f97-91f3-d0ddb87897cd`：`passed=true`、容量 2、两块（B1=[T001]、B2=[T002,T003]）、`peak=2`、`ordered=true`、`overlap=true`，证据见 `temp/codex-live-visible-ccfadefaaeeb/report.json`。
+- 可见 TUI 容量验收 `acceptance-0bae3626-870e-4f97-91f3-d0ddb87897cd`（当时公式给出的容量为 2）：`passed=true`、容量 2、两块（B1=[T001]、B2=[T002,T003]）、`peak=2`、`ordered=true`、`overlap=true`，证据见 `temp/codex-live-visible-ccfadefaaeeb/report.json`。
 - 断电恢复验收 `powerloss-26777d24-4138-465a-b203-e4875d77b173`：T001 检查点完成后、T002 执行中时用 `taskkill /F /T` 强杀整棵控制器进程树，再用 `--resume-run` 续跑；最终 `success=true`、generation 2、T001 尝试次数仍为 1（不可重复副作用只执行一次，`counter.json` 计数 = 1）、T002 作为 `retrySafe` 任务重试后 `verified`。证据见 `temp/powerloss-26777d24-413/report.json` 与同 run 的 `events.jsonl`（含 `run.resumed` 事件）。
 - 状态面：`status.mjs` 只读面板同时给出 TodoList（逐任务）与 Execution（逐块 + 尝试次数 + PID），`goal.json` 派生镜像包含 tasks/blocks/status，可直接被宿主或脚本消费。
 
-用例已固化为 `test/live-powerloss.mjs`（可选真机验收，默认不进离线套件）。本轮仍未覆盖：8 并发（受本机空闲内存限制）、长断网、真实重启（RunOnce）与真实前台连续输入。
+用例已固化为 `test/live-powerloss.mjs`（可选真机验收，默认不进离线套件）。
 
 ### 2026-09-15 本轮修复和证据边界
 

@@ -18,9 +18,11 @@ export function acceptanceKeyDiff(checks,tasks) {
 
 // 系统空闲内存（MB）→ 最大并发 TUI 窗数：每个窗口预留 1000 MB，向下取整。
 // fresh 规划与 --resume-run 的恢复校验共用同一容量；不再额外设置固定窗口上限。
-export function computeMaxWindows(freeMemoryMb) {
-  const mb = Number(freeMemoryMb);
-  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb / 1000) : 0;
+export function computeMaxWindows(memoryMb) {
+  const mb = Number(memoryMb);
+  // 每个执行块按 2 GB 预算：容量 = floor(机器内存MB / 1000) / 2 向下取整（等价于 floor(机器内存MB / 2000)）。
+  // 取“机器检测到的物理内存”，不是空闲内存；16 GB 机器 -> 容量 8。
+  return Number.isFinite(mb) && mb > 0 ? Math.floor(mb / 2000) : 0;
 }
 
 export function summaryComplete(sum, strict = true) {
