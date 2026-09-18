@@ -69,6 +69,17 @@
 
 同一单任务分别以 `exec + headless` 与可见 Windows Terminal TUI 实跑：两次都生成 `answer: 42` 回执，最终都在 provider `429`/不确定副作用下 fail-closed 为 `needs-reconciliation`，退出码均为 1，用户可感知的最终状态一致。该证据只证明单任务模式契约与失败收敛，不替代容量级并发回执、连续前台输入、长期断网、未完成任务跨重启和 RunOnce 自动收集；这些门槛继续保持未通过，computer-use 阶段尚未开始。
 
+
+### 2026-09-18 动态内存预算（替换固定容量公式）
+
+并发不再用固定公式估算，而是运行时按可用内存动态决定（`ORCH_CAPACITY_MODE=dynamic`，默认）：规划期用最宽并行层的预估成本判断，超预算就在同一并行层合并最贵的两块（块内串行，峰值取 max）；执行期每开新窗复检，不够先 `deferred` 暂缓、等已运行块结束后重检，全部跑完仍不满足则降级硬跑（`degraded=hard-run`），确保一轮跑完、不 fail-closed。每窗默认 256 MB 成本（实测边际成本 193 MB），按实测滚动修正（钳制 160-600 MB）；底线 `ORCH_MIN_AVAILABLE_MB` 默认 512 MB（实测 8 窗时最低可用内存 108 MB，256 MB 会被击穿）。`ORCH_CAPACITY_MODE=formula` 可回退旧公式；单任务请求不再进入编排。
+
+真机证据（deepseek，本机 16 GB）：
+
+- 合并路径 `acceptance-f8d769e2-8f2e-46a0-94b9-d506cd3efddd`：可用内存紧张时把 8 个项目合并成 2 块（日志 `memory budget merge: proj-91 + proj-92, ... -> required 512MB, available 1128MB, floor 512MB`），并产生首条滚动样本 `observed 172MB`（单样本不降预算）。
+- 暂缓→硬跑路径 `acceptance-6407d56d-b56a-4042-a2ab-30e74db7f2f2`：可用内存 583 MB、低于256+512门槛 → 先 `block.B1.deferred`，确认无其它块可推进后自动 `hard-run (degraded)`，最终 9 项任务全部 verified、`passed=true`（一轮跑完，未 fail-closed），证据见 `temp/codex-live-visible-badbedaddbbea/report.json`。
+- 单元：`test/memory-budget.test.mjs` 7 项（准入边界、同层合并、依赖保序/拒绝跨层、滚动修正升降与钳制、成本交叉校验）；全量离线回归见本节末记录。
+
 ## 跨重启验收桥接
 
 需要验证未完成任务恢复时，使用 `node test/live-reboot-recovery.mjs prepare <唯一ID>`。该脚本要求已提交的干净源码，实际运行两个 headless 任务：第一项完成并保存不可重复写入的回执，第二项进入可安全重试的幂等等待。只有读到第一项 `completed`、第二项 `started` 且原执行进程仍存活，才保存基线并交给下述收集器注册；脚本自身不重启 Windows。

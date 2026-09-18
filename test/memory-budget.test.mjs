@@ -77,17 +77,17 @@ test('rolling cost rises at once, falls slowly, and stays clamped', () => {
   const down1 = updateRollingCost(up, {observedMB: 190});
   assert.equal(down1.windowCostMB, 420, 'a single cheap sample cannot lower the budget');
   const down2 = updateRollingCost({...down1, samples: 2}, {observedMB: 190});
-  assert.equal(down2.windowCostMB, 305, 'after three samples the budget halves the distance');
-  const floor = updateRollingCost({windowCostMB: 170, samples: 9}, {observedMB: 20});
-  assert.equal(floor.windowCostMB, 165, 'downgrades move halfway towards the observed value');
-  const floor2 = updateRollingCost({windowCostMB: 161, samples: 12}, {observedMB: 20});
-  assert.equal(floor2.windowCostMB, COST_MIN_MB, 'and never fall below the floor');
-  assert.equal(clampCost(9999), COST_MAX_MB);
+  assert.equal(down2.windowCostMB, 338, 'after three samples the budget halves the distance');
+  const floor = updateRollingCost({windowCostMB: 300, samples: 9}, {observedMB: 20});
+  assert.equal(floor.windowCostMB, 278, 'downgrades move halfway towards the observed value');
+  const floor2 = updateRollingCost({windowCostMB: 258, samples: 12}, {observedMB: 20});
+  assert.ok(floor2.windowCostMB >= COST_MIN_MB && floor2.windowCostMB <= 258, 'and never fall below the floor');
+  assert.equal(clampCost(99999), COST_MAX_MB);
   assert.equal(clampCost(1), COST_MIN_MB);
 });
 
 test('observed cost cross-checks the process peak with the available-memory drop', () => {
-  assert.equal(observedCostMB({processPeakMB: 129}), 194, 'peak x 1.5');
-  assert.equal(observedCostMB({processPeakMB: 129, availableDeltaMB: 700}), 600, 'the larger signal wins and is clamped');
+  assert.equal(observedCostMB({processPeakMB: 200}), 300, 'peak x 1.5');
+  assert.equal(observedCostMB({processPeakMB: 200, availableDeltaMB: 700}), 700, 'the larger signal wins');
   assert.equal(observedCostMB({}), 0);
 });

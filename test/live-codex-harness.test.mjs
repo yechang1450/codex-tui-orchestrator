@@ -24,9 +24,11 @@ test('project splitting ignores numeric data in nonce and receipt fields',()=>{
   assert.deepEqual(split?.blocks.map(block=>block.title),['proj-91','proj-92','proj-93']);
 });
 
-test('capacity drift and excess are fatal before the probe barrier is released',()=>{
+test('a smaller dynamic block count is accepted while excess concurrency stays fatal',()=>{
   assert.doesNotThrow(()=>validateCapacitySample({capacity:3},3,3));
-  assert.throws(()=>validateCapacitySample({capacity:2},3,2),/snapshot changed/);
+  // dynamic 内存预算模式：规划期合并会得到更少的块（capacity 更小），这是允许的。
+  assert.doesNotThrow(()=>validateCapacitySample({capacity:2},3,2));
+  // 真实并发超过 harness 上限依然是致命错误。
   assert.throws(()=>validateCapacitySample({capacity:3},3,4),/Capacity exceeded/);
 });
 

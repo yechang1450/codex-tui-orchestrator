@@ -8,16 +8,17 @@
  *     若所有其它块都已结束仍不满足，则降级硬跑（degraded=hard-run），保证一轮跑完。
  *
  * 成本口径来自真机标定（2026-09-18，8 窗全绿）：单窗进程峰值中位 120 / 最大 129 MB，
- * 但含宿主、引擎与子进程的边际成本约 193 MB，因此默认每窗预算 256 MB 并滚动修正。
+ * 但含宿主、引擎与子进程的边际成本约 193 MB（轻载标定）；2026-09-18 的 7 窗并发实测在竞争下
+ * 直接顶到钳制上限，说明轻载标定不能当作并发预算，因此默认每窗预算提高到 400 MB 并滚动修正。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 export const DEFAULT_MIN_AVAILABLE_MB = 512;
-export const DEFAULT_WINDOW_COST_MB = 256;
-export const COST_MIN_MB = 160;
-export const COST_MAX_MB = 600;
+export const DEFAULT_WINDOW_COST_MB = 400;
+export const COST_MIN_MB = 256;
+export const COST_MAX_MB = 800;
 export const COST_SAMPLES_FOR_DOWNGRADE = 3;
 export const PEAK_OVERHEAD_FACTOR = 1.5;   // 进程峰值 -> 边际成本（含宿主/引擎/子进程）
 export const HARD_RUN_GRACE_MS = 2000;     // 无其它块在跑时的防竞态等待
