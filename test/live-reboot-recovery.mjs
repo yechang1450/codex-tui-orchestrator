@@ -78,21 +78,35 @@ if(id==='one'){fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});}else{
   writeNew(acceptance,Object.fromEntries(['one','two'].map((task,i)=>['T00'+(i+1),{retrySafe:task==='two',checks:[{type:'json',path:path.join(state.root,task+'.json'),equals:{nonce,cwd:state.runWorkspace,id:task,count:1,answer:42}}]}])));
   const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:state.runWorkspace,ORCH_RUN_ID:state.runId,ORCH_ACCEPTANCE_FILE:acceptance,ORCH_MAX_POLL_MS:'1800000'};delete env.ORCH_STATE_DIR;
   // 提示词刻意不用"修改/更新"这类词：任务文本里出现仓库路径 + 修改意图会被自引用守卫判成"改编排器自己"。
-  const request=['one','two'].map(task=>`同一项目 ${state.root}：在工作目录 ${state.runWorkspace} 执行 node "${probe}" ${task}，等命令结束后读回 ${task}.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=${task}、count=1、answer=42。先 started、成功回读后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`).join('；');
+  // 两个任务各带一个带编号的项目名，走确定性拆块（genericProjectSplit），不依赖规划模型的心情。
+  const request=['one','two'].map((task,index)=>`项目 ${91+index}：在工作目录 ${state.runWorkspace} 执行 node "${probe}" ${task}，等命令结束后读回 ${task}.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=${task}、count=1、answer=42。先 started、成功读回后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`).join('；');
   const out=fs.openSync(path.join(state.root,'prepare.stdout.log'),'wx'),err=fs.openSync(path.join(state.root,'prepare.stderr.log'),'wx');
   const child=spawn(process.execPath,[state.entry,'--exec',request],{cwd:repo,env,detached:true,windowsHide:true,stdio:['ignore',out,err]});
   fs.closeSync(out);fs.closeSync(err);let launchError;child.on('error',error=>{launchError=error;});
   try{
-    const deadline=Date.now()+300000;let sum,attempt;
+    const deadline=Date.now()+300000;let sum,attempt,waitingEntry;
+    // 跨块收集每个任务的最新检查点状态：T001 与 T002 可能落在不同的块里。
+    const checkpointStates=value=>{
+      const states={};
+      for(const entry of Object.values(value?.results||{}))for(const item of entry.attempts||[]){
+        const dir=path.join(path.dirname(item.file),'checkpoints');
+        for(const id of item.taskIds||[])if(!(id in states))states[id]=maybe(path.join(dir,id+'.json'))?.state||null;
+      }
+      return states;
+    };
     while(Date.now()<deadline){
       if(launchError)throw launchError;if(child.exitCode!==null)throw new Error('Controller exited before the reboot boundary');
-      sum=maybe(state.summaryFile);attempt=sum?.results?.B1?.attempts?.at(-1);
-      const checkpoints=attempt&&path.join(path.dirname(attempt.file),'checkpoints');
-      if(sum?.blocks?.length===1&&maybe(path.join(checkpoints||state.root,'T001.json'))?.state==='completed'&&maybe(path.join(checkpoints||state.root,'T002.json'))?.state==='started'&&fs.existsSync(path.join(state.root,'waiting')))break;
+      sum=maybe(state.summaryFile);
+      const states=checkpointStates(sum);
+      if(states.T001==='completed'&&states.T002==='started'&&fs.existsSync(path.join(state.root,'waiting')))break;
       await pause(500);
     }
-    if(!attempt||!fs.existsSync(path.join(state.root,'waiting'))||maybe(path.join(path.dirname(attempt.file),'checkpoints','T001.json'))?.state!=='completed'||maybe(path.join(path.dirname(attempt.file),'checkpoints','T002.json'))?.state!=='started')throw new Error('Did not reach the real unfinished-task reboot boundary');
-    const launcher=sum.results.B1.launcher;if(!sameProcess(launcher,processSnapshot().get(launcher?.ProcessId)))throw new Error('Prepared worker is not alive');
+    // 等待中的那一块（含 T002）必须真的还活着，否则这不是"跨重启恢复"而是"重启前就跑挂了"。
+    waitingEntry=Object.values(sum?.results||{}).find(entry=>(entry.attempts||[]).some(item=>(item.taskIds||[]).includes('T002')));
+    attempt=waitingEntry?.attempts?.at(-1);
+    const states=checkpointStates(sum);
+    if(!attempt||!fs.existsSync(path.join(state.root,'waiting'))||states.T001!=='completed'||states.T002!=='started')throw new Error('Did not reach the real unfinished-task reboot boundary');
+    const launcher=waitingEntry.launcher;if(!sameProcess(launcher,processSnapshot().get(launcher?.ProcessId)))throw new Error('Prepared worker is not alive');
     const pre={schema:1,id,runId:state.runId,workspace:repo,runWorkspace:state.runWorkspace,commit:current.commit,releaseSha256:current.releaseSha256,bootBefore:current.bootAfter,nonce,ready:true,firstReceiptSha256:hash(path.join(state.root,'one.json')),preparedAt:new Date().toISOString(),launcher,controllerPid:child.pid};
     writeNew(path.join(state.root,'pre-reboot.json'),pre);
     const bridge=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(repo,'test','reboot-validation.ps1'),'-Mode','prepare','-Id',id,'-RecoveryId',id,...(manualOnly?['-ManualOnly']:[])],{cwd:repo,encoding:'utf8',windowsHide:true,timeout:30000});
