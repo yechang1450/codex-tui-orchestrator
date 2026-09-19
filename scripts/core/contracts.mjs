@@ -30,7 +30,7 @@ function projectedPeakCostMB(blocks, costOf, keysOf) {
   }
 }
 
-export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}} = {}) {
+export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}, headroom = 1} = {}) {
   const blocks = structuredClone(input || []).map((block, index) => ({
     ...block,
     taskIds: [...(block.taskIds || block.tasks?.map(task => task.id) || [])],
@@ -54,7 +54,10 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
   // 预估口径 = "同一时刻最多能并发运行的块"成本之和（最宽的一层），而不是所有块之和：
   // 串行链（p1->p2->p3）天然只能跑一个块，不该被当成三块同时占内存。
   const totalCost = () => projectedPeakCostMB(blocks, costOf, block => block.memoryKey);
-  const fits = () => Number(floorMB) <= 0 || (Number(availableMB) - totalCost() >= Number(floorMB));
+  // headroom：首轮余量系数（样本不足时 >1），把预估峰值放大后再判断放不放得下。
+  const reserve = Number(headroom) > 1 ? Number(headroom) : 1;
+  const projectedCost = () => Math.ceil(totalCost() * reserve);
+  const fits = () => Number(floorMB) <= 0 || (Number(availableMB) - projectedCost() >= Number(floorMB));
   const merges = [];
   while (!fits() && blocks.length > 1) {
     let waves;
@@ -96,8 +99,8 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
     delete out.memoryKey; delete out.memoryTitle; delete out.memoryDeps;
     return out;
   });
-  const requiredMB = projectedPeakCostMB(plan, costOf, (block, index) => block.key || ('B' + (index + 1)));
-  return {plan, merges, requiredMB, availableMB: Number(availableMB), floorMB: Number(floorMB), ok: Number(floorMB) <= 0 || (Number(availableMB) - requiredMB >= Number(floorMB))};
+  const requiredMB = Math.ceil(projectedPeakCostMB(plan, costOf, (block, index) => block.key || ('B' + (index + 1))) * reserve);
+  return {plan, merges, requiredMB, headroom: reserve, availableMB: Number(availableMB), floorMB: Number(floorMB), ok: Number(floorMB) <= 0 || (Number(availableMB) - requiredMB >= Number(floorMB))};
 }
 
 export const CORE_VERSION = '1.4.0-rc.1';

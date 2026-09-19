@@ -232,7 +232,7 @@ export async function runWindows(request,hooks,options={}) {
       if(memoryBudget)memoryBudget.taskCosts=Object.fromEntries(Object.entries(checks||{}).map(([id,value])=>[id,{memoryMB:Number(value?.memoryMB||0)}]));
       const compactWithBudget=(plan,cap)=>{
         if(!memoryBudget||memoryBudget.mode!=='dynamic')return hooks.compact(plan,cap);
-        const merged=budgetMergePlan(plan,{availableMB:availableMB(),floorMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,taskCosts:memoryBudget.taskCosts||{}});
+        const merged=budgetMergePlan(plan,{availableMB:availableMB(),floorMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,taskCosts:memoryBudget.taskCosts||{},headroom:memoryBudget.headroom||1});
         memoryBudget.lastPlan=merged;
         if(merged.merges.length)console.log('[orchestrator] memory budget merge: '+merged.merges.map(m=>m.kept+' + '+m.merged).join(', ')+' -> required '+merged.requiredMB+'MB, available '+merged.availableMB+'MB, floor '+merged.floorMB+'MB');
         return merged.plan;
@@ -300,7 +300,8 @@ export async function runWindows(request,hooks,options={}) {
           // 保证"一轮要跑完"的批次不会因为内存 fail-closed。
           const memoryBudget=options.memoryBudget;
           if(memoryBudget&&memoryBudget.mode==='dynamic'&&Number(memoryBudget.floorMB)>0){
-            const cost=blockCostFor(sum,r.key,memoryBudget),waitStarted=Date.now();
+                // 首轮余量：样本不足时按放大后的成本做准入，宁可少开一块，也不把机器挤到 starvation。
+                const cost=Math.ceil(blockCostFor(sum,r.key,memoryBudget)*(memoryBudget.headroom||1)),waitStarted=Date.now();
             while(Date.now()<deadline){
               const available=availableMB(),running=runningCostMB(sum,r.key,memoryBudget);
               if(admissionOk({availableMB:available,runningCostMB:running,blockCostMB:cost,floorMB:memoryBudget.floorMB}))break;

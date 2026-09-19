@@ -22,6 +22,10 @@ export const COST_MAX_MB = 800;
 export const COST_SAMPLES_FOR_DOWNGRADE = 3;
 export const PEAK_OVERHEAD_FACTOR = 1.5;   // 进程峰值 -> 边际成本（含宿主/引擎/子进程）
 export const HARD_RUN_GRACE_MS = 2000;     // 无其它块在跑时的防竞态等待
+// 首次运行（还没有足够的干净样本）时额外留出的余量：2026-09-18 的 7 窗实测显示，
+// 没有历史时的默认成本偏乐观，会把并发块挤到 starvation。样本够了就自动取消余量。
+export const DEFAULT_FIRST_RUN_HEADROOM = 1.25;
+export const HEADROOM_SAMPLES = 3;
 
 /** 容量模式：dynamic（默认，内存预算）或 formula（旧的机器内存/2000 公式）。 */
 export function resolveBudgetMode(env = process.env) {
@@ -34,9 +38,18 @@ export function resolveBudgetMode(env = process.env) {
 export function budgetSettings(env = process.env) {
   const floorRaw = Number(env.ORCH_MIN_AVAILABLE_MB ?? DEFAULT_MIN_AVAILABLE_MB);
   const costRaw = Number(env.ORCH_WINDOW_COST_MB ?? DEFAULT_WINDOW_COST_MB);
+  const headroomRaw = Number(env.ORCH_FIRST_RUN_HEADROOM ?? DEFAULT_FIRST_RUN_HEADROOM);
   const floorMB = Number.isFinite(floorRaw) && floorRaw >= 0 ? Math.floor(floorRaw) : DEFAULT_MIN_AVAILABLE_MB;
   const windowCostMB = Number.isFinite(costRaw) && costRaw > 0 ? Math.round(costRaw) : DEFAULT_WINDOW_COST_MB;
-  return {mode: resolveBudgetMode(env), floorMB, windowCostMB};
+  const headroom = Number.isFinite(headroomRaw) && headroomRaw >= 1 && headroomRaw <= 3 ? headroomRaw : DEFAULT_FIRST_RUN_HEADROOM;
+  return {mode: resolveBudgetMode(env), floorMB, windowCostMB, headroom};
+}
+
+/** 样本不足时套用首轮余量；样本达到 HEADROOM_SAMPLES 后自动回到 1。 */
+export function firstRunHeadroom(samples, headroom = DEFAULT_FIRST_RUN_HEADROOM) {
+  const value = Number(headroom);
+  if (!Number.isFinite(value) || value <= 1) return 1;
+  return (Number(samples) || 0) >= HEADROOM_SAMPLES ? 1 : Math.min(3, value);
 }
 
 /** 可用内存：Node 的 os.freemem() 在 Windows 上就是 "Available MBytes"，与系统计数器一致。 */

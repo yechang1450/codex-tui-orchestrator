@@ -4,7 +4,7 @@ import {budgetMergePlan, planMemoryCosts} from '../scripts/core/contracts.mjs';
 import {
   admissionOk, blockCostMB, budgetSettings, clampCost, observedCostMB,
   resolveBudgetMode, updateRollingCost, DEFAULT_MIN_AVAILABLE_MB, DEFAULT_WINDOW_COST_MB,
-  COST_MIN_MB, COST_MAX_MB,
+  COST_MIN_MB, COST_MAX_MB, firstRunHeadroom, DEFAULT_FIRST_RUN_HEADROOM,
 } from '../scripts/core/memory-budget.mjs';
 
 const blocks = (n, extra = {}) => Array.from({length: n}, (_, i) => ({
@@ -90,4 +90,20 @@ test('observed cost cross-checks the process peak with the available-memory drop
   assert.equal(observedCostMB({processPeakMB: 200}), 300, 'peak x 1.5');
   assert.equal(observedCostMB({processPeakMB: 200, availableDeltaMB: 700}), 700, 'the larger signal wins');
   assert.equal(observedCostMB({}), 0);
+});
+
+test('the first run keeps extra headroom until enough clean samples exist', () => {
+  assert.equal(budgetSettings({}).headroom, DEFAULT_FIRST_RUN_HEADROOM);
+  assert.equal(budgetSettings({ORCH_FIRST_RUN_HEADROOM: '2'}).headroom, 2);
+  assert.equal(budgetSettings({ORCH_FIRST_RUN_HEADROOM: '9'}).headroom, DEFAULT_FIRST_RUN_HEADROOM, 'out of range falls back');
+  assert.equal(firstRunHeadroom(0), DEFAULT_FIRST_RUN_HEADROOM);
+  assert.equal(firstRunHeadroom(2), DEFAULT_FIRST_RUN_HEADROOM);
+  assert.equal(firstRunHeadroom(3), 1, 'three samples retire the extra headroom');
+  assert.equal(firstRunHeadroom(9, 1), 1);
+  // 首轮余量确实会让规划更保守：同样的内存能放的块更少。
+  const plan = blocks(5);
+  const without = budgetMergePlan(plan, {availableMB: 2000, floorMB: 512, windowCostMB: 256, headroom: 1});
+  const with_ = budgetMergePlan(plan, {availableMB: 2000, floorMB: 512, windowCostMB: 256, headroom: 1.25});
+  assert.ok(with_.plan.length < without.plan.length || with_.requiredMB > without.requiredMB, 'headroom must tighten the plan');
+  assert.equal(with_.headroom, 1.25);
 });

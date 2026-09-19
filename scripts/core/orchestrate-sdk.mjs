@@ -22,7 +22,7 @@ import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
 import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
 import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode } from "./network-policy.mjs";
-import {budgetSettings, budgetStateFile, loadBudgetState} from "./memory-budget.mjs";
+import {budgetSettings, budgetStateFile, loadBudgetState, firstRunHeadroom} from "./memory-budget.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, writeSync, closeSync, renameSync } from "node:fs";
@@ -2352,7 +2352,7 @@ export async function main() {
     const capacity=budget.mode==='dynamic'?64:computeMaxWindows(os.totalmem() / 1024 ** 2);
     if(capacity<1)throw new Error('Insufficient memory for an execution block');
     // 每窗成本：优先用滚动修正的历史实测值（越跑越准），没有历史样本时用默认 400MB。
-    const memoryBudget=budget.mode==='dynamic'?(()=>{const stateFile=budgetStateFile(STATE_DIR);const state=loadBudgetState(stateFile);const windowCostMB=state.samples>0?Math.max(budget.windowCostMB,state.windowCostMB):budget.windowCostMB;console.log(`[orchestrator] memory budget: floor=${budget.floorMB}MB windowCost=${windowCostMB}MB (samples ${state.samples})`);return {mode:'dynamic',floorMB:budget.floorMB,windowCostMB,stateFile};})():undefined;
+    const memoryBudget=budget.mode==='dynamic'?(()=>{const stateFile=budgetStateFile(STATE_DIR);const state=loadBudgetState(stateFile);const windowCostMB=state.samples>0?Math.max(budget.windowCostMB,state.windowCostMB):budget.windowCostMB;const headroom=firstRunHeadroom(state.samples,budget.headroom);console.log(`[orchestrator] memory budget: floor=${budget.floorMB}MB windowCost=${windowCostMB}MB headroom=x${headroom} (samples ${state.samples})`);return {mode:'dynamic',floorMB:budget.floorMB,windowCostMB,stateFile,samples:state.samples,headroom};})():undefined;
     let savedMode;
     if(resume){
       const id=process.env.ORCH_RUN_ID;
