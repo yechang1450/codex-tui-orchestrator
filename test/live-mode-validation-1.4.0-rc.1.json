@@ -1,0 +1,53 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-09-19T13:40:54.162277Z",
+  "coreVersion": "1.4.0-rc.1",
+  "pluginVersion": "0.5.0-rc.1+codex.20260919211020",
+  "protocol": 2,
+  "harness": "test/live-execution-mode.mjs",
+  "note": "两个独立任务的真实模型验收（默认动态内存预算路径）；从已安装缓存入口运行。",
+  "runs": [
+    {
+      "mode": "visible",
+      "runId": "mode-visible-bbf3d786-959e-4a8b-b1ce-5e7c6ca98a24",
+      "passed": true,
+      "exitCode": 0,
+      "closed": true,
+      "coreUnchanged": true,
+      "elapsedMs": 206006,
+      "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-tui-orchestrator\\0.5.0-rc.1+codex.20260919211020\\scripts\\orchestrate-sdk.mjs",
+      "releaseJsonSha256": "45413c1c7490b0b796c391effb9486b97e45ad432c38504ecad91f424a593ca0",
+      "tasks": [
+        "T001",
+        "T002"
+      ],
+      "taskStatus": {
+        "T001": "verified",
+        "T002": "verified"
+      },
+      "receiptsValid": true,
+      "blocks": 1
+    },
+    {
+      "mode": "headless",
+      "runId": "mode-headless-afbf3afd-e221-477b-930f-762b1dfbdc8f",
+      "passed": true,
+      "exitCode": 0,
+      "closed": true,
+      "coreUnchanged": true,
+      "elapsedMs": 114036,
+      "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-tui-orchestrator\\0.5.0-rc.1+codex.20260919211020\\scripts\\orchestrate-sdk.mjs",
+      "releaseJsonSha256": "45413c1c7490b0b796c391effb9486b97e45ad432c38504ecad91f424a593ca0",
+      "tasks": [
+        "T001",
+        "T002"
+      ],
+      "taskStatus": {
+        "T001": "verified",
+        "T002": "verified"
+      },
+      "receiptsValid": true,
+      "blocks": 1
+    }
+  ]
+}

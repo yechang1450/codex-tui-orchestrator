@@ -16,6 +16,7 @@
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 本地安装改用**干净分发**（2026-09-19）：个人 marketplace 条目指向 `<工作树父目录>/dist/codex-tui-orchestrator`，由 `scripts/publish-dist.mjs` 重建并校验；`codex plugin add` 后的安装缓存从 20 MB / 1473 文件（含 `.git/`、`temp/`）降到 2 MB / 194 文件，插件静态评估从 81/C（1 个 fail）变为 91/B（0 fail，缓存目录仍按版本号命名会带一条信息级提示）。`repair-plugin-registration.mjs --check` 现在同时接受 checkout 与 dist 源，并要求分发核心与工作树一致，否则报 `stale_dist`。本机实测：安装缓存内 `release-integrity` schema 2 / 25 核心 / 54 运行时、`--doctor` 通过、真实双任务 headless `success=true` 且改写验收契约后 `--verify-run` 退出码 1 拒绝。
+- [x] 真实双模式验收在当前提交重跑通过（2026-09-19，两任务、默认动态内存预算路径、**从已安装缓存入口**运行）：可见 TUI `runId=mode-visible-bbf3d786-959e-4a8b-b1ce-5e7c6ca98a24`、headless `runId=mode-headless-afbf3afd-e221-477b-930f-762b1dfbdc8f`，两项都是 `passed=true`、`exitCode=0`、`closed=true`、`coreUnchanged=true`、T001/T002 全 `verified`、回执 `nonce/cwd/answer` 校验通过，见 [证据](../test/live-mode-validation-1.4.0-rc.1.json)。顺带修掉一个真实漂移：`test/live-execution-mode.mjs` 过去只发单任务，而单任务按设计直接 `out-of-scope`，已改为两个独立任务并各自独立验收。
 
 ### 2026-09-18 provider 继承修复与未完成的实机门槛
 
@@ -229,7 +230,7 @@ node test/live-execution-mode.mjs
 if ($LASTEXITCODE -ne 0) { throw '真实可见执行验收未通过。' }
 ```
 
-真实验收使用现有账户额度，按顺序运行。`ORCH_LIVE_ENTRY` 可指定已安装缓存的公共入口。观察运行使用 `node scripts/status.mjs --run-id <ID> --watch`，添加 `--json` 可消费结构化状态；观察器只读，退出不终止执行。
+真实验收使用现有账户额度，按顺序运行。`ORCH_LIVE_ENTRY` 可指定已安装缓存的公共入口。`test/live-execution-mode.mjs` 发的是**两个独立任务**（单任务请求按设计直接 `out-of-scope`，不进编排），因此它的通过同时覆盖"每项各自写检查点 + 主控分别独立验收"。观察运行使用 `node scripts/status.mjs --run-id <ID> --watch`，添加 `--json` 可消费结构化状态；观察器只读，退出不终止执行。
 
 ## 发布边界与历史证据
 
