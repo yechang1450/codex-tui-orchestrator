@@ -92,6 +92,7 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 
 ### 2026-09-19 重启验收收口（拆分证据，不再要求额外重启）
 
+
 用户已明确不再为验收重启机器，因此该门槛按其可独立证明的两半收口：
 
 1. **重启后健康：已通过（两次真实重启）**。`temp/reboot-validation-reboot-check-20260918/post-reboot.json` 与 `...-20260918b/post-reboot.json` 都记录 `bootChanged=true`、`sourceClean=true`，且 `release-integrity` / `doctor` / `marketplace-registration` 三项检查全部有效。两次唯一为 false 的字段是 `commitMatches`——原因是基线冻结之后又产生了提交（记账漂移），与插件在重启后的健康无关；`releaseMatches` 随同一原因变化。
@@ -100,6 +101,12 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 **如实标注的残余缺口**：没有取得"同一次回执里同时满足 启动时间变化 + 提交/发布哈希一致 + 自动触发"的记录。原因是我在每次重启后又提交了代码（前两次），以及用户不再重启（第三次）。当前仍有一份冻结基线 `reboot-check-20260919`（绑定 `8ceae8c`）在册：将来任何一次重启或注销登录，启动项都会自动执行收集并留下 `collectionTrigger=StartupFolder` 的回执；届时只需读回该文件即可补齐这条并入证据，不需要改代码。
 
 **结论**：该门槛不再阻塞发布；文档明确区分"已证明"与"未观测到合并回执"两种情况。
+
+### 2026-09-19 规模化验收（12 任务 / 动态预算）与首轮余量
+
+- 验收规模：`ORCH_LIVE_TASKS=12`（公式容量 8 的 1.5 倍）→ 动态预算把 12 个任务合并成 **2 块**（`required 1600MB`、可用 `2727MB`、底线 `512MB`、滚动成本 `800MB`），**2 窗并发**、屏障正常释放。
+- 结果：`passed=true`、`peak=2`、`receiptsValid/ordered/overlap=true`、12 项全部 `verified`，证据见 `temp/codex-live-headless-bacaaffcdefedfec/report.json`（runId `acceptance-c3ef4abe-8bbc-4e27-be6d-684d063359df`）。
+- 首轮余量防护：新增 `ORCH_FIRST_RUN_HEADROOM`（默认 1.25）——样本不足 3 个时，规划与"开窗前准入"都按放大后的成本判断（宁可少开一块，也不把机器挤到 starvation）；样本够了自动回到 1。单测覆盖（含 65 任务无损合并、依赖保序、余量收紧），全量离线回归 294 项（293 通过 / 0 失败 / 1 跳过）。
 
 ### 2026-09-18 动态内存预算下的双模式验收（通过）
 
