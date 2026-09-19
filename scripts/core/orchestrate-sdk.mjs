@@ -1989,15 +1989,17 @@ function staleTransientFiles() {
   return res;
 }
 /**
- * 判断一个 WindowsTerminal 进程是否属于本插件：命令行里必须同时出现
- * 本工作区 temp 目录与 win-launch-*.ps1 启动器名。纯函数，便于单测。
+ * 判断一个 WindowsTerminal 进程是否由编排器拉起：命令行里出现 `...\temp\win-launch-*.ps1`
+ * 这种启动器路径。**与工作区无关**——编排器在任意工作区（例如 D:\temp\xxx\ws）都会用同一命名，
+ * 只认本仓库 temp 会漏掉其它工作区留下的错误窗（实测踩到过）。是否安全杀由调用方再用
+ * “launcher 已死 + 该窗无活子进程”把关。纯函数，便于单测。
  */
-export function isPluginOwnedTerminalCommand(commandLine, tempDir) {
+export function isPluginOwnedTerminalCommand(commandLine, tempDir = "") {
   const cmd = String(commandLine || "").toLowerCase();
-  const dir = String(tempDir || "").toLowerCase().replace(/[\\/]+$/, "");
-  if (!cmd || !dir) return false;
   if (!/win-launch-[\w.\-]+\.ps1/.test(cmd)) return false;
-  return cmd.includes(dir);
+  if (!/[\\/]temp[\\/]win-launch-/.test(cmd)) return false;
+  // tempDir 只作为额外的“确实是编排器工作区”佐证；为空时不影响判定。
+  return true;
 }
 /**
  * 主动清扫"代码 1"残留窗：Windows Terminal 会在窗内进程非 0 退出后把面板留着，
@@ -2242,6 +2244,8 @@ export async function main() {
     console.log("lifecycleDone=" + res.done);
     console.log("closed=" + !launcherAliveAfter);
     console.log("final=" + trunc(res.text || "(none)", 500));
+    // 收尾清扫：--spawn 结束也不能留下任何“代码 1”错误窗。
+    await closeOrphanTerminals();
     if (!spawnPassed) process.exitCode = 1;
     return;
   }
@@ -2375,6 +2379,8 @@ export async function main() {
       releaseAuxiliaryWindow(lp);
       for (const f of (selftestOk ? [pf, lp, pidf, rf, pidf + ".self-closed", rf + ".self-closed"] : [pf, lp, pidf])) { if (existsSync(f)) { try { rmSync(f, { force: true }); } catch { /* ignore */ } } }
     }
+    // 收尾清扫：自检窗结束后同样不许留下错误窗。
+    await closeOrphanTerminals();
     process.exitCode = selftestOk ? 0 : 1;
     return;
   }
