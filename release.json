@@ -29,7 +29,7 @@
     "status-events.mjs": "b0e382b902c1a201df53468cc1622f6be4e7e6cf1cff1d0dfa1600fd36107fd9"
   },
   "runtimeFiles": {
-    ".codex-plugin/plugin.json": "7782828301bb55fe8855b377e6cb53a6dedcd359f8eaa7d55a34f6943792f0cd",
+    ".codex-plugin/plugin.json": "628a2e3ea7475300ff7b2756dd6d266da032aded364b515567f8284fce7a099e",
     "repair.mjs": "f7fce2d2b3c78cc6dfca06b50741a20146c4ca4facad58989e44e8752e1bd1b0",
     "scripts/agent-auth-prompt.txt": "18fa9c01972cd99a2fe2b1b74a440b34921a051ba6c0d54daf2f5bf1096457b0",
     "scripts/agent.mjs": "7aec825e3b32b637844c352401aaf06a66daeee7cdc8e2ecbebc4d4816abd910",
@@ -65,8 +65,8 @@
     "scripts/host-cli.mjs": "994448626766f53883a29d17a5af547dcb67f6d2b9e7e5b6b6ff60f28582978c",
     "scripts/network-policy.mjs": "3a2b09ad0555475fa31d8e926da951aacd9a8997e33d80e1d46712432438d15a",
     "scripts/orchestrate-sdk.mjs": "bab0fe6c7e1e08b789749b2c97100cb674fdae7d71099038fd5246b08e16f472",
-    "scripts/package-lock.json": "ef0af7fe29fadead962dfdc9a93790cce7f76bd1325044a06b38d4dba7259d8c",
-    "scripts/package.json": "7bb6e5292a2c82447ecf5b53d76fd607bacd196ac7dcad38104ac2cb81e8ab32",
+    "scripts/package-lock.json": "cb310cec426e92d0736b468edbba767d0c2b06a28e7af543d734ffd10b06276b",
+    "scripts/package.json": "83bb8500b77bf81b4c6e255f5040653da291a87ca4f548947b4b463676f000e5",
     "scripts/poll-windows.mjs": "7ba5e086c79a3f96d14cdb7bc41eca2dedc210c9a1b7200d533da527569cdcc0",
     "scripts/release-integrity.mjs": "0d15bdba8890c16bacc8def49148f9ac8b7157edb9fe811ea676dbf4fb4080f2",
     "scripts/repair-plugin-registration.mjs": "6180b0f69b0d2239ef19f5b56d76eb37902874818db1b84ba959c8f14a716ec0",
