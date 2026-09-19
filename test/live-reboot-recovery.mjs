@@ -25,10 +25,11 @@ export function validateRebootBaseline(pre,current){
 
 export function assessRebootRecovery(pre,result){
   const sum=result.summary,ids=sum?.tasks?.map(task=>task.id).sort();
+  const runWorkspace=pre.runWorkspace||pre.workspace;
   return result.exitCode===0&&result.closed===true&&result.firstReceiptUnchanged===true&&
     sum?.runId===pre.runId&&sum.executionMode==='headless'&&sum.generation>=2&&sum.success===true&&
     JSON.stringify(ids)===JSON.stringify(['T001','T002'])&&ids.every(id=>sum.taskResults?.[id]?.status==='verified')&&
-    result.receipts?.length===2&&result.receipts.every((receipt,i)=>receipt?.id===['one','two'][i]&&receipt.nonce===pre.nonce&&receipt.cwd===pre.workspace&&receipt.count===1&&receipt.answer===42);
+    result.receipts?.length===2&&result.receipts.every((receipt,i)=>receipt?.id===['one','two'][i]&&receipt.nonce===pre.nonce&&receipt.cwd===runWorkspace&&receipt.count===1&&receipt.answer===42);
 }
 
 function environment(){
@@ -43,7 +44,10 @@ function environment(){
 function locations(id){
   if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$/.test(id))throw new Error('Invalid recovery Id');
   const runId='reboot-'+id,root=path.join(repo,'temp','reboot-recovery-'+id);
-  return {id,runId,root,summaryFile:path.join(repo,'temp','orchestrator','runs',runId,'summary.json'),entry:path.join(repo,'scripts','orchestrate-sdk.mjs')};
+  // 执行工作区独立于编排器仓库：编排器拒绝"改自己"的请求（自引用守卫），
+  // 而仓库路径出现在任务文本里会命中该守卫，所以这里用一个中立的 ws 目录承载这次运行。
+  const runWorkspace=path.join(root,'ws');
+  return {id,runId,root,runWorkspace,summaryFile:path.join(runWorkspace,'temp','orchestrator','runs',runId,'summary.json'),entry:path.join(repo,'scripts','orchestrate-sdk.mjs')};
 }
 
 function cancelOwned(state){
@@ -60,10 +64,10 @@ function cancelOwned(state){
 async function prepare(id,{manualOnly=false}={}){
   const current=environment(),state=locations(id),nonce=crypto.randomUUID();
   if(fs.existsSync(state.root)||fs.existsSync(state.summaryFile))throw new Error('Recovery Id already exists');
-  fs.mkdirSync(state.root,{recursive:true});
+  fs.mkdirSync(state.root,{recursive:true});fs.mkdirSync(state.runWorkspace,{recursive:true});
   const probe=path.join(state.root,'probe.mjs'),acceptance=path.join(state.root,'acceptance.json');
   fs.writeFileSync(probe,`import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';
-const root=${JSON.stringify(state.root)},cwd=${JSON.stringify(repo)},nonce=${JSON.stringify(nonce)},id=process.argv[2];
+const root=${JSON.stringify(state.root)},cwd=${JSON.stringify(state.runWorkspace)},nonce=${JSON.stringify(nonce)},id=process.argv[2];
 assert.ok(['one','two'].includes(id));assert.equal(process.cwd(),cwd);
 const receipt={nonce,cwd,id,count:1,answer:42},file=path.join(root,id+'.json');
 if(id==='one'){fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});}else{
@@ -71,9 +75,10 @@ if(id==='one'){fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});}else{
  while(!fs.existsSync(path.join(root,'release'))){if(Date.now()>deadline)throw new Error('Reboot barrier expired');await new Promise(r=>setTimeout(r,250));}
  if(fs.existsSync(file))assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);else fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});
 }assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(JSON.stringify(receipt));`);
-  writeNew(acceptance,Object.fromEntries(['one','two'].map((task,i)=>['T00'+(i+1),{retrySafe:task==='two',checks:[{type:'json',path:path.join(state.root,task+'.json'),equals:{nonce,cwd:repo,id:task,count:1,answer:42}}]}])));
-  const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:repo,ORCH_RUN_ID:state.runId,ORCH_ACCEPTANCE_FILE:acceptance,ORCH_MAX_POLL_MS:'1800000'};delete env.ORCH_STATE_DIR;
-  const request=['one','two'].map(task=>`同一项目 ${state.root}：在工作目录 ${repo} 执行 node "${probe}" ${task}，等命令结束后读回 ${task}.json，核验 nonce=${nonce}、cwd=${repo}、id=${task}、count=1、answer=42。先 started、成功回读后 completed。禁止修改测试脚本、读写记忆、另开窗口或提交`).join('；');
+  writeNew(acceptance,Object.fromEntries(['one','two'].map((task,i)=>['T00'+(i+1),{retrySafe:task==='two',checks:[{type:'json',path:path.join(state.root,task+'.json'),equals:{nonce,cwd:state.runWorkspace,id:task,count:1,answer:42}}]}])));
+  const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:state.runWorkspace,ORCH_RUN_ID:state.runId,ORCH_ACCEPTANCE_FILE:acceptance,ORCH_MAX_POLL_MS:'1800000'};delete env.ORCH_STATE_DIR;
+  // 提示词刻意不用"修改/更新"这类词：任务文本里出现仓库路径 + 修改意图会被自引用守卫判成"改编排器自己"。
+  const request=['one','two'].map(task=>`同一项目 ${state.root}：在工作目录 ${state.runWorkspace} 执行 node "${probe}" ${task}，等命令结束后读回 ${task}.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=${task}、count=1、answer=42。先 started、成功回读后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`).join('；');
   const out=fs.openSync(path.join(state.root,'prepare.stdout.log'),'wx'),err=fs.openSync(path.join(state.root,'prepare.stderr.log'),'wx');
   const child=spawn(process.execPath,[state.entry,'--exec',request],{cwd:repo,env,detached:true,windowsHide:true,stdio:['ignore',out,err]});
   fs.closeSync(out);fs.closeSync(err);let launchError;child.on('error',error=>{launchError=error;});
@@ -88,7 +93,7 @@ if(id==='one'){fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});}else{
     }
     if(!attempt||!fs.existsSync(path.join(state.root,'waiting'))||maybe(path.join(path.dirname(attempt.file),'checkpoints','T001.json'))?.state!=='completed'||maybe(path.join(path.dirname(attempt.file),'checkpoints','T002.json'))?.state!=='started')throw new Error('Did not reach the real unfinished-task reboot boundary');
     const launcher=sum.results.B1.launcher;if(!sameProcess(launcher,processSnapshot().get(launcher?.ProcessId)))throw new Error('Prepared worker is not alive');
-    const pre={schema:1,id,runId:state.runId,workspace:repo,commit:current.commit,releaseSha256:current.releaseSha256,bootBefore:current.bootAfter,nonce,ready:true,firstReceiptSha256:hash(path.join(state.root,'one.json')),preparedAt:new Date().toISOString(),launcher,controllerPid:child.pid};
+    const pre={schema:1,id,runId:state.runId,workspace:repo,runWorkspace:state.runWorkspace,commit:current.commit,releaseSha256:current.releaseSha256,bootBefore:current.bootAfter,nonce,ready:true,firstReceiptSha256:hash(path.join(state.root,'one.json')),preparedAt:new Date().toISOString(),launcher,controllerPid:child.pid};
     writeNew(path.join(state.root,'pre-reboot.json'),pre);
     const bridge=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-File',path.join(repo,'test','reboot-validation.ps1'),'-Mode','prepare','-Id',id,'-RecoveryId',id,...(manualOnly?['-ManualOnly']:[])],{cwd:repo,encoding:'utf8',windowsHide:true,timeout:30000});
     if(bridge.status!==0)throw new Error('Reboot collector preparation failed: '+bridge.stderr);
@@ -108,7 +113,7 @@ function collect(id){
     fs.writeFileSync(path.join(state.root,'release'),'continue');
     const out=fs.openSync(path.join(state.root,'resume.stdout.log'),'wx'),err=fs.openSync(path.join(state.root,'resume.stderr.log'),'wx');
     const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:repo};for(const key of ['ORCH_RUN_ID','ORCH_ACCEPTANCE_FILE','ORCH_STATE_DIR'])delete env[key];
-    let execution;try{execution=spawnSync(process.execPath,[state.entry,'--workspace',repo,'--resume-run',state.runId],{cwd:repo,env,windowsHide:true,stdio:['ignore',out,err],timeout:900000});}finally{fs.closeSync(out);fs.closeSync(err);}
+    let execution;try{execution=spawnSync(process.execPath,[state.entry,'--workspace',state.runWorkspace,'--resume-run',state.runId],{cwd:state.runWorkspace,env,windowsHide:true,stdio:['ignore',out,err],timeout:900000});}finally{fs.closeSync(out);fs.closeSync(err);}
     const sum=read(state.summaryFile),snapshot=processSnapshot(),blocks=Object.values(sum.results||{});
     const result={exitCode:execution.status,closed:blocks.length>0&&blocks.every(block=>block.launcher&&!sameProcess(block.launcher,snapshot.get(block.launcher.ProcessId))),summary:sum,receipts:['one','two'].map(task=>maybe(path.join(state.root,task+'.json'))),firstReceiptUnchanged:hash(path.join(state.root,'one.json'))===pre.firstReceiptSha256};
     report={...report,...result,bootBefore:pre.bootBefore,bootAfter:current.bootAfter,releaseSha256:current.releaseSha256,passed:assessRebootRecovery(pre,result),collectedAt:new Date().toISOString()};
