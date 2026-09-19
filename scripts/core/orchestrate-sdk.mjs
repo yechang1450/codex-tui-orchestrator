@@ -1988,6 +1988,49 @@ function staleTransientFiles() {
   }
   return res;
 }
+/**
+ * 判断一个 WindowsTerminal 进程是否属于本插件：命令行里必须同时出现
+ * 本工作区 temp 目录与 win-launch-*.ps1 启动器名。纯函数，便于单测。
+ */
+export function isPluginOwnedTerminalCommand(commandLine, tempDir) {
+  const cmd = String(commandLine || "").toLowerCase();
+  const dir = String(tempDir || "").toLowerCase().replace(/[\\/]+$/, "");
+  if (!cmd || !dir) return false;
+  if (!/win-launch-[\w.\-]+\.ps1/.test(cmd)) return false;
+  return cmd.includes(dir);
+}
+/**
+ * 主动清扫"代码 1"残留窗：Windows Terminal 会在窗内进程非 0 退出后把面板留着，
+ * 于是屏幕上出现一片报错窗。这里只认本插件自己的窗口（命令行带本工作区 temp 下的
+ * win-launch-*.ps1），并且要求 launcher 已死且该窗没有任何活着的子进程，才会强杀；
+ * 活窗、别人的窗口、共享的 WT 宿主一律不碰。
+ */
+export async function closeOrphanTerminals() {
+  let closed = 0;
+  try {
+    const procs = [...processSnapshot().values()];
+    for (const proc of procs) {
+      if (!/^WindowsTerminal\.exe$/i.test(String(proc.Name || ""))) continue;
+      const cmd = String(proc.CommandLine || "");
+      if (!isPluginOwnedTerminalCommand(cmd, TMP)) continue;
+      const m = /win-launch-([\w.\-]+)\.ps1/i.exec(cmd);
+      let launcherAlive = false;
+      if (m) {
+        const pidf = path.join(TMP, "window-" + m[1] + ".pid");
+        try {
+          const pid = Number(String(readFileSync(pidf, "utf8")).replace(/^\uFEFF/, "").trim());
+          launcherAlive = pid > 0 && pidAliveCheck(pid);
+        } catch { /* pid 缺失/不可读 -> 视为已死 */ }
+      }
+      const hasLiveChild = procs.some(p => Number(p.ParentProcessId) === Number(proc.ProcessId));
+      if (launcherAlive || hasLiveChild) continue;
+      spawnSync("taskkill.exe", ["/F", "/T", "/PID", String(proc.ProcessId)], { windowsHide: true });
+      closed++;
+      console.log("[orchestrator] closed orphan error window pid=" + proc.ProcessId + " (launcher exited non-zero; pane left open)");
+    }
+  } catch { /* 清扫是尽力而为，绝不影响主流程 */ }
+  return closed;
+}
 async function cleanStaleWindows() {
   // 兜底：上次若被中断/异常退出，会遗留 orchestrator 窗口(win-launch-*.ps1 launcher + 其 agent 子进程)。
   // 下次启动时按 orchestrator 自己的命名(win-launch-)识别历史残留，用优雅关窗关闭(杀 codex -> launcher exit0 -> WT pane 自动关)。
@@ -2022,9 +2065,10 @@ async function cleanStaleWindows() {
       try { const pid = Number(String(readFileSync(path.join(TMP, f), "utf8")).trim()); if (pid > 0) pidFiles.set(pid, path.join(TMP, f)); } catch { /* stale */ }
     }
     const ids = stale.filter((pid) => pidFiles.has(pid));
-    if (!ids.length) { console.log("[orchestrator] no stale orchestrator windows from previous run."); return; }
+    if (!ids.length) { console.log("[orchestrator] no stale orchestrator windows from previous run."); await closeOrphanTerminals(); return; }
     console.log("[orchestrator] cleaning " + ids.length + " stale orchestrator window(s) from previous run (protected live windows: " + protectedPids.size + ")...");
     await Promise.all(ids.map(async (pid) => { try { await closeWindowByPid(pid, launcherIdentity(pid, pidFiles.get(pid))); } catch { /* ignore */ } }));
+    await closeOrphanTerminals();
   } catch { /* ignore */ }
 }
 function cleanStaleTransients() {
@@ -2390,6 +2434,8 @@ export async function main() {
       plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
       register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
     },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
+    // 一轮结束后主动清扫"代码 1"残留窗（Windows Terminal 会把非 0 退出的面板留在屏幕上）。
+    await closeOrphanTerminals();
     process.exitCode=result.success?0:1;return;
   }
 

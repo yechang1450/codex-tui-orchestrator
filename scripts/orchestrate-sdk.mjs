@@ -8,7 +8,7 @@ export const {main,buildPsArrayLit,capPlanBlocks,buildWindowWaves,applyAuthPromp
  conflictByKeys,loadCachedDecompose,buildBlocksFromTasks,resolveHints,extractTasks,classifyPrompt,
  buildBlockPrompt,levelWaves,decomposeHash,checkDiskSpace,readPidFile,pidAliveCheck,closeWindowByPid,
  windowGenuinelyPopped,extractResult,extractUsage,readReportFromResult,sessionDir,writeInteractiveLauncher,
- staleTransientFiles,pidFileOfTransient,tryReserveWindow,commitReservation,cancelReservation,computeMaxWindows,
+ staleTransientFiles,pidFileOfTransient,tryReserveWindow,commitReservation,cancelReservation,computeMaxWindows,isPluginOwnedTerminalCommand,closeOrphanTerminals,
  blockKeys,keysOverlap,findOwnedTurn,waitForSessionFile,scanTaskComplete,waitTaskComplete,isCapacityError,capacityRetryPolicy,isProviderQuotaError,rolloutQuotaError,withRegistryLock,__setOrchHooks,isOrchestratorSelfMod,resolveCodexHome}=await import('./core/orchestrate-sdk.mjs');
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
