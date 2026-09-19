@@ -3,8 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {runWindows,runDirectory,verifyRun} from '../scripts/core/runner.mjs';
+import {runWindows,runDirectory,verifyRun,identifyWithRetry} from '../scripts/core/runner.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+test('transient process-enumeration failures retry instead of failing the whole block',async()=>{
+  let calls=0;
+  const sleep=[];
+  const identity=await identifyWithRetry(()=>{calls++;if(calls<3)throw new Error('Cannot verify process identities');return {ProcessId:42};},7,'exec-B1.pid',{pauseMs:ms=>{sleep.push(ms);return Promise.resolve();}});
+  assert.equal(calls,3);
+  assert.deepEqual(sleep,[300,600],'重试之间保持有界退避');
+  assert.equal(identity.ProcessId,42);
+  let attempts=0;
+  await assert.rejects(()=>identifyWithRetry(()=>{attempts++;throw new Error('Cannot verify process identities');},7,'exec-B1.pid',{pauseMs:()=>Promise.resolve()}),/Cannot verify process identities/);
+  assert.equal(attempts,3,'重试次数必须有上限，不能无限重试');
+  let mismatched=0;
+  assert.equal(await identifyWithRetry(()=>{mismatched++;return null;},7,'exec-B1.pid',{pauseMs:()=>Promise.resolve()}),null,'身份不匹配不是枚举故障，不重试');
+  assert.equal(mismatched,1);
+});
 test('runWindows rejects malformed capacity before creating run state',async()=>{
  const workspace=fs.mkdtempSync(path.join(family,'runner-capacity-'));
  try {

@@ -50,6 +50,20 @@ function treeWorkingSetMB(snapshot, rootPid) {
 import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+/**
+ * 进程身份枚举是瞬时故障源（Windows CIM 查询/互斥锁在机器繁忙时会超时）。
+ * 身份不一致仍然立即判失败，但"枚举本身取不到"要有限重试：
+ * 一次枚举超时不该让整块任务失败，否则一轮执行完不了（用户硬性要求）。
+ */
+export async function identifyWithRetry(identify,pid,pidFile,{attempts=3,pauseMs=ms=>pause(ms)}={}){
+  const limit=Math.max(1,Number(attempts)||1);
+  let lastError;
+  for(let i=0;i<limit;i++){
+    try{return identify(pid,pidFile);}
+    catch(error){lastError=error;if(i+1<limit)await pauseMs(300*(i+1));}
+  }
+  throw lastError;
+}
 export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100,snapshot=processSnapshot}={}) {
   if(!expected||!Number.isFinite(Number(expected.ProcessId)))return true;
   const timeout=Math.max(0,Math.min(15000,Number(timeoutMs)||0)),interval=Math.max(10,Math.min(1000,Number(intervalMs)||100));
@@ -332,7 +346,8 @@ export async function runWindows(request,hooks,options={}) {
       while(Date.now()<deadline) {
         if(progressError)throw progressError;
         let e=sum.results[r.key],la=e.launcherFiles,identity;
-        if(la)identity=identify(hooks.readPid(la.pidf),la.pidf);
+        // 没有 pid 文件就没有可认领的启动器；这里不查进程表，省掉一次昂贵的 CIM 枚举。
+        if(la&&fs.existsSync(la.pidf))identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
         const adopted=identity&&(!e.launcher||sameProcess(e.launcher,identity));
         let active;
         if(adopted) {
@@ -404,7 +419,7 @@ export async function runWindows(request,hooks,options={}) {
             // live window, then produced incomplete receipts.
             const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
             if(!await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token))throw new Error('Execution process did not start');
-            identity=identify(hooks.readPid(la.pidf),la.pidf);
+            identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
             if(!identity)throw new Error('Launcher process identity mismatch');
             await coordinate(()=>bind(coordinator,leaseId,identity),deadline);hooks.commit?.(leaseId,identity.ProcessId);
             hooks.ready?.(la);
@@ -472,7 +487,7 @@ export async function runWindows(request,hooks,options={}) {
             }
             memStats=null;
           }
-          if(!identity&&la)identity=identify(hooks.readPid(la.pidf),la.pidf);
+          if(!identity&&la&&fs.existsSync(la.pidf))identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
           if(identity)await hooks.close(identity.ProcessId,identity);
           if(identity&&!(await waitExit(identity))){
             // Keep the lease for resume/adoption, but never leave tasks at their
