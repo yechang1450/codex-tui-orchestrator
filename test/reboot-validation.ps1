@@ -8,7 +8,7 @@ param(
   [ValidatePattern('^$|^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$')]
   [string]$RecoveryId = '',
   [switch]$ManualOnly,
-  [ValidateSet('Manual','RunOnce')]
+  [ValidateSet('Manual','RunOnce','StartupFolder')]
   [string]$Trigger = 'Manual'
 )
 
@@ -26,6 +26,7 @@ $DispatchPath = Join-Path $State 'dispatch.json'
 $Collector = (Resolve-Path -LiteralPath $PSCommandPath).Path
 $RunOnceKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce'
 $RunOnceName = "CodexTuiOrchestrator-RebootValidation-$Id"
+$StartupName = "CodexTuiOrchestrator-RebootValidation-$Id.cmd"
 
 function Write-NewJson([string]$Path, [object]$Value) {
   $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 12))
@@ -60,6 +61,40 @@ function Remove-OwnedRegistration {
     Remove-ItemProperty -LiteralPath $RunOnceKey -Name $RunOnceName
     if (Read-Registration) { throw 'RunOnce cleanup read-back failed.' }
   }
+  Remove-OwnedStartup
+}
+
+# Startup-folder helper. RunOnce has not been executed at logon on this host
+# (the value survived two real logons), and creating an ONLOGON scheduled task
+# is refused without elevation, so the user's Startup folder is used instead:
+# it runs at logon without any administrator rights.
+function Startup-Path {
+  $folder = [Environment]::GetFolderPath('Startup')
+  if (-not $folder) { return $null }
+  return Join-Path $folder $StartupName
+}
+
+# External tools may return text in the console code page; strip anything
+# outside printable ASCII before it is written into a JSON baseline, otherwise
+# the mojibake can break the document (seen with a refused schtasks call).
+function Sanitize-Text([object]$Value) {
+  $text = [string]$Value
+  if (-not $text) { return '' }
+  $clean = -join ($text.ToCharArray() | Where-Object { [int]$_ -ge 32 -and [int]$_ -lt 127 })
+  return $clean.Trim()
+}
+
+function Read-StartupRegistration {
+  $path = Startup-Path
+  if (-not $path) { return $null }
+  if (-not (Test-Path -LiteralPath $path)) { return $null }
+  $text = Get-Content -LiteralPath $path -Raw -ErrorAction SilentlyContinue
+  if ($text -and $text.Contains($Collector) -and $text.Contains($Id)) { return $text }
+  return $null
+}
+
+function Remove-OwnedStartup {
+  if (Read-StartupRegistration) { Remove-Item -LiteralPath (Startup-Path) -Force }
 }
 
 function Invoke-Check([string]$Label, [string]$Command, [string[]]$Arguments, [int]$TimeoutMs = 30000) {
@@ -137,6 +172,18 @@ if ($Mode -eq 'prepare') {
       if ((Read-Registration) -ne $command) { throw 'RunOnce registration read-back failed.' }
       $preRecord.registration.status = 'registered-unverified'
     } catch { $preRecord.registration.status = 'unavailable'; $preRecord.registration.error = $_.Exception.Message }
+    # Second trigger: a .cmd in the user's Startup folder. Runs at logon without
+    # elevation and is independent of the RunOnce list.
+    try {
+      $startupPath = Startup-Path
+      if (-not $startupPath) { throw 'The Startup folder is unavailable.' }
+      if (Read-StartupRegistration) { throw 'A startup entry with this Id already exists.' }
+      $startupCommand = '{0} -NoProfile -NonInteractive -WindowStyle Hidden -File "{1}" -Mode collect -Id "{2}" -Trigger StartupFolder' -f (Join-Path $PSHOME 'powershell.exe'), $Collector, $Id
+      if ($Workspace -ne (Split-Path -Parent $PSScriptRoot)) { $startupCommand += ' -Workspace "{0}"' -f $Workspace }
+      Set-Content -LiteralPath $startupPath -Value ('@echo off' + [Environment]::NewLine + $startupCommand) -Encoding ASCII
+      if (-not (Read-StartupRegistration)) { throw 'Startup registration read-back failed.' }
+      $preRecord.registration.startup = 'registered-unverified'
+    } catch { $preRecord.registration.startup = 'unavailable'; $preRecord.registration.startupError = (Sanitize-Text $_.Exception.Message) }
   }
   try { Write-NewJson $PrePath $preRecord } catch { Remove-OwnedRegistration; throw }
   [pscustomobject]@{ prepared = $true; pre = $PrePath; id = $Id; registration = $preRecord.registration; bootBefore = $preRecord.bootBefore; commit = $commit } | ConvertTo-Json -Depth 4 -Compress
