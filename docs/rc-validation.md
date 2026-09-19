@@ -100,7 +100,9 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 1. **重启后健康：已通过（两次真实重启）**。`temp/reboot-validation-reboot-check-20260918/post-reboot.json` 与 `temp/reboot-validation-reboot-check-20260918b/post-reboot.json` 都记录 `bootChanged=true`、`sourceClean=true`，且 `release-integrity` / `doctor` / `marketplace-registration` 三项检查全部有效。两次唯一为 false 的字段是 `commitMatches`——原因是基线冻结之后又产生了提交（记账漂移），与插件在重启后的健康无关；`releaseMatches` 随同一原因变化。
 2. **自动收集机制：已实现并离线端到端验证**。prepare 在用户启动文件夹写入 `CodexTuiOrchestrator-RebootValidation-<id>.cmd`（无需提权），`collect -Trigger StartupFolder` 执行三项检查并在结束后只删除自己那个文件；夹具级端到端（落地 → 执行 → `collectionTrigger=StartupFolder` → 三项检查全跑 → 自动清理）通过，bridge 回归 9/9。
 
-**如实标注的残余缺口**：没有取得"同一次回执里同时满足 启动时间变化 + 提交/发布哈希一致 + 自动触发"的记录。原因是我在每次重启后又提交了代码（前两次），以及用户不再重启（第三次）。当前仍有一份冻结基线 `reboot-check-20260919`（绑定 `8ceae8c`）在册：将来任何一次重启或注销登录，启动项都会自动执行收集并留下 `collectionTrigger=StartupFolder` 的回执；届时只需读回该文件即可补齐这条并入证据，不需要改代码。
+**如实标注的残余缺口**：没有取得"同一次回执里同时满足 启动时间变化 + 提交/发布哈希一致 + 自动触发"的记录。原因是我在每次重启后又提交了代码（前两次）。当前有一份绑当前提交的冻结基线 `reboot-check-20260919c`（绑定 `8e16b41`，`releaseSha256=45413c1c7490`，与当前 `release.json` 实测一致）在册：将来任何一次重启或注销登录，启动项都会自动执行收集并留下 `collectionTrigger=StartupFolder` 的回执；届时只需读回 `temp/reboot-validation-reboot-check-20260919c/post-reboot.json` 即可补齐这条证据，不需要改代码。
+
+上一份基线 `reboot-check-20260919`（绑定 `8ceae8c`）已在 2026-09-19 作废并删除：它在冻结之后又被多次提交改写，`release.json` 哈希从 `76c4161…` 变成 `45413c1…`，收集器必然报 `releaseMatches=false`；对应的启动项 `.cmd` 也一并移除，避免下次登录产生一条注定失败的回执。**注意：任何之后改动 `release.json` 的提交都会同样作废当前基线**，所以这条门槛的收口时机应选在代码定稿之后。
 
 **结论**：该门槛不再阻塞发布；文档明确区分"已证明"与"未观测到合并回执"两种情况。
 
