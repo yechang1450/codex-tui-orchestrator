@@ -68,7 +68,7 @@
     "scripts/package-lock.json": "9b2110c3d84300ca639ad760dfa2c82adc338f15857430f963bc040585e0ddfc",
     "scripts/package.json": "024e9949ae81816727b2392f1fab78a005768fb0652184f7377a8cc154a53c2c",
     "scripts/poll-windows.mjs": "7ba5e086c79a3f96d14cdb7bc41eca2dedc210c9a1b7200d533da527569cdcc0",
-    "scripts/publish-dist.mjs": "a6782bfd937d15a33131cacaf71248ac8148fa0785d5cf64a54c394c1130ee01",
+    "scripts/publish-dist.mjs": "a708e8cd5e4fb9791de75a016d39317540517bc31552027c94d6de324d6708b6",
     "scripts/release-integrity.mjs": "0d15bdba8890c16bacc8def49148f9ac8b7157edb9fe811ea676dbf4fb4080f2",
     "scripts/repair-plugin-registration.mjs": "96080a0bdb05c1a9e5622b30626980c56c8dffa4c86fdf0783553e9db8a3910a",
     "scripts/runtime-context.mjs": "deb2671a6f36e428e452c9dc03b1add6f94ccbb4533c0018efc8e3c778a55045",

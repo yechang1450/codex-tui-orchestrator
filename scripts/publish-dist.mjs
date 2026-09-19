@@ -37,13 +37,14 @@ function parseArgs(argv) {
   return out;
 }
 
-export function publishDist({target = defaultDistRoot(root), quiet = false} = {}) {
+export function publishDist({target = null, quiet = false} = {}) {
   const pluginName = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8')).name;
-  const dist = path.join(target, pluginName);
-  fs.mkdirSync(target, {recursive: true});
+  const resolvedTarget = path.resolve(target || defaultDistRoot(root));
+  const dist = path.join(resolvedTarget, pluginName);
+  fs.mkdirSync(resolvedTarget, {recursive: true});
   // repair.mjs 拒绝已存在的目标，正是为了避免新旧混合；这里先删旧分发再重建。
   fs.rmSync(dist, {recursive: true, force: true});
-  const repair = spawnSync(process.execPath, [path.join(root, 'repair.mjs'), '--target', target], {encoding: 'utf8', windowsHide: true, cwd: root});
+  const repair = spawnSync(process.execPath, [path.join(root, 'repair.mjs'), '--target', resolvedTarget], {encoding: 'utf8', windowsHide: true, cwd: root});
   if (repair.status !== 0) throw new Error('repair.mjs failed: ' + (repair.stderr || repair.stdout || 'exit ' + repair.status));
   const verify = spawnSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', windowsHide: true, cwd: dist});
   if (verify.status !== 0) throw new Error('distribution integrity failed: ' + (verify.stderr || verify.stdout || 'exit ' + verify.status));
@@ -54,7 +55,7 @@ export function publishDist({target = defaultDistRoot(root), quiet = false} = {}
     walk(dist);
     return total;
   })();
-  const result = {dist, target, pluginName, files, coreVersion: summary.coreVersion, coreFiles: summary.files, runtimeFiles: summary.runtimeFiles, install: 'codex plugin add ' + pluginName + '@personal'};
+  const result = {dist, target: resolvedTarget, pluginName, files, coreVersion: summary.coreVersion, coreFiles: summary.files, runtimeFiles: summary.runtimeFiles, install: 'codex plugin add ' + pluginName + '@personal'};
   if (!quiet) {
     console.log('[publish-dist] ' + dist + ' (' + files + ' files, core ' + summary.coreVersion + ')');
     console.log('[publish-dist] next: ' + result.install);
