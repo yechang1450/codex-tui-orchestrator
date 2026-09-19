@@ -8,6 +8,10 @@ import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {verifyRelease} from '../scripts/release-integrity.mjs';
 import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
+import {CORE_VERSION} from '../scripts/core/contracts.mjs';
+// 与 scripts/core/orchestrate-sdk.mjs 的 decomposeHash 同式（sha1(CORE_VERSION|request|hintsKey)）。
+// 这里刻意不复用 SDK 的导出：SDK 在 import 时就要解析 Codex CLI，会让本文件的离线测试也依赖真实 CLI。
+const decomposeKey=(request,hints)=>crypto.createHash('sha1').update(CORE_VERSION+'|'+String(request||'')+'|'+JSON.stringify({moduleToProj:hints?.moduleToProj||{},foldRules:hints?.foldRules||{},tailKeywords:Array.isArray(hints?.tailKeywords)?hints.tailKeywords:[]})).digest('hex');
 
 const repo=path.resolve(fileURLToPath(new URL('../',import.meta.url)));
 const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -65,21 +69,36 @@ async function prepare(id,{manualOnly=false}={}){
   const current=environment(),state=locations(id),nonce=crypto.randomUUID();
   if(fs.existsSync(state.root)||fs.existsSync(state.summaryFile))throw new Error('Recovery Id already exists');
   fs.mkdirSync(state.root,{recursive:true});fs.mkdirSync(state.runWorkspace,{recursive:true});
-  const probe=path.join(state.root,'probe.mjs'),acceptance=path.join(state.root,'acceptance.json');
-  fs.writeFileSync(probe,`import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';
-const root=${JSON.stringify(state.root)},cwd=${JSON.stringify(state.runWorkspace)},nonce=${JSON.stringify(nonce)},id=process.argv[2];
-assert.ok(['one','two'].includes(id));assert.equal(process.cwd(),cwd);
+  const probes={one:path.join(state.root,'probe-one.mjs'),two:path.join(state.root,'probe-two.mjs')},acceptance=path.join(state.root,'acceptance.json');
+  // 每个任务用各自的探针脚本：共享同一个脚本路径会被判成同一资源而合并成一块，
+  // 那样"先完成一项"的顺序就只能靠模型自觉，实测会被打乱。
+  const probeSource=id=>`import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';
+const root=${JSON.stringify(state.root)},cwd=${JSON.stringify(state.runWorkspace)},nonce=${JSON.stringify(nonce)},id=${JSON.stringify(id)};
+assert.equal(process.cwd(),cwd);
 const receipt={nonce,cwd,id,count:1,answer:42},file=path.join(root,id+'.json');
-if(id==='one'){fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});}else{
- fs.writeFileSync(path.join(root,'waiting'),'idempotent wait');const deadline=Date.now()+1800000;
- while(!fs.existsSync(path.join(root,'release'))){if(Date.now()>deadline)throw new Error('Reboot barrier expired');await new Promise(r=>setTimeout(r,250));}
- if(fs.existsSync(file))assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);else fs.writeFileSync(file,JSON.stringify(receipt),{flag:'wx'});
-}assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(JSON.stringify(receipt));`);
+${id==='one'
+  ? 'fs.writeFileSync(file,JSON.stringify(receipt),{flag:"wx"});'
+  : 'fs.writeFileSync(path.join(root,"waiting"),"idempotent wait");const deadline=Date.now()+1800000;\nwhile(!fs.existsSync(path.join(root,"release"))){if(Date.now()>deadline)throw new Error("Reboot barrier expired");await new Promise(r=>setTimeout(r,250));}\nif(fs.existsSync(file))assert.deepEqual(JSON.parse(fs.readFileSync(file,"utf8")),receipt);else fs.writeFileSync(file,JSON.stringify(receipt),{flag:"wx"});'}
+assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(JSON.stringify(receipt));`;
+  fs.writeFileSync(probes.one,probeSource('one'));fs.writeFileSync(probes.two,probeSource('two'));
   writeNew(acceptance,Object.fromEntries(['one','two'].map((task,i)=>['T00'+(i+1),{retrySafe:task==='two',checks:[{type:'json',path:path.join(state.root,task+'.json'),equals:{nonce,cwd:state.runWorkspace,id:task,count:1,answer:42}}]}])));
   const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:state.runWorkspace,ORCH_RUN_ID:state.runId,ORCH_ACCEPTANCE_FILE:acceptance,ORCH_MAX_POLL_MS:'1800000'};delete env.ORCH_STATE_DIR;
+  for(const key of ['ORCH_TASK_HINTS','ORCH_TASK_FOLD','ORCH_TASK_TAIL'])delete env[key];
   // 提示词刻意不用"修改/更新"这类词：任务文本里出现仓库路径 + 修改意图会被自引用守卫判成"改编排器自己"。
-  // 两个任务各带一个带编号的项目名，走确定性拆块（genericProjectSplit），不依赖规划模型的心情。
-  const request=['one','two'].map((task,index)=>`项目 ${91+index}：在工作目录 ${state.runWorkspace} 执行 node "${probe}" ${task}，等命令结束后读回 ${task}.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=${task}、count=1、answer=42。先 started、成功读回后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`).join('；');
+  // 顺序由预置的拆块缓存保证（B1 完成后才允许开 B2），不指望模型自觉按序执行。
+  const sentences={
+    one:`项目 91：在工作目录 ${state.runWorkspace} 执行 node "${probes.one}"，等命令结束后读回 one.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=one、count=1、answer=42。先 started、成功读回后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`,
+    two:`项目 92：在工作目录 ${state.runWorkspace} 执行 node "${probes.two}"，等命令结束后读回 two.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=two、count=1、answer=42。先 started、成功读回后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`,
+  };
+  const request=[sentences.one,sentences.two].join('；');
+  const stateDir=path.join(state.runWorkspace,'temp','orchestrator');
+  fs.mkdirSync(stateDir,{recursive:true});
+  const hints={moduleToProj:{},foldRules:{},tailKeywords:['清爽','清理','保持干净','收尾','整理']};
+  const blocks=[
+    {type:'independent',title:'recovery-step-1',dependsOn:[],conflictKeys:['file:'+path.join(state.root,'one.json')],tasks:[{id:'t1',title:'one',prompt:sentences.one}]},
+    {type:'independent',title:'recovery-step-2',dependsOn:['recovery-step-1'],conflictKeys:['file:'+path.join(state.root,'two.json')],tasks:[{id:'t2',title:'two',prompt:sentences.two}]},
+  ];
+  fs.writeFileSync(path.join(stateDir,'orchestrator-decompose-cache.json'),JSON.stringify({version:CORE_VERSION,entries:{[decomposeKey(request,hints)]:{createdAt:Date.now(),blocks}}},null,2)+'\n');
   const out=fs.openSync(path.join(state.root,'prepare.stdout.log'),'wx'),err=fs.openSync(path.join(state.root,'prepare.stderr.log'),'wx');
   const child=spawn(process.execPath,[state.entry,'--exec',request],{cwd:repo,env,detached:true,windowsHide:true,stdio:['ignore',out,err]});
   fs.closeSync(out);fs.closeSync(err);let launchError;child.on('error',error=>{launchError=error;});
