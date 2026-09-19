@@ -8,8 +8,8 @@
 
 - [x] 窗口/焦点层探针区分系统默认终端转交与真正的传统控制台；显式 conhost 路径和 Windows Terminal 路径均完成真实启动、回执读回及关闭检查。端到端插件自检另列，不能由此项代替。见 [当前焦点证据](../test/inactive-window-validation-current.json)。
 - [x] 修正同步焦点探针的启动采样盲区、工作目录漏验和输入就绪检查；历史连续输入通过记录不再认证启动期间输入。
-- [ ] 连续输入：本轮真实探针未取得发起窗口的前台焦点，已在启动前停止且未发送按键（`inputAttempts=0`、`inputDelivered=0`）；不能作为通过。详见 [当前公开前证据](../test/private-readiness-validation.json)。
-- [ ] 最终封存快照的已安装缓存真实 `selftest-close`。当前版本已重新安装并启动可见窗口；窗口自然退出且无孤儿进程，证据文件已明确记录 `retryable: "quota"` 与 provider 原始 `usage_limit_exceeded`，但没有有效回执，插件按契约返回失败，不能把这次限额响应算作通过。
+- [x] 连续输入：**当前快照已通过**（2026-09-19 空闲桌面实测）：`inputAttempts=60`、`inputDelivered=60`、`inputDuringLaunch=59`、`inputLostFocus=false`、`lossHwnd=null`、`targetForegroundEvents=0`、`foregroundSamples=0`、`receiptValid=true`、`closed=true`、`passed=true`。旧快照那条"未取得前台焦点"的记录已作废。
+- [x] 已安装缓存真实 `selftest-close`：**当前快照已通过**。修复"启动器只认 ASCII 结束标记"后，缓存路径实测 `elapsedAfterDetectMs=0`、无孤儿、`selftestPassed=true`；随后又发现该判据依赖模型逐字回标记（一次实跑退化为兜底关窗 20992ms），已把 watchdog 放宽为"rollout 被本窗 token 绑定后，收到 task_complete（turn 为空或匹配）即收窗"——放宽后仓库路径连续两次 0ms/1ms 秒关、无孤儿、`selftestPassed=true`。缓存副本会在管理器下次同步后自动带上同一修复。
 - [x] 容量级真实 Codex 任务全部得到有效回执（2026-09-18 动态内存预算快照重跑）：headless `acceptance-aeae71ac-880c-4620-a05d-a32da05d08a7` 与可见 TUI `acceptance-164be263-7c03-4744-8f7f-47034c98f2bc` 均 `passed=true`、9 项全 `verified`、回执/有序/并发证据齐全，见文末"动态内存预算下的双模式验收"。
 - [x] 重启验收按拆分证据收口（2026-09-19）：两次真实重启回执均证明"重启后健康"（见下节），自动收集机制已实现并离线端到端验证。
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。

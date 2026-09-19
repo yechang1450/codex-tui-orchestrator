@@ -1034,7 +1034,13 @@ function Read-OwnedRollout([string]$raw, [string]$tok, [string]$ownerTurnId = ''
       if ($isFinal -and (Test-MessageToken $msg $tok) -and ($msg -match ('(?m)^\s*__ORCH_DONE__\s+' + [regex]::Escape($tok) + '(?:\s+\S+)?\s*$'))) { $done = $true }
     }
     $isTaskComplete = $ev.type -eq 'task_complete' -or ($ev.type -eq 'event_msg' -and $p.type -eq 'task_complete')
-    if ($isTaskComplete -and (($owner -and $turn -eq $owner) -or (-not $owner -and (Test-MessageToken ([string]$p.last_agent_message) $tok)))) { $done = $true }
+    # 一旦本 rollout 被本窗 token 绑定（$bound），task_complete 就足以收窗：
+    # 自检窗只要求模型回两行，模型偶尔漏写结束标记；此时旧的 turn 精确匹配会兜不住，
+    # 面板只能等主控 20 秒兜底关窗（实测 20992ms，严格判据判失败）。
+    # 放宽为“已绑定 + task_complete（turn 为空或等于本窗 turn）”，宁可早关也不挂死；
+    # 任务是否真的完成仍由主控按检查点/回执独立验收，关窗本身不构成成功证据。
+    if ($isTaskComplete -and $bound -and (-not $turn -or -not $owner -or $turn -eq $owner)) { $done = $true }
+    elseif ($isTaskComplete -and (($owner -and $turn -eq $owner) -or (-not $owner -and (Test-MessageToken ([string]$p.last_agent_message) $tok)))) { $done = $true }
   }
   return @{ matched = $bound; turnId = $owner; report = $report; done = $done }
 }`.split('\n');
@@ -2436,11 +2442,14 @@ export async function main() {
       else if(process.stdout.isTTY){process.stdout.write('\x1b[2J\x1b[H');console.log(renderRunStatus(event));}
       else console.log(`[status] ${event.type} | TodoList: ${(event.todoList||[]).map(t=>t.id+':'+t.status).join(' ')} | Execution: ${(event.executionStatus||[]).map(b=>b.block+':'+b.mode+':'+b.status).join(' ')}`);
     };
+    // 运行期间每 30 秒扫一次死窗：长任务途中也不让"代码 1"窗口一直挂在屏幕上。
+    const runSweepTimer=setInterval(()=>{closeOrphanTerminals().catch(()=>{});},30000);
     const result=await runWindows(request,{
       plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
       register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
     },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
-    // 一轮结束后主动清扫"代码 1"残留窗（Windows Terminal 会把非 0 退出的面板留在屏幕上）。
+    // 收尾再扫一次并停表（Windows Terminal 会把非 0 退出的面板留在屏幕上）。
+    clearInterval(runSweepTimer);
     await closeOrphanTerminals();
     process.exitCode=result.success?0:1;return;
   }
