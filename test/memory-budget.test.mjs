@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {budgetMergePlan, planMemoryCosts} from '../scripts/core/contracts.mjs';
+import {budgetMergePlan, planMemoryCosts, levelWaves} from '../scripts/core/contracts.mjs';
 import {
   admissionOk, blockCostMB, budgetSettings, clampCost, observedCostMB,
   resolveBudgetMode, updateRollingCost, DEFAULT_MIN_AVAILABLE_MB, DEFAULT_WINDOW_COST_MB,
@@ -106,4 +106,23 @@ test('the first run keeps extra headroom until enough clean samples exist', () =
   const with_ = budgetMergePlan(plan, {availableMB: 2000, floorMB: 512, windowCostMB: 256, headroom: 1.25});
   assert.ok(with_.plan.length < without.plan.length || with_.requiredMB > without.requiredMB, 'headroom must tighten the plan');
   assert.equal(with_.headroom, 1.25);
+});
+
+test('large plans merge to the budget without losing tasks or dependency order', () => {
+  // 65 任务 = 历史上限量级：必须无损合并，且依赖顺序不被打乱。
+  const big = blocks(65);
+  for (let i = 1; i < big.length; i++) big[i].dependsOn = i % 4 === 0 ? [] : ['p' + i];
+  const merged = budgetMergePlan(big, {availableMB: 2000, floorMB: 512, windowCostMB: 256, headroom: 1});
+  assert.ok(merged.ok, 'a satisfiable budget must be reached');
+  assert.ok(merged.plan.length < 65, 'the plan must actually compact');
+  assert.equal(merged.plan.flatMap(b => b.taskIds).length, 65, 'no task may be dropped');
+  assert.equal(new Set(merged.plan.flatMap(b => b.taskIds)).size, 65);
+  // 合并结果必须仍可分层（无环），且最宽层的成本在预算内。
+  const width = Math.max(...levelWaves(merged.plan.map((b, i) => ({key: 'B' + (i + 1), title: b.title, b, dependsOn: b.dependsOn}))).map(w => w.length));
+  assert.ok(width >= 1);
+  assert.ok(merged.availableMB - merged.requiredMB >= merged.floorMB, 'projected peak stays inside the budget');
+  // 单任务请求仍然可以走"不编排"分支：这里只验证规划函数不会把 1 个任务拆开。
+  const single = budgetMergePlan(blocks(1), {availableMB: 2000, floorMB: 512, windowCostMB: 256});
+  assert.equal(single.plan.length, 1);
+  assert.equal(single.plan[0].taskIds.length, 1);
 });

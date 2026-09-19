@@ -34,7 +34,11 @@ if (process.platform !== 'win32' || capacity < 2) throw new Error('This acceptan
 fs.mkdirSync(root, { recursive: true });
 const env = { ...process.env, ORCH_AGENT: agent, ORCH_MAX_POLL_MS: '900000', ORCH_RUN_ID:runId, ORCH_ACCEPTANCE_FILE:acceptanceFile };
 for (const key of ['WORKSPACE_DIR', 'ORCH_STATE_DIR', 'ORCH_TUI', 'ORCH_SANDBOX', 'ORCH_APPROVAL']) delete env[key];
-const config = { nonce, workspace, ids: Array.from({ length: capacity + 1 }, (_, i) => String(91 + i)), capacity };
+// ORCH_LIVE_TASKS 可放大验收规模（默认按公式容量 +1）；动态内存预算会把更大的批量
+// 合并进更少的块，从而在真实模型上验证"规模化时的合并/准入/回执"。
+const taskCount = Number(process.env.ORCH_LIVE_TASKS || (capacity + 1));
+if (!Number.isInteger(taskCount) || taskCount < 2) throw new Error('ORCH_LIVE_TASKS must be an integer >= 2');
+const config = { nonce, workspace, ids: Array.from({ length: taskCount }, (_, i) => String(91 + i)), capacity };
 fs.writeFileSync(path.join(root, 'config.json'), JSON.stringify(config));
 fs.writeFileSync(acceptanceFile,JSON.stringify(Object.fromEntries(config.ids.map((id,i)=>['T'+String(i+1).padStart(3,'0'),[{type:'json',path:path.join(root,'project-'+id,'result'+id+'.json'),equals:{id,nonce,cwd:workspace,sum:50005000}}]])),null,2));
 const probe = `import fs from 'node:fs';
