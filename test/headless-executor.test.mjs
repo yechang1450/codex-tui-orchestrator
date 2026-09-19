@@ -84,7 +84,8 @@ test('cancelling a running hidden worker terminates its owned exec process and p
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
     const runtime=f.files.lp.replace(/\.json$/,'.runtime.json');let childPid;
     const end=Date.now()+10000;
-    while(Date.now()<end){childPid=JSON.parse(fs.readFileSync(runtime)).childPid;if(childPid)break;await new Promise(r=>setTimeout(r,50));}
+    // 工作进程先写 pid 文件再写 runtime 日志；只等 pid 文件就立刻读日志会偶发 ENOENT。
+    while(Date.now()<end&&!childPid){if(fs.existsSync(runtime))childPid=JSON.parse(fs.readFileSync(runtime)).childPid;if(!childPid)await new Promise(r=>setTimeout(r,50));}
     assert.ok(childPid);await f.hooks.close(f.hooks.readPid(f.files.pidf));
     const result=JSON.parse(fs.readFileSync(f.files.rf));assert.equal(result.done,false);assert.match(result.text,/cancelled/i);
     assert.equal(processSnapshot().has(childPid),false);
