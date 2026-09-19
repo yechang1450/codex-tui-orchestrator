@@ -237,6 +237,20 @@ export function ledgerPlan(request, candidate, capacity, compact) {
 }
 
 export function sha256(file) {return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');}
+// Acceptance contracts are compared by content, not by formatting: key order and
+// indentation must not matter, while any real change must change the digest.
+// The encoding is type-tagged and explicit about -0/Infinity because JSON itself is
+// lossy there: JSON.stringify(Infinity) is "null" and JSON.stringify(-0) is "0", so a
+// plain stringify would let `null` be swapped for `1e400` without changing the digest.
+export function canonicalDigest(value) {
+  const encode = entry => {
+    if (Array.isArray(entry)) return '[' + entry.map(encode).join(',') + ']';
+    if (entry && typeof entry === 'object') return '{' + Object.keys(entry).sort().map(key => JSON.stringify(key) + ':' + encode(entry[key])).join(',') + '}';
+    if (entry === null) return 'null';
+    return typeof entry + ':' + (typeof entry === 'number' && Object.is(entry, -0) ? '-0' : String(entry));
+  };
+  return crypto.createHash('sha256').update(encode(value)).digest('hex');
+}
 export function verifyTask(receipt, task, checks, context) {
   if(!receipt || receipt.runId!==context.runId || receipt.token!==context.token || receipt.id!==task.id || receipt.status!=='completed')return {status:'failed',reason:'Missing or mismatched task receipt'};
   return verifyChecks(checks,context.workspace);

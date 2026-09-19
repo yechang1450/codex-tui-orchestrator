@@ -140,9 +140,10 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
    assert.equal(transport.name,fault==='response-timeout'?'TimeoutError':'TypeError');
    const resumed=await runWindows('',hooks,{...opts,resume:true});
    assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(requests,1);assert.equal(attempts.length,1);
-   const reconciled=JSON.parse(fs.readFileSync(checks));reconciled.T002={checks:[{type:'json',path:'remote.json',equals:{count:1}}]};
-   fs.writeFileSync(checks,JSON.stringify(reconciled));assert.equal(verifyRun(d,'partial',checks),true);
-   const verified=await runWindows('',hooks,{...opts,resume:true});assert.equal(verified.success,true);
+  const reconciled=JSON.parse(fs.readFileSync(checks));reconciled.T002={checks:[{type:'json',path:'remote.json',equals:{count:1}}]};
+   // 父代理在不确定结果后主动收紧契约属于"显式接管"：默认拒绝改写，必须打开 override 并留痕。
+   fs.writeFileSync(checks,JSON.stringify(reconciled));assert.equal(verifyRun(d,'partial',checks,{override:true}),true);
+   const verified=await runWindows('',hooks,{...opts,resume:true,acceptanceOverride:true});assert.equal(verified.success,true);
    assert.equal(requests,1);assert.equal(attempts.length,1);assert.equal(JSON.parse(fs.readFileSync(path.join(d,'count.json'))).count,1);
    return;
   }

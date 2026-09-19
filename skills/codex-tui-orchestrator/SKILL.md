@@ -33,6 +33,7 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 - 已开始但副作用不明的任务进入 `needs-reconciliation`（需核对真实结果），不能盲目重跑；只有预先声明 `retrySafe:true` 的任务可安全重试。恢复不会重放整个块。
 - 传输、超时、容量和服务端错误只做有上限的退避；容量错误发生在检查点前才自动重试。单任务可用 `supervise.mjs`，多任务使用 `--resume-run`。
 - 核对真实结果时运行 `node <SDK绝对路径> --verify-run <ID> --acceptance-file <JSON>`；不保证外部副作用恰好一次。
+- 验收契约在运行开始时按规范化 SHA-256 摘要绑定到 `manifest.json` / `summary.json`：`--verify-run` 与 `--resume-run` 读到不一致的契约会直接拒绝（执行窗改不了自己的验收门槛）。确实要换契约才加 `--allow-acceptance-change`（放在 run ID 之后）或 `ORCH_ACCEPTANCE_OVERRIDE=1`，重新绑定会记进账本 history。
 
 provider 明确返回账户用量上限（如 usage_limit_exceeded）时立即失败并保留错误；结构化 `error`/`turn.failed` 或 `task_complete.error` 才是配额信号，任务文本与工具输出不具备该权限。此类失败不消耗普通失败预算或重开窗口；等待额度恢复后再用原运行身份恢复。
 

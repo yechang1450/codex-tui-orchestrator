@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,budgetMergePlan} from './contracts.mjs';
+import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,budgetMergePlan,canonicalDigest} from './contracts.mjs';
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
@@ -77,6 +77,42 @@ export function runDirectory(workspace,runId) {
   return path.join(workspace,'temp','orchestrator','runs',runId);
 }
 function loadChecks(file){return file?JSON.parse(fs.readFileSync(file,'utf8')):{};}
+// 验收契约绑定：运行开始时把契约摘要写进账本（summary.json + manifest.json），
+// verify/resume 必须重读到同一份契约。执行窗对工作区有写权限，能把
+// <runDir>/acceptance.json 换成对自己有利的版本；没有绑定就无法判断它是否被改过。
+function acceptanceBinding(checks,source){return {algorithm:'sha256',sha256:canonicalDigest(checks),source,boundAt:Date.now()};}
+function readJsonIfPresent(file){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(error){if(error.code==='ENOENT')return undefined;throw error;}}
+function recordedAcceptanceDigest(sum,dir){
+  const manifest=readJsonIfPresent(path.join(dir,'manifest.json'));
+  const records=[sum?.acceptance,manifest?.acceptance].filter(binding=>typeof binding?.sha256==='string'&&binding.sha256.length>0);
+  if(!records.length)return null;
+  if(new Set(records.map(binding=>binding.sha256)).size===1)return records[0].sha256;
+  // 重绑定要写两份账本和一个磁盘副本，崩溃或校验失败可能只写成一半。这里取最新记录
+  // 并告警，而不是永久锁死这个运行（能同时改写两份账本的角色本来就绕得过摘要）。
+  const newest=records.slice().sort((left,right)=>(Number(right.boundAt)||0)-(Number(left.boundAt)||0))[0];
+  console.warn('[orchestrator] acceptance binding records disagree (summary '+String(sum?.acceptance?.sha256).slice(0,12)+', manifest '+String(manifest?.acceptance?.sha256).slice(0,12)+'); using the newest record '+newest.sha256.slice(0,12));
+  return newest.sha256;
+}
+function loadBoundChecks(file,dir,sum,override){
+  const checks=loadChecks(file),digest=canonicalDigest(checks),recorded=recordedAcceptanceDigest(sum,dir);
+  if(!recorded){
+    // 旧账本（本版本之前记录的运行）没有摘要可比，保持可验证，但必须说清楚。
+    console.warn('[orchestrator] this run has no recorded acceptance binding (historical ledger); the on-disk contract is used as-is');
+    return {checks,digest,rebound:false};
+  }
+  if(recorded===digest)return {checks,digest,rebound:false};
+  if(!override)throw new Error('Acceptance contract changed since the run was recorded (recorded '+recorded.slice(0,12)+', current '+digest.slice(0,12)+'): '+file+'。确认契约没有被削弱后才可以用 --allow-acceptance-change（或 ORCH_ACCEPTANCE_OVERRIDE=1）显式接管。');
+  console.warn('[orchestrator] acceptance override: contract digest changed ('+recorded.slice(0,12)+' -> '+digest.slice(0,12)+'); rebinding '+file);
+  return {checks,digest,rebound:true,previous:recorded};
+}
+function bindAcceptance(dir,checks,source){
+  const binding=acceptanceBinding(checks,source);
+  // 磁盘副本、摘要和账本必须始终是一份契约，否则下一次恢复会拿旧副本对不上新摘要。
+  atomicJson(path.join(dir,'acceptance.json'),checks);
+  const manifestFile=path.join(dir,'manifest.json'),manifest=readJsonIfPresent(manifestFile);
+  if(manifest)atomicJson(manifestFile,{...manifest,acceptance:binding});
+  return binding;
+}
 function goalDigest(sum) {
   return crypto.createHash('sha256').update(JSON.stringify({
     generation:sum.generation,runId:sum.runId,tasks:sum.tasks,blocks:sum.blocks,
@@ -161,17 +197,25 @@ export function collectVerification(sum,checks,workspace,{allowStarted=false}={}
   }
   return sum;
 }
-export function verifyRun(workspace,runId,acceptanceFile) {
+export function verifyRun(workspace,runId,acceptanceFile,options={}) {
   const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=JSON.parse(fs.readFileSync(file,'utf8'));
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
   if(sum.protocol===2)validateRecoverySummary(sum);
   const claim=claimRun(sum.coordinator||coordinatorDir(workspace),'run:'+path.resolve(dir).toLowerCase());
-  const checks=loadChecks(acceptanceFile||path.join(dir,'acceptance.json'));
   try{
+    const contractFile=acceptanceFile||path.join(dir,'acceptance.json');
+    const acceptance=loadBoundChecks(contractFile,dir,sum,options.override===true);
+    const checks=acceptance.checks;
     if(sum.tasks?.length){
       const keyDiff=acceptanceKeyDiff(checks,sum.tasks);
       if(keyDiff?.unknown.length)throw new Error('Acceptance keys do not match any task id: '+keyDiff.unknown.join(', ')+'（task ids: '+sum.tasks.map(t=>t.id).join(', ')+'）');
       if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
+    }
+    // 先校验再用新契约覆盖账本：无效的 override 契约不能把原来能用的绑定改坏。
+    if(acceptance.rebound){
+      const binding=bindAcceptance(dir,checks,path.resolve(contractFile));
+      sum.acceptance=binding;
+      sum.history.push({generation:sum.generation,acceptanceRebound:{at:binding.boundAt,from:acceptance.previous,to:binding.sha256}});
     }
     collectVerification(sum,checks,workspace,{allowStarted:true});sum.success=summaryComplete(sum,true);
     createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed');
@@ -212,11 +256,13 @@ export async function runWindows(request,hooks,options={}) {
   const runKey='run:'+dir.toLowerCase(),claim=await coordinate(()=>claimRun(coordinator,runKey),deadline);
   let sum,progressTimer,progressError;
   try {
-    let checks;
+    let checks,acceptance={checks:null,rebound:false};
     if(options.resume) {
       if(fs.readFileSync(summaryFile,'utf8')!==savedResumeRaw)throw new Error('Run changed while acquiring recovery ownership; retry resume');
       sum=savedResume;
-      checks=loadChecks(options.acceptanceFile||path.join(dir,'acceptance.json'));
+      // 恢复同样要复用被绑定的契约：执行窗改掉 acceptance.json 就能让未完成的任务被当成已验收。
+      acceptance=loadBoundChecks(options.acceptanceFile||path.join(dir,'acceptance.json'),dir,savedResume,options.acceptanceOverride===true);
+      checks=acceptance.checks;
       sum.history.push({generation:sum.generation,finishedAt:sum.finishedAt,success:sum.success});
       sum.generation++;delete sum.finishedAt;sum.success=false;
     }else {
@@ -255,7 +301,11 @@ export async function runWindows(request,hooks,options={}) {
       if(keyDiff?.unknown.length)throw new Error('Acceptance keys do not match any task id: '+keyDiff.unknown.join(', ')+'（task ids: '+sum.tasks.map(t=>t.id).join(', ')+'）');
       if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
     }
-    atomicJson(path.join(dir,'acceptance.json'),checks);
+    {
+      const binding=bindAcceptance(dir,checks,options.acceptanceFile?path.resolve(options.acceptanceFile):path.join(dir,'acceptance.json'));
+      sum.acceptance=binding;
+      if(acceptance.rebound)sum.history.push({generation:sum.generation,acceptanceRebound:{at:binding.boundAt,from:acceptance.previous,to:binding.sha256}});
+    }
     const publisher=createStatusPublisher(dir,{onEvent:options.onEvent});
     const persist=(event='run.updated')=>{
       publisher.publish(sum,event);

@@ -299,6 +299,14 @@ function byProjKeyCount(map) { let n = 0; for (const k in map) n += (map[k] || [
  * 把整条请求作为【一个 linked 块】（单窗、严格串行、无并发冲突），确保至少有一个真实执行窗落地，
  * 绝不因「拆不出合法 JSON」而让整批一个窗都不弹。linked = 串行 = 不会与其它窗冲突，符合底层思路。
  */
+/**
+ * 验收契约覆盖开关（acceptance override，允许重新绑定被改写的验收契约）。
+ * 默认关闭：契约与账本记录的摘要不一致时 verify/resume 直接拒绝，
+ * 只有操作者显式加 --allow-acceptance-change 或 ORCH_ACCEPTANCE_OVERRIDE=1 才放行并留痕。
+ */
+function acceptanceOverride() {
+  return process.env.ORCH_ACCEPTANCE_OVERRIDE === '1' || process.argv.includes('--allow-acceptance-change');
+}
 function fallbackPlan(request) {
   return {
     blocks: [
@@ -2392,7 +2400,7 @@ export async function main() {
   }
   if (mode === '--verify-run') {
     const id=process.argv[3]||process.env.ORCH_RUN_ID;
-    process.exitCode=verifyRun(WORKSPACE,id,process.env.ORCH_ACCEPTANCE_FILE)?0:1;return;
+    process.exitCode=verifyRun(WORKSPACE,id,process.env.ORCH_ACCEPTANCE_FILE,{override:acceptanceOverride()})?0:1;return;
   }
   if (['--run-windows','--visible','--run','--exec','--headless','--resume-run'].includes(mode)) {
     const resume=mode==='--resume-run';
@@ -2447,7 +2455,7 @@ export async function main() {
     const result=await runWindows(request,{
       plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
       register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
-    },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
+    },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,acceptanceOverride:acceptanceOverride(),timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
     // 收尾再扫一次并停表（Windows Terminal 会把非 0 退出的面板留在屏幕上）。
     clearInterval(runSweepTimer);
     await closeOrphanTerminals();

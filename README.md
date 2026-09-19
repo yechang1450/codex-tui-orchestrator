@@ -105,6 +105,8 @@ From the initiating workspace, call the installed script by absolute path. This 
 
 Replace `--exec` with `--run-windows` in the same checked invocation for visible execution. Both modes use the same task list, checkpoints, recovery and verification. For a real multi-part request, define content or behavior checks for every original task ID (`T001`, `T002`, …); see [the acceptance JSON format](docs/execution-contract.md#execution-and-verification). Missing checks leave completed work at `awaiting-verification` and return nonzero, not success. Use `--verify-run` with checks to inspect an existing run without redoing its tasks. Review the summary and result before cleaning this example's completed artifacts.
 
+The run start records the SHA-256 of the canonical acceptance contract in `manifest.json` and `summary.json`. `--verify-run` and `--resume-run` read the contract back and refuse to continue when the digest differs, so an execution window that rewrites `temp/orchestrator/runs/<id>/acceptance.json` cannot lower its own acceptance bar. Replacing the contract on purpose (for example narrowing checks after an uncertain result) requires the explicit `--allow-acceptance-change` flag or `ORCH_ACCEPTANCE_OVERRIDE=1`, and the rebinding is written into the ledger history. Runs recorded by earlier versions carry no binding and keep verifying unchanged.
+
 ### Automatic retry and resume
 
 For a single task that must survive a disconnected provider or a crashed CLI process, run the independent supervisor:

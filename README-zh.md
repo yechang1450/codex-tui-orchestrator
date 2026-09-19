@@ -105,6 +105,8 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 把上例同一条调用的 `--exec` 改为 `--run-windows` 即可选择可见执行；两种模式共用任务清单、检查点、恢复和验收。实际多任务请求要为每个原始任务 ID（`T001`、`T002` 等）定义内容或行为检查，格式见[验收协议](docs/execution-contract.md#execution-and-verification)。缺少验收条件时，已完成工作仍停在 `awaiting-verification`（等待主控验收），入口返回非零，不会当作成功。可以用 `--verify-run` 补充检查而不重做任务。读回 summary 和结果后，再清理本示例已结束的产物。
 
+运行开始时会把验收契约的规范化 SHA-256 摘要写进 `manifest.json` 和 `summary.json`；`--verify-run` 与 `--resume-run` 会重新读取契约比对摘要，不一致直接拒绝，避免执行窗改写 `temp/orchestrator/runs/<id>/acceptance.json` 给自己降低验收门槛。确实要换契约（例如不确定结果后收紧检查）必须显式加 `--allow-acceptance-change` 或 `ORCH_ACCEPTANCE_OVERRIDE=1`，重新绑定会写进账本 history 留痕。旧版本记录的运行没有摘要，仍按原来方式可验收。
+
 ### 自动重试与继续
 
 单个任务需要经受网络断开或 Codex 进程崩溃时，可以使用独立监督器（监督器，独立监测并恢复 Codex 会话的进程）：
