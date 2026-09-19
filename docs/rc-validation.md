@@ -84,9 +84,9 @@
 
 ### 2026-09-19 自动收集触发器（启动文件夹）
 
-RunOnce 在本机连续两次真实登录都未被执行（条目原样留存），而在非提权环境下创建 ONLOGON 计划任务被系统拒绝（实测 “拒绝访问”）。现改为第三种、无需提权的机制：prepare 时在用户启动文件夹写入 （内含完整 powershell.exe 路径 + 收集器 + id），登录即自动执行； 结束后只删除自己那一个文件。外部命令的错误文本一律先消毒为可打印 ASCII 再写入 JSON——此前把  的 GBK 报错原文写进基线，直接让 JSON 变成“未终止的字符串”，收集中断在 read-baseline 阶段。
+RunOnce 在本机连续两次真实登录都未被执行（条目原样留存），而在非提权环境下创建 ONLOGON 计划任务被系统拒绝（实测 "拒绝访问"）。现改为第三种、无需提权的机制：prepare 时在用户启动文件夹写入 `CodexTuiOrchestrator-RebootValidation-<id>.cmd`（内含完整 powershell.exe 路径 + 收集器 + id），登录即自动执行；`collect -Trigger StartupFolder` 结束后只删除自己那一个文件。外部命令的错误文本一律先消毒为可打印 ASCII 再写入 JSON——此前把 `schtasks` 的 GBK 报错原文写进基线，直接让 JSON 变成"未终止的字符串"，收集中断在 read-baseline 阶段。
 
-离线验证：bridge 测试 9/9；夹具级端到端（prepare → 启动项落地 → 执行 → 、三项检查全跑、bootChanged=false 正确判失败 → 启动项自动删除）全部通过。真实重启认证见下一次重启的 。
+离线验证：bridge 测试 9/9；夹具级端到端（prepare → 启动项落地 → 执行 → `collectionTrigger=StartupFolder`、三项检查全跑、bootChanged=false 正确判失败 → 启动项自动删除）全部通过。真实重启认证见下一次重启的 `post-reboot.json`。
 
 ## 跨重启验收桥接
 
