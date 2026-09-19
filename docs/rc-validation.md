@@ -81,6 +81,13 @@
 - 暂缓→硬跑路径 `acceptance-6407d56d-b56a-4042-a2ab-30e74db7f2f2`：可用内存 583 MB、低于256+512门槛 → 先 `block.B1.deferred`，确认无其它块可推进后自动 `hard-run (degraded)`，最终 9 项任务全部 verified、`passed=true`（一轮跑完，未 fail-closed），证据见 `temp/codex-live-visible-badbedaddbbea/report.json`。
 - 单元：`test/memory-budget.test.mjs` 7 项（准入边界、同层合并、依赖保序/拒绝跨层、滚动修正升降与钳制、成本交叉校验）；全量离线回归见本节末记录。
 
+
+### 2026-09-19 自动收集触发器（启动文件夹）
+
+RunOnce 在本机连续两次真实登录都未被执行（条目原样留存），而在非提权环境下创建 ONLOGON 计划任务被系统拒绝（实测 “拒绝访问”）。现改为第三种、无需提权的机制：prepare 时在用户启动文件夹写入 （内含完整 powershell.exe 路径 + 收集器 + id），登录即自动执行； 结束后只删除自己那一个文件。外部命令的错误文本一律先消毒为可打印 ASCII 再写入 JSON——此前把  的 GBK 报错原文写进基线，直接让 JSON 变成“未终止的字符串”，收集中断在 read-baseline 阶段。
+
+离线验证：bridge 测试 9/9；夹具级端到端（prepare → 启动项落地 → 执行 → 、三项检查全跑、bootChanged=false 正确判失败 → 启动项自动删除）全部通过。真实重启认证见下一次重启的 。
+
 ## 跨重启验收桥接
 
 ### 2026-09-18 动态内存预算下的双模式验收（通过）
