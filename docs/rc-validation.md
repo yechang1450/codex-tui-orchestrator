@@ -105,7 +105,9 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 
 上一份基线 `reboot-check-20260919`（绑定 `8ceae8c`）已在 2026-09-19 作废并删除：它在冻结之后又被多次提交改写，`release.json` 哈希从 `76c4161…` 变成 `45413c1…`，收集器必然报 `releaseMatches=false`；对应的启动项 `.cmd` 也一并移除，避免下次登录产生一条注定失败的回执。**注意：任何之后改动 `release.json` 的提交都会同样作废当前基线**，所以这条门槛的收口时机应选在代码定稿之后。
 
-收尾轮又把两条重启门槛打包成"一次登录一起收口"，只用一条基线：`node test/live-reboot-recovery.mjs prepare <id>` 会（1）启动一次真实 headless 运行，留下"一项已完成、一项幂等等待"的账本（执行工作区是 `temp/reboot-recovery-<id>/ws`，独立于插件仓库），并（2）自己调用 `test/reboot-validation.ps1 -Mode prepare -Id <id> -RecoveryId <id>`，把健康检查与任务恢复写进同一份基线（记录当时的 `commit` 与 `release.json` 哈希）。下次任何一次重启或注销登录，启动项会自动执行收集，一次回执同时覆盖：启动时间变化、发布哈希一致、`collectionTrigger=StartupFolder`、以及未完成任务跨重启后的 `task-recovery` 检查。**这份基线要求之后不再有提交、且 `release.json` 不再变化**（恢复侧会逐字比对基线与当前 `commit`/`releaseSha256`）；若之后仍有提交，删掉 `temp/reboot-recovery-<id>`、`temp/reboot-validation-<id>` 与启动项后重新 prepare 即可。
+还剩的这条门槛可以在**一次登录里一起收口**，但必须"临重启前再武装"：`node test/live-reboot-recovery.mjs prepare <id>` 会（1）启动一次真实 headless 运行，留下"一项已完成、一项幂等等待"的账本（执行工作区是 `temp/reboot-recovery-<id>/ws`，独立于插件仓库；两个任务落在各自块里、第二块依赖第一块，所以顺序由控制器保证而不是靠模型自觉），并（2）自己调用 `test/reboot-validation.ps1 -Mode prepare -Id <id> -RecoveryId <id>`，把健康检查与任务恢复写进同一份基线（记录当时的 `commit` 与 `release.json` 哈希）。重启或注销登录后启动项自动收集，一次回执同时覆盖：启动时间变化、发布哈希一致、`collectionTrigger=StartupFolder`、未完成任务跨重启后的 `task-recovery` 检查。
+
+**硬约束（实测）**：等待中的探针自己上限 30 分钟，控制器的轮询上限也是 `ORCH_MAX_POLL_MS=1800000`（30 分钟），所以这份"武装"状态只在一个半小时窗口内有效；超时后运行会失败、基线作废。因此收尾时的处理是**不预先武装**（避免留下挂起窗口、失败账本和 RunOnce 残留），也不再有 `release.json` 变化的提交；等真的打算重启时，在重启前 30 分钟内跑上面那条 `prepare` 命令即可，收尾时验证过它能在 10 分钟等待窗口内正常到达边界（`boundary: T001 completed; T002 started and waiting`）。之后若仍有改动 `release.json` 的提交，删掉 `temp/reboot-recovery-<id>`、`temp/reboot-validation-<id>`、启动项与 RunOnce 条目后重新 prepare 即可。
 
 **结论**：该门槛不再阻塞发布；文档明确区分"已证明"与"未观测到合并回执"两种情况。
 
