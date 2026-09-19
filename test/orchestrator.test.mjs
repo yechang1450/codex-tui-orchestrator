@@ -1369,6 +1369,25 @@ test('registry lock fails closed and reclaims only a dead stale owner', async ()
   }
 });
 
+test('registry lock creates its state directory so a fresh workspace can plan', async () => {
+  const fs = await import('node:fs');
+  const path2 = await import('node:path');
+  const root = fs.mkdtempSync(path2.join(fixtureFamily, 'orch-reg-fresh-'));
+  // 全新工作区里 temp/orchestrator 还不存在；第一次加锁不能因为 ENOENT 失败，
+  // 否则规划期会静默退化成单串行块（干净机器首个工作区就会踩到）。
+  const lockPath = path2.join(root, 'temp', 'orchestrator', 'nested', 'registry.lock');
+  try {
+    let ran = false;
+    const value = withRegistryLock(() => { ran = true; return 42; }, { lockPath });
+    assert.equal(value, 42);
+    assert.equal(ran, true);
+    assert.equal(fs.existsSync(lockPath), false, 'lock is released after transaction');
+    assert.equal(fs.existsSync(path2.dirname(lockPath)), true, 'state directory is created before locking');
+  } finally {
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+});
+
 test('extractUsage: 从 rollout JSONL 累积真实 token usage（input/prompt、output/completion、cached、total，容错字段名）', async () => {
   const os = await import('node:os');
   const fs = await import('node:fs');

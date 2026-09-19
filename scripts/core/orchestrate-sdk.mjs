@@ -1732,6 +1732,10 @@ function withRegistryLock(fn, options = {}) {
   const lockPath = options.lockPath || REG_LOCK;
   const attempts = Math.max(1, Number(options.attempts ?? 100));
   const retryMs = Math.max(0, Number(options.retryMs ?? 20));
+  // 锁文件所在的目录必须先存在。全新工作区的第一次加锁（例如规划期写拆块缓存）
+  // 会 openSync(...,'wx') 拿到 ENOENT，而建目录的 mkdirSync 在锁内，重试永远救不回来，
+  // 结果是规划静默退化成单串行块。这里先补目录，失败再交给 openSync 报真实错误。
+  try { mkdirSync(path.dirname(lockPath), { recursive: true }); } catch { /* 让下面的 openSync 报错 */ }
   let got = false;
   for (let i = 0; i < attempts; i++) {
     let fd;
