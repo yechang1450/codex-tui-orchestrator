@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "generatedAt": "2026-09-19T13:44:25.995897Z",
+  "coreVersion": "1.4.0-rc.1",
+  "pluginVersion": "0.5.0-rc.1+codex.20260919211020",
+  "source": {
+    "kind": "local-clean-distribution",
+    "path": "<tree-parent>/dist/codex-tui-orchestrator",
+    "marketplace": "personal (~/.agents/plugins/marketplace.json)"
+  },
+  "note": "仓库保持 private，因此\"公网 GitHub 升级/回滚\"门槛按私有分发源重新定义并实测：升级 = 指向更高 cachebuster 的分发后 codex plugin add；回滚 = 指回当前分发后再次 add。",
+  "cycle": [
+    {
+      "step": "baseline",
+      "version": "0.5.0-rc.1+codex.20260919211020",
+      "cacheDir": "0.5.0-rc.1+codex.20260919211020",
+      "integrity": "schema 2 / 25 core / 54 runtime",
+      "doctor": "ok",
+      "registration": "matched (dist)"
+    },
+    {
+      "step": "upgrade",
+      "version": "0.5.0-rc.1+codex.20260919230000",
+      "cacheDir": "0.5.0-rc.1+codex.20260919230000",
+      "how": "probe distribution with a higher cachebuster + codex plugin add",
+      "result": "installed; previous cache dir removed by the manager"
+    },
+    {
+      "step": "rollback",
+      "version": "0.5.0-rc.1+codex.20260919211020",
+      "cacheDir": "0.5.0-rc.1+codex.20260919211020",
+      "how": "point the entry back at the canonical distribution + codex plugin add",
+      "result": "older version reinstalled; integrity ok; npm ci re-run in the new cache"
+    }
+  ],
+  "managerCleanup": "Each add replaced the previous versioned cache directory, leaving exactly one installed copy.",
+  "limitations": [
+    "Only the local personal marketplace (private source) is exercised; no public registry/GitHub fetch.",
+    "remove/uninstall was validated earlier in an isolated CODEX_HOME, not on the live install."
+  ]
+}
