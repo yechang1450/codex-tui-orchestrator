@@ -38,10 +38,11 @@ node scripts\orchestrate-sdk.mjs --doctor
 ```powershell
 node scripts\repair-plugin-registration.mjs --check   # 期望 status=matched、sourceKind=dist
 codex plugin add codex-tui-orchestrator@personal
-node scripts\repair-plugin-registration.mjs <安装缓存路径> --check   # 期望同样 matched
+npm ci --prefix <安装缓存路径>\scripts --omit=optional --ignore-scripts --no-audit --no-fund
+node <安装缓存路径>\scripts\release-integrity.mjs      # 安装副本自校验
 ```
 
-期望：安装缓存里只有运行时文件（没有 `.git/`、`temp/`）；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
+期望：安装缓存里只有运行时文件（约 194 个、2 MB，没有 `.git/`、`temp/`、`node_modules/`），且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
 
 ## 三、离线回归（分发目录内）
 

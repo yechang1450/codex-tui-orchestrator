@@ -15,6 +15,7 @@
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 本地安装改用**干净分发**（2026-09-19）：个人 marketplace 条目指向 `<工作树父目录>/dist/codex-tui-orchestrator`，由 `scripts/publish-dist.mjs` 重建并校验；`codex plugin add` 后的安装缓存从 20 MB / 1473 文件（含 `.git/`、`temp/`）降到 2 MB / 194 文件，插件静态评估从 81/C（1 个 fail）变为 91/B（0 fail，缓存目录仍按版本号命名会带一条信息级提示）。`repair-plugin-registration.mjs --check` 现在同时接受 checkout 与 dist 源，并要求分发核心与工作树一致，否则报 `stale_dist`。本机实测：安装缓存内 `release-integrity` schema 2 / 25 核心 / 54 运行时、`--doctor` 通过、真实双任务 headless `success=true` 且改写验收契约后 `--verify-run` 退出码 1 拒绝。
 
 ### 2026-09-18 provider 继承修复与未完成的实机门槛
 
