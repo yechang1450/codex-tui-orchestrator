@@ -95,7 +95,7 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 
 用户已明确不再为验收重启机器，因此该门槛按其可独立证明的两半收口：
 
-1. **重启后健康：已通过（两次真实重启）**。`temp/reboot-validation-reboot-check-20260918/post-reboot.json` 与 `...-20260918b/post-reboot.json` 都记录 `bootChanged=true`、`sourceClean=true`，且 `release-integrity` / `doctor` / `marketplace-registration` 三项检查全部有效。两次唯一为 false 的字段是 `commitMatches`——原因是基线冻结之后又产生了提交（记账漂移），与插件在重启后的健康无关；`releaseMatches` 随同一原因变化。
+1. **重启后健康：已通过（两次真实重启）**。`temp/reboot-validation-reboot-check-20260918/post-reboot.json` 与 `temp/reboot-validation-reboot-check-20260918b/post-reboot.json` 都记录 `bootChanged=true`、`sourceClean=true`，且 `release-integrity` / `doctor` / `marketplace-registration` 三项检查全部有效。两次唯一为 false 的字段是 `commitMatches`——原因是基线冻结之后又产生了提交（记账漂移），与插件在重启后的健康无关；`releaseMatches` 随同一原因变化。
 2. **自动收集机制：已实现并离线端到端验证**。prepare 在用户启动文件夹写入 `CodexTuiOrchestrator-RebootValidation-<id>.cmd`（无需提权），`collect -Trigger StartupFolder` 执行三项检查并在结束后只删除自己那个文件；夹具级端到端（落地 → 执行 → `collectionTrigger=StartupFolder` → 三项检查全跑 → 自动清理）通过，bridge 回归 9/9。
 
 **如实标注的残余缺口**：没有取得"同一次回执里同时满足 启动时间变化 + 提交/发布哈希一致 + 自动触发"的记录。原因是我在每次重启后又提交了代码（前两次），以及用户不再重启（第三次）。当前仍有一份冻结基线 `reboot-check-20260919`（绑定 `8ceae8c`）在册：将来任何一次重启或注销登录，启动项都会自动执行收集并留下 `collectionTrigger=StartupFolder` 的回执；届时只需读回该文件即可补齐这条并入证据，不需要改代码。
@@ -103,6 +103,11 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 **结论**：该门槛不再阻塞发布；文档明确区分"已证明"与"未观测到合并回执"两种情况。
 
 ### 2026-09-19 规模化验收（12 任务 / 动态预算）与首轮余量
+
+### 2026-09-19 长断网验收（30 分钟）
+
+- 机制：进程级 CONNECT 代理（只作用于本次运行拉起的子进程，不动系统代理/防火墙/全局网络），放行域名按当前 provider 配置推导（deepseek → api.deepseek.com）。
+- 结果：30 分钟窗口内 **161 次连接被真实阻断**，恢复后重连成功；两项任务回执有效、整轮 `success=true`，证据见 `temp/outage-529ce29b-d504-4716-b00c-612753a299bb/report.json`（runId `outage-529ce29b-d504-4716-b00c-612753a299bb`）。此前 5 分钟版本同样通过；本项补齐到发布级时长。
 
 - 验收规模：`ORCH_LIVE_TASKS=12`（公式容量 8 的 1.5 倍）→ 动态预算把 12 个任务合并成 **2 块**（`required 1600MB`、可用 `2727MB`、底线 `512MB`、滚动成本 `800MB`），**2 窗并发**、屏障正常释放。
 - 结果：`passed=true`、`peak=2`、`receiptsValid/ordered/overlap=true`、12 项全部 `verified`，证据见 `temp/codex-live-headless-bacaaffcdefedfec/report.json`（runId `acceptance-c3ef4abe-8bbc-4e27-be6d-684d063359df`）。
