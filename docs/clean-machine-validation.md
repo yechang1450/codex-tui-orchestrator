@@ -1,0 +1,103 @@
+# 干净机器安装与验收（第二台机器）
+
+目的：在一台**全新 Windows 机器**上证明"私有仓库 → 干净分发 → 依赖安装 → 完整性校验 → 真实执行"整条链路可用，并留下可核对的版本与结果证据。第二台机器（Lecoo mini pro）到货后按本清单执行；本仓库保持 private，安装只依赖私有 Git 凭据，不需要任何公网发布。
+
+## 前置条件
+
+- Windows 11（记录版本号）+ Git（`git --version` 能在 PATH 里解析）。
+- Node 22/24（`node -v`），且是原生 Windows `node.exe`（WSL 里的 node 不能直接跑本插件）。
+- Codex CLI 已安装并登录（`codex --version`）；插件默认继承该 CLI 的 provider/模型配置，不在插件内保存任何凭据。
+- 可选：Windows Terminal（可见窗模式 `ORCH_TUI=wt` 需要）。
+- 私有仓库凭据：SSH key（`git clone git@github.com:yechang1450/codex-tui-orchestrator.git`）或 HTTPS + PAT。
+
+## 一、克隆与完整性校验
+
+```powershell
+git clone git@github.com:yechang1450/codex-tui-orchestrator.git C:\Users\<用户>\.codex\plugins\codex-tui-orchestrator
+cd C:\Users\<用户>\.codex\plugins\codex-tui-orchestrator
+node scripts\release-integrity.mjs
+```
+
+期望输出：`{"schema":2,"coreVersion":"1.4.0-rc.1","files":25,"runtimeFiles":53}`（数字随发布变化，以 `release.json` 为准）。失败即停止，不要跳过。
+
+## 二、生成干净分发并装依赖
+
+开发树里的 `temp/`（本机证据与运行状态）与 `.git/` 不该进安装缓存，因此**从分发目录注册/运行**，不要直接把开发树挂成安装源：
+
+```powershell
+node repair.mjs --target C:\Users\<用户>\.codex\plugins\temp\orch-dist
+cd C:\Users\<用户>\.codex\plugins\temp\orch-dist\codex-tui-orchestrator
+npm ci --prefix .\scripts --omit=optional --ignore-scripts --no-audit --no-fund
+node scripts\orchestrate-sdk.mjs --doctor
+```
+
+期望：`repair.mjs` 报告 `published 191 file(s)`（数量随发布变化）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
+
+## 三、离线回归（分发目录内）
+
+```powershell
+set PATH=C:\Program Files\Git\cmd;%PATH%
+node --test --test-concurrency=1 test\*.test.mjs
+```
+
+期望：全部通过（本机为 302 项 / 301 通过 / 1 跳过；跳过项是需真机环境的用例）。任何失败先单独重跑该文件：机器繁忙时进程枚举（PowerShell CIM）会偶发超时，单独重跑可区分环境抖动与真实回归。
+
+## 四、真实执行验收（headless）
+
+两个任务才能进编排（单任务请求按设计直接判 out-of-scope）。验收文件示例 `checks.json`：
+
+```json
+{
+  "T001": [{"type": "json", "path": "temp/one.json", "equals": {"id": "one", "answer": 42}}],
+  "T002": [{"type": "json", "path": "temp/two.json", "equals": {"id": "two", "answer": 42}}]
+}
+```
+
+```powershell
+node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acceptance-file <checks.json 绝对路径> --exec "在 <工作区> 创建 temp/one.json（id=one、answer=42）；在 <工作区> 创建 temp/two.json（id=two、answer=42）。"
+```
+
+期望：退出码 0，`<工作区>\temp\orchestrator\runs\<ID>\summary.json` 里 `success=true`、两个任务 `verified`。同一目录下 `manifest.json` 与 `summary.json` 都应出现 `acceptance.sha256`。
+
+## 五、验收契约绑定（回归检查）
+
+执行窗能改写工作区，所以验收契约与账本绑定：改写 `<run>\acceptance.json` 后再次验收必须被拒绝。
+
+```powershell
+node scripts\orchestrate-sdk.mjs --verify-run <ID>                        # 期望：Acceptance contract changed ...（退出码 1）
+node scripts\orchestrate-sdk.mjs --verify-run <ID> --allow-acceptance-change  # 显式接管：告警 + 重新绑定 + 账本 history 记 acceptanceRebound
+```
+
+## 六、可见 TUI 验收（可选但建议）
+
+```powershell
+set ORCH_TUI=wt
+node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acceptance-file <checks.json> --run-windows "同样的两任务请求"
+```
+
+观察点：双通道面板（TodoList + Execution）刷新；块结束后窗口自动关闭；编排结束屏幕上不残留"代码 1"错误窗；`status.mjs --watch` 能只读跟随状态。
+
+## 七、要记录的证据
+
+| 项目 | 采集方式 |
+| --- | --- |
+| 机器与系统 | 型号（Lecoo mini pro）、内存、`winver` 版本、`node -v`、`codex --version`、WT 版本 |
+| 完整性 | `release-integrity.mjs` 输出 |
+| 分发 | `repair.mjs --target` 输出 + 文件数 |
+| 回归 | 测试汇总行（tests / pass / fail / skipped） |
+| 真实执行 | `summary.json` 的 `success`、任务状态、`acceptance.sha256`、耗时 |
+| 契约绑定 | `--verify-run` 的拒绝输出与 override 后的 history 记录 |
+
+证据先落在工作区 `temp/` 与本机插件目录，稳定后再把摘要 JSON 提交到 `test/`，保持账实一致。
+
+## 本机实测的已知坑
+
+- **首次在全新工作区运行**：`temp\orchestrator` 不存在时，加锁会因目录缺失失败（已修复：加锁前先建目录）。修复前表现为规划静默退化成单串行块，或直接 `out-of-scope`。
+- **机器繁忙时进程枚举超时**：Windows CIM 查询在负载下会超时；身份校验现在有 3 次有界重试，且没有 pid 文件时不再枚举。身份不一致仍然立即失败，不做降级。
+- **单任务请求**：按设计不进编排，直接提示用 Codex 普通执行；验收用例至少给两个任务。
+- **私有仓库**：`git clone` 需要凭据；插件运行期不访问 GitHub，也不需要公网发布或 marketplace。
+- **可见窗模式**：没有 Windows Terminal 时退回 conhost，功能等价但外观不同。
+
+## 本清单不覆盖
+
+跨 Codex CLI 大版本矩阵、长时间断网、真实断电与重启恢复（如需请另跑 `test/live-powerloss.mjs`、`test/live-reboot-recovery.mjs`、`test/live-provider-outage.mjs`），以及多台机器同时写同一 `temp/` 共享目录的场景。
