@@ -103,7 +103,8 @@ assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(J
   const child=spawn(process.execPath,[state.entry,'--exec',request],{cwd:repo,env,detached:true,windowsHide:true,stdio:['ignore',out,err]});
   fs.closeSync(out);fs.closeSync(err);let launchError;child.on('error',error=>{launchError=error;});
   try{
-    const deadline=Date.now()+300000;let sum,attempt,waitingEntry;
+    // 两个真实窗口各自要冷启动模型（实测每块 1-2 分钟），边界等待给足 10 分钟。
+    const deadline=Date.now()+600000;let sum,attempt,waitingEntry;
     // 跨块收集每个任务的最新检查点状态：T001 与 T002 可能落在不同的块里。
     const checkpointStates=value=>{
       const states={};
