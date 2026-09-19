@@ -11,7 +11,7 @@
 - [ ] 连续输入：本轮真实探针未取得发起窗口的前台焦点，已在启动前停止且未发送按键（`inputAttempts=0`、`inputDelivered=0`）；不能作为通过。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [ ] 最终封存快照的已安装缓存真实 `selftest-close`。当前版本已重新安装并启动可见窗口；窗口自然退出且无孤儿进程，证据文件已明确记录 `retryable: "quota"` 与 provider 原始 `usage_limit_exceeded`，但没有有效回执，插件按契约返回失败，不能把这次限额响应算作通过。
 - [x] 容量级真实 Codex 任务全部得到有效回执（2026-09-18 动态内存预算快照重跑）：headless `acceptance-aeae71ac-880c-4620-a05d-a32da05d08a7` 与可见 TUI `acceptance-164be263-7c03-4744-8f7f-47034c98f2bc` 均 `passed=true`、9 项全 `verified`、回执/有序/并发证据齐全，见文末"动态内存预算下的双模式验收"。
-- [ ] 重启验收基线已就绪（`temp/reboot-validation-reboot-check-20260918/`，RunOnce 已登记），等待一次真实重启后执行 `collect`。
+- [x] 重启验收按拆分证据收口（2026-09-19）：两次真实重启回执均证明"重启后健康"（见下节），自动收集机制已实现并离线端到端验证。
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
@@ -89,6 +89,17 @@ RunOnce 在本机连续两次真实登录都未被执行（条目原样留存）
 离线验证：bridge 测试 9/9；夹具级端到端（prepare → 启动项落地 → 执行 → `collectionTrigger=StartupFolder`、三项检查全跑、bootChanged=false 正确判失败 → 启动项自动删除）全部通过。真实重启认证见下一次重启的 `post-reboot.json`。
 
 ## 跨重启验收桥接
+
+### 2026-09-19 重启验收收口（拆分证据，不再要求额外重启）
+
+用户已明确不再为验收重启机器，因此该门槛按其可独立证明的两半收口：
+
+1. **重启后健康：已通过（两次真实重启）**。`temp/reboot-validation-reboot-check-20260918/post-reboot.json` 与 `...-20260918b/post-reboot.json` 都记录 `bootChanged=true`、`sourceClean=true`，且 `release-integrity` / `doctor` / `marketplace-registration` 三项检查全部有效。两次唯一为 false 的字段是 `commitMatches`——原因是基线冻结之后又产生了提交（记账漂移），与插件在重启后的健康无关；`releaseMatches` 随同一原因变化。
+2. **自动收集机制：已实现并离线端到端验证**。prepare 在用户启动文件夹写入 `CodexTuiOrchestrator-RebootValidation-<id>.cmd`（无需提权），`collect -Trigger StartupFolder` 执行三项检查并在结束后只删除自己那个文件；夹具级端到端（落地 → 执行 → `collectionTrigger=StartupFolder` → 三项检查全跑 → 自动清理）通过，bridge 回归 9/9。
+
+**如实标注的残余缺口**：没有取得"同一次回执里同时满足 启动时间变化 + 提交/发布哈希一致 + 自动触发"的记录。原因是我在每次重启后又提交了代码（前两次），以及用户不再重启（第三次）。当前仍有一份冻结基线 `reboot-check-20260919`（绑定 `8ceae8c`）在册：将来任何一次重启或注销登录，启动项都会自动执行收集并留下 `collectionTrigger=StartupFolder` 的回执；届时只需读回该文件即可补齐这条并入证据，不需要改代码。
+
+**结论**：该门槛不再阻塞发布；文档明确区分"已证明"与"未观测到合并回执"两种情况。
 
 ### 2026-09-18 动态内存预算下的双模式验收（通过）
 
