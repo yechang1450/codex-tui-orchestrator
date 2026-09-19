@@ -25,13 +25,23 @@ node scripts\release-integrity.mjs
 开发树里的 `temp/`（本机证据与运行状态）与 `.git/` 不该进安装缓存，因此**从分发目录注册/运行**，不要直接把开发树挂成安装源：
 
 ```powershell
-node repair.mjs --target C:\Users\<用户>\.codex\plugins\temp\orch-dist
-cd C:\Users\<用户>\.codex\plugins\temp\orch-dist\codex-tui-orchestrator
+node scripts\publish-dist.mjs
+cd C:\Users\<用户>\.codex\plugins\dist\codex-tui-orchestrator
 npm ci --prefix .\scripts --omit=optional --ignore-scripts --no-audit --no-fund
 node scripts\orchestrate-sdk.mjs --doctor
 ```
 
-期望：`repair.mjs` 报告 `published 191 file(s)`（数量随发布变化）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
+期望：`publish-dist` 报告分发路径与文件数（约 194 个，随发布变化）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
+
+注册并安装（个人 marketplace 条目指向分发，而不是开发工作树）：
+
+```powershell
+node scripts\repair-plugin-registration.mjs --check   # 期望 status=matched、sourceKind=dist
+codex plugin add codex-tui-orchestrator@personal
+node scripts\repair-plugin-registration.mjs <安装缓存路径> --check   # 期望同样 matched
+```
+
+期望：安装缓存里只有运行时文件（没有 `.git/`、`temp/`）；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
 
 ## 三、离线回归（分发目录内）
 

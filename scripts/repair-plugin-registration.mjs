@@ -2,15 +2,29 @@
 /**
  * Check (and, when explicitly requested, repair) the case of a local
  * marketplace entry without changing its source path or any other entry.
+ *
+ * 本地安装既可以指向开发工作树（既有习惯），也可以指向由 `repair.mjs --target`
+ * 生成的干净分发（分发里没有 .git/temp/node_modules，安装缓存不会被本地证据和
+ * git 历史撑大）。指向分发时要求分发的 core 清单与工作树一致，否则报 stale_dist。
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {coreInventory} from './release-integrity.mjs';
 
 const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const DEFAULT_PLUGIN_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+// 干净分发的家：插件工作树旁边的 dist/<插件名>（可用 ORCH_PLUGIN_DIST_ROOT 覆盖），
+// 由 scripts/publish-dist.mjs 生成，安装缓存只带运行时文件。
+export function defaultDistRoot(pluginPath = DEFAULT_PLUGIN_PATH) {
+  return path.resolve(process.env.ORCH_PLUGIN_DIST_ROOT || path.join(path.dirname(path.resolve(pluginPath)), 'dist'));
+}
+
+function samePath(left, right) {
+  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
 
 function realPath(file) {
   return fs.realpathSync.native(file);
@@ -25,7 +39,7 @@ function fail(status, reason, extra = {}) {
 }
 
 /** Inspect registration state without writing anything. */
-export function inspectRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir()} = {}) {
+export function inspectRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null} = {}) {
   const pluginRoot = path.resolve(pluginPath);
   const marketplace = path.resolve(marketplacePath);
   const root = path.resolve(marketplaceRoot);
@@ -77,14 +91,32 @@ export function inspectRegistration({pluginPath = process.cwd(), marketplacePath
   } catch (error) {
     return fail('source_mismatch', `entry source cannot be resolved: ${error.message}`, {...base, sourcePath});
   }
-  const samePath = process.platform === 'win32'
-    ? sourceReal.toLowerCase() === pluginReal.toLowerCase()
-    : sourceReal === pluginReal;
-  if (!samePath) {
-    return fail('source_mismatch', 'entry source does not point at this plugin', {...base, sourcePath, sourceReal, pluginReal});
+  const distSource = path.resolve(distRoot || defaultDistRoot(pluginRoot), pluginName);
+  let distReal = null;
+  try { distReal = realPath(distSource); } catch { /* 分发还不存在 */ }
+  const checkoutMatch = samePath(sourceReal, pluginReal);
+  const distMatch = !!distReal && samePath(sourceReal, distReal);
+  if (!checkoutMatch && !distMatch) {
+    return fail('source_mismatch', 'entry source does not point at this plugin or its clean distribution', {...base, sourcePath, sourceReal, pluginReal, ...(distReal ? {distSource: distReal} : {})});
   }
-  if (entry.name === pluginName) return {ok: true, status: 'matched', ...base, sourcePath, sourceReal, pluginReal};
-  return {ok: false, status: 'repairable', reason: 'entry.name differs only by case', ...base, sourcePath, sourceReal, pluginReal};
+  if (distMatch) {
+    // 分发的价值是"和工作树同一份核心"；不一致就是陈旧分发，必须先重新生成再安装。
+    let distCore;
+    let checkoutCore;
+    try {
+      distCore = coreInventory(distSource);
+      checkoutCore = coreInventory(pluginRoot);
+    } catch (error) {
+      return fail('dist_unreadable', 'distribution core cannot be read: ' + error.message, {...base, sourcePath, sourceReal, pluginReal, distSource: distReal});
+    }
+    if (JSON.stringify(distCore) !== JSON.stringify(checkoutCore)) {
+      return fail('stale_dist', 'distribution core differs from the checkout; rebuild the distribution before reinstalling', {...base, sourcePath, sourceReal, pluginReal, distSource: distReal});
+    }
+  }
+  const sourceKind = distMatch ? 'dist' : 'checkout';
+  const distInfo = distMatch ? {distSource: distReal} : {};
+  if (entry.name === pluginName) return {ok: true, status: 'matched', sourceKind, ...base, sourcePath, sourceReal, pluginReal, ...distInfo};
+  return {ok: false, status: 'repairable', sourceKind, reason: 'entry.name differs only by case', ...base, sourcePath, sourceReal, pluginReal, ...distInfo};
 }
 
 export function atomicReplace(file, content, expected) {
@@ -126,7 +158,7 @@ export function repairRegistration(options = {}) {
 }
 
 function parseArgs(argv) {
-  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), repair: false};
+  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), distRoot: null, repair: false};
   const positional = [];
   let mode;
   for (let i = 0; i < argv.length; i++) {
@@ -150,6 +182,11 @@ function parseArgs(argv) {
       i++;
       out.marketplaceRoot = argv[i];
     }
+    else if (arg === '--dist-root') {
+      if (argv[i + 1] === undefined || argv[i + 1].startsWith('-')) throw new Error('--dist-root requires a value');
+      i++;
+      out.distRoot = argv[i];
+    }
     else if (arg === '-h' || arg === '--help') out.help = true;
     else if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`);
     else positional.push(arg);
@@ -163,7 +200,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log('Usage: repair-plugin-registration.mjs [plugin-path] [--check|--repair] [--marketplace path] [--marketplace-root path] [--json]');
+      console.log('Usage: repair-plugin-registration.mjs [plugin-path] [--check|--repair] [--marketplace path] [--marketplace-root path] [--dist-root path] [--json]');
       process.exit(0);
     }
     const result = options.repair ? repairRegistration(options) : inspectRegistration(options);

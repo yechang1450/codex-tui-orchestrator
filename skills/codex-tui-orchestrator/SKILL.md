@@ -42,5 +42,6 @@ provider 明确返回账户用量上限（如 usage_limit_exceeded）时立即�
 - `--doctor` 检查依赖和 CLI；`--plan` 只规划；`--status --readonly` 只读检查窗口和锁。
 - 插件管理器每次安装、升级或回退都会建新缓存；对返回的 `<installed>/scripts` 先运行 `npm ci --omit=optional --ignore-scripts --no-audit --no-fund`，再运行 release integrity 和 doctor。
 - `node <插件绝对路径>/scripts/release-integrity.mjs` 校验发布快照。核心改动前确认没有活动窗口，完成回归和适用的真实验收后再发布。
+- 本地安装/更新走干净分发：`node <工作树>/scripts/publish-dist.mjs` 重建 `<工作树父目录>/dist/codex-tui-orchestrator`，再 `codex plugin add codex-tui-orchestrator@personal`。安装源指向工作树会把 `.git/`、`temp/` 一起复制进缓存，不要这样装。
 
 详见 [执行协议](../../docs/execution-contract.md) 和 [发布规则](../../docs/release-policy.md)。

@@ -29,7 +29,7 @@
     "status-events.mjs": "b0e382b902c1a201df53468cc1622f6be4e7e6cf1cff1d0dfa1600fd36107fd9"
   },
   "runtimeFiles": {
-    ".codex-plugin/plugin.json": "b3c32f29d2e10c1757cbbd7557be2c5e30ef70e8768d538429eadd9de0474c6c",
+    ".codex-plugin/plugin.json": "4211d4b62573505d6d2d12cbc96ac12c672c938a515a549ac01040c34c1dfeda",
     "repair.mjs": "f7fce2d2b3c78cc6dfca06b50741a20146c4ca4facad58989e44e8752e1bd1b0",
     "scripts/agent-auth-prompt.txt": "18fa9c01972cd99a2fe2b1b74a440b34921a051ba6c0d54daf2f5bf1096457b0",
     "scripts/agent.mjs": "7aec825e3b32b637844c352401aaf06a66daeee7cdc8e2ecbebc4d4816abd910",
@@ -65,11 +65,12 @@
     "scripts/host-cli.mjs": "994448626766f53883a29d17a5af547dcb67f6d2b9e7e5b6b6ff60f28582978c",
     "scripts/network-policy.mjs": "3a2b09ad0555475fa31d8e926da951aacd9a8997e33d80e1d46712432438d15a",
     "scripts/orchestrate-sdk.mjs": "bab0fe6c7e1e08b789749b2c97100cb674fdae7d71099038fd5246b08e16f472",
-    "scripts/package-lock.json": "d7af90b36f2f7d6395fbbc0a78365dbce7fcbbe721744a98efe53e566b4ba1c9",
-    "scripts/package.json": "737ae3c29c6d8d28834f7e61aa62720d09dc9bee74ff0bfef15c21c37cd1b482",
+    "scripts/package-lock.json": "9b2110c3d84300ca639ad760dfa2c82adc338f15857430f963bc040585e0ddfc",
+    "scripts/package.json": "024e9949ae81816727b2392f1fab78a005768fb0652184f7377a8cc154a53c2c",
     "scripts/poll-windows.mjs": "7ba5e086c79a3f96d14cdb7bc41eca2dedc210c9a1b7200d533da527569cdcc0",
+    "scripts/publish-dist.mjs": "a6782bfd937d15a33131cacaf71248ac8148fa0785d5cf64a54c394c1130ee01",
     "scripts/release-integrity.mjs": "0d15bdba8890c16bacc8def49148f9ac8b7157edb9fe811ea676dbf4fb4080f2",
-    "scripts/repair-plugin-registration.mjs": "6180b0f69b0d2239ef19f5b56d76eb37902874818db1b84ba959c8f14a716ec0",
+    "scripts/repair-plugin-registration.mjs": "96080a0bdb05c1a9e5622b30626980c56c8dffa4c86fdf0783553e9db8a3910a",
     "scripts/runtime-context.mjs": "deb2671a6f36e428e452c9dc03b1add6f94ccbb4533c0018efc8e3c778a55045",
     "scripts/sdk-dependency-check.mjs": "fdc404edd75554859a098c4bbb9cd7f529003a7aaaaf2736d88f7dd95e47479f",
     "scripts/status.mjs": "ff99a4a921bb33f821535eeb76436dfcc855e03b98f69e57dfd07427c6214e65",
@@ -78,7 +79,7 @@
     "scripts/todo-list.mjs": "050234b9e5cb1220d2a3f2f4da8fb6372472d22c81e67fdeb995864a1556a228",
     "scripts/wsl/orch.sh": "4253e6853b8e10599afda6621c9fc14b390e76060db0469cac0f1aa754287b29",
     "scripts/wsl/run-tests.sh": "2450544d35bc655052ac615811a204d28be3f6a35da6d08f2fa000b7d8fd5165",
-    "skills/codex-tui-orchestrator/SKILL.md": "44f2a46f148a83b088c4d916eaf5b9ffede6866fff5393131061d38b2dc59a85",
+    "skills/codex-tui-orchestrator/SKILL.md": "00c615e927010eaa0a247102b937444984022ccc1af202c14d28ca4d197f7480",
     "skills/codex-tui-orchestrator/agents/openai.yaml": "b9002589fac6d51cf9f38f183f49f65eb74815a12e8a409175e249fbfd000e90",
     "skills/codex-tui-orchestrator/assets/icon.png": "4029152ad0a4840e249694ec618bce4990818bbb650ff31625875ae900e08502",
     "skills/codex-tui-orchestrator/assets/icon.svg": "090187303b3f4d4e4f4a3459e9c33b2072ef0b1f88cf4123ab194809512e9ec5"

@@ -2,6 +2,7 @@
 
 ## 0.5.0-rc.1
 
+- 本地安装改用**干净分发**：新增 `scripts/publish-dist.mjs`（删除旧分发 → 从封存工作树重建 → 分发自校验 → 打印安装命令），个人 marketplace 条目指向 `<工作树父目录>/dist/codex-tui-orchestrator`。此前安装源是开发工作树，管理器会把 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制进安装缓存（本机实测 20 MB / 1473 文件），运行时不受影响但安装体积与静态评估失真（Plugin Eval 评分 81/C，改分发后 95/A）。`repair-plugin-registration.mjs --check` 现在同时认识 checkout 与 dist 两种安装源，并要求分发的 core 清单与工作树一致，否则报 `stale_dist`（先重建再安装），因此重启健康检查里的 marketplace 校验仍然有效。
 - 修复**全新工作区首次加锁失败**：注册表锁在 `STATE_DIR` 还不存在时用 `openSync(...,'wx')` 直接拿到 ENOENT，而建目录的 `mkdirSync` 在锁内，重试永远救不回来——结果是干净工作区里的规划静默退化成单串行块（单任务请求还会直接判 out-of-scope）。现在加锁前先补锁目录，并加了回归用例。
 - 进程身份枚举加入**有界重试**：Windows CIM 查询在机器繁忙或互斥锁争用时会把一次枚举超时变成"整块任务失败"。身份不一致仍然立即失败，但"枚举本身取不到"最多重试 3 次（300/600ms 退避）；同时没有 pid 文件时不再做枚举，省掉一次昂贵查询。目标是不因为环境抖动破坏"一轮跑完"。
 - 验收契约与账本绑定（修复 Codex Security 扫描的 `integrity.unbound-acceptance-contract`，CWE-345）：运行开始时把验收契约的规范化 SHA-256（键排序，忽略排版）写进 `manifest.json` 与 `summary.json`，`--verify-run` 和 `--resume-run` 重新读取契约后比对摘要，不一致直接拒绝且不触碰任何任务状态或窗口——此前执行窗（对工作区有写权限）可以在验收前改写 `<runDir>/acceptance.json` 给自己降低门槛，或让恢复把未完成的任务当成已验收。重绑定只写了一半账本（崩溃）时取最新记录继续，不锁死运行。确实要换契约（不确定结果后收紧检查等）必须显式 `--allow-acceptance-change`（放在 run ID 之后）或 `ORCH_ACCEPTANCE_OVERRIDE=1`，放行会打印告警、重新绑定并在账本 history 追加 `acceptanceRebound` 留痕；旧版本记录的运行没有摘要，仍按原方式可验收。审计残留：同目录哈希挡不住能同时改写两份账本并抹掉绑定的角色，进一步隔离需要把运行目录移出执行窗写路径。

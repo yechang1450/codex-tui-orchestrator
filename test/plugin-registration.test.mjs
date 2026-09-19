@@ -68,6 +68,40 @@ test('wrong source path and non-local source are blocked', () => {
   } finally { cleanup(exactWrong); }
 });
 
+// 干净分发：coreInventory 需要 scripts/core 下的入口文件存在
+function coreFixture(pluginDir, marker) {
+  const core = path.join(pluginDir, 'scripts', 'core');
+  fs.mkdirSync(core, {recursive: true});
+  fs.writeFileSync(path.join(core, 'orchestrate-sdk.mjs'), 'export const marker = ' + JSON.stringify(marker) + ';\n');
+  fs.writeFileSync(path.join(core, 'contracts.mjs'), 'export const CORE_VERSION = "test";\n');
+}
+
+test('a clean distribution is accepted as install source only while its core matches the checkout', () => {
+  const f = fixture(localEntry('demo-plugin', '../dist/demo-plugin')); try {
+    coreFixture(f.plugin, 'checkout');
+    const distRoot = path.join(f.root, 'dist');
+    const dist = path.join(distRoot, 'demo-plugin');
+    coreFixture(dist, 'checkout');
+    const matched = inspectRegistration({...opts(f), distRoot});
+    assert.equal(matched.status, 'matched');
+    assert.equal(matched.sourceKind, 'dist');
+    // 分发和 checkout 不同核心 → 陈旧分发，必须先重建再安装
+    fs.writeFileSync(path.join(dist, 'scripts', 'core', 'orchestrate-sdk.mjs'), 'export const marker = "stale";\n');
+    const stale = inspectRegistration({...opts(f), distRoot});
+    assert.equal(stale.status, 'stale_dist');
+    assert.equal(stale.ok, false);
+  } finally { cleanup(f); }
+});
+
+test('a dist path outside the plugin family is still rejected', () => {
+  const f = fixture(localEntry('demo-plugin', '../elsewhere/demo-plugin')); try {
+    coreFixture(f.plugin, 'checkout');
+    const distRoot = path.join(f.root, 'dist');
+    coreFixture(path.join(distRoot, 'demo-plugin'), 'checkout');
+    assert.equal(inspectRegistration({...opts(f), distRoot}).status, 'source_mismatch');
+  } finally { cleanup(f); }
+});
+
 test('check is read-only and CLI emits machine-readable failure', () => {
   const f = fixture(localEntry('Demo-Plugin', '../plugin')); try {
     const before = fs.readFileSync(f.marketplace);

@@ -64,6 +64,14 @@ Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Fini
 
 Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. A plugin-manager install also creates a fresh cache without `scripts/node_modules`: after every `codex plugin add` or upgrade/rollback, run `npm ci --prefix <the installed plugin path>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`, then run release integrity and doctor against that same installed path. Doctor checks installation and CLI discovery, not provider access or task completion. The command block installs a script checkout; it does not register, activate, update or roll back a plugin-manager installation. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Actual manager registration/upgrade/rollback remains a separate installation check. Preserve Codex credentials and active workspace state.
 
+For a local (personal-marketplace) install, point the marketplace entry at the **clean distribution** rather than this working tree: the manager copies the whole plugin directory into its cache, so a working-tree source also copies `.git/` and `temp/` (local run state and acceptance evidence). Rebuild and reinstall with:
+
+```powershell
+node scripts/publish-dist.mjs                 # rebuilds <检查树父目录>/dist/codex-tui-orchestrator and verifies the copy
+codex plugin add codex-tui-orchestrator@personal
+node scripts/repair-plugin-registration.mjs --check   # accepts a dist source only while its core matches this checkout
+```
+
 An existing personal marketplace entry must use the canonical lowercase name `codex-tui-orchestrator` and resolve to this repository. For an older mixed-case entry, the command below checks the source and repairs only its name before using the official installer. It preserves entry order, source paths, policies, and other plugins. A missing, duplicated, remote, or mismatched entry stops with a diagnostic; this command does not create a new marketplace. Run it from this repository after dependency installation and release verification. Start a new Codex conversation after reinstalling so the host loads the updated skill.
 
 ```powershell
