@@ -26,7 +26,8 @@
         "T002": "verified"
       },
       "receiptsValid": true,
-      "blocks": 1
+      "blocks": 1,
+      "reportPath": "temp/mode-visible-bbf3d786-959e-4a8b-b1ce-5e7c6ca98a24/report.json"
     },
     {
       "mode": "headless",
@@ -47,7 +48,8 @@
         "T002": "verified"
       },
       "receiptsValid": true,
-      "blocks": 1
+      "blocks": 1,
+      "reportPath": "temp/mode-headless-afbf3afd-e221-477b-930f-762b1dfbdc8f/report.json"
     }
   ]
 }
