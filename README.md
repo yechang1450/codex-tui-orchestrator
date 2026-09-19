@@ -224,6 +224,13 @@ Window cleanup targets only the selected launcher's descendants. Startup also re
 cmd.exe /c "cd /d C:\path\to\codex-tui-orchestrator && node --test --test-concurrency=1 test\*.test.mjs"
 ```
 
+
+### WSL 现成入口（推荐直接用）
+
+- `bash scripts/wsl/orch.sh <参数>`：从 WSL 调用编排器。它会自动（1）找到 Windows 版 node.exe；（2）把当前 shell 里的全部 `ORCH_*` 变量经 `WSLENV` 转发给 Windows 侧；（3）把 `--workspace` / `--acceptance-file` 的 `/mnt/...` 路径翻译成 `C:...`。例：`ORCH_EXEC_MODE=visible bash scripts/wsl/orch.sh --doctor`（实测 `executionMode=visible`，说明转发生效）。
+- `bash scripts/wsl/run-tests.sh [测试文件...]`：从 WSL 跑离线回归。它经 Windows `cmd.exe` 执行，并把 `C:Program FilesGitcmd` 与插件 `scripts` 目录补进 PATH（此前从 WSL 直接跑会因解析不到 `git` 而假失败）。不带参数即跑全量。
+- 两者都用 `ORCH_NODE_EXE` 覆盖 node.exe 路径（可选）。
+
 ## 发行成熟度
 当前属于候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；每次代码或封存哈希变化后，都要重新确认适用的验证证据。
 
