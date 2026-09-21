@@ -17,7 +17,9 @@ import {
   parseArgs,
   parseCliJson,
   pickCodexCli,
+  pickNpmCli,
   pluginEnabledInConfig,
+  quoteShellArg,
   skillNamesOf,
   verifySkillsVisible,
 } from '../scripts/install-plugin.mjs';
@@ -274,4 +276,45 @@ test('parseArgs covers the generalization flags', () => {
   assert.equal(parseArgs(['--timeout-ms', '1000']).timeoutMs, 1000);
   assert.equal(parseArgs([]).timeoutMs, 900000);
   assert.throws(() => parseArgs(['--timeout-ms', '0']), /positive number/);
+});
+
+test('npm resolution prefers a JS entry so spaced paths survive the command line', () => {
+  const dir = fs.mkdtempSync(path.join(TEST_TEMP, 'npm-cli-'));
+  try {
+    const fakeNode = path.join(dir, 'node.exe');
+    const fakeNpm = path.join(dir, 'npm_execpath.js');
+    fs.writeFileSync(fakeNode, '');
+    fs.writeFileSync(fakeNpm, '');
+
+    const fromEnv = pickNpmCli({env: {npm_execpath: fakeNpm, PATH: ''}, nodePath: fakeNode});
+    assert.equal(fromEnv.source, 'npm_execpath');
+    assert.equal(fromEnv.command, fakeNode);
+    assert.deepEqual(fromEnv.args, [fakeNpm]);
+    assert.equal(fromEnv.shell, false);
+
+    // PATH 上只有 npm.cmd，但同级带 npm-cli.js → 仍然走 node + JS 入口（绕开 cmd 引号问题）
+    const binDir = path.join(dir, 'bin');
+    const cliDir = path.join(binDir, 'node_modules', 'npm', 'bin');
+    fs.mkdirSync(cliDir, {recursive: true});
+    fs.writeFileSync(path.join(binDir, 'npm.cmd'), '');
+    const cli = path.join(cliDir, 'npm-cli.js');
+    fs.writeFileSync(cli, '');
+    const fromPath = pickNpmCli({env: {PATH: binDir}, nodePath: fakeNode});
+    assert.equal(fromPath.source, 'npm-cli.js');
+    assert.equal(fromPath.command, fakeNode);
+    assert.deepEqual(fromPath.args, [cli]);
+    assert.equal(fromPath.shell, false);
+
+    // 只有 shim 时才退回 shell，此时参数必须自带引号
+    fs.rmSync(cli);
+    const shimOnly = pickNpmCli({env: {PATH: binDir}, nodePath: fakeNode});
+    assert.equal(shimOnly.source, 'npm-shim');
+    assert.equal(shimOnly.shell, true);
+    assert.equal(quoteShellArg('C:\\Program Files\\nodejs\\npm.cmd'), '"C:\\Program Files\\nodejs\\npm.cmd"');
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+  assert.equal(quoteShellArg('plain'), 'plain');
+  assert.equal(quoteShellArg('C:\\has space\\x'), '"C:\\has space\\x"');
+  assert.equal(quoteShellArg('has"quote'), '"has""quote"');
 });

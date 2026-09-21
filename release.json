@@ -63,7 +63,7 @@
     "scripts/core/status-events.mjs": "b0e382b902c1a201df53468cc1622f6be4e7e6cf1cff1d0dfa1600fd36107fd9",
     "scripts/entry-options.mjs": "7c4afbc502dd02bc84b946b7643f1ab37806584d8dfbb10548513748c4524d6c",
     "scripts/host-cli.mjs": "994448626766f53883a29d17a5af547dcb67f6d2b9e7e5b6b6ff60f28582978c",
-    "scripts/install-plugin.mjs": "66b3a857f6c9f72fea6a50cc74d24afc4c4a45160e6e7f2021cde11c39066766",
+    "scripts/install-plugin.mjs": "c325d3191ea309ca3e10bcc19faf843cb11258f372b36f7a59a0574953430299",
     "scripts/network-policy.mjs": "3a2b09ad0555475fa31d8e926da951aacd9a8997e33d80e1d46712432438d15a",
     "scripts/orchestrate-sdk.mjs": "bab0fe6c7e1e08b789749b2c97100cb674fdae7d71099038fd5246b08e16f472",
     "scripts/package-lock.json": "a3095c5bd65eab142be7258f0335e4f99c7b25270561ebfc04cca8233f62df03",
