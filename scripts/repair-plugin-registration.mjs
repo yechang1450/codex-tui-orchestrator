@@ -189,6 +189,7 @@ function canonicalEntry({pluginName, category, sourcePath, marketplaceRoot}) {
  * 个人 marketplace 文件或本插件条目还不存在的那一步。新建整份 marketplace 文件只允许发生在
  * `<home>/.agents/plugins/marketplace.json`（Codex 隐式发现的个人 marketplace）；其它路径仍然
  * 要求文件已存在，避免凭空造出别的 marketplace。既有条目、其它插件与顶层元数据一律保留。
+ * `setRegistrationSource` 用于换机器/换克隆目录：把唯一条目的安装源改写到当前分发或工作树。
  */
 export function ensureRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'dist', homeDir = os.homedir()} = {}) {
   const pluginRoot = path.resolve(pluginPath);
@@ -265,12 +266,63 @@ export function ensureRegistration({pluginPath = process.cwd(), marketplacePath 
   return {ok: true, ...after, status: 'created', entry, created: true};
 }
 
+/** 把唯一条目的安装源改写到本插件当前的源（分发优先）；缺文件或条目时退化为 `--ensure`。 */
+export function setRegistrationSource({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'dist', homeDir = os.homedir()} = {}) {
+  const options = {pluginPath: path.resolve(pluginPath), marketplacePath: path.resolve(marketplacePath), marketplaceRoot: path.resolve(marketplaceRoot), distRoot};
+  const inspected = inspectRegistration(options);
+  if (inspected.status === 'matched') return {...inspected, status: 'matched', changed: false};
+  if (inspected.status === 'missing_entry' || !fs.existsSync(options.marketplacePath)) {
+    const ensured = ensureRegistration({...options, source, homeDir});
+    return {...ensured, changed: ensured.status !== 'matched'};
+  }
+  let manifest;
+  try {
+    manifest = readJson(path.join(options.pluginPath, '.codex-plugin', 'plugin.json'));
+  } catch (error) {
+    return fail('invalid_manifest', error.message, {pluginPath: options.pluginPath, marketplacePath: options.marketplacePath});
+  }
+  const pluginName = manifest?.name;
+  if (typeof pluginName !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(pluginName)) {
+    return fail('invalid_manifest_name', 'manifest.name must be lowercase hyphen-case', {pluginName, pluginPath: options.pluginPath});
+  }
+  const sourcePath = source === 'checkout' ? options.pluginPath : path.resolve(distRoot || defaultDistRoot(options.pluginPath), pluginName);
+  let sourceReal;
+  try {
+    sourceReal = realPath(sourcePath);
+  } catch (error) {
+    return fail('source_missing', `install source does not exist yet (${sourcePath}); build it first (node scripts/publish-dist.mjs)`, {pluginName, marketplacePath: options.marketplacePath, sourcePath});
+  }
+  let expected;
+  let data;
+  try {
+    expected = fs.readFileSync(options.marketplacePath);
+    data = JSON.parse(expected.toString('utf8'));
+  } catch (error) {
+    return fail('invalid_marketplace', error.message, {pluginName, marketplacePath: options.marketplacePath});
+  }
+  if (!Array.isArray(data?.plugins)) return fail('invalid_marketplace', 'marketplace.plugins must be an array', {pluginName, marketplacePath: options.marketplacePath});
+  const matches = data.plugins.filter((entry) => typeof entry?.name === 'string' && entry.name.toLowerCase() === pluginName.toLowerCase());
+  if (matches.length === 0) return fail('missing_entry', 'no marketplace entry matches manifest.name', {pluginName, marketplacePath: options.marketplacePath});
+  if (matches.length !== 1) return fail('duplicate_entry', 'multiple marketplace entries match manifest.name case-insensitively', {pluginName, marketplacePath: options.marketplacePath});
+  const index = data.plugins.indexOf(matches[0]);
+  const previous = JSON.parse(JSON.stringify(matches[0]));
+  const updated = JSON.parse(JSON.stringify(data));
+  updated.plugins[index].name = pluginName;
+  updated.plugins[index].source = {source: 'local', path: relativeSourcePath(options.marketplaceRoot, sourceReal)};
+  if (!updated.plugins[index].policy) updated.plugins[index].policy = {installation: 'AVAILABLE', authentication: 'ON_INSTALL'};
+  if (!updated.plugins[index].category) updated.plugins[index].category = manifest?.interface?.category || 'Productivity';
+  atomicReplace(options.marketplacePath, `${JSON.stringify(updated, null, 2)}\n`, expected);
+  const after = inspectRegistration(options);
+  if (after.status !== 'matched') return fail('postcheck_failed', 'marketplace did not read back as matched', {before: inspected, after});
+  return {ok: true, ...after, status: 'source-set', changed: true, previous};
+}
+
 /** 把 inspect 的失败原样带出，并补上可操作的下一步提示。 */
 function inspectFailure(inspected, base, status = inspected.status) {
   const hints = {
     missing_entry: 'run with --ensure to append the canonical entry',
     duplicate_entry: 'remove the duplicate entries before installing',
-    source_mismatch: 'the existing entry points at another source; fix or remove it by hand',
+    source_mismatch: 'the existing entry points at another source; re-point it with --set-source when it really is this plugin, or fix or remove it by hand',
     stale_dist: 'rebuild the distribution (node scripts/publish-dist.mjs), then install again',
     invalid_marketplace_name: 'marketplace.name must match [A-Za-z0-9_-]+',
     dist_unreadable: 'the distribution core cannot be read; rebuild it (node scripts/publish-dist.mjs)',
@@ -296,6 +348,10 @@ function parseArgs(argv) {
     else if (arg === '--ensure') {
       if (mode && mode !== 'ensure') throw new Error('--check, --repair and --ensure are mutually exclusive');
       mode = 'ensure';
+    }
+    else if (arg === '--set-source') {
+      if (mode && mode !== 'set-source') throw new Error('--check, --repair, --ensure and --set-source are mutually exclusive');
+      mode = 'set-source';
     }
     else if (arg === '--source') {
       if (argv[i + 1] === undefined || argv[i + 1].startsWith('-')) throw new Error('--source requires a value');
@@ -332,11 +388,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log('Usage: repair-plugin-registration.mjs [plugin-path] [--check|--repair|--ensure] [--source dist|checkout] [--marketplace path] [--marketplace-root path] [--dist-root path] [--json]');
+      console.log('Usage: repair-plugin-registration.mjs [plugin-path] [--check|--repair|--ensure|--set-source] [--source dist|checkout] [--marketplace path] [--marketplace-root path] [--dist-root path] [--json]');
       process.exit(0);
     }
     const result = options.mode === 'repair' ? repairRegistration(options)
       : options.mode === 'ensure' ? ensureRegistration(options)
+      : options.mode === 'set-source' ? setRegistrationSource(options)
       : inspectRegistration(options);
     console.log(JSON.stringify(result));
     process.exit(result.ok ? 0 : 1);

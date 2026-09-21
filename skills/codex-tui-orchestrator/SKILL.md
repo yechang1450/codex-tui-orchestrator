@@ -40,7 +40,7 @@ provider 明确返回账户用量上限（如 usage_limit_exceeded）时立即�
 ## 诊断与发布
 
 - `--doctor` 检查依赖和 CLI；`--plan` 只规划；`--status --readonly` 只读检查窗口和锁。
-- 本机安装/更新用一条命令：`node <工作树>/scripts/install-plugin.mjs [--pull]`（重建干净分发 → 补齐个人 marketplace 条目 → `codex plugin add` → 对当次安装返回的缓存路径恢复依赖 → integrity + doctor）；只读复核用 `node <工作树>/scripts/install-plugin.mjs --check [--verify-skills]`。个人 marketplace 文件缺失时，`install-plugin.mjs` 与 `repair-plugin-registration.mjs --ensure` 会按规范补上条目；条目重复、指向别处或属于远端仍然停下报错。
+- 本机安装/更新用一条命令：`node <工作树>/scripts/install-plugin.mjs [--pull]`（重建干净分发 → 补齐个人 marketplace 条目 → `codex plugin add` → 对当次安装返回的缓存路径恢复依赖 → integrity + doctor）；只读复核用 `node <工作树>/scripts/install-plugin.mjs --check [--verify-skills]`。个人 marketplace 文件缺失时，`install-plugin.mjs` 与 `repair-plugin-registration.mjs --ensure` 会按规范补上条目；条目重复、指向别处或属于远端仍然停下报错，换机器后指向旧克隆时用 `--set-source` 重新指向。缓存根与宿主配置都跟随 `CODEX_HOME`；技能可见性验证在宿主不支持时只告警（`--strict-skills` 才当失败）。
 - 插件管理器每次安装、升级或回退都会建新缓存；对返回的 `<installed>/scripts` 先运行 `npm ci --omit=optional --ignore-scripts --no-audit --no-fund`，再运行 release integrity 和 doctor。
 - `node <插件绝对路径>/scripts/release-integrity.mjs` 校验发布快照。核心改动前确认没有活动窗口，完成回归和适用的真实验收后再发布。
 - 本地安装/更新走干净分发：`node <工作树>/scripts/publish-dist.mjs` 重建 `<工作树父目录>/dist/codex-tui-orchestrator`，再 `codex plugin add codex-tui-orchestrator@personal`。安装源指向工作树会把 `.git/`、`temp/` 一起复制进缓存，不要这样装。

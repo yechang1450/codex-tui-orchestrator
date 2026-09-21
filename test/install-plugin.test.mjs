@@ -9,6 +9,7 @@ import {
   inspectRegistration,
   isPersonalMarketplaceDir,
   relativeSourcePath,
+  setRegistrationSource,
 } from '../scripts/repair-plugin-registration.mjs';
 import {
   checkInstall,
@@ -18,6 +19,7 @@ import {
   pickCodexCli,
   pluginEnabledInConfig,
   skillNamesOf,
+  verifySkillsVisible,
 } from '../scripts/install-plugin.mjs';
 
 const TEST_TEMP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'temp');
@@ -47,6 +49,19 @@ function personalFixture({marketplace = null, withDist = true} = {}) {
     fs.writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2) + '\n');
   }
   return {home, plugin, dist, marketplacePath, options: {pluginPath: plugin, marketplacePath, marketplaceRoot: home, distRoot: path.join(home, 'plugins', 'dist'), homeDir: home}};
+}
+
+/** 注册 + 缓存 + 宿主配置都齐备的夹具（含可自定义的 CODEX_HOME）。 */
+function completeFixture({codexHomeRelative = '.codex', cli = null} = {}) {
+  const f = personalFixture();
+  assert.equal(ensureRegistration(f.options).ok, true);
+  const codexHome = path.join(f.home, codexHomeRelative);
+  const cache = path.join(codexHome, 'plugins', 'cache', 'personal', 'demo-plugin', '1.0.0');
+  fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
+  fs.writeFileSync(path.join(cache, 'scripts', 'release-integrity.mjs'), "console.log(JSON.stringify({schema: 2, coreVersion: 'test', files: 0, runtimeFiles: 0}));\n");
+  fs.mkdirSync(codexHome, {recursive: true});
+  fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@personal"]\nenabled = true\n');
+  return {...f, codexHome, cache, options: {...f.options, codexHome, ...(cli ? {codexCli: cli} : {})}};
 }
 
 test('ensureRegistration creates the personal marketplace and points at the clean distribution', () => {
@@ -186,4 +201,77 @@ test('CLI helpers parse host output, caches, enablement, and the Codex CLI path'
     fs.rmSync(home, {recursive: true, force: true});
   }
   assert.deepEqual(skillNamesOf(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')), ['codex-tui-orchestrator']);
+});
+
+test('cache discovery and checkInstall follow CODEX_HOME instead of the home directory', () => {
+  const f = completeFixture({codexHomeRelative: 'codex-home-elsewhere'});
+  try {
+    const caches = listInstalledCaches({codexHome: f.codexHome, marketplaceName: 'personal', pluginName: 'demo-plugin'});
+    assert.deepEqual(caches.map((entry) => entry.version), ['1.0.0']);
+    const result = checkInstall(f.options);
+    assert.equal(result.ok, true, JSON.stringify(result.problems));
+    assert.equal(result.codexHome, f.codexHome);
+    assert.equal(result.cache, f.cache);
+    assert.equal(result.environment.platform, process.platform);
+
+    // 同一台机器上 home/.codex 里没有缓存：必须报缺失，而不是把别处的缓存当成已安装
+    const misplaced = checkInstall({...f.options, codexHome: path.join(f.home, '.codex')});
+    assert.equal(misplaced.ok, false);
+    assert.equal(misplaced.problems.some((problem) => problem.step === 'cache'), true);
+  } finally {
+    fs.rmSync(f.home, {recursive: true, force: true});
+  }
+});
+
+test('setRegistrationSource re-points a single stale entry and preserves every other entry', () => {
+  const other = {name: 'other-plugin', source: {source: 'local', path: './plugins/other-plugin'}, policy: {installation: 'AVAILABLE', authentication: 'ON_USE'}, category: 'Engineering'};
+  const stale = {name: 'demo-plugin', source: {source: 'local', path: './plugins/gone-from-another-machine/demo-plugin'}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Test'};
+  const f = personalFixture({marketplace: {name: 'personal', interface: {displayName: 'Personal'}, plugins: [other, stale]}});
+  try {
+    assert.equal(inspectRegistration(f.options).status, 'source_mismatch');
+    const result = setRegistrationSource(f.options);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.status, 'source-set');
+    assert.equal(result.changed, true);
+    const data = JSON.parse(fs.readFileSync(f.marketplacePath, 'utf8'));
+    assert.equal(data.plugins[1].source.path, relativeSourcePath(f.home, f.dist));
+    assert.deepEqual(data.plugins[0], other, '其它条目必须原样保留');
+    assert.equal(data.plugins[1].category, 'Test', '既有策略与分类不被改写');
+    assert.equal(inspectRegistration(f.options).status, 'matched');
+    const again = setRegistrationSource(f.options);
+    assert.equal(again.status, 'matched');
+    assert.equal(again.changed, false);
+  } finally {
+    fs.rmSync(f.home, {recursive: true, force: true});
+  }
+});
+
+test('skill visibility is advisory unless --strict-skills is requested', () => {
+  const f = completeFixture();
+  try {
+    const brokenCli = path.join(f.home, 'not-a-real-cli');
+    const advisory = checkInstall({...f.options, verifySkills: true, codexCli: brokenCli});
+    assert.equal(advisory.ok, true, JSON.stringify(advisory.problems));
+    assert.equal(advisory.warnings.some((warning) => warning.step === 'skills_visible'), true);
+    const strict = checkInstall({...f.options, verifySkills: true, strictSkills: true, codexCli: brokenCli});
+    assert.equal(strict.ok, false);
+    assert.equal(strict.problems.some((problem) => problem.step === 'skills_visible'), true);
+  } finally {
+    fs.rmSync(f.home, {recursive: true, force: true});
+  }
+});
+
+test('verifySkillsVisible reports an unavailable host CLI instead of throwing', () => {
+  const result = verifySkillsVisible({codexCli: path.join(TEST_TEMP, 'missing-codex.exe'), pluginName: 'demo-plugin', skillNames: ['demo-skill']});
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /host CLI/);
+});
+
+test('parseArgs covers the generalization flags', () => {
+  assert.equal(parseArgs(['--set-source']).setSource, true);
+  assert.equal(parseArgs(['--strict-skills']).strictSkills, true);
+  assert.equal(parseArgs(['--strict-skills']).verifySkills, true);
+  assert.equal(parseArgs(['--timeout-ms', '1000']).timeoutMs, 1000);
+  assert.equal(parseArgs([]).timeoutMs, 900000);
+  assert.throws(() => parseArgs(['--timeout-ms', '0']), /positive number/);
 });

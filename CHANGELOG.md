@@ -2,9 +2,12 @@
 
 ## 0.5.0-rc.1
 
+- 按"第二台新机器"实测补上泛化边界（沙箱：全新 HOME + 全新 CODEX_HOME）：`--check` 与安装缓存发现改为**跟随 `CODEX_HOME`**，不再假设 `~/.codex`（此前 CODEX_HOME 在别处时会把另一份缓存当成已安装，甚至报 `ok`）；新增 `repair-plugin-registration.mjs --set-source` 与 `install-plugin.mjs --set-source`，把唯一条目的安装源改写到本机分发（保留其它条目、策略与分类，重复/远端/无匹配仍然停下），用于换机器或换克隆目录后条目仍指向旧路径的情况。
+- 技能可见性验证改为**可降级**：`--verify-skills` 在宿主不提供该调试入口或返回非零时记为 `warnings`（`steps` 里是 `warning`），只有显式 `--strict-skills` 才当作安装失败；所有子进程加超时（`--timeout-ms`，默认 15 分钟），宿主 CLI 缺失时给出可执行提示而不是 ENOENT 堆栈。
+- 输出与诊断面向非作者机器：`install`/`check` 的 JSON 增加 `codexHome`、`environment`（platform / node / hostCli）与 `warnings`；非 Windows 主机给出明确告警（执行核心仅 Windows），命令行提示改为中英双语。
 - 本机安装补上"首次安装"这一段并提供一键入口：新增 `scripts/install-plugin.mjs`（重建干净分发 → 补齐个人 marketplace 条目 → `codex plugin add` → 对**当次安装返回的缓存路径**恢复依赖 → integrity + doctor；`--check` 只读复核注册、分发新鲜度、缓存依赖与宿主启用，`--verify-skills` 再用宿主渲染一次新会话上下文确认技能可见）。`repair-plugin-registration.mjs` 增加 `--ensure`：个人 marketplace 文件或本插件条目缺失时按规范补上，新建整份文件只允许发生在 `<home>/.agents/plugins/marketplace.json`，既有条目、其它插件与顶层元数据原样保留；重复、指向别处或远端仍然停下报错。
 - 实测背景（2026-09-21，Windows）：从零安装时个人 marketplace 文件并不存在，`--check` 只报 `missing_entry`/`invalid_marketplace` 且不会创建；插件管理器建立的缓存里没有 `scripts/node_modules`，漏掉依赖恢复会得到"技能可见、运行时缺依赖"的半成品。README（中/英）据此把一键流程放到安装章节最前，手工步骤仍保留并标注每一步的作用。
-- 版本 cachebuster 升到 `+codex.20260921122603`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 同步），保证重装会建立新缓存而不是复用旧目录。
+- 版本 cachebuster 升到 `+codex.20260921125337`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 同步），保证重装会建立新缓存而不是复用旧目录。
 - 本地安装改用**干净分发**：新增 `scripts/publish-dist.mjs`（删除旧分发 → 从封存工作树重建 → 分发自校验 → 打印安装命令），个人 marketplace 条目指向 `<工作树父目录>/dist/codex-tui-orchestrator`。此前安装源是开发工作树，管理器会把 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制进安装缓存（本机实测 20 MB / 1473 文件），运行时不受影响但安装体积与静态评估失真（Plugin Eval 评分 81/C，改分发后 95/A）。`repair-plugin-registration.mjs --check` 现在同时认识 checkout 与 dist 两种安装源，并要求分发的 core 清单与工作树一致，否则报 `stale_dist`（先重建再安装），因此重启健康检查里的 marketplace 校验仍然有效。
 - 修掉真实验收入口的漂移：`test/live-execution-mode.mjs` 过去只发一个任务，而单任务请求按设计直接判 `out-of-scope`，导致这条"真实可见/headless 验收"实际跑不起来。现在发两个独立任务、各自独立验收，并在当前提交上从**已安装缓存入口**重跑通过（可见 + headless 双模式，证据见 `test/live-mode-validation-1.4.0-rc.1.json`）。
 - 重启自动收集基线换成绑当前提交的一份：旧基线 `reboot-check-20260919`（`8ceae8c`）在冻结后又被多次提交改写，`release.json` 哈希已从 `76c4161…` 变为 `45413c1…`，收集器必然判 `releaseMatches=false`；已删掉该基线与对应启动项，重新 `prepare` 出 `reboot-check-20260919c`（绑 `8e16b41`，哈希与当前 `release.json` 一致）。之后只要不再有改动 `release.json` 的提交，下一次重启/注销登录就会自动留下三合一的 `collectionTrigger=StartupFolder` 回执。
