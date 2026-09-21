@@ -62,9 +62,30 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 
 如果要放到其他安装父目录，也可以把 `$InstallRoot` 改成目标路径后执行同一段命令。
 
+#### 一条命令安装/更新（推荐）
+
+上面那段只准备脚本副本；把它注册进插件管理器还要四步：重建干净分发、补齐个人 marketplace 条目、安装、对**新缓存路径**恢复依赖并校验。本机实测最常漏的是第 2、3 步——漏第 2 步 `codex plugin add` 直接失败，漏第 3 步得到"技能在、运行时缺依赖"的半成品。`install-plugin.mjs` 把这四步串成一条命令，并在每次安装后对**当次安装返回的缓存路径**做完整性检查和 doctor：
+
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $InstallRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'   # 换成你的克隆位置
+  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --pull
+  if ($LASTEXITCODE -ne 0) { throw '安装失败。' }
+  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --check --verify-skills
+  if ($LASTEXITCODE -ne 0) { throw '安装校验失败。' }
+}
+```
+
+- 工作树不存在时先 `git clone`（见上）；`install-plugin.mjs` 不负责克隆。
+- `--pull` 要求工作树干净，只做 `git pull --ff-only`。
+- 个人 marketplace 文件 `<home>/.agents/plugins/marketplace.json` 不存在时按规范创建（顶层 `name: "personal"`，本插件条目指向 `./plugins/dist/codex-tui-orchestrator`）；其它路径仍然要求文件已存在，既有条目与其它插件原样保留。
+- `--check` 是只读复核：注册是否匹配、分发与工作树是否为同一份核心、安装缓存里是否有 `scripts/node_modules`、宿主 `config.toml` 是否已启用；`--verify-skills` 额外用宿主渲染一次新会话上下文，确认技能已进入可见清单。
+- 技能在**新开对话**时加载，装完请开一个新对话。
+
 依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；每次 `codex plugin add`、升级或回退后，都要对该次安装返回的插件路径运行 `npm ci --prefix <安装路径>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`，再用同一个安装路径运行完整性检查和 doctor。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
 
-本机安装（个人 marketplace）应把条目指向**干净分发**，不要指向开发工作树：管理器会把插件目录整体复制进安装缓存，指向工作树会连 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制。重建并安装：
+本机安装（个人 marketplace）应把条目指向**干净分发**，不要指向开发工作树：管理器会把插件目录整体复制进安装缓存，指向工作树会连 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制。`install-plugin.mjs` 已经按这个口径安装；只想手工执行时：
 
 ```powershell
 node scripts/publish-dist.mjs                 # 重建 <工作树父目录>/dist/codex-tui-orchestrator 并校验副本

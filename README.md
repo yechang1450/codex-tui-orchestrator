@@ -62,9 +62,30 @@ Use Windows with Node 22+ and an installed, authenticated native Codex CLI. Fini
 }
 ```
 
+#### One command: install or update (recommended)
+
+The block above only prepares a script checkout. Registering it with the plugin manager still takes four steps: rebuild the clean distribution, ensure the personal marketplace entry, install, and restore dependencies plus verify against the **new cache path**. In practice steps 2 and 3 are the ones that get skipped — without the marketplace entry `codex plugin add` fails outright, and without the cache restore you get a plugin that has the skill but no runtime dependencies. `install-plugin.mjs` performs all four and re-verifies integrity and doctor against the cache path that install actually returned:
+
+```powershell
+& {
+  $ErrorActionPreference = 'Stop'
+  $InstallRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'   # your checkout
+  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --pull
+  if ($LASTEXITCODE -ne 0) { throw 'Install failed.' }
+  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --check --verify-skills
+  if ($LASTEXITCODE -ne 0) { throw 'Install verification failed.' }
+}
+```
+
+- Clone first when the checkout does not exist; `install-plugin.mjs` does not clone.
+- `--pull` requires a clean tree and only runs `git pull --ff-only`.
+- When `<home>/.agents/plugins/marketplace.json` is missing the tool creates it with the canonical `name: "personal"` and an entry pointing at `./plugins/dist/codex-tui-orchestrator`; other paths still require an existing marketplace file, and existing entries and plugins are preserved.
+- `--check` is read-only: registration match, distribution-versus-checkout core equality, `scripts/node_modules` inside the installed cache, and host `config.toml` enablement. `--verify-skills` additionally renders one host prompt context and asserts the skills are listed.
+- Skills load in a new conversation; open one after installing.
+
 Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. A plugin-manager install also creates a fresh cache without `scripts/node_modules`: after every `codex plugin add` or upgrade/rollback, run `npm ci --prefix <the installed plugin path>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`, then run release integrity and doctor against that same installed path. Doctor checks installation and CLI discovery, not provider access or task completion. The command block installs a script checkout; it does not register, activate, update or roll back a plugin-manager installation. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Actual manager registration/upgrade/rollback remains a separate installation check. Preserve Codex credentials and active workspace state.
 
-For a local (personal-marketplace) install, point the marketplace entry at the **clean distribution** rather than this working tree: the manager copies the whole plugin directory into its cache, so a working-tree source also copies `.git/` and `temp/` (local run state and acceptance evidence). Rebuild and reinstall with:
+For a local (personal-marketplace) install, point the marketplace entry at the **clean distribution** rather than this working tree: the manager copies the whole plugin directory into its cache, so a working-tree source also copies `.git/` and `temp/` (local run state and acceptance evidence). `install-plugin.mjs` installs that way; to do it by hand:
 
 ```powershell
 node scripts/publish-dist.mjs                 # rebuilds <检查树父目录>/dist/codex-tui-orchestrator and verifies the copy

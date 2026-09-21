@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 /**
- * Check (and, when explicitly requested, repair) the case of a local
+* Check (and, when explicitly requested, repair) the case of a local
  * marketplace entry without changing its source path or any other entry.
+ * `--ensure` additionally covers first-time installation：个人 marketplace 文件或本插件
+ * 条目还不存在时补上（新建整份文件只允许发生在 <home>/.agents/plugins/marketplace.json）。
  *
  * 本地安装既可以指向开发工作树（既有习惯），也可以指向由 `repair.mjs --target`
  * 生成的干净分发（分发里没有 .git/temp/node_modules，安装缓存不会被本地证据和
@@ -157,19 +159,148 @@ export function repairRegistration(options = {}) {
   return {ok: true, ...after, status: 'repaired'};
 }
 
+/** 个人 marketplace 的约定路径：只有这里允许被 `--ensure` 新建。 */
+export function isPersonalMarketplaceDir(dir, homeDir = os.homedir()) {
+  const expected = path.join(path.resolve(homeDir), '.agents', 'plugins');
+  const left = path.resolve(dir);
+  return process.platform === 'win32' ? left.toLowerCase() === expected.toLowerCase() : left === expected;
+}
+
+/** 把绝对路径写成相对 marketplaceRoot 的 POSIX 风格路径（marketplace source.path 的写法）。 */
+export function relativeSourcePath(marketplaceRoot, target) {
+  const rel = path.relative(path.resolve(marketplaceRoot), path.resolve(target)).replaceAll('\\', '/');
+  return rel.startsWith('.') ? rel : './' + rel;
+}
+
+/** 首次安装写入的条目不继承其它 marketplace 的写法：策略固定、名称用清单里的规范名。 */
+function canonicalEntry({pluginName, category, sourcePath, marketplaceRoot}) {
+  return {
+    name: pluginName,
+    source: {source: 'local', path: relativeSourcePath(marketplaceRoot, sourcePath)},
+    policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'},
+    category: category || 'Productivity',
+  };
+}
+
+/**
+ * 检查并补齐个人 marketplace 条目（首次安装用）。
+ *
+ * 与 `repairRegistration` 的分工：`repair` 只修已存在条目的名称大小写；`ensure` 负责
+ * 个人 marketplace 文件或本插件条目还不存在的那一步。新建整份 marketplace 文件只允许发生在
+ * `<home>/.agents/plugins/marketplace.json`（Codex 隐式发现的个人 marketplace）；其它路径仍然
+ * 要求文件已存在，避免凭空造出别的 marketplace。既有条目、其它插件与顶层元数据一律保留。
+ */
+export function ensureRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'dist', homeDir = os.homedir()} = {}) {
+  const pluginRoot = path.resolve(pluginPath);
+  const marketplace = path.resolve(marketplacePath);
+  const root = path.resolve(marketplaceRoot);
+  let manifest;
+  try {
+    manifest = readJson(path.join(pluginRoot, '.codex-plugin', 'plugin.json'));
+  } catch (error) {
+    return fail('invalid_manifest', error.message, {pluginPath: pluginRoot, marketplacePath: marketplace});
+  }
+  const pluginName = manifest?.name;
+  if (typeof pluginName !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(pluginName)) {
+    return fail('invalid_manifest_name', 'manifest.name must be lowercase hyphen-case', {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace});
+  }
+  if (source !== 'dist' && source !== 'checkout') {
+    return fail('invalid_source', "source must be 'dist' or 'checkout'", {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace});
+  }
+
+  const sourcePath = source === 'checkout' ? pluginRoot : path.resolve(distRoot || defaultDistRoot(pluginRoot), pluginName);
+  let sourceReal;
+  try {
+    sourceReal = realPath(sourcePath);
+  } catch (error) {
+    return fail('source_missing', `install source does not exist yet (${sourcePath}); build it first (node scripts/publish-dist.mjs)`, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, sourcePath});
+  }
+
+  const options = {pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, distRoot};
+  const inspected = inspectRegistration(options);
+  if (inspected.status === 'matched') return {...inspected, status: 'matched', created: false};
+  if (inspected.status === 'repairable') {
+    const repaired = repairRegistration(options);
+    return {...repaired, created: false};
+  }
+
+  const entry = canonicalEntry({pluginName, category: manifest?.interface?.category, sourcePath: sourceReal, marketplaceRoot: root});
+  const base = {pluginName, marketplaceName: null, pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, sourcePath: sourceReal, entry, created: false};
+  const fileExists = fs.existsSync(marketplace);
+
+  if (fileExists) {
+    if (inspected.status !== 'missing_entry') return inspectFailure(inspected, base);
+    let expected;
+    let data;
+    try {
+      expected = fs.readFileSync(marketplace);
+      data = JSON.parse(expected.toString('utf8'));
+    } catch (error) {
+      return fail('invalid_marketplace', error.message, base);
+    }
+    if (!Array.isArray(data?.plugins)) return fail('invalid_marketplace', 'marketplace.plugins must be an array', base);
+    if (typeof data.name !== 'string' || !/^[A-Za-z0-9_-]+$/.test(data.name)) {
+      return fail('invalid_marketplace_name', 'marketplace.name must contain only ASCII letters, digits, underscores, or hyphens', base);
+    }
+    const updated = {...data, plugins: [...data.plugins, entry]};
+    atomicReplace(marketplace, `${JSON.stringify(updated, null, 2)}\n`, expected);
+    const after = inspectRegistration(options);
+    if (after.status !== 'matched') return inspectFailure(after, base, 'postcheck_failed');
+    return {ok: true, ...after, status: 'appended', entry, created: false};
+  }
+
+  if (!isPersonalMarketplaceDir(path.dirname(marketplace), homeDir)) {
+    return fail('create_forbidden', 'refusing to create a non-personal marketplace; the personal marketplace lives at <home>/.agents/plugins/marketplace.json', base);
+  }
+  if (inspected.status !== 'invalid_marketplace') return inspectFailure(inspected, base);
+  fs.mkdirSync(path.dirname(marketplace), {recursive: true});
+  const seeded = {name: 'personal', interface: {displayName: 'Personal'}, plugins: [entry]};
+  try {
+    fs.writeFileSync(marketplace, `${JSON.stringify(seeded, null, 2)}\n`, {flag: 'wx'});
+  } catch (error) {
+    return fail('concurrent_change', `refusing to overwrite a marketplace that appeared while installing: ${error.message}`, base);
+  }
+  const after = inspectRegistration(options);
+  if (after.status !== 'matched') return inspectFailure(after, base, 'postcheck_failed');
+  return {ok: true, ...after, status: 'created', entry, created: true};
+}
+
+/** 把 inspect 的失败原样带出，并补上可操作的下一步提示。 */
+function inspectFailure(inspected, base, status = inspected.status) {
+  const hints = {
+    missing_entry: 'run with --ensure to append the canonical entry',
+    duplicate_entry: 'remove the duplicate entries before installing',
+    source_mismatch: 'the existing entry points at another source; fix or remove it by hand',
+    stale_dist: 'rebuild the distribution (node scripts/publish-dist.mjs), then install again',
+    invalid_marketplace_name: 'marketplace.name must match [A-Za-z0-9_-]+',
+    dist_unreadable: 'the distribution core cannot be read; rebuild it (node scripts/publish-dist.mjs)',
+  };
+  const hint = hints[inspected.status];
+  return fail(status, hint ? `${inspected.reason} — ${hint}` : inspected.reason, {...base, inspected});
+}
+
 function parseArgs(argv) {
-  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), distRoot: null, repair: false};
+  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), distRoot: null, source: 'dist', mode: 'check'};
   const positional = [];
   let mode;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--repair') {
-      if (mode === 'check') throw new Error('--check and --repair are mutually exclusive');
-      mode = 'repair'; out.repair = true;
+      if (mode && mode !== 'repair') throw new Error('--check, --repair and --ensure are mutually exclusive');
+      mode = 'repair';
     }
     else if (arg === '--check') {
-      if (mode === 'repair') throw new Error('--check and --repair are mutually exclusive');
-      mode = 'check'; out.repair = false;
+      if (mode && mode !== 'check') throw new Error('--check, --repair and --ensure are mutually exclusive');
+      mode = 'check';
+    }
+    else if (arg === '--ensure') {
+      if (mode && mode !== 'ensure') throw new Error('--check, --repair and --ensure are mutually exclusive');
+      mode = 'ensure';
+    }
+    else if (arg === '--source') {
+      if (argv[i + 1] === undefined || argv[i + 1].startsWith('-')) throw new Error('--source requires a value');
+      i++;
+      out.source = argv[i];
     }
     else if (arg === '--json') out.json = true;
     else if (arg === '--marketplace') {
@@ -193,6 +324,7 @@ function parseArgs(argv) {
   }
   if (positional.length > 1) throw new Error('only one plugin path is supported');
   if (positional[0]) out.pluginPath = positional[0];
+  if (mode) out.mode = mode;
   return out;
 }
 
@@ -200,10 +332,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log('Usage: repair-plugin-registration.mjs [plugin-path] [--check|--repair] [--marketplace path] [--marketplace-root path] [--dist-root path] [--json]');
+      console.log('Usage: repair-plugin-registration.mjs [plugin-path] [--check|--repair|--ensure] [--source dist|checkout] [--marketplace path] [--marketplace-root path] [--dist-root path] [--json]');
       process.exit(0);
     }
-    const result = options.repair ? repairRegistration(options) : inspectRegistration(options);
+    const result = options.mode === 'repair' ? repairRegistration(options)
+      : options.mode === 'ensure' ? ensureRegistration(options)
+      : inspectRegistration(options);
     console.log(JSON.stringify(result));
     process.exit(result.ok ? 0 : 1);
   } catch (error) {
