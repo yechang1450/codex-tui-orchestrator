@@ -85,8 +85,13 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
   }
   try {processes=snapshot();let leases=[];try{leases=JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
     leases=leases.filter(l=>{
+      // 畸形/外来条目绝不能毒死协调器：非对象直接剪掉；没有 owner 的条目按"新鲜度"兜底
+      // （90s 内当作可能正在写入而保留，过后自愈剪掉），绝不在这里解引用 undefined。
+      // 回归：test/lease-poison.test.mjs（修前这里是裸 TypeError，160 次并发事务实测 159 次死在这）。
+      if(!l||typeof l!=='object')return false;
       if(l.launcher)return sameProcess(l.launcher,processes.get(l.launcher.ProcessId));
       if(l.pidFile){let pid=0;try{pid=Number(fs.readFileSync(l.pidFile,'utf8').replace(/^\uFEFF/,''));}catch{};const found=launcherIdentity(pid,l.pidFile,processes);if(found){l.launcher=found;return true;}}
+      if(!l.owner)return Date.now()-(l.reservedAt||0)<90000;
       return sameProcess(l.owner,processes.get(l.owner.ProcessId))||Date.now()-(l.reservedAt||0)<90000;
     });
     const result=fn(leases,owner,processes);atomicJson(file,leases);return result;
