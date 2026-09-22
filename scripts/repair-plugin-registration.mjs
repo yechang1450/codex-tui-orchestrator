@@ -365,6 +365,8 @@ function parseArgs(argv) {
       if (argv[i + 1] === undefined || argv[i + 1].startsWith('-')) throw new Error('--source requires a value');
       i++;
       out.source = argv[i];
+      // 与 install-plugin 同一条枚举纪律：静默把垃圾值当成 dist 会得到"成功但装错来源"。
+      if (!['dist', 'checkout'].includes(out.source)) throw new Error(`--source must be dist or checkout, got: ${out.source}`);
     }
     else if (arg === '--json') out.json = true;
     else if (arg === '--marketplace') {

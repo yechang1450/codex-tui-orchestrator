@@ -160,7 +160,7 @@ const codex = AGENT.agent==='codex'?new (await import('@openai/codex-sdk')).Code
   ...(PROVIDER_MODE === 'openai-https' ? { baseUrl: resolveOpenAIBaseUrl(), config: networkConfig } : {}),
 }):null;
 // 让出 CPU：orchestrator（含拆解线程）以 BelowNormal 优先级跑，不抢占系统/其它任务（限速=80% 性能，慢慢跑）。
-try { process.setPriority(6); console.log("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }
+try { process.setPriority(6); console.error("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }
 function threadBase() {
   return {
     model: MODEL,
@@ -336,20 +336,20 @@ async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalm
   //    命中直接复用 -> 越用越快（与下方 loadDecomposeCache 的“永不自动失效”实现保持一致）。
   const cached = loadCachedDecompose(request, hints);
   if (cached && Array.isArray(cached.blocks) && cached.blocks.length) {
-    console.log("[orchestrator] decompose cache HIT -> " + cached.blocks.map((b) => b.title).join(", "));
+    console.error("[orchestrator] decompose cache HIT -> " + cached.blocks.map((b) => b.title).join(", "));
     return finalize(cached.blocks);
   }
   // 1) 通用确定性启发（非硬编码项目路径）：请求里出现多个不同项目目录 -> 单独拆块，秒级返回并写缓存。
   const det = genericProjectSplit(request);
   if (det && Array.isArray(det.blocks) && det.blocks.length) {
-    console.log("[orchestrator] generic project split -> " + det.blocks.map((b) => b.title).join(", "));
+    console.error("[orchestrator] generic project split -> " + det.blocks.map((b) => b.title).join(", "));
     saveDecompose(request, det.blocks, hints);
     return finalize(det.blocks);
   }
   // 1.5) 单任务快速路径（通用，非写死路径）：明确"单动作"请求 -> 单一窗口，跳过 LLM 拆块，秒级+写缓存。
   const sb = trySingleBlock(request);
   if (sb && Array.isArray(sb.blocks) && sb.blocks.length) {
-    console.log("[orchestrator] single-block fast path -> " + sb.blocks[0].title);
+    console.error("[orchestrator] single-block fast path -> " + sb.blocks[0].title);
     saveDecompose(request, sb.blocks, hints);
     return finalize(sb.blocks);
   }
@@ -736,7 +736,7 @@ function checkDiskSpace(opts = {}) {
       console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + wsPath + "; TUI window/temp may fail.");
       return true;
     }
-    console.log("[orchestrator] disk: workspace " + wsPath + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
+    console.error("[orchestrator] disk: workspace " + wsPath + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
     return true;
   } catch (e) {
     console.warn("[orchestrator] WARN: could not stat workspace disk (" + (e && e.message ? e.message : String(e)) + "); skipping space check.");

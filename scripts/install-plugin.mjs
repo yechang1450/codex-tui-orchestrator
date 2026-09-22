@@ -64,7 +64,11 @@ export function parseArgs(argv) {
     else if (arg === '--json') out.json = true;
     else if (arg === '--quiet') out.quiet = true;
     else if (arg === '--plugin') { out.pluginPath = requireValue(argv, ++i, '--plugin'); }
-    else if (arg === '--source') { out.source = requireValue(argv, ++i, '--source'); }
+    else if (arg === '--source') {
+      out.source = requireValue(argv, ++i, '--source');
+      // 枚举必须显式校验：静默把 'bogus'/空串当成 dist，会得到一份"成功"但装错来源的报告。
+      if (!['dist', 'checkout'].includes(out.source)) throw new Error(`--source must be dist or checkout, got: ${out.source}`);
+    }
     else if (arg === '--marketplace') { out.marketplacePath = requireValue(argv, ++i, '--marketplace'); }
     else if (arg === '--marketplace-root') { out.marketplaceRoot = requireValue(argv, ++i, '--marketplace-root'); }
     else if (arg === '--dist-root') { out.distRoot = requireValue(argv, ++i, '--dist-root'); }
@@ -366,9 +370,12 @@ export function installPlugin(options = {}) {
     summary.warnings.push({step: 'platform', status: 'unsupported', reason: PLATFORM_WARNING});
   }
   if (!options.quiet) {
-    console.log(`[install-plugin] ${pluginName} ${summary.version} → ${installedPath}`);
-    console.log('[install-plugin] skills load in a new Codex conversation. / 技能在新开的 Codex 对话中加载。');
-    for (const warning of summary.warnings) console.log(`[install-plugin] warning (${warning.step}): ${warning.reason}`);
+    // --json 是机器可读契约：进度与告警必须走 stderr，否则 stdout 不是纯 JSON（穷举审计 E 组实测：
+    // 成功路径上 JSON.parse(stdout) 直接失败）。人类模式下 stdout 保持原样。
+    const say = options.json ? console.error : console.log;
+    say(`[install-plugin] ${pluginName} ${summary.version} → ${installedPath}`);
+    say('[install-plugin] skills load in a new Codex conversation. / 技能在新开的 Codex 对话中加载。');
+    for (const warning of summary.warnings) say(`[install-plugin] warning (${warning.step}): ${warning.reason}`);
   }
   return summary;
 }

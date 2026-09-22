@@ -22,3 +22,19 @@ export function exitFatal(error) {
   reportFatal(error);
   process.exit(1);
 }
+
+// 模块求值期的失败还有第三种入口：**动态 import 期间**抛出的错误（例如引擎在模块体里解析
+// 工作区/CLI：`resolveRuntimeContext`、`resolveHost`）。这类错误既不在 main() 的 promise 里，
+// 也不在被 try/catch 包住的那一段里，Node 默认会把源码行、栈帧和 "Node.js v…" 横幅一起打出来
+// （穷举审计实测：`--workspace <文件> --doctor`、过期封印、缺依赖都命中过）。
+// 只在"确实被当成 CLI 入口跑"时安装兜底；被当库 import 时不劫持宿主语义（测试运行器依赖这一点）。
+const CLI_ENTRY = /(?:^|[\\/])(?:orchestrate-sdk|codex-entry|supervise|poll-windows|status)\.mjs$/i;
+export function installFatalGuard({argv = process.argv[1], env = process.env, proc = process} = {}) {
+  if (env.ORCH_FATAL_GUARD === '0') return false;
+  if (!argv || !CLI_ENTRY.test(argv)) return false;
+  proc.on('uncaughtException', (error) => { reportFatal(error); proc.exit ? proc.exit(1) : (proc.exitCode = 1); });
+  proc.on('unhandledRejection', (reason) => { reportFatal(reason); proc.exit ? proc.exit(1) : (proc.exitCode = 1); });
+  return true;
+}
+
+installFatalGuard();
