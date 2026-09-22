@@ -746,8 +746,51 @@ function checkDiskSpace(opts = {}) {
 // Visible window (REAL popup, via cmd /c start — reliably opens a new console)
 // ---------------------------------------------------------------------------
 // Trust configuration is owned by the user, never rewritten here.
+// 可见窗会在 Codex 的"是否信任此文件夹"提示上无限等待（headless 路径会注入
+// `-c projects.<cwd>.trust_level="trusted"`，可见窗刻意不代管），所以这里做只读预检：
+// 读 CODEX_HOME/config.toml，未受信任就在启动前 fail-closed，并给出可执行的两条出路。
+export function trustConfigPath(env = process.env) {
+  const home = env.CODEX_HOME || path.join(process.env.USERPROFILE || process.env.HOME || "", ".codex");
+  return path.join(home, "config.toml");
+}
+function normalizeWorkspaceKey(value) {
+  return String(value || "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+}
+export function workspaceTrustState(workspace, { configPath = trustConfigPath() } = {}) {
+  let text;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch {
+    return "unknown";
+  }
+  const lines = text.split(/\r?\n/);
+  const wanted = normalizeWorkspaceKey(workspace);
+  let inSection = false;
+  let seenSection = false;
+  for (const line of lines) {
+    const header = /^\s*\[\s*projects\s*\.\s*(?:'([^']*)'|"([^"]*)"|([^\]]+))\s*\]\s*$/.exec(line);
+    if (header) {
+      inSection = normalizeWorkspaceKey(header[1] ?? header[2] ?? header[3]) === wanted;
+      if (inSection) seenSection = true;
+      continue;
+    }
+    if (!inSection) continue;
+    const trust = /^\s*trust_level\s*=\s*(['"])([^'"]*)\1/.exec(line);
+    if (trust) return trust[2].toLowerCase() === "trusted" ? "trusted" : "untrusted";
+  }
+  return "untrusted";
+}
 function spawnVisibleWindow(lp, title) {
   // Workspace trust remains under the host/user configuration.
+  const trustState = workspaceTrustState(WORKSPACE);
+  if (trustState !== "trusted") {
+    throw new Error(
+      "VISIBLE_WORKSPACE_UNTRUSTED: " + WORKSPACE + " is not trusted in " + trustConfigPath() +
+      " — the visible TUI would stop at Codex's \"trust this folder\" prompt and the run would wait forever. " +
+      "Trust it once from the Codex CLI, or add [projects.'" + WORKSPACE + "'] trust_level = \"trusted\" to that file, " +
+      "or use --exec (headless, which injects the trust override for this run only)."
+    );
+  }
   // Prefer Windows Terminal: it natively supports IME/TSF composition, so the Codex
   // TUI keeps accepting Microsoft 拼音/日语 IME switches (fixes "偶发失效"). Codex
   // runs the same launcher (UTF-8 + chcp 65001), just hosted in a WT ConPTY.
