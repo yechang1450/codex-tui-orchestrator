@@ -30,7 +30,7 @@ Once the plugin is registered with the host and enabled, start a new conversatio
 
 这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。此前流程证据覆盖 headless、可见 TUI、恢复接管、监督器和独立复核；当前候选仍须以最新真实自检和 RC 清单为准，不能把历史流程证据当作当前版本全流程通过。历史提交 `dea90f4` 曾完成覆盖 162 个文件的离线安全审计，未发现报告项；该结果不认证之后的修改；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前只支持 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测，离线回归不会替它们背书。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
 
-Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`.
+Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 
 ### Install or update from GitHub
 

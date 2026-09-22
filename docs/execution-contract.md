@@ -100,7 +100,7 @@ Windows inherit the initiating directory; do not derive cwd from a target filena
 
 ## Regression commands
 
-Run node --test --test-concurrency=1 test/*.test.mjs in the dedicated plugin directory. Invoke test/live-codex.mjs by absolute path from the desired workspace for the opt-in calculated-capacity real-model acceptance. ORCH_LIVE_ENTRY can select the Codex-specific scripts/orchestrate-sdk.mjs entry to run the same acceptance contract. Existing historical result files are not evidence for a changed core version; retain newly generated run IDs and summaries.
+Run node --test --test-concurrency=1 test/*.test.mjs in the dedicated plugin directory. node scripts/coverage.mjs runs the same serial suite with Node's built-in coverage and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, never published); it accepts `--test <path|glob>`, `--out <file>` and `--concurrency <n>`, and its exit code reports the suite, not the coverage percentage. Invoke test/live-codex.mjs by absolute path from the desired workspace for the opt-in calculated-capacity real-model acceptance. ORCH_LIVE_ENTRY can select the Codex-specific scripts/orchestrate-sdk.mjs entry to run the same acceptance contract. Existing historical result files are not evidence for a changed core version; retain newly generated run IDs and summaries.
 
 ## Operational flags and environment
 
