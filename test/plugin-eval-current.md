@@ -1,5 +1,11 @@
 # Plugin Eval Report: codex-tui-orchestrator
 
+<!-- Historical audit evidence, not a current score. Source audit: test/full-audit-current.json -->
+
+> **Historical evidence — Generated: 2026-09-14 | Commit: 020808d | Target: plugin root**
+> This snapshot belongs to the 2026-09-14 full audit and does not certify the current release; the recorded score above reflects that commit, not today's tree.
+> Regenerate with `plugin-eval analyze <plugin root> --format markdown`.
+
 ## At a Glance
 - Score: 86/100
 - Grade: B
