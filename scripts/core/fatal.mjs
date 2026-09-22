@@ -13,6 +13,10 @@ export function fatalMessage(error) {
 export function reportFatal(error) {
   // 同步写 fd 2：console.error 接到管道时是异步的，随后立刻退出会把它截断。
   try { fs.writeSync(2, fatalMessage(error) + '\n'); } catch { /* stderr is gone; the exit code still fails closed */ }
+  // 排障出口：默认绝不附栈（契约），只有显式 ORCH_DEBUG=1 才允许把栈跟在这一行后面。
+  if (process.env.ORCH_DEBUG === '1' && error && error.stack) {
+    try { fs.writeSync(2, String(error.stack) + '\n'); } catch { /* ignore */ }
+  }
   process.exitCode = 1;
 }
 

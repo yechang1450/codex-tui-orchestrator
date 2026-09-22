@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {buildTodoList} from './contracts.mjs';
+import {buildTodoList,jsonProblem,describeShape} from './contracts.mjs';
 import {atomicJson} from './leases.mjs';
 
 function directory(workspace,runId){
@@ -21,12 +21,18 @@ function eventText(dir){
   try{return fs.readFileSync(path.join(dir,'events.jsonl'),'utf8');}catch(error){if(error.code==='ENOENT')return '';throw error;}
 }
 export function readEvents(dir,{after=0}={}){
-  const text=eventText(dir),lines=text.slice(0,text.lastIndexOf('\n')+1).split('\n'),events=[];
-  let previous=0,runId;
+  const file=path.join(dir,'events.jsonl'),text=eventText(dir),lines=text.slice(0,text.lastIndexOf('\n')+1).split('\n'),events=[];
+  let previous=0,runId,lineNumber=0;
   for(const line of lines){
+    lineNumber++;
     if(!line.trim())continue;
-    let event;try{event=JSON.parse(line);}catch{throw new Error('Invalid status event JSON');}
-    if(event.schema!==1||!Number.isSafeInteger(event.seq)||event.seq<=previous||!event.runId||typeof event.type!=='string'||(runId&&runId!==event.runId))throw new Error('Invalid status event sequence or identity');
+    let event;
+    // 事件账本是审计线索：坏行仍然 fail-closed，但真因必须点名文件 + 行号，
+    // 否则调用方只知道"有问题"，不知道是哪一条。
+    try{event=JSON.parse(line);}
+    catch(error){throw new Error('Invalid status event JSON at '+file+':'+lineNumber+'：'+jsonProblem(line,error));}
+    if(event.schema!==1||!Number.isSafeInteger(event.seq)||event.seq<=previous||!event.runId||typeof event.type!=='string'||(runId&&runId!==event.runId))
+      throw new Error('Invalid status event sequence or identity at '+file+':'+lineNumber+'（要求 schema=1、seq 严格递增、整份文件同一个 runId）');
     previous=event.seq;runId=event.runId;if(event.seq>after)events.push(event);
   }
   return events;
@@ -50,11 +56,25 @@ export function createStatusPublisher(dir,{onEvent}={}){
   }};
 }
 export function readRunStatus(workspace,runId){
-  const dir=directory(workspace,runId);let sum;
-  try{sum=JSON.parse(fs.readFileSync(path.join(dir,'summary.json'),'utf8'));}
-  catch(error){if(error.code!=='ENOENT')throw error;sum=JSON.parse(fs.readFileSync(path.join(dir,'manifest.json'),'utf8'));}
+  const dir=directory(workspace,runId),summaryFile=path.join(dir,'summary.json'),manifestFile=path.join(dir,'manifest.json');
+  let source=summaryFile,sum=readLedger(summaryFile);
+  if(!sum){source=manifestFile;sum=readLedger(manifestFile);}
+  if(!sum)throw new Error('Run ledger not found: '+summaryFile+'（同目录也没有 manifest.json：'+dir+'）');
+  if(typeof sum.runId!=='string'||typeof sum.workspace!=='string')throw new Error('Invalid run ledger '+source+'：缺少 runId/workspace 字段（实测 runId='+describeShape(sum.runId)+'，workspace='+describeShape(sum.workspace)+'）');
   if(sum.runId!==runId||path.resolve(sum.workspace)!==path.resolve(workspace))throw new Error('Status run identity mismatch');
   return {...sum,todoList:buildTodoList(sum.tasks,sum.blocks,sum.taskResults),executionStatus:buildExecutionStatus(sum)};
+}
+// 坏账本既不能静默当成正常状态读出去（调用方会拿到半份状态），也不能只回裸 SyntaxError。
+// ENOENT 返回 null 交给调用方决定回落（summary 缺失时看 manifest）。
+function readLedger(file){
+  let text;
+  try{text=fs.readFileSync(file,'utf8');}
+  catch(error){if(error.code==='ENOENT')return null;throw new Error('Run ledger unreadable ('+error.code+'): '+file);}
+  let value;
+  try{value=JSON.parse(text.replace(/^\uFEFF/,''));}
+  catch(error){throw new Error('Invalid run ledger '+file+'：'+jsonProblem(text,error));}
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid run ledger '+file+'：顶层必须是 JSON 对象（实测 '+describeShape(value)+'）');
+  return value;
 }
 export function renderRunStatus(state){
   const rows=['Run '+state.runId+' | '+(state.finishedAt?(state.success?'verified':'finished with unresolved tasks'):'active'),

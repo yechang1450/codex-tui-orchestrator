@@ -255,18 +255,41 @@ export function verifyTask(receipt, task, checks, context) {
   if(!receipt || receipt.runId!==context.runId || receipt.token!==context.token || receipt.id!==task.id || receipt.status!=='completed')return {status:'failed',reason:'Missing or mismatched task receipt'};
   return verifyChecks(checks,context.workspace);
 }
+// 状态/契约文件的 JSON 解析失败必须给"人读得懂"的真因：空文件与半截文件是最常见的两种崩溃形态，
+// 直接点明；其余情况保留 JSON.parse 的定位信息（调用方负责补上文件名）。
+export function jsonProblem(text, error) {
+  const message = String((error && error.message) || error || '');
+  if (!String(text).trim()) return '文件为空（0 字节）';
+  if (/Unexpected end of JSON input/.test(message)) return 'JSON 不完整（可能被截断或写到一半）';
+  return 'JSON 解析失败：' + message;
+}
+export function describeShape(value) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return '数组';
+  if (value === undefined) return 'undefined';
+  return typeof value;
+}
 export function verifyChecks(checks,workspace) {
   if(!Array.isArray(checks)||!checks.length)return {status:'awaiting-verification',reason:'No parent-defined acceptance checks; window report is not proof of success'};
   const evidence=[];
   try {
-    for(const check of checks) {
+    for(const [index,check] of checks.entries()) {
+      // 检查项本身的类型错误必须在执行前就点名，而不是让 spawnSync/path.resolve 抛 Node 内部措辞。
+      if(!check||typeof check!=='object'||Array.isArray(check))throw new Error('Acceptance check #'+index+' must be an object (实测 '+describeShape(check)+')');
+      const where=' (check #'+index+(check.type?'，type='+check.type:'')+')';
       if(check.type==='command') {
-        if(!check.command||!Array.isArray(check.args))throw new Error('Command acceptance requires command and args');
+        if(typeof check.command!=='string'||!check.command)throw new Error('Command acceptance requires command and args'+where+'：command 必须是非空字符串（实测 '+describeShape(check.command)+'）');
+        if(!Array.isArray(check.args))throw new Error('Command acceptance requires command and args'+where+'：args 必须是数组');
+        const badArg=check.args.findIndex(arg=>typeof arg!=='string');
+        if(badArg>=0)throw new Error('Command acceptance args must be strings'+where+'：args['+badArg+'] 是 '+describeShape(check.args[badArg]));
+        if(check.timeoutMs!==undefined&&(!Number.isFinite(check.timeoutMs)||check.timeoutMs<0))throw new Error('Command acceptance timeoutMs must be a non-negative finite number'+where+'：实测 '+JSON.stringify(check.timeoutMs));
         const result=spawnSync(check.command,check.args,{cwd:workspace,encoding:'utf8',windowsHide:true,shell:false,timeout:check.timeoutMs||30000});
         if(result.error||result.status!==(check.exitCode??0))throw new Error('Acceptance command failed: '+(result.error?.message||result.status));
         if(check.stdout!==undefined&&result.stdout.trim()!==check.stdout)throw new Error('Acceptance stdout mismatch');
         evidence.push({type:'command',command:check.command,args:check.args,exitCode:result.status});continue;
       }
+      if(typeof check.path!=='string'||!check.path)throw new Error('Acceptance check requires a path string'+where+'：实测 '+describeShape(check.path));
+      if(check.type==='json'&&check.equals!==undefined&&(check.equals===null||typeof check.equals!=='object'||Array.isArray(check.equals)))throw new Error('JSON acceptance equals must be a JSON object'+where+'：实测 '+describeShape(check.equals));
       const file=path.resolve(workspace,check.path);
       if(check.type==='file') {
         if(!fs.existsSync(file))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));

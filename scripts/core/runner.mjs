@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,budgetMergePlan,canonicalDigest} from './contracts.mjs';
+import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,budgetMergePlan,canonicalDigest,jsonProblem,describeShape} from './contracts.mjs';
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
@@ -90,12 +90,45 @@ export function runDirectory(workspace,runId) {
   if(!/^[a-zA-Z0-9_-]{1,100}$/.test(runId||''))throw new Error('A valid --run-id is required');
   return path.join(workspace,'temp','orchestrator','runs',runId);
 }
-function loadChecks(file){return file?JSON.parse(fs.readFileSync(file,'utf8')):{};}
+// 验收契约是安全闸门：畸形文件**不能**被当成"没有检查"静默放行（那样任务会停在
+// awaiting-verification 而调用方看不出真因），也不能只回一句 JSON.parse 的裸措辞。
+// 这里逐层点名：哪个文件、哪一层、期望什么、实测什么。
+function loadChecks(file){
+  if(!file)return {};
+  let text;
+  try{text=fs.readFileSync(file,'utf8');}
+  catch(error){throw new Error('Acceptance contract unreadable ('+error.code+'): '+file+'：'+(error.message||error));}
+  let value;
+  try{value=JSON.parse(text.replace(/^\uFEFF/,''));}
+  catch(error){throw new Error('Invalid acceptance contract '+file+'：'+jsonProblem(text,error));}
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid acceptance contract '+file+'：顶层必须是「任务 id -> 检查」的 JSON 对象（实测 '+describeShape(value)+'）');
+  for(const [id,entry] of Object.entries(value)){
+    const checks=Array.isArray(entry)?entry:entry?.checks;
+    if(!Array.isArray(checks))throw new Error('Invalid acceptance contract '+file+'：任务 "'+id+'" 的检查必须是数组或 {checks:[…]}（实测 '+describeShape(entry)+'，缺 checks 字段等同契约写错，不能静默降级成"无检查"）');
+  }
+  return value;
+}
+// 账本读取：ENOENT 保持原样（调用方按 code 判定）；解析/形状问题必须点名文件，
+// 不能把裸 SyntaxError 丢给调用方。
+function parseLedger(file,text){
+  let value;
+  try{value=JSON.parse(String(text).replace(/^\uFEFF/,''));}
+  catch(error){throw new Error('Invalid run ledger '+file+'：'+jsonProblem(text,error));}
+  if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid run ledger '+file+'：顶层必须是 JSON 对象（实测 '+describeShape(value)+'）');
+  return value;
+}
+export function readLedgerJson(file){return parseLedger(file,fs.readFileSync(file,'utf8'));}
 // 验收契约绑定：运行开始时把契约摘要写进账本（summary.json + manifest.json），
 // verify/resume 必须重读到同一份契约。执行窗对工作区有写权限，能把
 // <runDir>/acceptance.json 换成对自己有利的版本；没有绑定就无法判断它是否被改过。
 function acceptanceBinding(checks,source){return {algorithm:'sha256',sha256:canonicalDigest(checks),source,boundAt:Date.now()};}
-function readJsonIfPresent(file){try{return JSON.parse(fs.readFileSync(file,'utf8'));}catch(error){if(error.code==='ENOENT')return undefined;throw error;}}
+function readJsonIfPresent(file){
+  let text;
+  try{text=fs.readFileSync(file,'utf8');}
+  catch(error){if(error.code==='ENOENT')return undefined;throw error;}
+  try{return JSON.parse(text.replace(/^\uFEFF/,''));}
+  catch(error){throw new Error('Invalid ledger '+file+'：'+jsonProblem(text,error));}
+}
 function recordedAcceptanceDigest(sum,dir){
   const manifest=readJsonIfPresent(path.join(dir,'manifest.json'));
   const records=[sum?.acceptance,manifest?.acceptance].filter(binding=>typeof binding?.sha256==='string'&&binding.sha256.length>0);
@@ -212,7 +245,7 @@ export function collectVerification(sum,checks,workspace,{allowStarted=false}={}
   return sum;
 }
 export function verifyRun(workspace,runId,acceptanceFile,options={}) {
-  const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=JSON.parse(fs.readFileSync(file,'utf8'));
+  const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=readLedgerJson(file);
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
   if(sum.protocol===2)validateRecoverySummary(sum);
   const claim=claimRun(sum.coordinator||coordinatorDir(workspace),'run:'+path.resolve(dir).toLowerCase());
@@ -250,7 +283,7 @@ export async function runWindows(request,hooks,options={}) {
   // validated ledger. New runs use the Codex-specific default locator.
   let savedResume=null,savedResumeRaw;
   if(options.resume){
-    savedResumeRaw=fs.readFileSync(summaryFile,'utf8');savedResume=JSON.parse(savedResumeRaw);
+    savedResumeRaw=fs.readFileSync(summaryFile,'utf8');savedResume=parseLedger(summaryFile,savedResumeRaw);
     if(savedResume.protocol!==2||!Array.isArray(savedResume.plan))throw new Error('This run has no recoverable task checkpoints');
     if((savedResume.agent||'codex')!==(options.agent||'codex'))throw new Error('Resume agent must match the saved run');
     if(options.executionMode&&(savedResume.executionMode||'visible')!==options.executionMode)throw new Error('Resume execution mode must match the saved run');

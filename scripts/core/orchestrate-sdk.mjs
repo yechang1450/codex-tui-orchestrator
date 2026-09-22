@@ -13,7 +13,7 @@
 import {nativeArgumentLines} from "./native-argv.mjs";
 import {spawnInactiveWindow} from './inactive-window.mjs';
 import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bindClassifiedTasks,computeMaxWindows} from "./contracts.mjs";
-import {runWindows,verifyRun} from "./runner.mjs";
+import {runWindows,verifyRun,readLedgerJson} from "./runner.mjs";
 import {resolveExecutionMode,resolveTuiMode,buildExecArgs} from './execution-mode.mjs';
 import {createHeadlessHooks} from './headless-executor.mjs';
 import {renderRunStatus} from './status-events.mjs';
@@ -336,8 +336,22 @@ async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalm
   //    命中直接复用 -> 越用越快（与下方 loadDecomposeCache 的“永不自动失效”实现保持一致）。
   const cached = loadCachedDecompose(request, hints);
   if (cached && Array.isArray(cached.blocks) && cached.blocks.length) {
-    console.error("[orchestrator] decompose cache HIT -> " + cached.blocks.map((b) => b.title).join(", "));
-    return finalize(cached.blocks);
+    const issue = cachedPlanIssue(cached.blocks);
+    if (issue) {
+      // 形状坏：摘掉毒条目后按"没有缓存"继续走正常规划（下面 non-array/empty 也是这个口径）。
+      dropCachedDecompose(request, hints, issue);
+    } else {
+      try {
+        const plan = finalize(cached.blocks);
+        console.error("[orchestrator] decompose cache HIT -> " + plan.map((b) => b.title).join(", "));
+        return plan;
+      } catch (error) {
+        // 依赖图坏（未知依赖/自依赖/环/重复块身份）：先摘毒条目（否则同一请求每次都被同一条
+        // 记录拦住），再按可读真因 fail-closed —— 计划契约违例绝不能静默降级。
+        dropCachedDecompose(request, hints, (error && error.message) || String(error));
+        throw error;
+      }
+    }
   }
   // 1) 通用确定性启发（非硬编码项目路径）：请求里出现多个不同项目目录 -> 单独拆块，秒级返回并写缓存。
   const det = genericProjectSplit(request);
@@ -461,6 +475,35 @@ function loadCachedDecompose(request, hints) {
   const e = j.entries[h];
   if (!e) return null;
   return e;
+}
+// 拆块缓存是派生态：一条用不了的缓存条目必须被就地摘除并告警，否则同一请求会永远撞在同一条
+// 毒记录上（用户既看不到原因，也不知道要 --clear-cache）。摘除走 registry 锁，避免和并发的
+// saveDecompose 互相覆盖。
+function dropCachedDecompose(request, hints, reason) {
+  try {
+    withRegistryLock(() => {
+      const cache = loadDecomposeCache(), hash = decomposeHash(request, hints);
+      if (!Object.hasOwn(cache.entries, hash)) return;
+      delete cache.entries[hash]; saveDecomposeCache(cache);
+    });
+  } catch { /* 摘除是尽力而为，不改变本次判定 */ }
+  console.warn("[orchestrator] 拆块缓存条目不可用，已从 " + DECOMPOSE_CACHE + " 摘除：" + reason + "（同一请求下一次会重新规划）");
+}
+// 缓存内容必须先是"一份计划"：blocks 是非空对象数组，每块的 tasks 是对象数组、prompt 是字符串。
+// 形状不符 = 当成没有缓存（与既有"非数组/空数组即忽略"的口径一致）；依赖图不合法仍然 fail-closed。
+function cachedPlanIssue(blocks) {
+  if (!Array.isArray(blocks) || !blocks.length) return "blocks 不是非空数组";
+  for (const [bi, block] of blocks.entries()) {
+    if (!block || typeof block !== "object" || Array.isArray(block)) return "blocks[" + bi + "] 不是对象";
+    if (block.title !== undefined && typeof block.title !== "string") return "blocks[" + bi + "].title 不是字符串";
+    if (block.dependsOn !== undefined && (!Array.isArray(block.dependsOn) || block.dependsOn.some((dep) => typeof dep !== "string"))) return "blocks[" + bi + "].dependsOn 不是字符串数组";
+    if (!Array.isArray(block.tasks)) return "blocks[" + bi + "].tasks 不是数组";
+    for (const [ti, task] of block.tasks.entries()) {
+      if (!task || typeof task !== "object" || Array.isArray(task)) return "blocks[" + bi + "].tasks[" + ti + "] 不是对象";
+      if (typeof task.prompt !== "string") return "blocks[" + bi + "].tasks[" + ti + "].prompt 不是字符串";
+    }
+  }
+  return null;
 }
 function saveDecompose(request, plan, hints) {
   withRegistryLock(()=>{
@@ -2469,7 +2512,8 @@ export async function main() {
     if(resume){
       const id=process.env.ORCH_RUN_ID;
       if(!/^[A-Za-z0-9_-]{1,100}$/.test(id||''))throw new Error('Invalid run ID');
-      savedMode=JSON.parse(readFileSync(path.join(WORKSPACE,'temp','orchestrator','runs',id,'summary.json'),'utf8')).executionMode;
+      // 恢复前必须先读模式：账本被截断/被改成非法 JSON 时要点名文件，不能只回裸 SyntaxError。
+      savedMode=readLedgerJson(path.join(WORKSPACE,'temp','orchestrator','runs',id,'summary.json')).executionMode;
     }
     const executionMode=resolveExecutionMode(mode,process.env,savedMode);
     if(AGENT.agent!=='codex'&&executionMode==='headless')throw new Error('Headless executor requires Codex');
@@ -2500,12 +2544,16 @@ export async function main() {
     };
     // 运行期间每 30 秒扫一次死窗：长任务途中也不让"代码 1"窗口一直挂在屏幕上。
     const runSweepTimer=setInterval(()=>{closeOrphanTerminals().catch(()=>{});},30000);
-    const result=await runWindows(request,{
-      plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
-      register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
-    },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,acceptanceOverride:acceptanceOverride(),timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
-    // 收尾再扫一次并停表（Windows Terminal 会把非 0 退出的面板留在屏幕上）。
-    clearInterval(runSweepTimer);
+    // 定时器必须在任何出口都停掉：runWindows 抛错（坏账本、坏契约、容量不足…）时若只走下面那行
+    // clearInterval，进程会被这个 30 秒定时器永久吊住 —— 公开入口于是既不退出也不报完，调用方只能等超时。
+    let result;
+    try {
+      result=await runWindows(request,{
+        plan:decomposeSafely,compact:capPlanBlocks,infer:inferTargetKeys,prompt:buildBlockPrompt,...executor,
+        register:r=>updateWindows(ws=>[...ws,{...r,mode:executionMode}]),commit:commitReservation,unregister:cancelReservation,
+      },{workspace:WORKSPACE,capacity,resume,executionMode,onEvent,agent:AGENT.agent,runId:process.env.ORCH_RUN_ID,acceptanceFile:process.env.ORCH_ACCEPTANCE_FILE,acceptanceOverride:acceptanceOverride(),timeoutMs:POLL_TIMEOUT_MS,auth:readAuthPrompt(),memoryBudget});
+    } finally { clearInterval(runSweepTimer); }
+    // 收尾再扫一次（Windows Terminal 会把非 0 退出的面板留在屏幕上）。
     await closeOrphanTerminals();
     process.exitCode=result.success?0:1;return;
   }
