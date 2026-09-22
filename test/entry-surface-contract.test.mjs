@@ -61,3 +61,30 @@ test('a workspace path that exists but is not a directory fails closed', () => {
     fs.rmSync(dir, {recursive: true, force: true});
   }
 });
+
+// ⑤ `--version` / `--install-deps` 在引擎加载**之前**就要能用：引擎静态依赖锁定的 SDK，
+//    而这两个命令恰恰是"依赖坏了"时唯一还问得出版本号与修法的地方（穷举审计 P5/P8）。
+test('--version is a read-only, zero-state, machine-readable success surface', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-version-'));
+  try {
+    const result = invoke('orchestrate-sdk.mjs', ['--version'], {cwd: dir});
+    assert.equal(result.status, 0, result.stderr);
+    const parsed = JSON.parse(result.stdout);
+    assert.equal(parsed.name, 'codex-tui-orchestrator');
+    assert.match(String(parsed.version), /^\d+\.\d+\.\d+/, 'plugin version must be readable');
+    assert.ok(parsed.coreVersion, 'coreVersion must be reported');
+    assert.deepEqual(fs.readdirSync(dir), [], '--version must not create any state');
+  } finally {
+    fs.rmSync(dir, {recursive: true, force: true});
+  }
+});
+
+test('--install-deps is idempotent and reports already-present on the second call', () => {
+  const first = invoke('orchestrate-sdk.mjs', ['--install-deps'], {timeout: 600000});
+  assert.equal(first.status, 0, first.stderr);
+  const firstBody = JSON.parse(first.stdout);
+  assert.equal(firstBody.ok, true, first.stdout);
+  const second = invoke('orchestrate-sdk.mjs', ['--install-deps'], {timeout: 600000});
+  assert.equal(second.status, 0, second.stderr);
+  assert.equal(JSON.parse(second.stdout).status, 'already-present', 'the second call must be a no-op');
+});
