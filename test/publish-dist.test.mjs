@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {inspectRegistration} from '../scripts/repair-plugin-registration.mjs';
 
@@ -37,5 +37,29 @@ test('publish-dist builds a clean distribution that registration accepts as inst
     const result = inspectRegistration({pluginPath: repo, marketplacePath: marketplace, marketplaceRoot: marketRoot, distRoot: target});
     assert.equal(result.status, 'matched', JSON.stringify(result));
     assert.equal(result.sourceKind, 'dist');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
+// 回归（2026-09-22 穷举审计实测抓到）：publishDist 把 manifest.name 直接 path.join
+// 到分发根上，然后 rmSync(recursive) —— 一个 name = "..\\victim" 的清单会在
+// 任何校验之前递归删掉分发根之外的同名目录（实测已复现）。判据：畸形清单名必须先被
+// 拒绝，且目标目录必须原样存活。
+test('publish-dist refuses a manifest name that escapes the distribution root', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-escape-'));
+  try {
+    const fake = path.join(root, 'fake-plugin');
+    fs.mkdirSync(path.join(fake, 'scripts'), {recursive: true});
+    fs.mkdirSync(path.join(fake, '.codex-plugin'), {recursive: true});
+    for (const rel of ['scripts/publish-dist.mjs', 'scripts/repair-plugin-registration.mjs', 'scripts/release-integrity.mjs', 'repair.mjs']) {
+      fs.copyFileSync(path.join(repo, rel), path.join(fake, rel));
+    }
+    fs.writeFileSync(path.join(fake, '.codex-plugin', 'plugin.json'), JSON.stringify({name: '..\\victim', version: '0.0.1'}), 'utf8');
+    const victim = path.join(root, 'victim');
+    fs.mkdirSync(victim, {recursive: true});
+    fs.writeFileSync(path.join(victim, 'marker.txt'), 'must survive', 'utf8');
+
+    const result = spawnSync(process.execPath, [path.join(fake, 'scripts', 'publish-dist.mjs'), '--target', path.join(root, 'dist')], {encoding: 'utf8', cwd: fake, windowsHide: true});
+    assert.notEqual(result.status, 0, 'malformed manifest name must fail the publish');
+    assert.ok(fs.existsSync(path.join(victim, 'marker.txt')), 'a directory outside the distribution root must never be deleted');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });

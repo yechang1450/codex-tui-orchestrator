@@ -26,7 +26,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot} from './repair-plugin-registration.mjs';
+import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {publishDist} from './publish-dist.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -203,6 +203,8 @@ export function checkInstall(options = {}) {
   const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(homeDir, '.codex');
   const problems = [];
   const warnings = [];
+  const nameProblem = manifestNameProblem(pluginName);
+  if (nameProblem) problems.push({step: 'manifest_name', status: 'invalid', reason: nameProblem});
 
   const registration = inspectRegistration({pluginPath, marketplacePath, marketplaceRoot, distRoot});
   if (registration.status !== 'matched') {
@@ -291,6 +293,10 @@ export function installPlugin(options = {}) {
   const pluginPath = path.resolve(options.pluginPath || root);
   const manifest = readManifest(pluginPath);
   const pluginName = manifest.name;
+  // 清单名在**任何文件系统动作之前**校验：publish-dist 会按这个名字递归删除分发目录，
+  // 注册检查里的同名判据跑得太晚（回归：test/publish-dist.test.mjs 的越界删除用例）。
+  const nameProblem = manifestNameProblem(pluginName);
+  if (nameProblem) throw new Error(`invalid .codex-plugin/plugin.json name ${JSON.stringify(pluginName)}: ${nameProblem}`);
   const marketplacePath = path.resolve(options.marketplacePath || DEFAULT_MARKETPLACE);
   const marketplaceRoot = path.resolve(options.marketplaceRoot || os.homedir());
   const homeDir = options.homeDir || os.homedir();

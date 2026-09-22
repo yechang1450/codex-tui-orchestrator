@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import './codex-entry.mjs';
+import {reportFatal} from './core/fatal.mjs';
 import {resolveHost} from './core/host-cli.mjs';
 import {networkConfig,resolveOpenAIBaseUrl,resolveProviderMode} from './core/network-policy.mjs';
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
@@ -195,5 +196,5 @@ export async function supervise(options, {codexFactory = config => new Codex({..
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   try { await supervise(parseArgs(process.argv.slice(2))); }
-  catch (error) { console.error(`[supervise] ${error?.stack || error}`); process.exitCode = 1; }
+  catch (error) { reportFatal(error); }
 }

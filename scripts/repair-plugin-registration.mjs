@@ -40,6 +40,16 @@ function fail(status, reason, extra = {}) {
   return {...extra, ok: false, status, reason};
 }
 
+// 插件名的唯一判据（install-plugin / publish-dist / 注册检查共用）：
+// 它会被拼进分发目录、缓存目录和 marketplace 条目，所以必须先证明它是单段、
+// 小写连字符名——否则 "..\\victim" 这类名字会在任何检查之前被 path.join 抬出目标根。
+export const MANIFEST_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+export function manifestNameProblem(pluginName) {
+  if (typeof pluginName !== 'string' || !MANIFEST_NAME_PATTERN.test(pluginName)) return 'manifest.name must be lowercase hyphen-case';
+  if (pluginName.length > 64) return 'manifest.name exceeds 64 characters';
+  return null;
+}
+
 /** Inspect registration state without writing anything. */
 export function inspectRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null} = {}) {
   const pluginRoot = path.resolve(pluginPath);
@@ -53,11 +63,9 @@ export function inspectRegistration({pluginPath = process.cwd(), marketplacePath
   } catch (error) {
     return fail('invalid_manifest', error.message, {pluginPath: pluginRoot, marketplacePath: marketplace});
   }
-  if (typeof pluginName !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(pluginName)) {
-    return fail('invalid_manifest_name', 'manifest.name must be lowercase hyphen-case', {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace});
-  }
-  if (pluginName.length > 64) {
-    return fail('invalid_manifest_name', 'manifest.name exceeds 64 characters', {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace});
+  const nameProblem = manifestNameProblem(pluginName);
+  if (nameProblem) {
+    return fail('invalid_manifest_name', nameProblem, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace});
   }
 
   let bytes;

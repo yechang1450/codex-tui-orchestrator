@@ -2,6 +2,7 @@
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {readRunStatus,watchRunStatus,renderRunStatus} from './core/status-events.mjs';
+import {reportFatal} from './core/fatal.mjs';
 
 export async function main(argv=process.argv.slice(2)){
   const options={workspace:process.env.WORKSPACE_DIR||process.cwd(),runId:process.env.ORCH_RUN_ID,watch:false,json:false,after:0,timeoutMs:21600000};
@@ -20,4 +21,4 @@ export async function main(argv=process.argv.slice(2)){
   const controller=new AbortController(),cancel=()=>controller.abort();process.once('SIGINT',cancel);
   try{await watchRunStatus({...options,onEvent:output,signal:controller.signal});}finally{process.removeListener('SIGINT',cancel);}
 }
-if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)main().catch(error=>{console.error(error.message);process.exitCode=1;});
+if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)main().catch(reportFatal);

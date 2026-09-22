@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {defaultDistRoot} from './repair-plugin-registration.mjs';
+import {defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -40,7 +40,7 @@ function parseArgs(argv) {
 export function publishDist({target = null, quiet = false} = {}) {
   const pluginName = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8')).name;
   const resolvedTarget = path.resolve(target || defaultDistRoot(root));
-  const dist = path.join(resolvedTarget, pluginName);
+  const dist = resolveDistDir(resolvedTarget, pluginName);
   fs.mkdirSync(resolvedTarget, {recursive: true});
   // repair.mjs 拒绝已存在的目标，正是为了避免新旧混合；这里先删旧分发再重建。
   fs.rmSync(dist, {recursive: true, force: true});
@@ -61,6 +61,25 @@ export function publishDist({target = null, quiet = false} = {}) {
     console.log('[publish-dist] next: ' + result.install);
   }
   return result;
+}
+
+// 回归（2026-09-22 穷举审计实测抓到）：此前 pluginName 直接从清单取出后 path.join 到
+// 分发根上就 rmSync(recursive)，清单里写 "..\\victim" 会在任何校验之前递归删掉分发根
+// 之外的同名目录（实测已复现）。判据（test/publish-dist.test.mjs）：畸形名字必须先被
+// 拒绝，且目标目录原样存活；正常名字解析结果必须仍是分发根的直接子目录。
+export function resolveDistDir(resolvedTarget, pluginName) {
+  const problem = manifestNameProblem(pluginName);
+  if (problem) throw new Error(`invalid .codex-plugin/plugin.json name ${JSON.stringify(pluginName)}: ${problem}`);
+  const dist = path.resolve(resolvedTarget, pluginName);
+  if (path.dirname(dist) !== path.resolve(resolvedTarget)) {
+    throw new Error(`plugin name escapes the distribution root: ${JSON.stringify(pluginName)}`);
+  }
+  // repair.mjs 按**检出目录名**落盘（<target>/<basename>），分发路径按清单名计算；
+  // 两者不一致时原地失败并指明原因，别让后面的完整性校验报一个看不懂的 ENOENT。
+  if (path.basename(root) !== pluginName) {
+    throw new Error(`checkout directory ${JSON.stringify(path.basename(root))} must equal manifest.name ${JSON.stringify(pluginName)} so the distribution lands in ${JSON.stringify(dist)}`);
+  }
+  return dist;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {

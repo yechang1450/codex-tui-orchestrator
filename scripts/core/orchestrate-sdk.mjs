@@ -23,6 +23,7 @@ import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuot
 import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
 import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode } from "./network-policy.mjs";
 import {budgetSettings, budgetStateFile, loadBudgetState, firstRunHeadroom} from "./memory-budget.mjs";
+import {reportFatal} from "./fatal.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, writeSync, closeSync, renameSync } from "node:fs";
@@ -2529,8 +2530,5 @@ export async function main() {
   );
 }
 const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
-if (isMain) main().catch((e) => {
-  console.error("[orchestrator] FATAL: " + e.message);
-  process.exitCode = 1;
-});
+if (isMain) main().catch(reportFatal);
 export { findOwnedTurn, waitForSessionFile, classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy, isProviderQuotaError, rolloutQuotaError };
