@@ -520,7 +520,16 @@ export async function runWindows(request,hooks,options={}) {
             }
             memStats=null;
           }
-          if(!identity&&la&&fs.existsSync(la.pidf))identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
+          if(!identity&&la&&fs.existsSync(la.pidf)){
+            // 身份枚举是瞬时故障源（Windows CIM / 互斥体在机器繁忙时会超时）。它绝不能
+            // 从 finally 里抛出去，把一次枚举抖动变成任务级终态失败：保留租约、给出真因，
+            // 交给 --resume-run 接管。
+            try{identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);}
+            catch(error){
+              e.status='failed';e.reason='Process identity enumeration failed: '+(error&&error.message?error.message:error);
+              e.endedAt=Date.now();persist();return;
+            }
+          }
           if(identity)await hooks.close(identity.ProcessId,identity);
           if(identity&&!(await waitExit(identity))){
             // Keep the lease for resume/adoption, but never leave tasks at their
