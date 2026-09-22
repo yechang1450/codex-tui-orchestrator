@@ -2,6 +2,7 @@
 
 ## 0.5.0-rc.1
 
+- cachebuster 升到 `+codex.20260922113000`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"未受信任工作区的可见窗 fail-closed"（提交 `5a12bb5`）一起发布。本次起由判据 `test/changelog-cachebuster.test.mjs` 守住两条发布纪律：**当前 cachebuster 必须在 CHANGELOG 留痕**、**三处清单版本必须一致**（此前 11:30 那次升版漏记，排障时会把在跑版本误判成 09:45 那版）。
 - 可见窗（`--run-windows`）不再在未受信任工作区上无限等待：新增只读预检 `workspaceTrustState()`/`trustConfigPath()`，读 `CODEX_HOME/config.toml` 的 `[projects.'<路径>'] trust_level`，未受信任就在启动前 fail-closed，并给出三条出路（先在 Codex CLI 里信任一次 / 手写 trust_level / 改用 `--exec` 走 headless，headless 会注入本次运行的信任覆盖）。**修正上一轮的判断**：可见模式之前在临时工作区"卡住"是 Codex 的"是否信任此文件夹"提示所致（在新窗口里没人应答），不是启动器引号问题——启动链 `spawnInactiveWindow → inactive-window.ps1 → CreateProcessW("\"file\" parameters")` 的引号经复核是正确的；在**已受信任**工作区实测可见双任务跑通（两块 visible 均 verified，约 1.5 分钟）。
 - 修正上一版的安装缓存问题：同一版本号重复 `codex plugin add` **不会刷新**已存在的缓存目录（本机实测：缓存里仍是旧文件），因此本次把 cachebuster 升到 `+codex.20260922094500`，让含 npm 引号修复的版本落进新缓存；README 的更新流程也按"改内容必须升 cachebuster"执行。
 - 按"第二台新机器"实测补上泛化边界（沙箱：全新 HOME + 全新 CODEX_HOME）：`--check` 与安装缓存发现改为**跟随 `CODEX_HOME`**，不再假设 `~/.codex`（此前 CODEX_HOME 在别处时会把另一份缓存当成已安装，甚至报 `ok`）；新增 `repair-plugin-registration.mjs --set-source` 与 `install-plugin.mjs --set-source`，把唯一条目的安装源改写到本机分发（保留其它条目、策略与分类，重复/远端/无匹配仍然停下），用于换机器或换克隆目录后条目仍指向旧路径的情况。
