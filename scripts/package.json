@@ -1,7 +1,7 @@
 {
   "name": "codex-tui-orchestrator",
   "private": true,
-  "version": "0.5.0-rc.1+codex.20260921125337",
+  "version": "0.5.0-rc.1+codex.20260922094500",
   "scripts": {
     "supervise": "node supervise.mjs"
   },

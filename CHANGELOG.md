@@ -2,6 +2,7 @@
 
 ## 0.5.0-rc.1
 
+- 修正上一版的安装缓存问题：同一版本号重复 `codex plugin add` **不会刷新**已存在的缓存目录（本机实测：缓存里仍是旧文件），因此本次把 cachebuster 升到 `+codex.20260922094500`，让含 npm 引号修复的版本落进新缓存；README 的更新流程也按"改内容必须升 cachebuster"执行。
 - 按"第二台新机器"实测补上泛化边界（沙箱：全新 HOME + 全新 CODEX_HOME）：`--check` 与安装缓存发现改为**跟随 `CODEX_HOME`**，不再假设 `~/.codex`（此前 CODEX_HOME 在别处时会把另一份缓存当成已安装，甚至报 `ok`）；新增 `repair-plugin-registration.mjs --set-source` 与 `install-plugin.mjs --set-source`，把唯一条目的安装源改写到本机分发（保留其它条目、策略与分类，重复/远端/无匹配仍然停下），用于换机器或换克隆目录后条目仍指向旧路径的情况。
 - 技能可见性验证改为**可降级**：`--verify-skills` 在宿主不提供该调试入口或返回非零时记为 `warnings`（`steps` 里是 `warning`），只有显式 `--strict-skills` 才当作安装失败；所有子进程加超时（`--timeout-ms`，默认 15 分钟），宿主 CLI 缺失时给出可执行提示而不是 ENOENT 堆栈。
 - 输出与诊断面向非作者机器：`install`/`check` 的 JSON 增加 `codexHome`、`environment`（platform / node / hostCli）与 `warnings`；非 Windows 主机给出明确告警（执行核心仅 Windows），命令行提示改为中英双语。
