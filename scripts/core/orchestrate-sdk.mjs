@@ -16,6 +16,7 @@ import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bind
 import {runWindows,verifyRun,readLedgerJson} from "./runner.mjs";
 import {resolveExecutionMode,resolveTuiMode,buildExecArgs} from './execution-mode.mjs';
 import {createHeadlessHooks} from './headless-executor.mjs';
+import {resolveInitiatorSettings} from './initiator-settings.mjs';
 import {renderRunStatus} from './status-events.mjs';
 import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,reserve,bind,release} from "./leases.mjs";
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
@@ -72,8 +73,9 @@ const PY = process.env.PYTHON || "python";
 // Absent explicit overrides, let the native CLI and SDK use the caller's
 // Codex configuration. A hard-coded model can become unavailable independently
 // of the installed plugin and must not replace the user's selected default.
-const MODEL = process.env.ORCH_MODEL || undefined;
-const EFFORT = process.env.ORCH_EFFORT || undefined;
+const INITIATOR = AGENT.agent==='codex'?resolveInitiatorSettings():{};
+const MODEL = process.env.ORCH_MODEL || INITIATOR.model;
+const EFFORT = process.env.ORCH_EFFORT || INITIATOR.effort;
 // A caller may pass its effective permissions; never elevate implicitly.
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = "never";
@@ -100,6 +102,8 @@ function appendModelEffortArgs(arr, agentConfig) {
   }
   if (model && String(model).trim() && !/\s/.test(String(model))) out.push("-m", String(model));
   if (effort && String(effort).trim() && !/\s/.test(String(effort))) out.push("-c", "model_reasoning_effort=" + String(effort));
+  const tier=process.env.ORCH_SERVICE_TIER||INITIATOR.serviceTier;
+  if(tier&&!/\s/.test(tier))out.push('-c','service_tier='+JSON.stringify(tier));
   return out;
 }
 // 生成 PowerShell 数组字面量 @('a','b',...)——每个参数独立元素, 含空格/单引号的值也保持为一个参数,
@@ -157,7 +161,8 @@ const TUI_MODE = resolveTuiMode(process.env.ORCH_TUI);
 const PROVIDER_MODE = resolveProviderMode();
 const codex = AGENT.agent==='codex'?new (await import('@openai/codex-sdk')).Codex({
   codexPathOverride: CODEX,
-  ...(PROVIDER_MODE === 'openai-https' ? { baseUrl: resolveOpenAIBaseUrl(), config: networkConfig } : {}),
+  ...(PROVIDER_MODE === 'openai-https' ? { baseUrl: resolveOpenAIBaseUrl() } : {}),
+  config:{...(PROVIDER_MODE==='openai-https'?networkConfig:{}),...(INITIATOR.serviceTier?{service_tier:INITIATOR.serviceTier}:{})},
 }):null;
 // 让出 CPU：orchestrator（含拆解线程）以 BelowNormal 优先级跑，不抢占系统/其它任务（限速=80% 性能，慢慢跑）。
 try { process.setPriority(6); console.error("[orchestrator] priority=BelowNormal (让出CPU)"); } catch { /* ignore */ }
@@ -725,7 +730,9 @@ function armEnforcement() {
   try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
 }
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
-// 检测 codex 可执行；找不到则用 node22 的 npm 全局安装 @openai/codex；仍不行则报错中止。
+// resolveAgent() 在本模块求值时调用 host-cli 的有界探测器；找不到已验证的
+// native Codex 时，它只执行一次受超时约束的 npm 安装并重新探测。这里保留
+// 轻量守卫，供 --spawn 的显式入口调用，避免把安装逻辑复制成第二套。
 function ensureCodexCli() { return AGENT.config.bin; }
 // ---------------------------------------------------------------------------
 // Superpowers 插件检测（用户要求：运行环境检测里加入对 Superpowers plugin 的检测）。

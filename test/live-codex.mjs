@@ -7,7 +7,7 @@ import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
-import {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest} from './live-acceptance-utils.mjs';
+import {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest,orderedCapacityReceipts} from './live-acceptance-utils.mjs';
 import {requestTasks} from '../scripts/core/contracts.mjs';
 import {coreInventory,verifyRelease} from '../scripts/release-integrity.mjs';
 
@@ -215,7 +215,7 @@ const results = config.ids.map(id => {
 
 const summary = fs.existsSync(summaryFile) ? JSON.parse(fs.readFileSync(summaryFile, 'utf8')) : null;
 const receiptsValid = results.every((r, i) => !r.missing && r.id === config.ids[i] && r.nonce === nonce && r.sum === 50005000 && r.cwd === workspace && r.finished > r.started);
-const ordered = receiptsValid && results[expectedLive].started >= results[expectedLive - 1].finished;
+const ordered = receiptsValid && orderedCapacityReceipts(results, expectedLive, summary?.blocks);
 const windowLaunches = executionMode==='headless'?Object.values(summary?.results||{}).reduce((n,r)=>n+(r.attempts?.length||0),0):(engine.output().match(new RegExp('spawned visible '+agent+' TUI','g')) || []).length;
 const uniqueLaunchers = new Set(samples.flatMap(s => s.live.map(w => w.launcherPid))).size;
 // 并发证据：dynamic 模式会把多个探针合并进同一串行块，任务时间窗不再代表并发；

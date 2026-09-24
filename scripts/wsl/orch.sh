@@ -48,7 +48,7 @@ forward=""
 while IFS= read -r name; do
   [ -n "$name" ] || continue
   forward="${forward:+$forward:}$name"
-done < <(env | sed -n 's/^\(ORCH_[A-Za-z0-9_]*\)=.*/\1/p' | sort -u)
+done < <(env | sed -n 's/^\(ORCH_[A-Za-z0-9_]*\|CODEX_THREAD_ID\|CODEX_SESSION_ID\)=.*/\1/p' | sort -u)
 if [ -n "$forward" ]; then
   if [ -n "${WSLENV:-}" ]; then export WSLENV="$WSLENV:$forward"; else export WSLENV="$forward"; fi
 fi

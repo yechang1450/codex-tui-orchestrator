@@ -38,6 +38,23 @@ test('exec and interactive TUI use the initiating model and effort exactly',()=>
   assert.deepEqual(optionPair(visible.args),expected);
 });
 
+test('both doctors inherit thread model, effort and Fast without explicit ORCH overrides',()=>{
+  const dir=fs.mkdtempSync(path.join(family,'initiator-')),id='11111111-2222-4333-8444-555555555555';
+  try{
+    const sessions=path.join(dir,'sessions','2026','09','24');fs.mkdirSync(sessions,{recursive:true});
+    fs.writeFileSync(path.join(sessions,'rollout-example-'+id+'.jsonl'),JSON.stringify({type:'turn_context',payload:{model:'initiator-default-model',effort:'max',service_tier:'priority'}})+'\n','utf8');
+    const env={...process.env,CODEX_HOME:dir,CODEX_THREAD_ID:id,ORCH_AGENT:'codex'};
+    delete env.ORCH_MODEL;delete env.ORCH_EFFORT;delete env.ORCH_SERVICE_TIER;
+    for(const mode of ['headless','visible']){
+      const result=spawnSync(process.execPath,[path.join(repo,'scripts','core','orchestrate-sdk.mjs'),'--doctor'],{encoding:'utf8',windowsHide:true,env:{...env,ORCH_EXEC_MODE:mode}});
+      assert.equal(result.status,0,result.stderr);
+      const report=JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+      assert.deepEqual(optionPair(report.args),{model:'initiator-default-model',effort:'max'});
+      assert.ok(report.args.includes('service_tier="priority"'));
+    }
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
 test('interactive launcher keeps model and effort in one structured PowerShell argv list',()=>{
   const dir=fs.mkdtempSync(path.join(family,'visible-'));
   const script=path.join(dir,'make-launcher.mjs');
@@ -106,7 +123,10 @@ test('optional real exec and visible TUI acceptance uses the same report contrac
     const child=spawn(process.execPath,[harness],{cwd:process.cwd(),windowsHide:true,env:{...process.env,ORCH_LIVE_MODE:mode}});
     let output='';child.stdout.on('data',chunk=>output+=chunk);child.stderr.on('data',chunk=>output+=chunk);
     const code=await new Promise(resolve=>child.once('exit',resolve));assert.equal(code,0,output);
-    const match=output.match(/"passed":true[\s\S]*?"root":"([^"]+)"/);assert.ok(match,output);
-    const report=JSON.parse(fs.readFileSync(path.join(match[1],'report.json'),'utf8'));assert.equal(report.mode,mode);assert.equal(report.summary.executionMode,mode);assert.equal(report.passed,true);assert.equal(report.receipt.answer,42);assert.equal(report.receipt.cwd,process.cwd());
+    const record=output.trim().split(/\r?\n/).reverse().map(line=>{try{return JSON.parse(line);}catch{return null;}}).find(value=>value?.passed===true&&value.root);
+    assert.ok(record,output);
+    const report=JSON.parse(fs.readFileSync(path.join(record.root,'report.json'),'utf8'));assert.equal(report.mode,mode);assert.equal(report.summary.executionMode,mode);assert.equal(report.passed,true);
+    assert.equal(report.receipts.length,2);
+    for(const receipt of report.receipts){assert.equal(receipt.answer,42);assert.equal(receipt.cwd,process.cwd());}
   }
 });

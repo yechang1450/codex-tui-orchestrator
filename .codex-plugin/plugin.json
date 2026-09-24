@@ -1,9 +1,9 @@
 {
   "name": "codex-tui-orchestrator",
-  "version": "0.5.0-rc.1+codex.20260923040000",
-  "description": "Windows \u4e0a\u7684 Codex \u5e76\u53d1\u7f16\u6392\u63d2\u4ef6\uff1a\u9ed8\u8ba4\u65e0\u5f39\u7a97\u6267\u884c\uff0c\u53ef\u9009\u53ef\u89c1 TUI\uff0c\u6309\u51b2\u7a81\u548c\u4f9d\u8d56\u5206\u5757\uff0c\u6301\u7eed\u540c\u6b65\u4efb\u52a1\u72b6\u6001\uff0c\u652f\u6301\u72ec\u7acb\u9a8c\u6536\u4e0e\u68c0\u67e5\u70b9\u6062\u590d\u3002\u53ea\u8bfb\u5206\u6790\u4e0e\u7f16\u6392\u5668\u81ea\u8eab\u4fee\u6539\u7559\u5728\u4e3b\u5bf9\u8bdd\u3002",
+  "version": "0.5.0-rc.1+codex.20260924145450",
+  "description": "Windows 上的 Codex 并发编排插件：默认无弹窗执行，可选可见 TUI，按冲突和依赖分块，持续同步任务状态，支持独立验收与检查点恢复。只读分析与编排器自身修改留在主对话。",
   "author": {
-    "name": "Yang Wench\u00e0ng"
+    "name": "Yang Wenchàng"
   },
   "homepage": "https://github.com/yechang1450/codex-tui-orchestrator",
   "license": "MIT",
@@ -18,9 +18,9 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Codex TUI Orchestrator",
-    "shortDescription": "\u771f\u5b9e\u6267\u884c\u5e76\u53d1\u7f16\u6392",
-    "longDescription": "\u72ec\u7acb\u5757\u5e76\u884c\u3001\u8054\u52a8\u5757\u4e32\u884c\uff1b\u9ed8\u8ba4\u65e0\u5f39\u7a97 exec\uff0c\u53ef\u9009\u53ef\u89c1 TUI\uff1bTodoList \u4e0e Execution \u72b6\u6001\u6765\u81ea\u540c\u4e00\u6301\u4e45\u8d26\u672c\uff0c\u652f\u6301\u8fdb\u7a0b\u63a5\u7ba1\u548c\u72ec\u7acb\u9a8c\u6536\u3002",
-    "developerName": "Yang Wench\u00e0ng",
+    "shortDescription": "真实执行并发编排",
+    "longDescription": "独立块并行、联动块串行；默认无弹窗 exec，可选可见 TUI；TodoList 与 Execution 状态来自同一持久账本，支持进程接管和独立验收。",
+    "developerName": "Yang Wenchàng",
     "category": "Productivity",
     "capabilities": [
       "Read",
@@ -35,8 +35,8 @@
     "logoDark": "./assets/icon.png",
     "screenshots": [],
     "defaultPrompt": [
-      "\u5c06\u5b8c\u6574\u4efb\u52a1\u6309\u51b2\u7a81\u548c\u4f9d\u8d56\u5206\u5757\uff0c\u9ed8\u8ba4 exec+headless \u6267\u884c\u5e76\u6301\u7eed\u663e\u793a\u4efb\u52a1\u4e0e\u5757\u72b6\u6001",
-      "\u4f7f\u7528 --run-windows \u663e\u793a TUI\uff0c\u9010\u4efb\u52a1\u8bb0\u5f55\u68c0\u67e5\u70b9\u5e76\u72ec\u7acb\u9a8c\u6536"
+      "将完整任务按冲突和依赖分块，默认 exec+headless 执行并持续显示任务与块状态",
+      "使用 --run-windows 显示 TUI，逐任务记录检查点并独立验收"
     ]
   }
 }

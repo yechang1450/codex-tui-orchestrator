@@ -29,6 +29,38 @@ export function capacityAcceptancePassed(r) {
     &&Object.values(r.summary.results).every(result=>result.status==='verified');
 }
 
+// The overflow ordering check only applies when the fixture intentionally
+// creates one task beyond the observed block count. A small two-task probe can
+// legitimately have exactly as many receipts as blocks.
+export function orderedCapacityReceipts(results, expectedLive, blocks) {
+  if (!Array.isArray(results) || !Number.isInteger(expectedLive) || expectedLive < 1) return false;
+  if (results.length < expectedLive) return false;
+  if(blocks){
+    const assigned=new Set();
+    for(const block of blocks){
+      let previous;
+      for(const id of block.taskIds||[]){
+        const index=Number(String(id).replace(/^T/,''))-1,receipt=results[index];
+        if(assigned.has(index)||!Number.isFinite(receipt?.started)||!Number.isFinite(receipt?.finished)||receipt.finished<receipt.started)return false;
+        if(previous&&receipt.started<previous.finished)return false;
+        assigned.add(index);previous=receipt;
+      }
+    }
+    return assigned.size===results.length;
+  }
+  if (results.length === expectedLive) return true;
+  const lastConcurrent = results[expectedLive - 1];
+  const overflow = results[expectedLive];
+  return Number.isFinite(lastConcurrent?.finished) && Number.isFinite(overflow?.started)
+    && overflow.started >= lastConcurrent.finished;
+}
+
+export function liveTimeout(env=process.env){
+  const value=Number(env.ORCH_LIVE_TIMEOUT_MS||180000);
+  if(!Number.isSafeInteger(value)||value<1000||value>21600000)throw new Error('Invalid ORCH_LIVE_TIMEOUT_MS: expected 1000..21600000');
+  return value;
+}
+
 export async function boundedChildResult(item,timeoutMs) {
   let timer;
   try {

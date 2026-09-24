@@ -12,7 +12,7 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 - 只读分析、方案和编排器自身修改留在主对话；用户已授权时直接执行，不重复询问窗口批准。
 - 默认用 `--exec`（headless，无弹窗）执行；需要观察或交互时用 `--run-windows` / `--visible`。`--run` 和裸请求遵循 `ORCH_EXEC_MODE`，显式参数优先。
 - 可见模式默认 `ORCH_TUI=wt`（Windows Terminal）；`ORCH_TUI=inactive` 只在显式指定时使用，仍不能保证焦点不变。
-- 两种执行模式默认继承原生 Codex 的模型与推理配置；需要沿用当前对话的临时设置时，由调用方显式传入 `ORCH_MODEL`、`ORCH_EFFORT`。执行块不得递归编排、调用子代理或另开窗口。
+- 两种模式通过 `CODEX_THREAD_ID` 自动读取发起对话最近的结构化 turn_context（当前轮次设置），继承模型与思考级别；Fast 优先使用轮次 service_tier，否则使用原生配置。`ORCH_MODEL`、`ORCH_EFFORT`、`ORCH_SERVICE_TIER` 可显式覆盖；无本地对话记录时回退原生配置。执行块不得递归编排、调用子代理或另开窗口。
 
 ## 规划与执行
 

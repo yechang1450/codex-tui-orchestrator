@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest} from './live-acceptance-utils.mjs';
+import {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest,orderedCapacityReceipts,liveTimeout} from './live-acceptance-utils.mjs';
 import {requestTasks} from '../scripts/core/contracts.mjs';
 import {genericProjectSplit} from '../scripts/core/orchestrate-sdk.mjs';
 
@@ -36,6 +36,27 @@ test('capacity success requires immutable core, exact concurrency, verified rece
   const valid={monitorError:null,coreUnchanged:true,closed:true,engineResult:{code:0},pollResult:{code:0},runnerCapacity:2,capacity:2,peak:2,receiptsValid:true,ordered:true,overlap:true,windowLaunches:2,uniqueLaunchers:2,executionMode:'visible',terminal:'wt',summary:{success:true,results:{B1:{status:'verified'},B2:{status:'verified'}}}};
   assert.equal(capacityAcceptancePassed(valid),true);
   for(const patch of [{coreUnchanged:false},{closed:false},{monitorError:'snapshot failed'},{runnerCapacity:1},{peak:1},{peak:3},{receiptsValid:false},{ordered:false},{overlap:false},{windowLaunches:3},{uniqueLaunchers:3},{terminal:null},{engineResult:{code:1}},{pollResult:{code:1}},{summary:{success:false,results:valid.summary.results}}])assert.equal(capacityAcceptancePassed({...valid,...patch}),false,JSON.stringify(patch));
+});
+
+test('exactly full receipt sets do not require a nonexistent overflow task',()=>{
+  assert.equal(orderedCapacityReceipts([{finished:20},{started:10}],2),true);
+  assert.equal(orderedCapacityReceipts([{finished:10},{finished:20},{started:21}],2),true);
+  assert.equal(orderedCapacityReceipts([{finished:10},{finished:20},{started:19}],2),false);
+  assert.equal(orderedCapacityReceipts([{finished:20}],2),false);
+});
+
+test('merged block ordering follows task membership and rejects missing or duplicated receipts',()=>{
+  const blocks=[{taskIds:['T001','T003']},{taskIds:['T002']}];
+  const results=[{started:1,finished:10},{started:2,finished:40},{started:11,finished:20}];
+  assert.equal(orderedCapacityReceipts(results,2,blocks),true);
+  assert.equal(orderedCapacityReceipts([...results.slice(0,2),{started:9,finished:20}],2,blocks),false);
+  assert.equal(orderedCapacityReceipts(results,2,[{taskIds:['T001','T001']},{taskIds:['T002']}]),false);
+});
+
+test('live timeout is configurable but always finite and bounded',()=>{
+  assert.equal(liveTimeout({}),180000);
+  assert.equal(liveTimeout({ORCH_LIVE_TIMEOUT_MS:'900000'}),900000);
+  for(const v of ['NaN','Infinity','-1','0','21600001'])assert.throws(()=>liveTimeout({ORCH_LIVE_TIMEOUT_MS:v}),/Invalid ORCH_LIVE_TIMEOUT_MS/);
 });
 
 test('terminal evidence follows the actual launch, including conhost fallback',()=>{
