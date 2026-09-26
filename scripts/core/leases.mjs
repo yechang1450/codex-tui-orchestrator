@@ -5,6 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {keysOverlap} from './contracts.mjs';
 import os from 'node:os';
+import {assertNoReparsePoints} from './runtime-context.mjs';
 
 function shapeOf(value) {
   if (value === null) return 'null';
@@ -47,7 +48,7 @@ export function processSnapshot(timeoutMs=15000) {
   if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
   const waitMs=Math.max(1000,Math.min(30000,Math.ceil(timeoutMs)));
   // WorkingSet64/PeakWorkingSet64 供动态内存预算采样（进程峰值 -> 边际成本）；不改身份校验字段。
-  const script=`$m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false;try{try{$held=$m.WaitOne(${waitMs})}catch [Threading.AbandonedMutexException]{$held=$true};if(-not $held){throw 'Process snapshot mutex timeout'};[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$ErrorActionPreference="Stop";Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,WorkingSet64,PeakWorkingSet64,@{n="Started";e={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
+  const script=`$m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false;try{try{$held=$m.WaitOne(${waitMs})}catch [Threading.AbandonedMutexException]{$held=$true};if(-not $held){throw 'Process snapshot mutex timeout'};[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$ErrorActionPreference="Stop";Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n="WorkingSet64";e={[long]$_.WorkingSetSize}},@{n="PeakWorkingSet64";e={[long]$_.PeakWorkingSetSize*1024}},@{n="Started";e={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
   const result=spawnSync('powershell.exe',['-NoProfile','-Command',script],
     {encoding:'utf8',windowsHide:true,timeout:Math.max(1,Math.min(15000,Math.ceil(timeoutMs)))});
   if(result.status!==0){
@@ -65,31 +66,38 @@ export function sameProcess(expected,actual) {
 export function launcherIdentity(pid,pidFile,snapshot=processSnapshot()) {
   const actual=snapshot.get(Number(pid));
   if(!pidFile)return null;
+  const commandHasToken=(command,file)=>{
+    const normalized=String(command||'').toLowerCase().replaceAll('/','\\');
+    const escaped=String(file).toLowerCase().replaceAll('/','\\').replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+    return new RegExp('(?:^|[\\s"\'])'+escaped+'(?=[\\s"\']|$)').test(normalized);
+  };
   if(path.basename(pidFile).startsWith('exec-')){
     const args=String(actual?.CommandLine||'').toLowerCase().replaceAll('/','\\');
     const contains=file=>new RegExp('(?:^|\\s)"?'+file.toLowerCase().replaceAll('/','\\').replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'"?(?=\\s|$)').test(args);
     return /^node(?:\.exe)?$/i.test(actual?.Name||'')&&contains(fileURLToPath(new URL('./headless-worker.mjs',import.meta.url)))&&contains(pidFile.replace(/\.pid$/,'.json'))?actual:null;
   }
   const script=path.join(path.dirname(pidFile),path.basename(pidFile).replace(/^window-/,'win-launch-').replace(/\.pid$/,'.ps1'));
-  const args=String(actual?.CommandLine||'').toLowerCase().replaceAll('/','\\');
-  if(!/^(powershell|pwsh)\.exe$/i.test(actual?.Name||'')||!args.includes(script.toLowerCase().replaceAll('/','\\')))return null;
+  if(!/^(powershell|pwsh)\.exe$/i.test(actual?.Name||'')||!commandHasToken(actual?.CommandLine,script))return null;
   return actual;
 }
 
 // Only a locator is kept in HKCU; all runtime files remain beneath the first
 // initiating workspace's temp. A named mutex makes first discovery atomic.
 export function coordinatorDir(workspace,env=process.env) {
-  if(env.ORCH_COORDINATOR_DIR)return path.resolve(workspace,env.ORCH_COORDINATOR_DIR);
+  if(env.ORCH_COORDINATOR_DIR){
+    const selected=path.resolve(workspace,env.ORCH_COORDINATOR_DIR);
+    return assertNoReparsePoints(selected,'ORCH_COORDINATOR_DIR');
+  }
   // Codex owns an independent pool. The former generic locator was also used
   // by open-tui-orchestrator, whose sweeper can only understand its own
   // launcher identities and therefore removes valid Codex reservations.
   const fallback=path.join(workspace,'temp','orchestrator','codex-coordinator');
-  if(process.platform!=='win32')return fallback;
+  if(process.platform!=='win32')return assertNoReparsePoints(fallback,'Codex coordinator');
   const quoted=fallback.replaceAll("'","''");
   const script=`$held=$false; $m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.Coordinator'); try {try{$held=$m.WaitOne(15000)}catch [Threading.AbandonedMutexException]{$held=$true}; if(-not $held){throw 'Coordinator locator busy'}; $key='HKCU:\\Software\\CodexTuiOrchestrator'; $p=(Get-ItemProperty -LiteralPath $key -Name CoordinatorRoot -ErrorAction SilentlyContinue).CoordinatorRoot; if(-not $p){$p='${quoted}'; New-Item -Path $key -Force|Out-Null; New-ItemProperty -LiteralPath $key -Name CoordinatorRoot -Value $p -PropertyType String -Force|Out-Null}; Write-Output $p}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
   const r=spawnSync('powershell.exe',['-NoProfile','-Command','[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); '+script],{encoding:'utf8',windowsHide:true,timeout:20000});
   if(r.status!==0||!r.stdout.trim())throw new Error('Unable to locate machine window coordinator');
-  return path.resolve(r.stdout.trim());
+  return assertNoReparsePoints(path.resolve(r.stdout.trim()),'Codex coordinator');
 }
 export function atomicJson(file,value){
   fs.mkdirSync(path.dirname(file),{recursive:true});
@@ -112,7 +120,10 @@ export function atomicJson(file,value){
   }finally{fs.rmSync(tmp,{force:true});}
 }
 export function transaction(dir,fn,snapshot=processSnapshot) {
-  fs.mkdirSync(dir,{recursive:true});const lock=path.join(dir,'mutex.json'),file=path.join(dir,'leases.json');
+  assertNoReparsePoints(dir,'coordinator directory');
+  fs.mkdirSync(dir,{recursive:true});
+  assertNoReparsePoints(dir,'coordinator directory');
+  const lock=path.join(dir,'mutex.json'),file=path.join(dir,'leases.json');
   let processes=snapshot();const owner=processes.get(process.pid);
   if(!owner)throw new Error('Coordinator owner identity unavailable');
   // A kernel mutex is released by Windows on a crash. Unlike a stale lockfile,
@@ -164,12 +175,13 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
     const result=fn(leases,owner,processes);atomicJson(file,leases);return result;
   }finally{unlock();}
 }
-export function reserve(dir,rec,capacity,snapshot) {
-  return transaction(dir,(leases,owner)=>{
+export function reserve(dir,rec,capacity,snapshot,memoryAdmission) {
+  return transaction(dir,(leases,owner,processes)=>{
     if(leases.some(l=>l.id===rec.id))return {ok:false,reason:'existing reservation'};
     const limit=Math.min(capacity,...leases.map(l=>l.capacity||capacity));
     if(leases.length>=limit)return {ok:false,reason:'capacity'};
     if(leases.some(l=>keysOverlap(l.keys,rec.keys)))return {ok:false,reason:'conflict'};
+    if(memoryAdmission&&!memoryAdmission(leases,rec,processes))return {ok:false,reason:'memory'};
     leases.push({...rec,owner,capacity,reservedAt:Date.now()});return {ok:true};
   },snapshot);
 }
@@ -192,10 +204,14 @@ export function claimRun(dir,key) {
   });
 }
 export function releaseRun(dir,key,claim) {
-  return transaction(dir,()=>{
+  return transaction(dir,(_leases,_owner,processes)=>{
     // 释放必须幂等：runWindows 的 finally 调它，账本被删/被写坏时抛错会把"已经跑完的一轮"改判成失败。
     const file=path.join(dir,'run-owners.json');
     const owners=readState(file,value=>!!value&&typeof value==='object'&&!Array.isArray(value),'运行占用账本 '+file,{broken:'empty'})||{};
-    if(owners[key]?.token===claim.token){delete owners[key];atomicJson(file,owners);}
+    // token 只用于区分同一进程的不同占用；任务子进程可以读到 token，
+    // 所以释放还必须绑定当前进程的 PID、启动时间、名称和完整命令行。
+    const current=processes.get(process.pid),entry=owners[key];
+    if(!claim?.token||!sameProcess(claim.owner,current)||entry?.token!==claim.token||!sameProcess(entry.owner,current))return;
+    delete owners[key];atomicJson(file,owners);
   });
 }

@@ -134,16 +134,18 @@ function npmRoot({npm, env, platform, spawn}) {
   return '';
 }
 
+export const DEFAULT_CLI_INSTALL_SPEC = '@openai/codex@0.157.0';
+
 /** Install a native Codex package without logging npm output or credentials. */
 export function installCodexCli({env = process.env, platform = process.platform, spawn = spawnSync, localRoots = defaultLocalModuleRoots(platform), probe = file => nativeProbe(file, env)} = {}) {
   const npm = pickNpmCli({env});
-  const spec = String(env.ORCH_CLI_INSTALL_SPEC || '@openai/codex').trim();
-  if (!spec || /[\r\n]/.test(spec)) throw installerError('invalid_spec');
+  const spec = String(env.ORCH_CLI_INSTALL_SPEC || DEFAULT_CLI_INSTALL_SPEC).trim();
+  if (!/^@openai\/codex@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(spec)) throw installerError('invalid_spec');
   const timeout = Number(env.ORCH_CLI_INSTALL_TIMEOUT_MS || 120000);
   if(!Number.isSafeInteger(timeout)||timeout<1||timeout>600000)throw installerError('invalid_timeout');
   let result;
   try {
-    result = spawn(npm.command, [...npm.args, 'install', '--global', '--no-audit', '--no-fund', spec], {
+    result = spawn(npm.command, [...npm.args, 'install', '--global', '--ignore-scripts', '--no-audit', '--no-fund', spec], {
       cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: npm.shell, timeout, env,
     });
   } catch (error) {

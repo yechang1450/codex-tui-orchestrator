@@ -122,12 +122,21 @@ test('unbound historical ledgers stay verifiable and conflicting bindings are re
     fs.writeFileSync(checks,JSON.stringify(contract({count:1})));
     fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(summary));
     assert.equal(verifyRun(workspace,'legacy'),true,'没有绑定的历史账本保持可验证');
-    // 重绑定要写两份账本，崩溃可能只写成一半：取最新记录继续，而不是永久锁死这个运行。
+    // 重绑定要写两份账本；如果崩溃或篡改导致两份记录不一致，恢复必须拒绝选择任意一份。
     const digest=canonicalDigest(contract({count:1}));
     const bound={...summary,acceptance:{algorithm:'sha256',sha256:digest,boundAt:2}};
     fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(bound));
     fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({runId:'legacy',workspace,acceptance:{algorithm:'sha256',sha256:'0'.repeat(64),boundAt:1}}));
-    assert.equal(verifyRun(workspace,'legacy'),true,'半途重绑定时取最新摘要继续验收');
+    assert.throws(()=>verifyRun(workspace,'legacy'),/Acceptance binding records disagree or are incomplete/,'冲突绑定必须默认拒绝');
+    assert.equal(verifyRun(workspace,'legacy',undefined,{override:true}),true,'显式 override 才能修复冲突绑定');
+    const healed=readJson(path.join(dir,'summary.json'));
+    assert.equal(healed.acceptance.sha256,digest,'override 必须重新绑定 summary');
+    assert.equal(readJson(path.join(dir,'manifest.json')).acceptance.sha256,digest,'override 必须重新绑定 manifest');
+    const oneMissing=readJson(path.join(dir,'manifest.json'));
+    delete oneMissing.acceptance;
+    fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify(oneMissing));
+    assert.throws(()=>verifyRun(workspace,'legacy'),/Acceptance binding records disagree or are incomplete/,'只剩一份绑定也必须拒绝');
+    assert.equal(verifyRun(workspace,'legacy',undefined,{override:true}),true,'显式 override 能修复缺失的一份绑定');
     // 绑定真正保护的是"磁盘契约必须与记录一致"：契约被改写就拒绝。
     fs.writeFileSync(checks,JSON.stringify(weakened));
     assert.throws(()=>verifyRun(workspace,'legacy'),/Acceptance contract changed/);

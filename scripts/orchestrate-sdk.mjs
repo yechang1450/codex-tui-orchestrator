@@ -3,7 +3,7 @@
 // 模块体（installFatalGuard）会在任何可能抛错的模块（依赖自检、入口参数校验、宿主 CLI 解析）
 // 之前跑完。
 import {reportFatal} from './core/fatal.mjs';
-import {runBootstrapCommand} from './entry-bootstrap.mjs';
+import {runBootstrapCommand,ensureRuntimeDependencies} from './entry-bootstrap.mjs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -13,10 +13,11 @@ const IS_CLI = Boolean(process.argv[1]) && path.resolve(process.argv[1]).toLower
 if (IS_CLI && await runBootstrapCommand(process.argv.slice(2))) process.exit(0);
 
 await import('./codex-entry.mjs');
+await ensureRuntimeDependencies();
 await import('./sdk-dependency-check.mjs');
 // Load the engine only after dependency validation completes. Static re-exports
 // could start engine evaluation concurrently with the asynchronous SDK check.
-export const {main,buildPsArrayLit,capPlanBlocks,buildWindowWaves,applyAuthPromptPolicy,readTail,
+export const {main,buildPsArrayLit,capPlanBlocks,buildWindowWaves,memoryPreflight,applyAuthPromptPolicy,readTail,
  classifyBlockComplexity,classifyExecutionMode,appendModelEffortArgs,genericProjectSplit,trySingleBlock,
  conflictByKeys,loadCachedDecompose,buildBlocksFromTasks,resolveHints,extractTasks,classifyPrompt,
  buildBlockPrompt,levelWaves,decomposeHash,checkDiskSpace,readPidFile,pidAliveCheck,closeWindowByPid,

@@ -2,27 +2,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,budgetMergePlan,canonicalDigest,jsonProblem,describeShape} from './contracts.mjs';
+import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,canonicalDigest,jsonProblem,describeShape} from './contracts.mjs';
 import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
-import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint} from './recovery.mjs';
+import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint,hasParentInspection,resolveAttemptFile,validateSavedLauncherFiles} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
-import {availableMB, admissionOk, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost, HARD_RUN_GRACE_MS} from './memory-budget.mjs';
-
-const RUNNING_BLOCK_STATUSES = new Set(['launching', 'running', 'reserved', 'retrying']);
-const TERMINAL_BLOCK_STATUSES = new Set(['verified', 'failed', 'needs-reconciliation', 'timeout', 'popup-failed']);
+import {availableMB, admissionOk, unconsumedReservationMB, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost} from './memory-budget.mjs';
+import {createVerificationQueue} from './verification-queue.mjs';
 
 function blockCostFor(sum, key, budget) {
   const block = (sum.blocks || []).find(item => item.key === key);
   return budgetBlockCostMB(block, budget.windowCostMB, budget.taskCosts || {});
-}
-function runningCostMB(sum, excludeKey, budget) {
-  return Object.entries(sum.results || {}).reduce((total, [key, result]) =>
-    (key !== excludeKey && RUNNING_BLOCK_STATUSES.has(result?.status)) ? total + blockCostFor(sum, key, budget) : total, 0);
-}
-function othersCanProgress(sum, excludeKey) {
-  return Object.entries(sum.results || {}).some(([key, result]) =>
-    key !== excludeKey && !TERMINAL_BLOCK_STATUSES.has(result?.status) && result?.status !== 'deferred');
 }
 /** 启动器进程树的当前工作集合计（MB），用于滚动修正每窗成本。 */
 function treeWorkingSetMB(snapshot, rootPid) {
@@ -129,28 +119,30 @@ function readJsonIfPresent(file){
   try{return JSON.parse(text.replace(/^\uFEFF/,''));}
   catch(error){throw new Error('Invalid ledger '+file+'：'+jsonProblem(text,error));}
 }
-function recordedAcceptanceDigest(sum,dir){
+function recordedAcceptanceDigest(sum,dir,{allowConflict=false}={}){
   const manifest=readJsonIfPresent(path.join(dir,'manifest.json'));
   const records=[sum?.acceptance,manifest?.acceptance].filter(binding=>typeof binding?.sha256==='string'&&binding.sha256.length>0);
-  if(!records.length)return null;
-  if(new Set(records.map(binding=>binding.sha256)).size===1)return records[0].sha256;
-  // 重绑定要写两份账本和一个磁盘副本，崩溃或校验失败可能只写成一半。这里取最新记录
-  // 并告警，而不是永久锁死这个运行（能同时改写两份账本的角色本来就绕得过摘要）。
-  const newest=records.slice().sort((left,right)=>(Number(right.boundAt)||0)-(Number(left.boundAt)||0))[0];
-  console.warn('[orchestrator] acceptance binding records disagree (summary '+String(sum?.acceptance?.sha256).slice(0,12)+', manifest '+String(manifest?.acceptance?.sha256).slice(0,12)+'); using the newest record '+newest.sha256.slice(0,12));
-  return newest.sha256;
+  if(!records.length)return {digest:null,conflict:false,records:[]};
+  if(records.length===2&&records[0].sha256===records[1].sha256)return {digest:records[0].sha256,conflict:false,records};
+  const details='summary '+String(sum?.acceptance?.sha256).slice(0,12)+', manifest '+String(manifest?.acceptance?.sha256).slice(0,12);
+  if(!allowConflict)throw new Error('Acceptance binding records disagree or are incomplete ('+details+'); refusing to select a binding. Use an explicit acceptance override to rebind both records.');
+  // 两份账本不一致时不能按时间戳猜测哪一份可信。显式 override 只负责
+  // 把当前契约重新绑定到两份账本，且必须在调用方留痕。
+  console.warn('[orchestrator] acceptance override: binding records disagree ('+details+'); rebinding both records');
+  return {digest:null,conflict:true,records};
 }
 function loadBoundChecks(file,dir,sum,override){
-  const checks=loadChecks(file),digest=canonicalDigest(checks),recorded=recordedAcceptanceDigest(sum,dir);
-  if(!recorded){
+  const checks=loadChecks(file),digest=canonicalDigest(checks),recorded=recordedAcceptanceDigest(sum,dir,{allowConflict:override===true});
+  if(recorded.conflict)return {checks,digest,rebound:true,conflict:true,previousRecords:recorded.records};
+  if(!recorded.digest){
     // 旧账本（本版本之前记录的运行）没有摘要可比，保持可验证，但必须说清楚。
     console.warn('[orchestrator] this run has no recorded acceptance binding (historical ledger); the on-disk contract is used as-is');
     return {checks,digest,rebound:false};
   }
-  if(recorded===digest)return {checks,digest,rebound:false};
-  if(!override)throw new Error('Acceptance contract changed since the run was recorded (recorded '+recorded.slice(0,12)+', current '+digest.slice(0,12)+'): '+file+'。确认契约没有被削弱后才可以用 --allow-acceptance-change（或 ORCH_ACCEPTANCE_OVERRIDE=1）显式接管。');
-  console.warn('[orchestrator] acceptance override: contract digest changed ('+recorded.slice(0,12)+' -> '+digest.slice(0,12)+'); rebinding '+file);
-  return {checks,digest,rebound:true,previous:recorded};
+  if(recorded.digest===digest)return {checks,digest,rebound:false};
+  if(!override)throw new Error('Acceptance contract changed since the run was recorded (recorded '+recorded.digest.slice(0,12)+', current '+digest.slice(0,12)+'): '+file+'。确认契约没有被削弱后才可以用 --allow-acceptance-change（或 ORCH_ACCEPTANCE_OVERRIDE=1）显式接管。');
+  console.warn('[orchestrator] acceptance override: contract digest changed ('+recorded.digest.slice(0,12)+' -> '+digest.slice(0,12)+'); rebinding '+file);
+  return {checks,digest,rebound:true,previous:recorded.digest};
 }
 function bindAcceptance(dir,checks,source){
   const binding=acceptanceBinding(checks,source);
@@ -159,6 +151,11 @@ function bindAcceptance(dir,checks,source){
   const manifestFile=path.join(dir,'manifest.json'),manifest=readJsonIfPresent(manifestFile);
   if(manifest)atomicJson(manifestFile,{...manifest,acceptance:binding});
   return binding;
+}
+function acceptanceReboundRecord(acceptance,binding){
+  return {at:binding.boundAt,from:acceptance.conflict
+    ? acceptance.previousRecords.map(record=>record.sha256)
+    : acceptance.previous,to:binding.sha256,...(acceptance.conflict?{conflict:true}:{})};
 }
 function goalDigest(sum) {
   return crypto.createHash('sha256').update(JSON.stringify({
@@ -181,7 +178,7 @@ export function refreshTaskProgress(sum){
   for(const block of sum.blocks){
     const entry=sum.results[block.key],attempt=entry?.attempts?.at(-1);
     if(!attempt||!['running','launching','awaiting-verification'].includes(entry.status))continue;
-    let checkpoints;try{checkpoints=readCheckpoints(attempt.file,{...attempt,runId:sum.runId});}catch{continue;}
+    let checkpoints;try{checkpoints=readCheckpoints(sum.workspace?resolveAttemptFile(sum,attempt.file):attempt.file,{...attempt,runId:sum.runId});}catch{continue;}
     for(const id of attempt.taskIds){
       const checkpoint=checkpoints[id];
       if(!checkpoint||checkpoint.state==='invalid'||sum.taskResults[id]?.status==='verified')continue;
@@ -201,7 +198,8 @@ function resetUnverifiedTasks(sum,block) {
 function blockCheckpoints(entry,block,sum) {
   const out={};
   for(const a of entry?.attempts||[]) {
-    try{Object.assign(out,readCheckpoints(a.file,{...a,runId:sum.runId}));}catch{for(const id of a.taskIds)out[id]={state:'invalid'};}
+    try{Object.assign(out,readCheckpoints(sum.workspace?resolveAttemptFile(sum,a.file):a.file,{...a,runId:sum.runId}));}
+    catch(error){if(error?.code!=='ENOENT')for(const id of a.taskIds)out[id]={state:'invalid'};}
   }
   // Preserve read-only verification of historical protocol-1 runs.
   if(!entry?.attempts&&entry?.receiptFile) {
@@ -216,7 +214,8 @@ function blockCheckpoints(entry,block,sum) {
         ['started','completed'].includes(saved.state)&&(['id','runId','token'].every(key=>!Object.hasOwn(saved,key))||checkpointMatches(saved,{runId:sum.runId,token:entry?.token},id));
       out[id]=valid?saved:{state:'invalid'};
     }
-    if(!out[id]&&sum.taskResults[id]?.status==='verified')out[id]={state:'invalid'};
+    const inspected=hasParentInspection(sum.taskResults[id],id)&&(entry?.attempts||[]).some(a=>a.runId===sum.taskResults[id].inspection.runId&&a.token===sum.taskResults[id].inspection.token&&a.taskIds.includes(id));
+    if(!out[id]&&sum.taskResults[id]?.status==='verified'&&!inspected)out[id]={state:'invalid'};
   }
   return out;
 }
@@ -227,14 +226,32 @@ function blockStatus(ids,results) {
   if(statuses.includes('awaiting-verification'))return 'awaiting-verification';
   return 'failed';
 }
-export function collectVerification(sum,checks,workspace,{allowStarted=false}={}) {
-  for(const b of sum.blocks) {
+export function collectVerification(sum,checks,workspace,{allowStarted=false,allowParentInspection=false,blockKey}={}) {
+  const blocks=blockKey?sum.blocks.filter(block=>block.key===blockKey):sum.blocks;
+  for(const b of blocks) {
     const e=sum.results[b.key];if(!e?.endedAt)continue;
     if(['blocked','popup-failed','preflight-failed','cancelled'].includes(e.status)&&!e.attempts?.length)continue;
     const cps=blockCheckpoints(e,b,sum);
     for(const id of b.taskIds) {
-      const cp=cps[id];if(!cp){sum.taskResults[id]={status:'failed',reason:'No durable task checkpoint'};continue;}
-      if(cp.state==='invalid'){sum.taskResults[id]={status:'needs-reconciliation',reason:'Invalid checkpoint',checkpoint:cp};continue;}
+      const cp=cps[id],attempt=e.attempts?.at(-1);
+      // A confirmed exit only authorizes a parent inspection when the parent
+      // supplied an actual acceptance contract for this task. Without checks
+      // there is no independent evidence to inspect, so a missing checkpoint
+      // remains a normal failed result. This also keeps provider capacity and
+      // startup failures from being relabeled as awaiting-verification.
+      const parentChecks=taskPolicy(checks[id]).checks;
+      const parentInspection=allowParentInspection===true&&Array.isArray(parentChecks)&&parentChecks.length>0&&e.exitConfirmed===true&&attempt?.runId===sum.runId&&attempt.taskIds.includes(id);
+      if(!cp&&!parentInspection){sum.taskResults[id]={status:'failed',reason:'No durable task checkpoint or confirmed exit inspection'};continue;}
+      if(cp?.state==='invalid'){sum.taskResults[id]={status:'needs-reconciliation',reason:'Invalid checkpoint',checkpoint:cp};continue;}
+      if(parentInspection){
+        const check=verifyChecks(taskPolicy(checks[id]).checks,workspace);
+        const inspection={id,runId:sum.runId,token:attempt.token,at:Date.now()};
+        sum.taskResults[id]=cp?.state==='started'&&!allowStarted
+          ? {status:'needs-reconciliation',reason:'Task has a started checkpoint but no completed checkpoint; use --verify-run for explicit reconciliation',verification:check,checkpoint:cp,inspection}
+          : {...check,...(cp?{checkpoint:cp}:{}),inspection,...(cp?.state==='started'?{reconciled:true}:{})};
+        if(check.status==='failed')sum.taskResults[id].status='needs-reconciliation';
+        continue;
+      }
       const reconciled=cp.state==='started'&&(allowStarted||hasReconciledCheckpoint(sum.taskResults[id],cp,id));
       const check=verifyChecks(taskPolicy(checks[id]).checks,workspace);
       sum.taskResults[id]=check.status==='verified'&&(cp.state==='completed'||reconciled)?{...check,checkpoint:cp,...(reconciled?{reconciled:true}:{})}:
@@ -262,7 +279,7 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
     if(acceptance.rebound){
       const binding=bindAcceptance(dir,checks,path.resolve(contractFile));
       sum.acceptance=binding;
-      sum.history.push({generation:sum.generation,acceptanceRebound:{at:binding.boundAt,from:acceptance.previous,to:binding.sha256}});
+      sum.history.push({generation:sum.generation,acceptanceRebound:acceptanceReboundRecord(acceptance,binding)});
     }
     collectVerification(sum,checks,workspace,{allowStarted:true});sum.success=summaryComplete(sum,true);
     createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed');
@@ -320,28 +337,23 @@ export async function runWindows(request,hooks,options={}) {
       atomicJson(path.join(dir,'manifest.json'),manifest);
       options.onEvent?.({...manifest,type:'plan.started',executionStatus:[]});
       const candidate=await hooks.plan(request,capacity);
-      // 动态内存预算：先按"全部块同时运行"的预估成本合并同层最贵的两块，再落账本。
       const memoryBudget=options.memoryBudget;
-      if(memoryBudget)memoryBudget.taskCosts=Object.fromEntries(Object.entries(checks||{}).map(([id,value])=>[id,{memoryMB:Number(value?.memoryMB||0)}]));
-      const compactWithBudget=(plan,cap)=>{
-        if(!memoryBudget||memoryBudget.mode!=='dynamic')return hooks.compact(plan,cap);
-        const merged=budgetMergePlan(plan,{availableMB:availableMB(),floorMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,taskCosts:memoryBudget.taskCosts||{},headroom:memoryBudget.headroom||1});
-        memoryBudget.lastPlan=merged;
-        if(merged.merges.length)console.log('[orchestrator] memory budget merge: '+merged.merges.map(m=>m.kept+' + '+m.merged).join(', ')+' -> required '+merged.requiredMB+'MB, available '+merged.availableMB+'MB, floor '+merged.floorMB+'MB');
-        return merged.plan;
-      };
-      const {plan,tasks}=ledgerPlan(request,candidate,capacity,compactWithBudget);
+      // Memory affects launch admission only. The dependency/conflict plan is
+      // immutable so waiting never changes which work is serial or parallel.
+      const {plan,tasks}=ledgerPlan(request,candidate,capacity,hooks.compact);
       const recs=plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[],keys:[...new Set([...(b.conflictKeys||[]),...b.tasks.flatMap(t=>hooks.infer(t.prompt||''))].map(k=>canonicalKey(k,workspace)))]}));
       levelWaves(recs);
       sum={protocol:2,version:CORE_VERSION,agent:options.agent||'codex',executionMode:options.executionMode||'visible',runId,workspace,request,capacity,coordinator,generation:1,history:[],startedAt:Date.now(),tasks,plan:recs,
-        memoryBudget:memoryBudget?{mode:memoryBudget.mode,floorMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,merges:memoryBudget.lastPlan?.merges||[],requiredMB:memoryBudget.lastPlan?.requiredMB,availableMB:memoryBudget.lastPlan?.availableMB}:undefined,
+        memoryBudget:memoryBudget?{mode:memoryBudget.mode,reserveMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,headroom:memoryBudget.headroom||1}:undefined,
         blocks:recs.map(r=>({key:r.key,title:r.title,taskIds:r.b.tasks.flatMap(t=>t.sourceIds)})),results:{},taskResults:{},todoList:[]};
       // dynamic 模式下 capacity 只是安全边界；账本记录真实块数，便于宿主与验收读取。
       if(memoryBudget?.mode==='dynamic')sum.capacity=sum.blocks.length;
       for(const r of recs){sum.results[r.key]={status:'pending',attempts:[]};for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)sum.taskResults[id]={status:'pending'};}
     }
+    if(options.memoryBudget)options.memoryBudget.taskCosts=Object.fromEntries(Object.entries(checks||{}).map(([id,value])=>[id,{memoryMB:Number(value?.memoryMB||0)}]));
     sum.owner=claim.owner;sum.coordinator=coordinator;
     const refreshTodoList=()=>{sum.todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);};
+    const verificationQueue=createVerificationQueue();
     refreshTodoList();
     {
       const keyDiff=acceptanceKeyDiff(checks,sum.tasks);
@@ -351,7 +363,7 @@ export async function runWindows(request,hooks,options={}) {
     {
       const binding=bindAcceptance(dir,checks,options.acceptanceFile?path.resolve(options.acceptanceFile):path.join(dir,'acceptance.json'));
       sum.acceptance=binding;
-      if(acceptance.rebound)sum.history.push({generation:sum.generation,acceptanceRebound:{at:binding.boundAt,from:acceptance.previous,to:binding.sha256}});
+      if(acceptance.rebound)sum.history.push({generation:sum.generation,acceptanceRebound:acceptanceReboundRecord(acceptance,binding)});
     }
     const publisher=createStatusPublisher(dir,{onEvent:options.onEvent});
     const persist=(event='run.updated')=>{
@@ -364,7 +376,6 @@ export async function runWindows(request,hooks,options={}) {
       persist(`block.${r.key}.${status}`);
     };
     persist(options.resume?'run.resumed':'plan.created');
-    if(sum.memoryBudget?.merges?.length)persist('plan.memory-merged');
     progressTimer=setInterval(()=>{try{if(refreshTaskProgress(sum))persist('task.progress');}catch(error){progressError=error;clearInterval(progressTimer);}},250);
     console.log(`[run] runId=${runId} mode=${sum.executionMode||'visible'} blocks=${sum.blocks.length} capacity=${capacity} generation=${sum.generation} summary=${summaryFile}`);
     async function execute(r) {
@@ -379,6 +390,7 @@ export async function runWindows(request,hooks,options={}) {
       while(Date.now()<deadline) {
         if(progressError)throw progressError;
         let e=sum.results[r.key],la=e.launcherFiles,identity;
+        if(la)validateSavedLauncherFiles(sum,b,e,e.attempts?.at(-1),{requireLiveFiles:['launching','running','awaiting-verification'].includes(e.status)});
         // 没有 pid 文件就没有可认领的启动器；这里不查进程表，省掉一次昂贵的 CIM 枚举。
         if(la&&fs.existsSync(la.pidf))identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
         const adopted=identity&&(!e.launcher||sameProcess(e.launcher,identity));
@@ -394,36 +406,19 @@ export async function runWindows(request,hooks,options={}) {
           if(recovery.uncertain.length){e.status='needs-reconciliation';e.reason='Uncertain tasks: '+recovery.uncertain.join(', ');e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;}
           if(attemptsThisController>=limit){mark(r,'failed','Safe recovery attempt budget exhausted');return;}
           if(attemptsThisController)await pause(Math.min(2000*attemptsThisController,Math.max(0,deadline-Date.now())));
-          // 动态内存准入：不够就 deferred（暂缓，不算失败）；其它块也全都推进不了时降级硬跑，
-          // 保证"一轮要跑完"的批次不会因为内存 fail-closed。
           const memoryBudget=options.memoryBudget;
-          if(memoryBudget&&memoryBudget.mode==='dynamic'&&Number(memoryBudget.floorMB)>0){
-                // 首轮余量：样本不足时按放大后的成本做准入，宁可少开一块，也不把机器挤到 starvation。
-                const cost=Math.ceil(blockCostFor(sum,r.key,memoryBudget)*(memoryBudget.headroom||1)),waitStarted=Date.now();
-            while(Date.now()<deadline){
-              const available=availableMB(),running=runningCostMB(sum,r.key,memoryBudget);
-              if(admissionOk({availableMB:available,runningCostMB:running,blockCostMB:cost,floorMB:memoryBudget.floorMB}))break;
-              const canProgress=running>0||othersCanProgress(sum,r.key);
-              if(!canProgress&&Date.now()-waitStarted>=HARD_RUN_GRACE_MS){
-                console.log(`[orchestrator] memory budget unmet for ${r.key} (available ${available}MB, block ${cost}MB, floor ${memoryBudget.floorMB}MB); no other block can run -> hard-run (degraded)`);
-                e.degraded='hard-run';
-                e.degradedReason=`memory budget unmet: available ${available}MB, block ${cost}MB, floor ${memoryBudget.floorMB}MB`;
-                mark(r,'deferred',e.degradedReason);
-                persist(`block.${r.key}.hard-run`);
-                break;
-              }
-              if(e.status!=='deferred'){
-                e.reason=`memory budget: available ${available}MB, need ${cost}MB + floor ${memoryBudget.floorMB}MB`;
-                mark(r,'deferred',e.reason);
-              }
-              await pause(1000);
-            }
-          }
+          let cost=memoryBudget&&memoryBudget.mode==='dynamic'
+            ?Math.ceil(blockCostFor(sum,r.key,memoryBudget)*(memoryBudget.headroom||1)):0;
+          const memoryAdmission=memoryBudget&&memoryBudget.mode==='dynamic'
+            ?(leases,rec,snapshot)=>admissionOk({availableMB:availableMB(),runningCostMB:unconsumedReservationMB(leases,snapshot),blockCostMB:rec.memoryCostMB,floorMB:memoryBudget.floorMB})
+            :undefined;
           let reserved=false;
           while(Date.now()<deadline) {
-            const result=await coordinate(()=>reserve(coordinator,{id:leaseId,runId,keys:r.keys},capacity),deadline);
+            if(memoryBudget?.mode==='dynamic')cost=Math.ceil(blockCostFor(sum,r.key,memoryBudget)*(memoryBudget.headroom||1));
+            const result=await coordinate(()=>reserve(coordinator,{id:leaseId,runId,keys:r.keys,memoryCostMB:cost},capacity,undefined,memoryAdmission),deadline);
             if(result.ok){reserved=true;break;}
-            mark(r,'waiting','Waiting for '+result.reason);await pause(1000);
+            const reason=result.reason==='memory'?`Waiting for memory: available ${availableMB()}MB, predicted peak ${cost}MB, reserve ${memoryBudget.floorMB}MB`:'Waiting for '+result.reason;
+            mark(r,result.reason==='memory'?'deferred':'waiting',reason);await pause(1000);
           }
           if(!reserved){mark(r,'timeout','Window capacity/resource wait timed out');return;}
           attemptsThisController++;
@@ -442,7 +437,7 @@ export async function runWindows(request,hooks,options={}) {
             '\n本块列出的全部待办都已分别写入 completed 检查点后，最后仅输出 __ORCH_DONE__ '+token;
           try{la=hooks.launcher(r.key,hooks.prompt(body,token),runId+'-a'+number,{attemptFile,runId,token,taskIds:recovery.pending});}
           catch(error){await coordinate(()=>release(coordinator,leaseId),deadline);throw error;}
-          e={...e,status:'launching',launchFailed:false,leaseId,token,launcherFiles:la,launcher:null,endedAt:null,startedAt:Date.now(),reason:'',retryAt:null};sum.results[r.key]=e;persist(`block.${r.key}.launching`);
+          e={...e,status:'launching',launchFailed:false,leaseId,token,launcherFiles:la,launcher:null,endedAt:null,exitConfirmed:false,startedAt:Date.now(),reason:'',retryAt:null};sum.results[r.key]=e;persist(`block.${r.key}.launching`);
           try {
             hooks.register({id:leaseId,runId,title:r.title,keys:r.keys,pidFile:la.pidf,pid:0,pending:true,reservedAt:Date.now()});
             await coordinate(()=>prepare(coordinator,leaseId,la.pidf),deadline);
@@ -540,9 +535,28 @@ export async function runWindows(request,hooks,options={}) {
             e.status='failed';e.reason='Launcher still alive; lease retained';e.endedAt=Date.now();persist();return;
           }
           await coordinate(()=>release(coordinator,e.leaseId||leaseId),Date.now()+30000);
+          e.exitConfirmed=!!identity;
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;
-          collectVerification(sum,checks,workspace);persist(`block.${r.key}.${e.status}`);
+          await verificationQueue.enqueue(r.key,async()=>{
+            let inspectionError=null;
+            try{collectVerification(sum,checks,workspace,{blockKey:r.key,allowParentInspection:true});}
+            catch(error){
+              inspectionError=error;
+              e.status='failed';
+              e.reason='Parent verification failed: '+(error?.message||String(error));
+              for(const id of b.taskIds)sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
+            }
+            const report={at:Date.now(),block:r.key,status:e.status,error:inspectionError?.message||null,tasks:b.taskIds.map(id=>({id,result:sum.taskResults[id]}))};
+            try{fs.appendFileSync(path.join(dir,'verification-report.jsonl'),JSON.stringify(report)+'\n','utf8');}
+            catch(error){
+              e.status='failed';
+              e.reason='Parent verification report could not be appended: '+(error?.message||String(error));
+              for(const id of b.taskIds)sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
+              console.error('[orchestrator] '+e.reason);
+            }
+            persist(`block.${r.key}.${e.status}`);
+          });
         }
         // A capacity failure happens before any task checkpoint. Reclaim the window and
         // retry after the provider's suggested/backoff delay without consuming the normal
@@ -572,6 +586,8 @@ export async function runWindows(request,hooks,options={}) {
     await scheduleReady(sum.plan,async r=>{try{await execute(r);}catch(e){mark(r,'failed',e.message);}},key=>sum.results[key]?.status,
       (r,failed)=>mark(r,'blocked','Predecessors not verified: '+failed.join(', ')));
     for(const r of sum.plan)if(!TERMINAL.has(sum.results[r.key]?.status))mark(r,'failed','No terminal result');
+    await verificationQueue.drain();
+    sum.verification=verificationQueue.stats();
     if(progressError)throw progressError;
     clearInterval(progressTimer);
     sum.finishedAt=Date.now();sum.success=summaryComplete(sum,true);persist(sum.success?'run.completed':'run.failed');

@@ -77,6 +77,7 @@ test('automatic installer uses a bounded global npm install and verifies the ins
   assert.equal(calls.length, 2);
   assert.ok(calls[0].args.includes('install'));
   assert.ok(calls[0].args.includes('--global'));
+  assert.ok(calls[0].args.includes('--ignore-scripts'));
   assert.ok(calls[0].args.includes('--no-audit'));
   assert.ok(calls[0].args.includes('--no-fund'));
   assert.ok(calls[0].args.includes('@openai/codex@0.149.0'));
@@ -84,7 +85,7 @@ test('automatic installer uses a bounded global npm install and verifies the ins
 });
 test('automatic installer converts npm failure to a bounded diagnostic without npm output', () => {
   assert.throws(() => installCodexCli({
-    env: {PATH: '', ORCH_CLI_INSTALL_SPEC: '@openai/codex'},
+    env: {PATH: '', ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.149.0'},
     platform: 'win32',
     localRoots: [],
     spawn: () => ({status: 1, stdout: 'private-token-from-npm', stderr: 'registry details'}),
@@ -94,8 +95,15 @@ test('automatic installer converts npm failure to a bounded diagnostic without n
     return true;
   });
 });
+
+test('automatic CLI installation requires an exact official Codex package version',()=>{
+  for(const spec of ['@openai/codex','@evil/codex@1.2.3','@openai/codex@latest','@openai/codex@1.2.3 --ignore-scripts']){
+    assert.throws(()=>installCodexCli({env:{PATH:'',ORCH_CLI_INSTALL_SPEC:spec},spawn:()=>{throw new Error('must not spawn');}}),/CLI_AUTO_INSTALL_FAILED/);
+  }
+});
 test('Windows CLI discovery consults the native where.exe result when PATH is empty', () => {
   const candidates = cliCandidates({PATH:'',Path:'',SystemRoot:'C:\\Windows'}, 'win32', {
+    localRoots: [], desktopBins: [],
     where: () => ({status:0, stdout:'C:\\Program Files\\Codex\\codex.exe\r\n'})
   });
   assert.ok(candidates.includes('C:\\Program Files\\Codex\\codex.exe'));

@@ -28,11 +28,12 @@ test('runWindows rejects malformed capacity before creating run state',async()=>
 });
 test('failed prerequisite retains both original tasks and never starts its dependent',async()=>{
  fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'runner-'));
+ fs.mkdirSync(path.join(workspace,'temp'),{recursive:true});
  let launches=0;const prompts=[];
  const hooks={
   plan:async()=>[{title:'A',tasks:[{prompt:'执行甲'}]},{title:'B',dependsOn:['A'],tasks:[{prompt:'执行乙'}]}],
   compact:p=>p,infer:()=>[],prompt:p=>{prompts.push(p);return p;},
-  launcher:key=>{launches++;return{pidf:path.join(workspace,'window-'+key+'.pid')};},
+  launcher:(key,_prompt,suffix)=>{launches++;return{lp:path.join(workspace,'temp','win-launch-'+suffix+'.ps1'),pf:path.join(workspace,'temp','agent-win-'+suffix+'.md'),pidf:path.join(workspace,'temp','window-'+suffix+'.pid'),rf:path.join(workspace,'temp','win-'+suffix+'.result.json')};},
   register:()=>{},unregister:()=>{},cleanup:()=>{},spawn:async()=>false,readPid:()=>0,
  };
  try{

@@ -8,6 +8,7 @@ import {reportFatal} from './core/fatal.mjs';
 import {resolveHost} from './core/host-cli.mjs';
 import {networkConfig,resolveOpenAIBaseUrl,resolveProviderMode} from './core/network-policy.mjs';
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
+import {ensureRuntimeDependencies} from './entry-bootstrap.mjs';
 import {
   canSupervisorRetry,
   classifySupervisorError,
@@ -16,6 +17,7 @@ import {
   nextSupervisorDelay,
 } from './supervisor-core.mjs';
 
+await ensureRuntimeDependencies();
 const {Codex} = await import('./sdk-dependency-check.mjs').then(() => import('@openai/codex-sdk'));
 
 // 默认继承调用方 Codex 配置；显式中继模式保留历史上使用的兜底模型与力度。
@@ -158,7 +160,12 @@ export async function supervise(options, {codexFactory = config => new Codex({..
         if (type === 'turn.completed' || type === 'task_complete') completed = true;
         if (thread.id) state.threadId = thread.id;
         writeState(file, state);
-        process.stdout.write(`${JSON.stringify(event)}\n`);
+        // Provider events can contain prompts, tool arguments, file contents,
+        // paths, and credentials copied into diagnostics. Expose only a small
+        // lifecycle envelope on stdout; detailed recovery state stays in the
+        // controller-owned ledger.
+        const safeType = /^[A-Za-z0-9_.-]{1,80}$/.test(type) ? type : 'event';
+        emit('provider.' + safeType, state);
       }
       if (!completed) throw new Error('stream ended before turn.completed');
       state.status = 'completed';

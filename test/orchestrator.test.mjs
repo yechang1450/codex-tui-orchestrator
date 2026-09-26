@@ -213,31 +213,18 @@ test('orchestrate-sdk conflictByKeys', () => {
   // 无活窗 -> 返回 null（无冲突）
   assert.equal(conflictByKeys(['file:C:/workspace/build/81', 'port:8081']), null);
 });
-test('orchestrate-sdk appendModelEffortArgs injects -m/-c and is space-guarded', () => {
-  // 显式设 env 保证确定性（默认已改为自动取 config.toml 主对话 model、effort 默认 xhigh，避免依赖宿主 config）。
-  const pm = process.env.ORCH_MODEL, pe = process.env.ORCH_EFFORT;
-  process.env.ORCH_MODEL = 'deepseek-v4-flash'; process.env.ORCH_EFFORT = 'max';
+test('orchestrate-sdk structured initiating settings override stale environment values', () => {
+  const prior = process.env.ORCH_MODEL;
+  process.env.ORCH_MODEL = 'wrong-model';
   try {
-    const base = ['--cd', 'D:\\', '-a', 'never', '--sandbox', 'danger-full-access'];
-    const out = appendModelEffortArgs(base);
-    assert.deepEqual(out.slice(-4), ['-m', 'deepseek-v4-flash', '-c', 'model_reasoning_effort=max']);
-    assert.ok(out.includes('deepseek-v4-flash') && out.includes('model_reasoning_effort=max'));
-    assert.ok(!/\s/.test('deepseek-v4-flash'), 'model value must contain no space (else launcher arg-split breaks it)');
-  } finally {
-    if (pm === undefined) delete process.env.ORCH_MODEL; else process.env.ORCH_MODEL = pm;
-    if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
-  }
+    const out = appendModelEffortArgs(['--cd', 'W'], {id:'codex'}, {model:'initiator-model',effort:'max',serviceTier:'priority'});
+    assert.deepEqual(out.slice(2), ['-m','initiator-model','-c','model_reasoning_effort=max','-c','service_tier="priority"']);
+    assert.equal(out.includes('wrong-model'),false);
+  } finally { if(prior===undefined)delete process.env.ORCH_MODEL;else process.env.ORCH_MODEL=prior; }
 });
-test('orchestrate-sdk leaves model and effort to native Codex configuration when no override is supplied', () => {
-  const pm = process.env.ORCH_MODEL, pe = process.env.ORCH_EFFORT;
-  delete process.env.ORCH_MODEL; delete process.env.ORCH_EFFORT;
-  try {
-    const out = appendModelEffortArgs(['--cd', 'D:\\']);
-    assert.deepEqual(out, ['--cd', 'D:\\']);
-  } finally {
-    if (pm === undefined) delete process.env.ORCH_MODEL; else process.env.ORCH_MODEL = pm;
-    if (pe === undefined) delete process.env.ORCH_EFFORT; else process.env.ORCH_EFFORT = pe;
-  }
+test('orchestrate-sdk rejects whitespace in model and effort values', () => {
+  const out=appendModelEffortArgs(['--cd','W'],{id:'codex'},{model:'bad model',effort:'bad effort',serviceTier:'bad tier'});
+  assert.deepEqual(out,['--cd','W']);
 });
 test('通用化: appendModelEffortArgs 对非 codex 走其 modelEnv/effortEnv、绝不注入 codex -m/-c', () => {
   const prevM = process.env.ANTHROPIC_MODEL, prevE = process.env.ORCH_CLAUD_EFFORT;

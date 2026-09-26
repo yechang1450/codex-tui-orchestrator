@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { resolveRuntimeContext } from '../scripts/runtime-context.mjs';
 import { launchArgs } from '../scripts/host-cli.mjs';
 
@@ -25,6 +26,22 @@ test('state override stays inside the initiating workspace temp directory', () =
     () => resolveRuntimeContext({ ORCH_STATE_DIR: path.join(cwd, '..', 'outside-state') }, cwd),
     /ORCH_STATE_DIR.*workspace temp/i,
   );
+});
+test('runtime state rejects symlinked workspace temp and state paths', () => {
+  const root=fs.mkdtempSync(path.join(path.resolve('temp'),'runtime-links-'));
+  try {
+    const target=path.join(root,'real');fs.mkdirSync(target);
+    fs.mkdirSync(path.join(root,'temp'));
+    try { fs.symlinkSync(target,path.join(root,'temp','workspace-temp'),'junction'); }
+    catch { try { fs.symlinkSync(target,path.join(root,'temp','workspace-temp'),'dir'); } catch { return; } }
+    assert.throws(() => resolveRuntimeContext({WORKSPACE_DIR:root,ORCH_STATE_DIR:'workspace-temp'}, root), /symbolic link|junction|reparse/i);
+    const workspace=path.join(root,'workspace');fs.mkdirSync(workspace);
+    fs.mkdirSync(path.join(workspace,'temp'));
+    const stateTarget=path.join(root,'state-target');fs.mkdirSync(stateTarget);
+    try { fs.symlinkSync(stateTarget,path.join(workspace,'temp','linked'),'junction'); }
+    catch { try { fs.symlinkSync(stateTarget,path.join(workspace,'temp','linked'),'dir'); } catch { return; } }
+    assert.throws(() => resolveRuntimeContext({ORCH_STATE_DIR:'linked'},workspace), /symbolic link|junction|reparse/i);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
 test('authorized windows do not request approval; legacy approval overrides cannot reintroduce prompts', () => {
   const cwd = path.resolve('temp', "caller's workspace");

@@ -1,14 +1,87 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {levelWaves,verifyChecks,requestTasks,buildTodoList} from './contracts.mjs';
 import {checkpointMatches} from './checkpoint.mjs';
+import {assertNoReparsePoints} from './runtime-context.mjs';
+
+const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
+const pathInside=(root,value)=>{
+ const candidate=path.isAbsolute(value)?path.resolve(value):path.resolve(root,value);
+ const relative=path.relative(path.resolve(root),candidate);
+ if(relative==='..'||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative))return null;
+ return candidate;
+};
+export function runRoot(sum){return path.resolve(String(sum.workspace),'temp','orchestrator','runs',String(sum.runId));}
+export function resolveAttemptFile(sum,value,label='attempt file'){
+ if(typeof value!=='string'||!value||value.includes('\0'))throw new Error('Invalid recovery ledger: '+label+' must be a safe path');
+ const resolved=pathInside(runRoot(sum),value);
+ if(!resolved)throw new Error('Invalid recovery ledger: '+label+' escapes the run directory');
+ assertNoReparsePoints(resolved,label);
+ return resolved;
+}
+function resolveTempFile(sum,value,label){
+ if(typeof value!=='string'||!value||value.includes('\0'))throw new Error('Invalid recovery ledger: '+label+' must be a safe path');
+ const resolved=pathInside(path.join(String(sum.workspace),'temp'),value);
+ if(!resolved)throw new Error('Invalid recovery ledger: '+label+' escapes workspace temp');
+ assertNoReparsePoints(resolved,label);
+ return resolved;
+}
+function samePath(a,b){return path.resolve(a).toLowerCase()===path.resolve(b).toLowerCase();}
+function safeStem(value){return String(value).replace(/[^A-Za-z0-9_-]/g,'_');}
+export function validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveFiles=false}={}){
+ const files=entry?.launcherFiles;
+ if(files===undefined)return;
+ if(!object(files)||!attempt||attempt.runId!==sum.runId||entry.token!==attempt.token)throw new Error('Invalid recovery ledger: launcher identity is not bound to the latest attempt');
+ const attemptFile=resolveAttemptFile(sum,attempt.file,'attempt file');
+ const temp=path.join(String(sum.workspace),'temp');
+ const headless=files.mode==='headless'||Object.hasOwn(files,'stdout')||Object.hasOwn(files,'stderr');
+ const required=headless?['lp','pf','pidf','rf','stdout','stderr']:['lp','pf','pidf','rf'];
+ for(const key of required)if(typeof files[key]!=='string'||!files[key])throw new Error('Invalid recovery ledger: launcherFiles.'+key+' is missing');
+ for(const [key,value] of Object.entries(files)){
+  if(key==='mode')continue;
+  if(typeof value!=='string'||!value)throw new Error('Invalid recovery ledger: launcherFiles.'+key+' must be a path');
+  resolveTempFile(sum,value,'launcherFiles.'+key);
+ }
+ const attemptDir=path.dirname(attemptFile),key=safeStem(block.key);
+ if(headless){
+  const base=path.join(attemptDir,'exec-'+key);
+  const expected={lp:base+'.json',pf:base+'.prompt.txt',pidf:base+'.pid',rf:base+'.result.json',stdout:base+'.stdout.jsonl',stderr:base+'.stderr.log'};
+  for(const [name,value] of Object.entries(expected))if(!samePath(files[name],value))throw new Error('Invalid recovery ledger: headless launcherFiles.'+name+' is not derived from the attempt path');
+  if(requireLiveFiles){
+   let config;
+   try{config=JSON.parse(fs.readFileSync(files.lp,'utf8'));}
+   catch(error){if(error?.code==='ENOENT')throw new Error('Invalid recovery ledger: headless launcher configuration is missing');throw new Error('Invalid recovery ledger: headless launcher configuration is unreadable');}
+   if(!object(config)||config.version!==1||config.runId!==sum.runId||config.token!==attempt.token||path.resolve(String(config.workspace||''))!==path.resolve(String(sum.workspace))||!Array.isArray(config.args)||!object(config.files))throw new Error('Invalid recovery ledger: headless launcher configuration identity mismatch');
+   for(const [name,value] of Object.entries(expected))if(!samePath(config.files[name],value))throw new Error('Invalid recovery ledger: headless launcher configuration path mismatch');
+   for(const name of ['ready','cancel','runtime']){
+    if(typeof config[name]!=='string'||!samePath(config[name],path.join(attemptDir,'exec-'+key+'.'+({ready:'go',cancel:'cancel',runtime:'runtime.json'}[name]))))throw new Error('Invalid recovery ledger: headless launcher control path mismatch');
+    resolveAttemptFile(sum,config[name],'headless control path');
+   }
+  }
+ }else{
+  const lp=path.basename(files.lp),match=/^win-launch-(.+)\.ps1$/i.exec(lp);
+  const suffix=match?.[1];
+  if(!suffix||!suffix.includes(String(sum.runId)+'-a'+String(attempt.number)))throw new Error('Invalid recovery ledger: visible launcher is not bound to this run attempt');
+  const expected={pf:'agent-win-'+suffix+'.md',pidf:'window-'+suffix+'.pid',rf:'win-'+suffix+'.result.json'};
+  if(!samePath(files.lp,path.join(temp,lp))||Object.entries(expected).some(([name,value])=>!samePath(files[name],path.join(temp,value))))throw new Error('Invalid recovery ledger: visible launcher file set is inconsistent');
+  if(requireLiveFiles){
+   for(const name of ['lp','pf','pidf'])if(!fs.existsSync(files[name]))throw new Error('Invalid recovery ledger: visible launcher file is missing');
+   let script,prompt;
+   try{script=fs.readFileSync(files.lp,'utf8');prompt=fs.readFileSync(files.pf,'utf8');}
+   catch{throw new Error('Invalid recovery ledger: visible launcher files are unreadable');}
+   const token=String(attempt.token).replaceAll("'","''");
+   if(!script.includes(`$token = '${token}'`)||!prompt.includes('__ORCH_DONE__ '+attempt.token))throw new Error('Invalid recovery ledger: visible launcher ownership token mismatch');
+  }
+ }
+}
 
 // Validate persisted structure before recovery can change state or invoke tools.
 export function validateRecoverySummary(sum) {
  const fail=reason=>{throw new Error('Invalid recovery ledger: '+reason);};
- const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
  const strings=x=>Array.isArray(x)&&x.every(v=>typeof v==='string'&&v.length>0);
  const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
  const exact=(ids,value)=>object(value)&&new Set(ids).size===ids.length&&Object.keys(value).length===ids.length&&ids.every(id=>Object.hasOwn(value,id)&&object(value[id]));
- if(!object(sum)||sum.protocol!==2||typeof sum.request!=='string'||typeof sum.runId!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(sum.runId)||!Number.isSafeInteger(sum.generation)||sum.generation<1||!Array.isArray(sum.history))fail('invalid header');
+ if(!object(sum)||sum.protocol!==2||typeof sum.request!=='string'||typeof sum.workspace!=='string'||!path.isAbsolute(sum.workspace)||typeof sum.runId!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(sum.runId)||!Number.isSafeInteger(sum.generation)||sum.generation<1||!Array.isArray(sum.history))fail('invalid header');
  if(sum.executionMode!==undefined&&!['headless','visible'].includes(sum.executionMode))fail('invalid execution mode');
  const tasks=requestTasks(sum.request);
  if(!tasks.length||!Array.isArray(sum.tasks)||!same(sum.tasks.map(t=>({id:t?.id,prompt:t?.prompt})),tasks))fail('original task inventory mismatch');
@@ -32,8 +105,12 @@ export function validateRecoverySummary(sum) {
   if(!entry.attempts.length&&(entry.launcherFiles||entry.launcher||entry.token||['launching','running','verified','awaiting-verification'].includes(entry.status)))fail('launched block has no attempt inventory');
   for(const attempt of entry.attempts) {
    if(!object(attempt)||attempt.runId!==sum.runId||typeof attempt.token!=='string'||!attempt.token||typeof attempt.file!=='string'||!attempt.file||!strings(attempt.taskIds)||!attempt.taskIds.length||new Set(attempt.taskIds).size!==attempt.taskIds.length||attempt.taskIds.some(id=>!block.taskIds.includes(id)))fail('invalid attempt identity or task coverage');
+   try{resolveAttemptFile(sum,attempt.file,'attempt file');}catch(error){fail(error.message.replace(/^Invalid recovery ledger:\s*/,''));}
   }
+  if(entry.launcherFiles){try{validateSavedLauncherFiles(sum,block,entry,entry.attempts.at(-1),{requireLiveFiles:['launching','running','awaiting-verification'].includes(entry.status)});}catch(error){fail(error.message.replace(/^Invalid recovery ledger:\s*/,''));}}
   for(const id of block.taskIds) {
+   const inspection=sum.taskResults[id]?.inspection;
+   if(inspection!==undefined&&(!hasParentInspection(sum.taskResults[id],id)||inspection.runId!==sum.runId||!entry.attempts.some(a=>a.runId===inspection.runId&&a.token===inspection.token&&a.taskIds.includes(id))))fail('invalid parent inspection: '+id);
    const checkpoint=sum.taskResults[id]?.checkpoint;
    if(checkpoint!==undefined&&checkpoint?.state!=='invalid'&&!entry.attempts.some(attempt=>attempt.taskIds.includes(id)&&checkpointMatches(checkpoint,attempt,id)))fail('invalid saved task checkpoint: '+id);
   }
@@ -63,11 +140,19 @@ export const taskPolicy=value=>Array.isArray(value)?{checks:value,retrySafe:fals
 export function hasReconciledCheckpoint(result,checkpoint,id) {
   return result?.status==='verified'&&result.reconciled===true&&result.checkpoint?.state==='started'&&checkpoint?.state==='started'&&checkpointMatches(result.checkpoint,checkpoint,id);
 }
+export function hasParentInspection(result,id) {
+  const proof=result?.inspection;
+  return proof?.id===id&&typeof proof.runId==='string'&&!!proof.runId&&typeof proof.token==='string'&&!!proof.token&&Number.isFinite(proof.at)&&proof.at>0;
+}
 export function recoveryTasks(tasks,checkpoints,checks,workspace,previousResults={}) {
   const result={verified:[],pending:[],uncertain:[],results:{}};
   for(const task of tasks) {
     const cp=checkpoints[task.id],policy=taskPolicy(checks[task.id]);
     if(!cp){
+      // A persisted inspection is only a receipt from the previous controller
+      // process. It is not proof that a worker exited or that the same output
+      // still exists. Recompute it only in the live controller after a fresh
+      // identity-bound exit confirmation; resume must reconcile or retry.
       result.pending.push(task.id);
       result.results[task.id]={status:'pending'};
       continue;

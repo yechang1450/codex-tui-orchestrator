@@ -14,9 +14,15 @@ fs.mkdirSync(family,{recursive:true});
 
 function doctor(mode,model,effort){
   const entry=path.join(repo,'scripts','core','orchestrate-sdk.mjs');
-  const result=spawnSync(process.execPath,[entry,'--doctor'],{encoding:'utf8',windowsHide:true,env:{...process.env,ORCH_AGENT:'codex',ORCH_EXEC_MODE:mode,ORCH_MODEL:model,ORCH_EFFORT:effort}});
-  assert.equal(result.status,0,result.stderr||result.stdout);
-  return JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  const home=fs.mkdtempSync(path.join(family,'doctor-'));
+  try{
+    fs.writeFileSync(path.join(home,'config.toml'),`model = "${model}"\nmodel_reasoning_effort = "${effort}"\nservice_tier = "priority"\n`,'utf8');
+    const env={...process.env,CODEX_HOME:home,ORCH_AGENT:'codex',ORCH_EXEC_MODE:mode,ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};
+    delete env.CODEX_THREAD_ID;
+    const result=spawnSync(process.execPath,[entry,'--doctor'],{encoding:'utf8',windowsHide:true,env});
+    assert.equal(result.status,0,result.stderr||result.stdout);
+    return JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
 }
 
 function optionPair(args){
@@ -59,9 +65,11 @@ test('interactive launcher keeps model and effort in one structured PowerShell a
   const dir=fs.mkdtempSync(path.join(family,'visible-'));
   const script=path.join(dir,'make-launcher.mjs');
   const module=new URL('../scripts/core/orchestrate-sdk.mjs',import.meta.url).href;
+  fs.writeFileSync(path.join(dir,'config.toml'),'model = "initiator-visible-model"\nmodel_reasoning_effort = "medium"\nservice_tier = "priority"\n','utf8');
   fs.writeFileSync(script,`import {writeInteractiveLauncher} from ${JSON.stringify(module)};const f=writeInteractiveLauncher('acceptance','【本块唯一标识】acceptance-token','1');console.log(f.lp);`);
   try{
-    const result=spawnSync(process.execPath,[script],{cwd:dir,encoding:'utf8',windowsHide:true,env:{...process.env,ORCH_AGENT:'codex',ORCH_MODEL:'initiator-visible-model',ORCH_EFFORT:'medium'}});
+    const env={...process.env,CODEX_HOME:dir,ORCH_AGENT:'codex',ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};delete env.CODEX_THREAD_ID;
+    const result=spawnSync(process.execPath,[script],{cwd:dir,encoding:'utf8',windowsHide:true,env});
     assert.equal(result.status,0,result.stderr);
     const launcher=fs.readFileSync(result.stdout.trim(),'utf8');
     assert.match(launcher,/initiator-visible-model/);

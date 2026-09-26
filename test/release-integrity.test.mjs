@@ -40,6 +40,7 @@ test('publisher excludes git and runtime debris and refuses an existing release'
   for(const [name,text] of Object.entries({'README.md':'readme','LICENSE':'license','SKILL.md':'skill','.git/config':'private metadata','temp/junk':'runtime','scripts/core/contracts.mjs':'core'}))fs.writeFileSync(path.join(source,name),text);
   fs.copyFileSync(fileURLToPath(new URL('../repair.mjs',import.meta.url)),path.join(source,'repair.mjs'));
   fs.copyFileSync(fileURLToPath(new URL('../scripts/release-integrity.mjs',import.meta.url)),path.join(source,'scripts','release-integrity.mjs'));
+  fs.copyFileSync(fileURLToPath(new URL('../scripts/core/runtime-context.mjs',import.meta.url)),path.join(source,'scripts','core','runtime-context.mjs'));
   fs.writeFileSync(path.join(source,'scripts','core','orchestrate-sdk.mjs'),'entry');
   fs.mkdirSync(path.join(source,'.codex-plugin'));fs.mkdirSync(path.join(source,'skills'));
   fs.mkdirSync(path.join(source,'skills','source'));fs.writeFileSync(path.join(source,'skills','source','SKILL.md'),'skill');
@@ -51,7 +52,7 @@ test('publisher excludes git and runtime debris and refuses an existing release'
   assert.equal(publish().status,2);
   const alias=path.join(root,'source-alias');fs.symlinkSync(source,alias,'junction');
   const aliased=spawnSync(process.execPath,[path.join(source,'repair.mjs'),'--target',path.join(alias,'nested')],{encoding:'utf8',windowsHide:true});
-  assert.equal(aliased.status,2);assert.match(aliased.stderr,/outside the source tree/);
+  assert.equal(aliased.status,2);assert.match(aliased.stderr,/(outside the source tree|symbolic link|junction|reparse point)/);
   assert.equal(fs.existsSync(path.join(source,'nested')),false);
   const dotNamed=spawnSync(process.execPath,[path.join(source,'repair.mjs'),'--target',path.join(source,'..named')],{encoding:'utf8',windowsHide:true});
   assert.equal(dotNamed.status,2);assert.match(dotNamed.stderr,/outside the source tree/);

@@ -57,6 +57,26 @@ test('relay base URL is optional, normalized, and must end in /v1', () => {
   });
 });
 
+test('relay base URL rejects credentials and opaque suffixes before CLI construction', () => {
+  withoutProviderEnv(()=>{
+    for (const value of [
+      'https://user:secret@proxy.example/v1',
+      'https://proxy.example/v1?token=secret',
+      'https://proxy.example/v1#secret',
+    ]) {
+      process.env.ORCH_OPENAI_BASE_URL = value;
+      assert.throws(() => resolveOpenAIBaseUrl(), error =>
+        /must not contain username, password, query, or fragment/.test(error.message) && !error.message.includes('secret'));
+    }
+    process.env.ORCH_OPENAI_BASE_URL = 'http://proxy.example/v1';
+    assert.throws(() => resolveOpenAIBaseUrl(), /must use https for non-loopback hosts/);
+    process.env.ORCH_OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1';
+    assert.equal(resolveOpenAIBaseUrl(), 'http://127.0.0.1:8080/v1');
+    process.env.ORCH_OPENAI_BASE_URL = 'https://proxy.example/private/v1';
+    assert.throws(() => resolveOpenAIBaseUrl(), /fixed \/v1 path/);
+  });
+});
+
 test('configured provider base URL is carried into spawned Codex argv', () => {
   withoutProviderEnv(()=>{
     process.env.ORCH_OPENAI_BASE_URL = 'https://proxy.example/v1';

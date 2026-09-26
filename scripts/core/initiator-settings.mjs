@@ -37,11 +37,23 @@ function latestContext(file) {
   return {};
 }
 
+function nativeConfigSettings(home) {
+  let text;
+  try { text=fs.readFileSync(path.join(home,'config.toml'),'utf8'); } catch { return {}; }
+  const read=(key)=>new RegExp(String.raw`^\s*${key}\s*=\s*["']([^"']+)["']\s*$`,'m').exec(text)?.[1];
+  return Object.fromEntries(Object.entries({model:read('model'),effort:read('model_reasoning_effort'),serviceTier:read('service_tier')}).filter(([,v])=>typeof v==='string'&&v.length>0&&!/\s/.test(v)));
+}
+
 export function resolveInitiatorSettings(env=process.env) {
   const id=env.CODEX_THREAD_ID||env.CODEX_SESSION_ID||'';
   const home=env.CODEX_HOME||path.join(os.homedir(),'.codex');
   const context=/^[a-f0-9-]{36}$/i.test(id)?latestContext(sessionFile(path.join(home,'sessions'),id)):{};
-  const values={model:env.ORCH_MODEL||context.model,effort:env.ORCH_EFFORT||context.effort||context.reasoning_effort,
-    serviceTier:env.ORCH_SERVICE_TIER||context.service_tier};
+  const native=nativeConfigSettings(home);
+  // A structured turn is authoritative. Explicit ORCH_* values only fill a
+  // missing context field; they cannot silently make a worker differ from its
+  // initiating window.
+  const values={model:context.model||native.model||env.ORCH_MODEL,
+    effort:context.effort||context.reasoning_effort||native.effort||env.ORCH_EFFORT,
+    serviceTier:context.service_tier||native.serviceTier||env.ORCH_SERVICE_TIER};
   return Object.fromEntries(Object.entries(values).filter(([,v])=>typeof v==='string'&&v.length>0&&!/\s/.test(v)));
 }

@@ -7,6 +7,7 @@ import {runWindows} from '../scripts/core/runner.mjs';
 
 for(const mixed of [false,true])test(mixed?'capacity recovery never disables the ordinary failure budget':'capacity retries use their own budget and restore pending TodoList state',async()=>{
  const workspace=fs.mkdtempSync(path.join(os.tmpdir(),'orch-capacity-run-'));
+ fs.mkdirSync(path.join(workspace,'temp'),{recursive:true});
  const original={ORCH_CAPACITY_RETRIES:process.env.ORCH_CAPACITY_RETRIES,ORCH_CAPACITY_RETRY_MS:process.env.ORCH_CAPACITY_RETRY_MS};
  process.env.ORCH_CAPACITY_RETRIES='3';process.env.ORCH_CAPACITY_RETRY_MS='0';
  let launches=0,live=false;const prompts=[],spawnRetries=[];
@@ -14,7 +15,7 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
  const hooks={
   plan:async()=>[{title:'capacity',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],
   prompt:p=>{prompts.push(p);return p;},
-  launcher:key=>({key,pidf:path.join(workspace,`window-${++launches}.pid`)}),
+  launcher:(key,_prompt,suffix)=>{++launches;return {key,lp:path.join(workspace,'temp',`win-launch-${suffix}.ps1`),pf:path.join(workspace,'temp',`agent-win-${suffix}.md`),pidf:path.join(workspace,'temp',`window-${suffix}.pid`),rf:path.join(workspace,'temp',`win-${suffix}.result.json`)};},
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
   spawn:async(...args)=>{spawnRetries.push(args[3]);live=true;return true;},
   readPid:()=>1,identity:()=>live?identity:null,waitForExit:async()=>true,
@@ -41,11 +42,12 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
 
 test('terminal provider quota does not consume the ordinary failure budget',async()=>{
  const workspace=fs.mkdtempSync(path.join(os.tmpdir(),'orch-quota-run-'));
+ fs.mkdirSync(path.join(workspace,'temp'),{recursive:true});
  let launches=0;
  const identity={ProcessId:9002,Name:'powershell.exe',Started:'test',CommandLine:'test launcher'};
  const hooks={
   plan:async()=>[{title:'quota',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],
-  prompt:p=>p,launcher:key=>({key,pidf:path.join(workspace,'window-'+(++launches)+'.pid')}),
+  prompt:p=>p,launcher:(key,_prompt,suffix)=>{++launches;return {key,lp:path.join(workspace,'temp',`win-launch-${suffix}.ps1`),pf:path.join(workspace,'temp',`agent-win-${suffix}.md`),pidf:path.join(workspace,'temp',`window-${suffix}.pid`),rf:path.join(workspace,'temp',`win-${suffix}.result.json`)};},
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
   spawn:async()=>true,readPid:()=>1,identity:()=>identity,waitForExit:async()=>true,
   close:async()=>{},session:async()=>true,

@@ -15,17 +15,17 @@ export function resolveOpenAIBaseUrl(env = process.env) {
   if (!raw) return undefined;
   const normalized = raw.replace(/\/+$/, '');
   let url;
-  try {
-    url = new URL(normalized);
-  } catch {
-    throw new Error(`ORCH_OPENAI_BASE_URL must be an absolute http(s) URL ending in /v1: ${raw}`);
-  }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`ORCH_OPENAI_BASE_URL must use http or https: ${raw}`);
-  }
-  if (!url.pathname.endsWith('/v1')) {
-    throw new Error(`ORCH_OPENAI_BASE_URL must end with /v1: ${raw}`);
-  }
+  try { url = new URL(normalized); } catch { throw new Error('ORCH_OPENAI_BASE_URL must be an absolute http(s) URL ending in /v1'); }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('ORCH_OPENAI_BASE_URL must use http or https');
+  // The value is passed to Codex as a command-line configuration argument.
+  // Reject URL credentials and opaque suffixes so secrets cannot enter process
+  // listings, diagnostics, or provider request URLs through this setting.
+  if (url.username || url.password || url.search || url.hash) throw new Error('ORCH_OPENAI_BASE_URL must not contain username, password, query, or fragment');
+  if (url.protocol === 'http:' && !['localhost','127.0.0.1','::1'].includes(url.hostname.toLowerCase())) throw new Error('ORCH_OPENAI_BASE_URL must use https for non-loopback hosts');
+  // The value is also serialized into a child configuration argument. Only
+  // the fixed API path is accepted so credentials cannot hide in a custom
+  // path segment that would later appear in process listings or diagnostics.
+  if (!url.hostname || url.pathname !== '/v1') throw new Error('ORCH_OPENAI_BASE_URL must be an absolute http(s) URL with the fixed /v1 path');
   return url.toString().replace(/\/$/, '');
 }
 

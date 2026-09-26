@@ -19,6 +19,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
+import {assertNoReparsePoints} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -41,6 +42,11 @@ export function publishDist({target = null, quiet = false} = {}) {
   const pluginName = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8')).name;
   const resolvedTarget = path.resolve(target || defaultDistRoot(root));
   const dist = resolveDistDir(resolvedTarget, pluginName);
+  // The next operation is recursive deletion. Validate the target and every
+  // existing ancestor before mkdir/rm so a junction or symlink cannot redirect
+  // publication into an unrelated directory.
+  assertNoReparsePoints(resolvedTarget, 'distribution target root');
+  assertNoReparsePoints(dist, 'distribution target');
   fs.mkdirSync(resolvedTarget, {recursive: true});
   // repair.mjs 拒绝已存在的目标，正是为了避免新旧混合；这里先删旧分发再重建。
   fs.rmSync(dist, {recursive: true, force: true});

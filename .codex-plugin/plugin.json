@@ -1,6 +1,6 @@
 {
   "name": "codex-tui-orchestrator",
-  "version": "0.5.0-rc.1+codex.20260924145450",
+  "version": "0.5.0-rc.1+codex.20260926092400",
   "description": "Windows 上的 Codex 并发编排插件：默认无弹窗执行，可选可见 TUI，按冲突和依赖分块，持续同步任务状态，支持独立验收与检查点恢复。只读分析与编排器自身修改留在主对话。",
   "author": {
     "name": "Yang Wenchàng"
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "Codex TUI Orchestrator",
     "shortDescription": "真实执行并发编排",
-    "longDescription": "独立块并行、联动块串行；默认无弹窗 exec，可选可见 TUI；TodoList 与 Execution 状态来自同一持久账本，支持进程接管和独立验收。",
+    "longDescription": "先自动补齐依赖与 Codex CLI；按原始任务的依赖和冲突组成串行块，确认块间独立后按 4000MB 内存预留动态排队；默认无弹窗 exec，可选可见 TUI，窗口退出后由主控串行独立验收。",
     "developerName": "Yang Wenchàng",
     "category": "Productivity",
     "capabilities": [
@@ -35,8 +35,8 @@
     "logoDark": "./assets/icon.png",
     "screenshots": [],
     "defaultPrompt": [
-      "将完整任务按冲突和依赖分块，默认 exec+headless 执行并持续显示任务与块状态",
-      "使用 --run-windows 显示 TUI，逐任务记录检查点并独立验收"
+      "先检查并自动补齐依赖与 Codex CLI，再将完整任务按依赖和冲突拆成互不依赖的并行块",
+      "默认用 exec+headless 按 4000MB 安全预留排队执行；需要观察时用 --run-windows，并由主控串行验收"
     ]
   }
 }

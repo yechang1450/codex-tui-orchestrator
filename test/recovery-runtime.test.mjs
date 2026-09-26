@@ -79,6 +79,18 @@ test('two controllers cannot own the same run concurrently',async()=>{
  try{claim=claimRun(d,'run');assert.throws(()=>claimRun(d,'run'),/live controller/);releaseRun(d,'run',claim);claim=claimRun(d,'run');}
  finally{if(claim)releaseRun(d,'run',claim);await pause(500);fs.rmSync(d,{recursive:true,force:true});}
 });
+test('run owner release requires the claiming process identity, not only a readable token',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'run-claim-owner-'));let claim;
+ try{
+  claim=claimRun(d,'run');
+  const helper=`import {releaseRun} from ${JSON.stringify(new URL('../scripts/core/leases.mjs',import.meta.url).href)};releaseRun(process.argv[1],process.argv[2],JSON.parse(process.argv[3]));`;
+  const child=spawn(process.execPath,['--input-type=module','-e',helper,d,'run',JSON.stringify(claim)],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+  const result=await new Promise((resolve,reject)=>{let stdout='',stderr='';child.stdout.on('data',value=>stdout+=value);child.stderr.on('data',value=>stderr+=value);child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal,stdout,stderr}));});
+  assert.equal(result.code,0,result.stderr);
+  assert.throws(()=>claimRun(d,'run'),/live controller/,'a child with the token must not release the parent claim');
+  releaseRun(d,'run',claim);claim=null;
+ }finally{if(claim)releaseRun(d,'run',claim);await pause(500);fs.rmSync(d,{recursive:true,force:true});}
+});
 for(const fault of ['safe-retry','response-reset','response-timeout','started-only'])test('actual recovery without duplicate side effects: '+fault,async()=>{
  const d=fs.mkdtempSync(path.join(family,'recover-process-')),attempts=[],children=[];
  let requests=0,server,endpoint='';
@@ -110,10 +122,12 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
  const checks=path.join(d,'acceptance.json');fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'count.json',equals:{count:1}}],T002:{retrySafe:fault==='safe-retry',checks:[{type:'json',path:'done.json',equals:{done:true}}]}}));
  const hooks={plan:async()=>[{title:'linked',type:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
   launcher:(key,prompt,suffix)=>{const file=/开始前：node "[^"]+" "([^"]+)"/.exec(prompt)[1];attempts.push(JSON.parse(fs.readFileSync(file)).taskIds);
-   const pidf=path.join(d,'window-'+suffix+'.pid'),lp=path.join(d,'win-launch-'+suffix+'.ps1'),rf=path.join(d,suffix+'.result');
+   const launchDir=path.join(d,'temp');fs.mkdirSync(launchDir,{recursive:true});
+   const pidf=path.join(launchDir,'window-'+suffix+'.pid'),lp=path.join(launchDir,'win-launch-'+suffix+'.ps1'),pf=path.join(launchDir,'agent-win-'+suffix+'.md'),rf=path.join(launchDir,'win-'+suffix+'.result.json');
    // Start-Process -Wait 让夹具不依赖父进程类型：从 WSL 启动时，PowerShell 对 `& <控制台子进程>`
    // 会立即返回（实测 252ms），窗口身份校验就会因为启动器已退出而失败；-Wait 在两种父进程下都等待。
-   fs.writeFileSync(lp,'\ufeff'+`$PID | Set-Content -LiteralPath ${lit(pidf)} -Encoding UTF8\nStart-Process -FilePath ${lit(process.execPath)} -ArgumentList ${lit(worker)},${lit(file)},${lit(rf)},${lit(d)} -NoNewWindow -Wait\nexit 0`);return{pidf,lp,rf};},
+   const token=JSON.parse(fs.readFileSync(file,'utf8')).token;
+   fs.writeFileSync(pf,prompt,'utf8');fs.writeFileSync(lp,'\ufeff'+`$token = ${lit(token)}\n$PID | Set-Content -LiteralPath ${lit(pidf)} -Encoding UTF8\nStart-Process -FilePath ${lit(process.execPath)} -ArgumentList ${lit(worker)},${lit(file)},${lit(rf)},${lit(d)} -NoNewWindow -Wait\nexit 0`);return{pidf,lp,pf,rf};},
   spawn:async(lp,_title,pidf)=>{const child=spawn('powershell.exe',['-NoProfile','-File',lp],{windowsHide:true,stdio:'ignore'});children.push(child);const end=Date.now()+15000;while(!fs.existsSync(pidf)&&Date.now()<end)await pause(20);return fs.existsSync(pidf);},
   readPid:p=>fs.existsSync(p)?Number(fs.readFileSync(p,'utf8').replace(/^\uFEFF/,'')):0,
   session:async()=> 'controlled',wait:async(_session,_timeout,rf)=>{fs.writeFileSync(rf+'.go','go');const end=Date.now()+15000;while(!fs.existsSync(rf)&&Date.now()<end)await pause(20);return {done:fs.existsSync(rf),exitCode:JSON.parse(fs.readFileSync(rf)).exitCode};},

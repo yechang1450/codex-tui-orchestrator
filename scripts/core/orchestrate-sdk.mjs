@@ -12,7 +12,7 @@
  */
 import {nativeArgumentLines} from "./native-argv.mjs";
 import {spawnInactiveWindow} from './inactive-window.mjs';
-import {CORE_VERSION, levelWaves, keysOverlap, summaryComplete,requestTasks,bindClassifiedTasks,computeMaxWindows} from "./contracts.mjs";
+import {CORE_VERSION, levelWaves, keysOverlap, canonicalKey, summaryComplete,requestTasks,bindClassifiedTasks,computeMaxWindows} from "./contracts.mjs";
 import {runWindows,verifyRun,readLedgerJson} from "./runner.mjs";
 import {resolveExecutionMode,resolveTuiMode,buildExecArgs} from './execution-mode.mjs';
 import {createHeadlessHooks} from './headless-executor.mjs';
@@ -23,7 +23,8 @@ import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
 import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
 import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode } from "./network-policy.mjs";
-import {budgetSettings, budgetStateFile, loadBudgetState, firstRunHeadroom} from "./memory-budget.mjs";
+import {budgetSettings, budgetStateFile, loadBudgetState, firstRunHeadroom, availableMB, DEFAULT_MIN_AVAILABLE_MB} from "./memory-budget.mjs";
+import {partitionIndependentBlocks} from './plan-policy.mjs';
 import {reportFatal} from "./fatal.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
@@ -74,8 +75,8 @@ const PY = process.env.PYTHON || "python";
 // Codex configuration. A hard-coded model can become unavailable independently
 // of the installed plugin and must not replace the user's selected default.
 const INITIATOR = AGENT.agent==='codex'?resolveInitiatorSettings():{};
-const MODEL = process.env.ORCH_MODEL || INITIATOR.model;
-const EFFORT = process.env.ORCH_EFFORT || INITIATOR.effort;
+const MODEL = INITIATOR.model;
+const EFFORT = INITIATOR.effort;
 // A caller may pass its effective permissions; never elevate implicitly.
 const SANDBOX = process.env.ORCH_SANDBOX || "danger-full-access";
 const APPROVAL = "never";
@@ -83,7 +84,7 @@ const AGENT_BIN = AGENT.config.bin;
 const AGENT_BIN_Q = String(AGENT_BIN).replace(/'/g, "''");
 // exec 一次性模式参数：config 已含 approval_policy=never/sandbox，仅剔除交互专用 -a 并在最前加 exec。
 // 模型/推理力度透传给窗内 codex：MODEL/EFFORT 非空且值不含空格时才追加 -m / -c（-c 用 model_reasoning_effort=<EFFORT>）。
-function appendModelEffortArgs(arr, agentConfig) {
+function appendModelEffortArgs(arr, agentConfig, initiatorSettings) {
   const out = [...arr];
   // 通用化：按 agent 各自的 modelEnv/effortEnv 取值（默认 codex 用 ORCH_MODEL/ORCH_EFFORT）；
   // 只有 codex 才注入 codex 专属 -m/-c model_reasoning_effort=；非 codex 走 CLI 自身环境变量。
@@ -91,9 +92,14 @@ function appendModelEffortArgs(arr, agentConfig) {
   const id = String(cfg.id || "codex");
   const modelEnv = cfg.modelEnv || "ORCH_MODEL";
   const effortEnv = cfg.effortEnv || "ORCH_EFFORT";
-  // Explicit environment overrides take precedence over native configuration.
-  const model = process.env[modelEnv] || (id === "codex" ? MODEL : "");
-  const effort = process.env[effortEnv] || (id === "codex" ? EFFORT : "");
+  // For Codex, structured settings from the initiating turn are authoritative.
+  // Environment values remain a fallback for direct helper callers and other agents.
+  const model = id === "codex"
+    ? (initiatorSettings?.model || MODEL || process.env[modelEnv])
+    : process.env[modelEnv];
+  const effort = id === "codex"
+    ? (initiatorSettings?.effort || EFFORT || process.env[effortEnv])
+    : process.env[effortEnv];
   if (id !== "codex") {
     // 非 codex：模型/力度经 CLI 自身环境变量（ANTHROPIC_MODEL/GEMINI_MODEL 等）注入，绝不塞 codex 专属 argv。
     if (model && String(model).trim() && !/\s/.test(String(model))) { try { process.env[modelEnv] = String(model); } catch { /* ignore */ } }
@@ -102,7 +108,7 @@ function appendModelEffortArgs(arr, agentConfig) {
   }
   if (model && String(model).trim() && !/\s/.test(String(model))) out.push("-m", String(model));
   if (effort && String(effort).trim() && !/\s/.test(String(effort))) out.push("-c", "model_reasoning_effort=" + String(effort));
-  const tier=process.env.ORCH_SERVICE_TIER||INITIATOR.serviceTier;
+  const tier=initiatorSettings?.serviceTier||INITIATOR.serviceTier||process.env.ORCH_SERVICE_TIER;
   if(tier&&!/\s/.test(tier))out.push('-c','service_tier='+JSON.stringify(tier));
   return out;
 }
@@ -113,7 +119,7 @@ export function buildPsArrayLit(args) {
   if (!a.length) return "@()";
   return "@(" + a.map((x) => "'" + String(x).replace(/'/g, "''") + "'").join(",") + ")";
 }
-const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }), AGENT.config);
+const AGENT_ARGS_LIST = appendModelEffortArgs(launchArgs(AGENT.config, { cwd: WORKSPACE, approval: APPROVAL, sandbox: SANDBOX }), AGENT.config, INITIATOR);
 
 // Runtime state belongs to the initiating workspace temp/orchestrator directory.
 
@@ -334,7 +340,7 @@ function fallbackPlan(request) {
  * 重试耗尽仍无合法 JSON 时回退到 fallbackPlan —— 单串行窗，确保整批一定落地。
  * 返回已 normalize + split 的 blocks；绝不因拆块失败而抛错中止整批。
  */
-async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalmem() / 1024 ** 2)) {
+async function decomposeSafely(request, maxWindows = Number.MAX_SAFE_INTEGER) {
   const finalize = plan => capPlanBlocks(normalizePlan(plan), maxWindows);
   const hints = resolveHints(); // hints 参与缓存键（moduleToProj/foldRules/tail），防跨项目映射撞缓存
   // 0) 缓存优先：相同请求+相同 hints 的拆块结果永不自动失效（仅 --clear-cache 或删除缓存文件才重置），
@@ -380,7 +386,7 @@ async function decomposeSafely(request, maxWindows = computeMaxWindows(os.totalm
   for (let i = 0; i < attempts; i++) {
     try {
       const res = await runThreadPrompt(classifyPrompt(request, hints) +
-        `\nMaximum execution blocks: ${maxWindows}. Return ALL tasks; overflow tasks will be merged into serial blocks. Never omit tasks to meet the window budget.`, { sandboxMode: "read-only" });
+        `\nReturn ALL atomic tasks with their original ids. Do not merge or omit tasks to meet a window budget; dependency and conflict grouping is performed deterministically after classification.`, { sandboxMode: "read-only" });
       if (res?.errored) throw new Error(String(res.errored));
       let plan;
       try {
@@ -930,7 +936,7 @@ async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token, reserv
   try {
     if(!reservedByRunner){
       coordinator=coordinatorDir(WORKSPACE);
-      const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},computeMaxWindows(os.totalmem() / 1024 ** 2));
+      const claim=reserve(coordinator,{id:auxiliaryId,keys:["aux:"+token]},Number.MAX_SAFE_INTEGER);
       if(!claim.ok)throw new Error("Window admission waiting: "+claim.reason);
       admitted=true;
     }
@@ -1027,41 +1033,25 @@ function psKillDescendantsLines() {
 
 // computeMaxWindows 已下沉至 contracts.mjs（fresh 规划与 resume 校验共用），此处经 import 复用。
 
-// Capacity is a planning constraint, not a queue of extra windows.
+// Capacity is only an explicit external safety boundary. Memory pressure is
+// handled by the runner's admission queue and never by merging independent work.
 export function capPlanBlocks(input, capacity) {
   if (!Number.isInteger(capacity) || capacity < 1) throw new RangeError('capacity must be a positive integer');
-  const plan = structuredClone(input);
-  levelWaves(plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[]})));
-  if (plan.length <= capacity) return plan;
-  const aliases = new Map();
-  plan.forEach((b, i) => { aliases.set(`B${i + 1}`, i); aliases.set(titleOf(`B${i + 1}`, b.title), i); aliases.set(b.title, i); });
-  const deps = plan.map((b, i) => new Set((b.dependsOn || []).map(d => aliases.get(String(d))).filter(d => d !== undefined && d !== i)));
-  const order = [], done = new Set();
-  while (order.length < plan.length) {
-    const next = plan.findIndex((_, i) => !done.has(i) && [...deps[i]].every(d => done.has(d)));
-    if (next < 0) throw new Error('Cannot compact cyclic block dependencies; no tasks were executed');
-    order.push(next); done.add(next);
-  }
-  // Consecutive topological ranges prevent merge-induced dependency cycles.
-  const groups = Array.from({ length: capacity }, (_, i) => order.slice(
-    Math.floor(i * order.length / capacity), Math.floor((i + 1) * order.length / capacity)));
-  const owner = new Map();
-  groups.forEach((g, i) => g.forEach(index => owner.set(index, i)));
-  return groups.map((g, i) => ({
-    type: g.length > 1 || g.some(index => plan[index].type === 'linked') ? 'linked' : 'independent',
-    title: `capacity-${i + 1}`,
-    tasks: g.flatMap(index => plan[index].tasks || []),
-    conflictKeys: [...new Set(g.flatMap(index => blockKeys(plan[index])))],
-    dependsOn: [...new Set(g.flatMap(index => [...deps[index]].map(d => owner.get(d))))]
-      .filter(group => group !== i).map(group => `capacity-${group + 1}`),
-  }));
+  const plan = structuredClone(input || []);
+  levelWaves(plan.map((b,i)=>({key:'B'+(i+1),title:b.title,b,dependsOn:b.dependsOn||[]})));
+  if (plan.length > capacity) throw new RangeError('plan exceeds the explicit window capacity; memory admission queues blocks instead of merging them');
+  return plan;
+}
+export function memoryPreflight(available, reserve=DEFAULT_MIN_AVAILABLE_MB) {
+  const free=Number(available), floor=Math.max(DEFAULT_MIN_AVAILABLE_MB,Number(reserve)||DEFAULT_MIN_AVAILABLE_MB);
+  return {ok:Number.isFinite(free)&&free>=floor,availableMB:free,reserveMB:floor};
 }
 // Shared by the real window scheduler and its capacity boundary tests.
 export function buildWindowWaves(recs, maxByMem) {
   if (!Number.isInteger(maxByMem) || maxByMem < 1) {
     throw new RangeError('maxByMem must be a positive integer');
   }
-  if (recs.length > maxByMem) throw new RangeError('plan exceeds window capacity; compact before scheduling');
+  if (recs.length > maxByMem) throw new RangeError('plan exceeds window capacity; queue blocks instead of merging them');
   return levelWaves(recs);
 }
 // ---------------------------------------------------------------------------
@@ -2040,7 +2030,8 @@ function normalizePlan(plan) {
   const originals=structuredClone(plan);
   const recs=originals.map((b,i)=>({key:'B'+(i+1),title:b.title,b,dependsOn:b.dependsOn||[]}));
   const ordered=levelWaves(recs).flat();
-  for(const r of recs) r.keys=[...new Set([...(r.b.conflictKeys||[]),...r.b.tasks.flatMap(t=>inferTargetKeys(t.prompt||t.title||''))])];
+  for(const r of recs) r.keys=[...new Set([...(r.b.conflictKeys||[]),...r.b.tasks.flatMap(t=>inferTargetKeys(t.prompt||t.title||''))]
+    .map(key=>canonicalKey(key,WORKSPACE)))];
   const groups=[];
   for(const r of ordered) {
     const hits=groups.filter(g=>g.some(x=>keysOverlap(x.keys,r.keys)));
@@ -2056,7 +2047,10 @@ function normalizePlan(plan) {
     tasks:ordered.filter(r=>g.includes(r)).flatMap(r=>r.b.tasks),conflictKeys:[...new Set(g.flatMap(r=>r.keys))],
     dependsOn:[...new Set(g.flatMap(r=>r.dependsOn).filter(k=>owner.get(k)!==i).map(k=>owner.get(k)))]}));
   for(const b of result)b.dependsOn=b.dependsOn.map(i=>result[i].title);
-  try{levelWaves(result.map((b,i)=>({key:'B'+(i+1),title:b.title,b,dependsOn:b.dependsOn})));return result;}
+  try{
+    levelWaves(result.map((b,i)=>({key:'B'+(i+1),title:b.title,b,dependsOn:b.dependsOn})));
+    return partitionIndependentBlocks(result);
+  }
   catch(e){if(!/Cyclic/.test(e.message))throw e;return [{title:'serial-conflict-dependencies',type:'linked',dependsOn:[],conflictKeys:[...new Set(recs.flatMap(r=>r.keys))],tasks:ordered.flatMap(r=>r.b.tasks)}];}
 }
 // Stale transient auto-clean ("用完即弃"): remove orchestrator's own leftover temp artifacts
@@ -2101,49 +2095,32 @@ function staleTransientFiles() {
   return res;
 }
 /**
- * 判断一个 WindowsTerminal 进程是否由编排器拉起：命令行里出现 `...\temp\win-launch-*.ps1`
- * 这种启动器路径。**与工作区无关**——编排器在任意工作区（例如 D:\temp\xxx\ws）都会用同一命名，
- * 只认本仓库 temp 会漏掉其它工作区留下的错误窗（实测踩到过）。是否安全杀由调用方再用
- * “launcher 已死 + 该窗无活子进程”把关。纯函数，便于单测。
+ * 判断一个 WindowsTerminal 进程是否由当前工作区的编排器拉起：命令行里必须出现
+ * 当前工作区 temp 下的 `win-launch-*.ps1` 启动器路径。调用方还必须提供对应 pid 文件，
+ * 再用“launcher 已死 + 该窗无活子进程”把关。纯函数，便于单测。
  */
+function ownedTerminalToken(commandLine, tempDir) {
+  const cmd = String(commandLine || "").toLowerCase().replaceAll("/", "\\");
+  const root = String(tempDir || "").toLowerCase().replaceAll("/", "\\").replace(/[\\]+$/, "");
+  if (!root) return null;
+  const marker = root + "\\win-launch-";
+  const start = cmd.indexOf(marker);
+  if (start < 0 || (start > 0 && !/[\s"']/.test(cmd[start - 1]))) return null;
+  const suffix = cmd.slice(start + marker.length);
+  return /^([\w.\-]+)\.ps1(?:[\s"']|$)/.exec(suffix)?.[1] || null;
+}
 export function isPluginOwnedTerminalCommand(commandLine, tempDir = "") {
-  const cmd = String(commandLine || "").toLowerCase();
-  if (!/win-launch-[\w.\-]+\.ps1/.test(cmd)) return false;
-  if (!/[\\/]temp[\\/]win-launch-/.test(cmd)) return false;
-  // tempDir 只作为额外的“确实是编排器工作区”佐证；为空时不影响判定。
-  return true;
+  return ownedTerminalToken(commandLine, tempDir) !== null;
 }
 /**
- * 主动清扫"代码 1"残留窗：Windows Terminal 会在窗内进程非 0 退出后把面板留着，
- * 于是屏幕上出现一片报错窗。这里只认本插件自己的窗口（命令行带本工作区 temp 下的
- * win-launch-*.ps1），并且要求 launcher 已死且该窗没有任何活着的子进程，才会强杀；
- * 活窗、别人的窗口、共享的 WT 宿主一律不碰。
+ * Windows Terminal is a shared host. A command-line marker can identify a
+ * launcher, but it cannot prove that a WindowsTerminal.exe process owns only
+ * that pane. Never taskkill the host recursively; the launcher descendant
+ * cleanup above is the only permitted process cleanup path. A later run can
+ * remove stale launcher artifacts after the host has naturally closed them.
  */
-export async function closeOrphanTerminals() {
-  let closed = 0;
-  try {
-    const procs = [...processSnapshot().values()];
-    for (const proc of procs) {
-      if (!/^WindowsTerminal\.exe$/i.test(String(proc.Name || ""))) continue;
-      const cmd = String(proc.CommandLine || "");
-      if (!isPluginOwnedTerminalCommand(cmd, TMP)) continue;
-      const m = /win-launch-([\w.\-]+)\.ps1/i.exec(cmd);
-      let launcherAlive = false;
-      if (m) {
-        const pidf = path.join(TMP, "window-" + m[1] + ".pid");
-        try {
-          const pid = Number(String(readFileSync(pidf, "utf8")).replace(/^\uFEFF/, "").trim());
-          launcherAlive = pid > 0 && pidAliveCheck(pid);
-        } catch { /* pid 缺失/不可读 -> 视为已死 */ }
-      }
-      const hasLiveChild = procs.some(p => Number(p.ParentProcessId) === Number(proc.ProcessId));
-      if (launcherAlive || hasLiveChild) continue;
-      spawnSync("taskkill.exe", ["/F", "/T", "/PID", String(proc.ProcessId)], { windowsHide: true });
-      closed++;
-      console.log("[orchestrator] closed orphan error window pid=" + proc.ProcessId + " (launcher exited non-zero; pane left open)");
-    }
-  } catch { /* 清扫是尽力而为，绝不影响主流程 */ }
-  return closed;
+export async function closeOrphanTerminals(_options = {}) {
+  return 0;
 }
 async function cleanStaleWindows() {
   // 兜底：上次若被中断/异常退出，会遗留 orchestrator 窗口(win-launch-*.ps1 launcher + 其 agent 子进程)。
@@ -2508,11 +2485,15 @@ export async function main() {
     if(isOrchestratorSelfMod(request)){console.log(JSON.stringify({mode:'inline',reason:'Modify the orchestrator in the initiating conversation before opening windows'}));return;}
     if(!resume&&await classifyExecutionMode(request)==='inline'){console.log(JSON.stringify({mode:'inline',reason:'Read-only analysis'}));return;}
     if(!checkDiskSpace()) {process.exitCode=1;return;}
-    // 容量模式：dynamic 用运行时内存预算（规划期同层合并 + 开窗前复检 + 暂缓/硬跑），
-    // formula 保留旧的"机器内存/2000"公式。dynamic 下 capacity 只是并发上限的安全边界。
+    // Memory is a launch queue, never a plan compactor. Keep a very large
+    // integer only for the lease schema; real parallelism is admission-based.
     const budget=budgetSettings();
-    const capacity=budget.mode==='dynamic'?64:computeMaxWindows(os.totalmem() / 1024 ** 2);
-    if(capacity<1)throw new Error('Insufficient memory for an execution block');
+    const preflight=memoryPreflight(availableMB(),budget.floorMB);
+    if(!preflight.ok){
+      console.log(JSON.stringify({mode:'inline',reason:'available memory is below the mandatory orchestration reserve',...preflight}));
+      return;
+    }
+    const capacity=Number.MAX_SAFE_INTEGER;
     // 每窗成本：优先用滚动修正的历史实测值（越跑越准），没有历史样本时用默认 400MB。
     const memoryBudget=budget.mode==='dynamic'?(()=>{const stateFile=budgetStateFile(STATE_DIR);const state=loadBudgetState(stateFile);const windowCostMB=state.samples>0?Math.max(budget.windowCostMB,state.windowCostMB):budget.windowCostMB;const headroom=firstRunHeadroom(state.samples,budget.headroom);console.log(`[orchestrator] memory budget: floor=${budget.floorMB}MB windowCost=${windowCostMB}MB headroom=x${headroom} (samples ${state.samples})`);return {mode:'dynamic',floorMB:budget.floorMB,windowCostMB,stateFile,samples:state.samples,headroom};})():undefined;
     let savedMode;
@@ -2528,8 +2509,8 @@ export async function main() {
     if(!resume&&memoryBudget){
       const preplan=await decomposeSafely(request,capacity);
       const plannedTasks=(preplan||[]).reduce((n,block)=>n+(block.tasks?.length||0),0);
-      if((preplan||[]).length===1&&plannedTasks===1){
-        console.log(JSON.stringify({status:'out-of-scope',reason:'单任务请求：编排不带来并发收益，请直接用 Codex 执行该任务',tasks:1}));
+      if((preplan||[]).length===1){
+        console.log(JSON.stringify({mode:'inline',reason:'the dependency/conflict plan contains one serial block; execute it in the initiating conversation',tasks:plannedTasks}));
         return;
       }
     }

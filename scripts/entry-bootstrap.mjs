@@ -34,6 +34,19 @@ export const USAGE = [
 
 const BOOTSTRAP_COMMANDS = new Set(['--help', '-h', '--version', '--install-deps']);
 
+// First-use setup is automatic; explicit read-only diagnostics can opt out.
+// Reuse the bounded locked installer and keep all diagnostics off JSON stdout.
+export async function ensureRuntimeDependencies({env=process.env,verify=verifyLockedSdk,install=installLockedDependencies}={}) {
+  const before=await verify();
+  if(before.ok)return before;
+  if(env.ORCH_AUTO_INSTALL_DEPS==='0'||before.code!=='RELEASE_DEPENDENCY_MISSING')throw new Error(before.message);
+  console.error('[orchestrator] installing missing locked SDK dependency');
+  await install();
+  const after=await verify();
+  if(!after.ok)throw new Error(after.message);
+  return after;
+}
+
 function emit(text) {
   fs.writeSync(1, text.endsWith('\n') ? text : text + '\n');
 }

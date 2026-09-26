@@ -272,8 +272,11 @@ test('A6 契约被换成削弱版（摘要不匹配）必须拒绝，且真因�
   const workspace = newDir('acceptance-digest');
   const {contract, dir} = acceptanceFixture(workspace, 'r1', {T001: [{type: 'file', path: 'evidence.txt'}]});
   fs.writeFileSync(path.join(workspace, 'evidence.txt'), 'done', 'utf8');
-  verifyRun(workspace, 'r1', contract);                       // 首次绑定（无条件改写和重新绑定）
   const summary = JSON.parse(fs.readFileSync(path.join(dir, 'summary.json'), 'utf8'));
+  fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
+    runId: 'r1', workspace, acceptance: summary.acceptance,
+  }), 'utf8');
+  verifyRun(workspace, 'r1', contract);                       // 首次绑定（无条件改写和重新绑定）
   fs.writeFileSync(contract, JSON.stringify({T001: []}), 'utf8'); // 执行窗把契约换成空检查
   let error = null;
   try {
@@ -283,7 +286,7 @@ test('A6 契约被换成削弱版（摘要不匹配）必须拒绝，且真因�
   }
   seen('acceptance.weakened', error ? error.message.slice(0, 240) : '(no error)');
   assert.ok(error, '被换过的契约必须拒绝（否则执行窗可以自降验收条件）');
-  assert.match(error.message, /Acceptance contract changed/);
+  assert.match(error.message, /Acceptance (contract changed|binding records disagree or are incomplete)/);
   assert.match(error.message, new RegExp(summary.acceptance.sha256.slice(0, 12)));
   fs.rmSync(workspace, {recursive: true, force: true});
 });
@@ -356,6 +359,7 @@ test('U1-U9 单元命令/验收检查的畸形输入：命令类必须 fail-clos
     ['bad-json', [{type: 'json', path: 'plain.mjs', equals: {a: 1}}], /Acceptance JSON parse failed/],
     ['unsupported-type', [{type: 'wat', path: 'shape.json'}], /Unsupported acceptance check/],
     ['absent-violated', [{type: 'absent', path: 'shape.json'}], /Unexpected path/],
+    ['path-escape', [{type: 'file', path: path.join(workspace, '..', 'outside.txt')}], /escapes the initiating workspace/],
   ];
   for (const [label, checks, expected] of negatives) {
     const result = verifyChecks(checks, workspace);

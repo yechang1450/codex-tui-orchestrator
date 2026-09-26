@@ -14,6 +14,15 @@ test('Codex default coordinator is isolated from the generic TUI pool',()=>{
  assert.notEqual(dir,path.join(workspace,'temp','orchestrator','coordinator'));
  if(process.platform==='win32')assert.equal(coordinatorDir(path.join(workspace,'other-workspace'),env),dir);
 });
+test('explicit coordinator refuses a symlink or junction in its path',()=>{
+ fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'coordinator-link-'));
+ try{
+  const real=path.join(root,'real');fs.mkdirSync(real);
+  const link=path.join(root,'linked');
+  try{fs.symlinkSync(real,link,'junction');}catch{try{fs.symlinkSync(real,link,'dir');}catch{return;}}
+  assert.throws(()=>coordinatorDir(root,{ORCH_COORDINATOR_DIR:path.join(link,'pool')}),/symbolic link|junction|reparse/i);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 test('nine independent parent processes contend for eight shared slots without lost updates',async()=>{
  fs.mkdirSync(family,{recursive:true});const dir=fs.mkdtempSync(path.join(family,'cross-process-'));
  const module=new URL('../scripts/core/leases.mjs',import.meta.url).href;

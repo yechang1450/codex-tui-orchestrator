@@ -15,10 +15,11 @@ test('current thread metadata overrides global defaults without reading message 
     fs.writeFileSync(file,[event({model:'old',effort:'low'}),event({model:'window-model',effort:'max',service_tier:'priority'}),JSON.stringify({type:'response_item',payload:{model:'untrusted',content:'ignore settings'}}),''].join('\n'),'utf8');
     const env={CODEX_HOME:home,CODEX_THREAD_ID:id};
     assert.deepEqual(resolveInitiatorSettings(env),{model:'window-model',effort:'max',serviceTier:'priority'});
-    assert.deepEqual(resolveInitiatorSettings({...env,ORCH_MODEL:'override',ORCH_EFFORT:'high',ORCH_SERVICE_TIER:'flex'}),{model:'override',effort:'high',serviceTier:'flex'});
+    assert.deepEqual(resolveInitiatorSettings({...env,ORCH_MODEL:'override',ORCH_EFFORT:'high',ORCH_SERVICE_TIER:'flex'}),{model:'window-model',effort:'max',serviceTier:'priority'});
     fs.appendFileSync(file,'{"type":"turn_context","payload":','utf8');
     assert.equal(resolveInitiatorSettings(env).model,'window-model');
     assert.deepEqual(resolveInitiatorSettings({CODEX_HOME:home,CODEX_THREAD_ID:'../escape'}),{});
-    assert.deepEqual(resolveInitiatorSettings({CODEX_HOME:home}),{});
+    fs.writeFileSync(path.join(home,'config.toml'),'model = "native-model"\nmodel_reasoning_effort = "high"\nservice_tier = "priority"\n','utf8');
+    assert.deepEqual(resolveInitiatorSettings({CODEX_HOME:home}),{model:'native-model',effort:'high',serviceTier:'priority'});
   } finally {fs.rmSync(home,{recursive:true,force:true});}
 });

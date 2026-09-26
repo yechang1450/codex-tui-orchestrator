@@ -1,6 +1,18 @@
 # Changelog
 
 ## 0.5.0-rc.1
+- cachebuster 升到 `+codex.20260926092400`。安全审查发现并修复两条完整性边界：验收摘要冲突或只剩一份绑定时默认拒绝，显式接管才会同时重绑两份账本；运行占用释放同时校验当前控制器的进程身份，只有可读 token 的任务进程不能释放活跃控制器。
+
+## 0.5.0-rc.1
+- cachebuster 升到 `+codex.20260925184023`。同步最终技能契约、发布清单与安装缓存版本，保证本轮完整回归、插件评估和安全审查对应同一个可追溯快照。
+- cachebuster 升到 `+codex.20260925135007`。按安全审查收紧中继 URL：非回环 HTTP 被拒绝，URL 用户信息、查询参数和片段被拒绝且不会回显；Codex CLI 自动安装改为固定官方精确版本并使用 `--ignore-scripts`，CI 锁定依赖安装同样禁用生命周期脚本；同步补充信任边界与安装约束文档。
+- cachebuster 升到 `+codex.20260925132635`。安全收紧中继 URL：拒绝 URL 用户信息、查询参数和片段，且错误信息不回显原始 URL，避免凭据进入 CLI 命令行或诊断日志；新增网络策略回归覆盖。
+- cachebuster 升到 `+codex.20260925125201`。收紧父级退出验收证明：只有存在真实 acceptance 检查时才允许缺少子窗口检查点的独立验收；无检查点且无验收契约的容量、启动和终止失败继续保持 failed。容量重试与普通失败预算回归全绿。
+- cachebuster 升到 `+codex.20260925041943`。修复内存预留不得重复扣除当前进程集、父级退出后独立验收可在缺少子窗口检查点时形成证明、started 检查点仍需显式 reconciliation，以及残留终端清理的 PID 读取与失败 taskkill 边界。
+- cachebuster 升到 `+codex.20260925034321`。完成独立任务块的依赖/冲突分组、按实时可用内存与 4000MB 预留动态排队、headless/可见 TUI 的发起方设置继承、退出后的 FIFO 串行独立验收、残留窗口归属加固，以及发布包排除测试与 CI 文件。通过原生 Windows 全量回归、Plugin Eval 技能评估和 Codex Security 标准扫描闭环。
+- The orchestrator now partitions only independent blocks, admits each block from live memory with a 4000MB reserve, inherits the initiating model and reasoning settings, verifies exited workers serially in the parent, hardens orphan-terminal ownership checks, and keeps published packages free of test and CI files.
+
+## 0.5.0-rc.1
 - cachebuster 升到 `+codex.20260924145450`（三处版本清单同步）。补齐发起对话结构化设置继承、桌面原生 CLI 优先探测、自动安装超时边界，以及真实并发验收脚本的满容量边界。
 - Inherit initiating thread settings and prefer a desktop native CLI before the SDK fallback; bound auto-install timeouts. Repair live acceptance receipt parsing, configurable timing, and per-block ordering without overflow tasks.
 

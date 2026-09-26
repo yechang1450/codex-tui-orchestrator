@@ -4,13 +4,13 @@ import {isDeepStrictEqual} from 'node:util';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {blockCostMB as budgetBlockCostMB, DEFAULT_WINDOW_COST_MB} from './memory-budget.mjs';
+import {assertNoReparsePoints} from './runtime-context.mjs';
 
 /**
  * 动态内存预算（dynamic capacity）：
- *   - 先用"全部块同时运行"的预估成本判断放不放得下（available - Σcost >= floor）；
- *   - 放不下就在同一并行层里合并成本最大的两块（块内串行，峰值取 max 而非求和），循环重判；
- *   - 合并保持拓扑顺序：被合并块的依赖改指到保留块，绝不产生依赖环。
- * 返回 {plan, merges, requiredMB, availableMB, floorMB, ok}。
+ *   - 计划阶段只确定依赖、冲突和资源边界，绝不因为内存压力改写任务块；
+ *   - 执行阶段由 leases.mjs 原子预留预测成本，不够就排队，窗口结束后重新准入；
+ *   - 4000 MB 是不可降低的安全底线，实际峰值样本可以把后续预测成本提高。
  */
 export function planMemoryCosts(plan, {windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}} = {}) {
   return (plan || []).map(block => ({key: block.key, title: block.title, costMB: budgetBlockCostMB(block, windowCostMB, taskCosts)}));
@@ -30,20 +30,24 @@ function projectedPeakCostMB(blocks, costOf, keysOf) {
   }
 }
 
+/**
+ * Compatibility report for callers that used the old planner-time merge API.
+ * It deliberately never merges blocks. The live runner uses admissionOk and
+ * the lease queue instead; this report only answers whether the current plan
+ * would fit if every wave reached its predicted peak at once.
+ */
 export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}, headroom = 1} = {}) {
-  const blocks = structuredClone(input || []).map((block, index) => ({
+  const plan = structuredClone(input || []);
+  const blocks = plan.map((block, index) => ({
     ...block,
-    taskIds: [...(block.taskIds || block.tasks?.map(task => task.id) || [])],
-    conflictKeys: [...(block.conflictKeys || [])],
-    memoryKey: 'K' + (index + 1),
+    key: String(block.key || 'B' + (index + 1)),
+    memoryKey: String(block.key || 'B' + (index + 1)),
     memoryTitle: block.title || ('block' + (index + 1)),
   }));
   const alias = new Map();
   blocks.forEach((block, index) => {
     alias.set(String(block.memoryTitle), block.memoryKey);
     alias.set(String(block.memoryKey), block.memoryKey);
-    const positional = block.key || ('B' + (index + 1));
-    alias.set(String(positional), block.memoryKey);
   });
   for (const block of blocks) {
     block.memoryDeps = [...new Set((block.dependsOn || [])
@@ -58,49 +62,10 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
   const reserve = Number(headroom) > 1 ? Number(headroom) : 1;
   const projectedCost = () => Math.ceil(totalCost() * reserve);
   const fits = () => Number(floorMB) <= 0 || (Number(availableMB) - projectedCost() >= Number(floorMB));
-  const merges = [];
-  while (!fits() && blocks.length > 1) {
-    let waves;
-    try {
-      waves = levelWaves(blocks.map(block => ({key: block.memoryKey, title: block.memoryTitle, b: block, dependsOn: block.memoryDeps})));
-    } catch { break; }
-    let best = null;
-    for (const wave of waves) {
-      for (let i = 0; i < wave.length; i++) {
-        for (let j = i + 1; j < wave.length; j++) {
-          const kept = blocks.find(block => block.memoryKey === wave[i].key);
-          const merged = blocks.find(block => block.memoryKey === wave[j].key);
-          if (!kept || !merged) continue;
-          const sum = costOf(kept) + costOf(merged);
-          // 只合并同一并行层、且成本最大的两块；成本相同时保持稳定顺序。
-          if (!best || sum > best.sum) best = {kept, merged, sum};
-        }
-      }
-    }
-    if (!best) break;
-    const {kept, merged} = best;
-    kept.taskIds = [...kept.taskIds, ...merged.taskIds];
-    kept.tasks = [...(kept.tasks || []), ...(merged.tasks || [])];
-    kept.conflictKeys = [...new Set([...kept.conflictKeys, ...merged.conflictKeys])];
-    kept.memoryDeps = [...new Set([...kept.memoryDeps, ...merged.memoryDeps])].filter(dep => dep !== kept.memoryKey && dep !== merged.memoryKey);
-    kept.type = 'linked';
-    kept.memoryMergedFrom = [...(kept.memoryMergedFrom || []), merged.memoryTitle];
-    for (const block of blocks) block.memoryDeps = block.memoryDeps.map(dep => dep === merged.memoryKey ? kept.memoryKey : dep);
-    blocks.splice(blocks.indexOf(merged), 1);
-    merges.push({kept: kept.memoryTitle, merged: merged.memoryTitle, costMB: Math.round(best.sum), reason: 'memory-budget'});
-  }
-  const keyMap = new Map(blocks.map((block, index) => [block.memoryKey, 'B' + (index + 1)]));
-  const plan = blocks.map((block, index) => {
-    const out = {
-      ...block,
-      key: 'B' + (index + 1),
-      dependsOn: [...new Set(block.memoryDeps.map(dep => keyMap.get(dep)).filter(Boolean))],
-    };
-    delete out.memoryKey; delete out.memoryTitle; delete out.memoryDeps;
-    return out;
-  });
-  const requiredMB = Math.ceil(projectedPeakCostMB(plan, costOf, (block, index) => block.key || ('B' + (index + 1))) * reserve);
-  return {plan, merges, requiredMB, headroom: reserve, availableMB: Number(availableMB), floorMB: Number(floorMB), ok: Number(floorMB) <= 0 || (Number(availableMB) - requiredMB >= Number(floorMB))};
+  const requiredMB = Math.ceil(projectedPeakCostMB(blocks, costOf, block => block.memoryKey) * reserve);
+  const floor = Number(floorMB) || 0;
+  return {plan, merges: [], requiredMB, headroom: reserve, availableMB: Number(availableMB), floorMB: floor,
+    ok: floor <= 0 || (Number(availableMB) - requiredMB > floor)};
 }
 
 export const CORE_VERSION = '1.4.0-rc.1';
@@ -115,8 +80,8 @@ export function acceptanceKeyDiff(checks,tasks) {
   return (unknown.length||missing.length)?{unknown,missing}:null;
 }
 
-// 系统空闲内存（MB）→ 最大并发 TUI 窗数：每个窗口预留 1000 MB，向下取整。
-// fresh 规划与 --resume-run 的恢复校验共用同一容量；不再额外设置固定窗口上限。
+// 历史兼容辅助：当前 live runner 不使用固定公式，而是按 availableMB、预测峰值和
+// 4000 MB 底线动态排队。保留此函数只为旧调用方和诊断脚本提供稳定的纯函数接口。
 export function computeMaxWindows(memoryMb) {
   const mb = Number(memoryMb);
   // 每个执行块按 2 GB 预算：容量 = floor(机器内存MB / 1000) / 2 向下取整（等价于 floor(机器内存MB / 2000)）。
@@ -291,6 +256,18 @@ export function verifyChecks(checks,workspace) {
       if(typeof check.path!=='string'||!check.path)throw new Error('Acceptance check requires a path string'+where+'：实测 '+describeShape(check.path));
       if(check.type==='json'&&check.equals!==undefined&&(check.equals===null||typeof check.equals!=='object'||Array.isArray(check.equals)))throw new Error('JSON acceptance equals must be a JSON object'+where+'：实测 '+describeShape(check.equals));
       const file=path.resolve(workspace,check.path);
+      // Windows localhost administrative shares are another spelling of the
+      // same local drive. Canonicalize that spelling only for containment;
+      // retain the original path for the actual read so UNC fixtures and real
+      // UNC workspaces keep working without allowing remote shares through.
+      const localEquivalent=value=>{
+        const normalized=path.normalize(value);
+        const match=/^\\\\(?:localhost|127\.0\.0\.1)\\([A-Za-z])\$(?:\\(.*))?$/i.exec(normalized);
+        return match?`${match[1].toUpperCase()}:\\${match[2]||''}`:normalized;
+      };
+      const relative=path.relative(localEquivalent(path.resolve(workspace)),localEquivalent(file));
+      if(relative==='..'||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative))throw new Error('Acceptance path escapes the initiating workspace: '+file);
+      assertNoReparsePoints(file,'Acceptance path');
       if(check.type==='file') {
         if(!fs.existsSync(file))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));
         if(!fs.statSync(file).isFile())throw new Error('Not a file: '+file);if(check.sha256&&sha256(file)!==check.sha256)throw new Error('Hash mismatch: '+file);}

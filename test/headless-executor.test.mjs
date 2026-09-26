@@ -50,6 +50,16 @@ test('unstructured stderr remains diagnostic and cannot authorize capacity repla
     assert.equal(result.done,false);assert.match(result.text,/model is at capacity/);assert.equal(result.retryable,undefined);
   }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
 });
+test('oversized unbroken JSONL event fails safely without retaining unbounded stdout',async()=>{
+  const f=fixture("process.stdout.write('x'.repeat(5*1024*1024));setInterval(()=>{},1000);");
+  try{
+    await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
+    const result=await f.hooks.wait(f.files.rf,15000,f.files.rf,'token',f.files.pidf);
+    assert.equal(result.done,false);
+    assert.match(result.text,/4 MiB safety limit/);
+    assert.equal(result.terminationRefused,undefined,'owned child should be terminated without a PID ownership ambiguity');
+  }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
+});
 
 test('headless worker marks a typed provider capacity failure as retryable',async()=>{
   const f=fixture("console.log(JSON.stringify({type:'turn.failed',error:{message:'Selected model is at capacity'}}));process.exitCode=1;");

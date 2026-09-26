@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {validateRecoverySummary} from '../scripts/core/recovery.mjs';
+import {validateRecoverySummary,validateSavedLauncherFiles} from '../scripts/core/recovery.mjs';
 import {runWindows,verifyRun} from '../scripts/core/runner.mjs';
 import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 import {buildTodoList} from '../scripts/core/contracts.mjs';
@@ -53,6 +53,23 @@ test('saved recovery checkpoints must belong to a recorded attempt before recove
  assert.throws(()=>validateRecoverySummary(unrecorded),/Invalid recovery ledger/);
  const invalid=structuredClone(saved);invalid.taskResults.T001.checkpoint={state:'invalid'};
  validateRecoverySummary(invalid);
+});
+test('visible launcher evidence is bound to the current run token before adoption',()=>{
+ const root=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'launcher-binding-'));
+ try{
+  const runId='ledger',workspace=root,attemptFile=path.join(root,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json');
+  fs.mkdirSync(path.dirname(attemptFile),{recursive:true});
+  const attempt={runId,token:'ledger-B1-a1-token',number:1,file:attemptFile,taskIds:['T001']};
+  const dir=path.join(root,'temp'),suffix='foreign-a1',files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
+  fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(files.lp,`$token = '${attempt.token}'`);fs.writeFileSync(files.pf,'__ORCH_DONE__ '+attempt.token);fs.writeFileSync(files.pidf,'123');
+  const sum={runId,workspace};const entry={token:attempt.token,launcherFiles:files};
+  assert.throws(()=>validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt,{requireLiveFiles:true}),/bound to this run attempt/);
+  files.lp=path.join(dir,'win-launch-'+runId+'-a1.ps1');files.pf=path.join(dir,'agent-win-'+runId+'-a1.md');files.pidf=path.join(dir,'window-'+runId+'-a1.pid');files.rf=path.join(dir,'win-'+runId+'-a1.result.json');
+  fs.writeFileSync(files.lp,`$token = '${attempt.token}'`);fs.writeFileSync(files.pf,'__ORCH_DONE__ '+attempt.token);fs.writeFileSync(files.pidf,'123');
+  validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt,{requireLiveFiles:true});
+  files.pf=path.join(dir,'agent-win-'+runId+'-a1.md');fs.writeFileSync(files.pf,'__ORCH_DONE__ foreign-token');
+  assert.throws(()=>validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt,{requireLiveFiles:true}),/ownership token mismatch/);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
 test('safe retry clears an old failed or verified task status before composing receipts',()=>{

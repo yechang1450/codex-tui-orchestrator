@@ -5,44 +5,25 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 
 # Codex TUI Orchestrator
 
-本插件只接 Codex CLI。专用核心固定在本插件内，启动时按 `release.json` 校验完整性；其它 Agent 由独立适配器处理。
+本技能只接 Codex CLI；编排器自身的只读分析、设计和修改留在主对话。首次运行先自动校验并补齐 SDK、CLI 等缺失依赖（无法替用户制造登录凭据），再执行任务。
 
-## 先做的事
+## 硬性执行契约
 
-- 只读分析、方案和编排器自身修改留在主对话；用户已授权时直接执行，不重复询问窗口批准。
-- 默认用 `--exec`（headless，无弹窗）执行；需要观察或交互时用 `--run-windows` / `--visible`。`--run` 和裸请求遵循 `ORCH_EXEC_MODE`，显式参数优先。
-- 可见模式默认 `ORCH_TUI=wt`（Windows Terminal）；`ORCH_TUI=inactive` 只在显式指定时使用，仍不能保证焦点不变。
-- 两种模式通过 `CODEX_THREAD_ID` 自动读取发起对话最近的结构化 turn_context（当前轮次设置），继承模型与思考级别；Fast 优先使用轮次 service_tier，否则使用原生配置。`ORCH_MODEL`、`ORCH_EFFORT`、`ORCH_SERVICE_TIER` 可显式覆盖；无本地对话记录时回退原生配置。执行块不得递归编排、调用子代理或另开窗口。
+- 默认 `--exec`（headless）；只有用户需要观察或交互时才用 `--run-windows` / `--visible`。两种模式都继承发起窗口最近结构化 `turn_context` 的 model、thinking/reasoning level 和 service tier；缺字段时依次回退到原生 `CODEX_HOME/config.toml`、`ORCH_*`。不得递归编排、调用子代理或另开子窗口。
+- 保留所有原始任务 ID 和原文。把任务拆到原子项，按依赖、父子路径锁、资源冲突和未知作用域归并为串行块；块间必须无依赖、无冲突、无未知风险。单块直接回到发起对话执行，多块才编排并发。
+- 启动每个块前按实时可用内存和该块预测峰值准入：可用内存 `<=4000 MB` 回退单窗；否则必须满足 `预测峰值 < 可用内存 - 4000 MB`。不满足就排队，窗口退出并释放租约后重试；不得合并独立块、突破底线硬跑或只按固定窗口数限流。默认块成本 400 MB，并用实测峰值滚动修正。
+- 每个任务经过 `started → 实际操作/自验 → completed`，父控按 FIFO 串行队列独立检查真实工作区并写 `verification-report.jsonl`。结束标记、子窗自报、关窗或进程退出都不能证明成功；最后清理并核对剩余错误窗口/线程。
+- 不确定副作用标为 `needs-reconciliation`，不可盲目重跑；仅显式 `retrySafe:true` 的任务可安全重试。成功条件是全部任务已独立 `verified` 且自有进程已退出。
 
-## 规划与执行
+## 入口与恢复
 
-- 从发起工作区调用绝对入口，临时文件只进 `workspace/temp/orchestrator`。并发按**运行时内存预算**（`ORCH_CAPACITY_MODE=dynamic`，默认）：规划后先判断全部块同时运行的预估成本是否会把可用内存压到 `ORCH_MIN_AVAILABLE_MB`（默认 512）以下，超了就把同一并行层里最贵的两块合并（块内串行），循环到放得下；执行期每开一个新块前复检，不够就 `deferred` 暂缓，等已运行块结束后重检，全部跑完仍不够则**降级硬跑**（记 `degraded=hard-run`，绝不 fail-closed，保证一轮跑完）。每窗成本默认 256 MB 并按实测滚动修正；单任务请求不在编排范围内，直接用 Codex 执行。`ORCH_CAPACITY_MODE=formula` 可回退旧的 `floor(机器内存MB/2000)` 公式。
-- 保留原始任务 ID 和原文。按冲突、父子路径锁和依赖拆块；未知、自指、循环依赖在启动前报错，覆盖不确定时保留全部任务并串行兜底。
-- 先生成唯一 run ID 和 acceptance JSON（每个 T001 等任务都要有内容或行为检查），再执行：
-  `node <SDK绝对路径> --run-id <ID> --acceptance-file <JSON绝对路径> --exec "<完整请求>"`
-- 每项必须按 `started → 实际操作与自验 → completed` 写检查点；最后由主控独立验收。仅有结束标记、关窗、agent 自报或进程退出都不算成功。
-- 需要观察时运行：
-  `node <插件绝对路径>/scripts/status.mjs --workspace <工作区> --run-id <ID> --watch`
-  `status.mjs` 只读，不依赖 SDK；原生 TodoList/spawn 卡片属于宿主，本插件只提供终端面板和状态事件。
+```text
+node <插件绝对路径>/scripts/orchestrate-sdk.mjs --plan "<请求>"
+node <插件绝对路径>/scripts/orchestrate-sdk.mjs --run-id <ID> --acceptance-file <JSON> --exec "<请求>"
+node <插件绝对路径>/scripts/orchestrate-sdk.mjs --verify-run <ID> --acceptance-file <JSON>
+node <插件绝对路径>/scripts/status.mjs --workspace <工作区> --run-id <ID> --watch
+```
 
-## 状态与恢复
+`--resume-run` 复用原计划、模式和验收摘要；传输、超时、容量、服务端错误只做有上限退避，账户用量上限立即失败并保留证据。`--doctor`、`--plan`、`--status --readonly` 分别用于环境、规划和只读诊断。
 
-- TodoList（原始任务状态）和 Execution（执行块状态）来自同一持久账本：`manifest.json` 是规划清单，`summary.json` 是权威快照，`events.jsonl` 是有序事件，`goal.json` 是派生镜像。
-- 全部任务 `verified` 且自有进程已退出才成功；缺检查或结果不符保留为 `awaiting-verification`。产物只清理本次拥有且已结束的文件。
-- `--resume-run <ID>` 沿用原任务、计划、模式和验收条件；已验证任务不重做，存活窗口按 PID/创建时间/命令行接管。
-- 已开始但副作用不明的任务进入 `needs-reconciliation`（需核对真实结果），不能盲目重跑；只有预先声明 `retrySafe:true` 的任务可安全重试。恢复不会重放整个块。
-- 传输、超时、容量和服务端错误只做有上限的退避；容量错误发生在检查点前才自动重试。单任务可用 `supervise.mjs`，多任务使用 `--resume-run`。
-- 核对真实结果时运行 `node <SDK绝对路径> --verify-run <ID> --acceptance-file <JSON>`；不保证外部副作用恰好一次。
-- 验收契约在运行开始时按规范化 SHA-256 摘要绑定到 `manifest.json` / `summary.json`：`--verify-run` 与 `--resume-run` 读到不一致的契约会直接拒绝（执行窗改不了自己的验收门槛）。确实要换契约才加 `--allow-acceptance-change`（放在 run ID 之后）或 `ORCH_ACCEPTANCE_OVERRIDE=1`，重新绑定会记进账本 history。
-
-provider 明确返回账户用量上限（如 usage_limit_exceeded）时立即失败并保留错误；结构化 `error`/`turn.failed` 或 `task_complete.error` 才是配额信号，任务文本与工具输出不具备该权限。此类失败不消耗普通失败预算或重开窗口；等待额度恢复后再用原运行身份恢复。
-
-## 诊断与发布
-
-- `--doctor` 检查依赖和 CLI；`--plan` 只规划；`--status --readonly` 只读检查窗口和锁。
-- 本机安装/更新用一条命令：`node <工作树>/scripts/install-plugin.mjs [--pull]`（重建干净分发 → 补齐个人 marketplace 条目 → `codex plugin add` → 对当次安装返回的缓存路径恢复依赖 → integrity + doctor）；只读复核用 `node <工作树>/scripts/install-plugin.mjs --check [--verify-skills]`。个人 marketplace 文件缺失时，`install-plugin.mjs` 与 `repair-plugin-registration.mjs --ensure` 会按规范补上条目；条目重复、指向别处或属于远端仍然停下报错，换机器后指向旧克隆时用 `--set-source` 重新指向。缓存根与宿主配置都跟随 `CODEX_HOME`；技能可见性验证在宿主不支持时只告警（`--strict-skills` 才当失败）。
-- 插件管理器每次安装、升级或回退都会建新缓存；对返回的 `<installed>/scripts` 先运行 `npm ci --omit=optional --ignore-scripts --no-audit --no-fund`，再运行 release integrity 和 doctor。
-- `node <插件绝对路径>/scripts/release-integrity.mjs` 校验发布快照。核心改动前确认没有活动窗口，完成回归和适用的真实验收后再发布。
-- 本地安装/更新走干净分发：`node <工作树>/scripts/publish-dist.mjs` 重建 `<工作树父目录>/dist/codex-tui-orchestrator`，再 `codex plugin add codex-tui-orchestrator@personal`。安装源指向工作树会把 `.git/`、`temp/` 一起复制进缓存，不要这样装。
-
-详见 [执行协议](../../docs/execution-contract.md) 和 [发布规则](../../docs/release-policy.md)。
+执行时读取[执行协议](../../docs/execution-contract.md)；发布历史和审查证据按需读取，不在技能发现阶段递归加载。

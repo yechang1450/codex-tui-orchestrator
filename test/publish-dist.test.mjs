@@ -19,6 +19,8 @@ test('publish-dist builds a clean distribution that registration accepts as inst
     const dist = path.join(target, 'codex-tui-orchestrator');
     assert.ok(fs.existsSync(path.join(dist, '.codex-plugin', 'plugin.json')), '分发必须带插件清单');
     assert.equal(fs.existsSync(path.join(dist, 'temp')), false, '分发不带本地运行状态');
+    assert.equal(fs.existsSync(path.join(dist, 'test')), false, '分发不带开发测试套件');
+    assert.equal(fs.existsSync(path.join(dist, '.github')), false, '分发不带 CI 元数据');
     assert.equal(fs.existsSync(path.join(dist, '.git')), false, '分发不带 git 元数据');
     assert.equal(fs.existsSync(path.join(dist, 'scripts', 'node_modules')), false, '分发不带依赖目录');
     const verify = JSON.parse(execFileSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', cwd: dist}));
@@ -62,4 +64,17 @@ test('publish-dist refuses a manifest name that escapes the distribution root', 
     assert.notEqual(result.status, 0, 'malformed manifest name must fail the publish');
     assert.ok(fs.existsSync(path.join(victim, 'marker.txt')), 'a directory outside the distribution root must never be deleted');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+test('publish-dist refuses a target beneath a junction before recursive cleanup',()=>{
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'orch-publish-junction-'));
+ try{
+  const outside=path.join(root,'outside');fs.mkdirSync(outside);
+  const marker=path.join(outside,'marker.txt');fs.writeFileSync(marker,'survives','utf8');
+  const link=path.join(root,'linked');
+  try{fs.symlinkSync(outside,link,'junction');}catch{try{fs.symlinkSync(outside,link,'dir');}catch{return;}}
+  const result=spawnSync(process.execPath,[path.join(repo,'scripts','publish-dist.mjs'),'--target',link],{encoding:'utf8',cwd:repo,windowsHide:true});
+  assert.notEqual(result.status,0);
+  assert.match(result.stderr,/symbolic link|junction|reparse/i);
+  assert.equal(fs.readFileSync(marker,'utf8'),'survives');
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {verifyRelease} from './scripts/release-integrity.mjs';
+import {assertNoReparsePoints} from './scripts/core/runtime-context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SKILL = path.basename(__dirname);
@@ -64,7 +65,10 @@ const DEBRIS_DIRS = new Set([
 const DEBRIS_EXACT = new Set(['.enforce-state.json', '.agent-cache.json', '.DS_Store', 'Thumbs.db']);
 const DEBRIS_RE = /\.(part|tmp|pyc|pyo|crdownload|partial|swp)$/i;
 
-const PROTECTED_DIRS=new Set(['.git','node_modules','temp','.plugin-eval']);
+// Development-only suites and CI metadata stay in the source checkout. They
+// are not runtime plugin content and must not be copied into an installed
+// cache (they also contain large historical fixtures and live evidence).
+const PROTECTED_DIRS=new Set(['.git','node_modules','temp','.plugin-eval','test','.github']);
 function listFiles(dir, base = '', out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if(PROTECTED_DIRS.has(e.name))continue;
@@ -226,6 +230,8 @@ function publish(targetRoot) {
     const missing = requiredPublishedFiles().filter((nf) => !isRegularFile(path.join(__dirname, nf)));
     if (missing.length || !findSkillFile()) { console.error("[" + SKILL + "] publish aborted: missing " + (missing.length ? missing.join(", ") : "skill SKILL.md (under skills/<name>/)")); process.exit(2); }
     const dest = path.join(path.resolve(targetRoot), SKILL);
+    assertNoReparsePoints(path.resolve(targetRoot), 'publish target root');
+    assertNoReparsePoints(dest, 'publish target');
     if(fs.existsSync(dest))throw new Error('Publish target already exists; choose a fresh version directory');
     const relative=path.relative(__dirname,dest);
     if(relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative))throw new Error('Publish target must be outside the source tree');
