@@ -42,7 +42,7 @@ npm ci --prefix .\scripts --omit=optional --ignore-scripts --no-audit --no-fund
 node scripts\orchestrate-sdk.mjs --doctor
 ```
 
-期望：`publish-dist` 报告分发路径与文件数（约 194 个，随发布变化）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
+期望：`publish-dist` 报告分发路径与文件数（本候选实测 112 个，后续以发布器输出为准）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
 
 注册并安装（个人 marketplace 条目指向分发，而不是开发工作树）：
 
@@ -53,7 +53,7 @@ npm ci --prefix <安装缓存路径>\scripts --omit=optional --ignore-scripts --
 node <安装缓存路径>\scripts\release-integrity.mjs      # 安装副本自校验
 ```
 
-期望：安装缓存里只有运行时文件（约 194 个、2 MB，没有 `.git/`、`temp/`、`node_modules/`），且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
+期望：安装缓存里只有分发文件（本候选实测 112 个，没有 `.git/`、`temp/`、`node_modules/`），且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
 
 ## 三、离线回归（源码目录内）
 
