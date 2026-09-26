@@ -34,6 +34,9 @@ export function runtimeInventory(pluginRoot){
   else if(stat.isFile())files[rel.replaceAll('\\','/')]=crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
  }
  for(const rel of ['.codex-plugin','repair.mjs','scripts','skills'])walk(rel);
+ // Hooks execute before the model's first tool call and are part of the same
+ // release boundary. Older packages without hooks remain readable.
+ if(fs.existsSync(path.join(pluginRoot,'hooks')))walk('hooks');
  return files;
 }
 function assertCanonicalTextLineEndings(pluginRoot){

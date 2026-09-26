@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest,orderedCapacityReceipts,liveTimeout} from './live-acceptance-utils.mjs';
+import * as liveUtils from './live-acceptance-utils.mjs';
+const {validateCapacitySample,observedTerminal,capacityAcceptancePassed,boundedChildResult,capacityRequest,orderedCapacityReceipts,liveTimeout,liveConcurrencyOptions,capacityBarrierDecision,settingsFromCommandLine,settingsMatch,receiptConcurrencyPeak}=liveUtils;
 import {requestTasks} from '../scripts/core/contracts.mjs';
 import {genericProjectSplit} from '../scripts/core/orchestrate-sdk.mjs';
 
@@ -24,18 +25,59 @@ test('project splitting ignores numeric data in nonce and receipt fields',()=>{
   assert.deepEqual(split?.blocks.map(block=>block.title),['proj-91','proj-92','proj-93']);
 });
 
-test('a smaller dynamic block count is accepted while excess concurrency stays fatal',()=>{
-  assert.doesNotThrow(()=>validateCapacitySample({capacity:3},3,3));
-  // dynamic 内存预算模式：规划期合并会得到更少的块（capacity 更小），这是允许的。
-  assert.doesNotThrow(()=>validateCapacitySample({capacity:2},3,2));
-  // 真实并发超过 harness 上限依然是致命错误。
-  assert.throws(()=>validateCapacitySample({capacity:3},3,4),/Capacity exceeded/);
+const independentBlocks = n => Array.from({length:n},(_,i)=>({key:'B'+(i+1),taskIds:['T'+String(i+1).padStart(3,'0')]}));
+
+test('dynamic queueing preserves every independent block instead of changing the plan',()=>{
+  const summary={capacity:4,blocks:independentBlocks(4)};
+  assert.doesNotThrow(()=>validateCapacitySample(summary,4,2));
+  assert.throws(()=>validateCapacitySample({...summary,capacity:2},4,2),/Independent block inventory changed/);
+  assert.throws(()=>validateCapacitySample({...summary,blocks:[{key:'B1',taskIds:['T001','T002']},...summary.blocks.slice(2)]},4,2),/Independent block inventory changed/);
+  assert.throws(()=>validateCapacitySample(summary,4,5),/Capacity exceeded/);
+});
+
+test('live concurrency requests are explicit and a four-task run defaults to proving four overlapping workers',()=>{
+  assert.deepEqual(liveConcurrencyOptions({}),{taskCount:2,minimumConcurrency:2});
+  assert.deepEqual(liveConcurrencyOptions({ORCH_LIVE_TASKS:'4'}),{taskCount:4,minimumConcurrency:4});
+  assert.deepEqual(liveConcurrencyOptions({ORCH_LIVE_TASKS:'4',ORCH_LIVE_MIN_CONCURRENCY:'2'}),{taskCount:4,minimumConcurrency:2});
+  for(const env of [{ORCH_LIVE_TASKS:'NaN'},{ORCH_LIVE_TASKS:'1'},{ORCH_LIVE_TASKS:'4',ORCH_LIVE_MIN_CONCURRENCY:'5'},{ORCH_LIVE_TASKS:'4',ORCH_LIVE_MIN_CONCURRENCY:'1'}])assert.throws(()=>liveConcurrencyOptions(env),/ORCH_LIVE/);
+});
+
+test('a deferred memory queue releases active probes without falsely proving the required concurrency',()=>{
+  const summary={blocks:independentBlocks(4),results:{B1:{status:'running'},B2:{status:'running'},B3:{status:'deferred'},B4:{status:'deferred'}}};
+  const args={summary,readyTaskIds:['T001','T002'],liveBlockKeys:['B1','B2'],minimumConcurrency:4};
+  assert.deepEqual(capacityBarrierDecision(args),{release:true,reason:'memory-queue',concurrencyProven:false});
+  assert.deepEqual(capacityBarrierDecision({...args,minimumConcurrency:2}),{release:true,reason:'concurrency-proven',concurrencyProven:true});
+  assert.equal(capacityBarrierDecision({...args,readyTaskIds:['T001']}).release,false);
+  assert.equal(capacityBarrierDecision({...args,summary:{...summary,results:{...summary.results,B3:{status:'launching'}}}}).release,false);
+  assert.equal(capacityBarrierDecision({...args,summary:{...summary,results:{...summary.results,B3:{status:'pending'},B4:{status:'pending'}}}}).release,false);
+});
+
+test('receipt overlap counts actual simultaneous probes and rejects invalid intervals',()=>{
+  assert.equal(receiptConcurrencyPeak([{started:1,finished:5},{started:2,finished:6},{started:5,finished:8},{started:6,finished:9}]),2);
+  assert.equal(receiptConcurrencyPeak(Array.from({length:4},(_,i)=>({started:i+1,finished:10+i}))),4);
+  assert.equal(receiptConcurrencyPeak([{started:1,finished:1}]),0);
+  assert.equal(receiptConcurrencyPeak([{missing:true}]),0);
+});
+
+test('worker settings evidence decodes native Windows quoting and checks every inherited field',()=>{
+  const expected={model:'gpt-6-luna',effort:'max',serviceTier:'priority'};
+  const line=String.raw`"C:\Program Files\codex.exe" exec -m gpt-6-luna -c model_reasoning_effort=max -c "service_tier=\"priority\"" "prompt has -m misleading text"`;
+  assert.deepEqual(settingsFromCommandLine(line),expected);
+  assert.equal(settingsMatch(expected,settingsFromCommandLine(line)),true);
+  assert.equal(settingsMatch(expected,{...expected,effort:'low'}),false);
+  assert.equal(settingsMatch(expected,{model:expected.model,effort:expected.effort}),false);
+  assert.equal(settingsMatch({},{}),false);
 });
 
 test('capacity success requires immutable core, exact concurrency, verified receipts and proven exit',()=>{
-  const valid={monitorError:null,coreUnchanged:true,closed:true,engineResult:{code:0},pollResult:{code:0},runnerCapacity:2,capacity:2,peak:2,receiptsValid:true,ordered:true,overlap:true,windowLaunches:2,uniqueLaunchers:2,executionMode:'visible',terminal:'wt',summary:{success:true,results:{B1:{status:'verified'},B2:{status:'verified'}}}};
+  const valid={monitorError:null,coreUnchanged:true,closed:true,settingsInherited:true,engineResult:{code:0},pollResult:{code:0},runnerCapacity:2,capacity:2,taskCount:2,minimumConcurrency:2,peak:2,receiptPeak:2,receiptsValid:true,ordered:true,overlap:true,windowLaunches:2,uniqueLaunchers:2,executionMode:'visible',terminal:'wt',summary:{success:true,capacity:2,blocks:independentBlocks(2),results:{B1:{status:'verified',attempts:[{}]},B2:{status:'verified',attempts:[{}]}}}};
   assert.equal(capacityAcceptancePassed(valid),true);
-  for(const patch of [{coreUnchanged:false},{closed:false},{monitorError:'snapshot failed'},{runnerCapacity:1},{peak:1},{peak:3},{receiptsValid:false},{ordered:false},{overlap:false},{windowLaunches:3},{uniqueLaunchers:3},{terminal:null},{engineResult:{code:1}},{pollResult:{code:1}},{summary:{success:false,results:valid.summary.results}}])assert.equal(capacityAcceptancePassed({...valid,...patch}),false,JSON.stringify(patch));
+  for(const patch of [{coreUnchanged:false},{closed:false},{settingsInherited:false},{monitorError:'snapshot failed'},{runnerCapacity:1},{peak:1},{peak:3},{receiptPeak:1},{receiptsValid:false},{ordered:false},{overlap:false},{windowLaunches:3},{uniqueLaunchers:3},{terminal:null},{engineResult:{code:1}},{pollResult:{code:1}},{summary:{success:false,results:valid.summary.results}}])assert.equal(capacityAcceptancePassed({...valid,...patch}),false,JSON.stringify(patch));
+  const queued={...valid,taskCount:4,capacity:4,runnerCapacity:4,windowLaunches:4,uniqueLaunchers:4,summary:{success:true,capacity:4,blocks:independentBlocks(4),results:Object.fromEntries(independentBlocks(4).map(b=>[b.key,{status:'verified',attempts:[{}]}]))}};
+  assert.equal(capacityAcceptancePassed(queued),true);
+  assert.equal(capacityAcceptancePassed({...queued,minimumConcurrency:4}),false);
+  assert.equal(capacityAcceptancePassed({...queued,minimumConcurrency:4,peak:4,receiptPeak:4}),true);
+  assert.equal(capacityAcceptancePassed({...queued,summary:{...queued.summary,results:{...queued.summary.results,B1:{status:'verified',attempts:[{},{}]}}}}),false);
 });
 
 test('exactly full receipt sets do not require a nonexistent overflow task',()=>{

@@ -23,3 +23,13 @@ test('current thread metadata overrides global defaults without reading message 
     assert.deepEqual(resolveInitiatorSettings({CODEX_HOME:home}),{model:'native-model',effort:'high',serviceTier:'priority'});
   } finally {fs.rmSync(home,{recursive:true,force:true});}
 });
+test('an identified initiating turn cannot silently borrow a different native model or effort',()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'orch-context-missing-'));
+  const id='22222222-2222-4222-8222-222222222222';
+  try{
+    const dir=path.join(home,'sessions','2026','09','26');fs.mkdirSync(dir,{recursive:true});
+    fs.writeFileSync(path.join(dir,`rollout-2026-09-26T00-00-00-${id}.jsonl`),JSON.stringify({type:'turn_context',payload:{model:'window-model'}})+'\n','utf8');
+    fs.writeFileSync(path.join(home,'config.toml'),'model = "native-model"\nmodel_reasoning_effort = "high"\n','utf8');
+    assert.throws(()=>resolveInitiatorSettings({CODEX_HOME:home,CODEX_THREAD_ID:id}),/INITIATOR_SETTINGS_UNAVAILABLE/);
+  }finally{fs.rmSync(home,{recursive:true,force:true});}
+});

@@ -16,9 +16,9 @@ function doctor(mode,model,effort){
   const entry=path.join(repo,'scripts','core','orchestrate-sdk.mjs');
   const home=fs.mkdtempSync(path.join(family,'doctor-'));
   try{
-    fs.writeFileSync(path.join(home,'config.toml'),`model = "${model}"\nmodel_reasoning_effort = "${effort}"\nservice_tier = "priority"\n`,'utf8');
+    fs.writeFileSync(path.join(home,'config.toml'),`model = "${model}"\nmodel_reasoning_effort = "${effort}"\nservice_tier = "priority"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\n`,'utf8');
     const env={...process.env,CODEX_HOME:home,ORCH_AGENT:'codex',ORCH_EXEC_MODE:mode,ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};
-    delete env.CODEX_THREAD_ID;
+    delete env.CODEX_THREAD_ID;delete env.CODEX_SESSION_ID;
     const result=spawnSync(process.execPath,[entry,'--doctor'],{encoding:'utf8',windowsHide:true,env});
     assert.equal(result.status,0,result.stderr||result.stdout);
     return JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
@@ -48,13 +48,15 @@ test('both doctors inherit thread model, effort and Fast without explicit ORCH o
   const dir=fs.mkdtempSync(path.join(family,'initiator-')),id='11111111-2222-4333-8444-555555555555';
   try{
     const sessions=path.join(dir,'sessions','2026','09','24');fs.mkdirSync(sessions,{recursive:true});
-    fs.writeFileSync(path.join(sessions,'rollout-example-'+id+'.jsonl'),JSON.stringify({type:'turn_context',payload:{model:'initiator-default-model',effort:'max',service_tier:'priority'}})+'\n','utf8');
+    fs.writeFileSync(path.join(sessions,'rollout-example-'+id+'.jsonl'),JSON.stringify({type:'turn_context',payload:{model:'initiator-default-model',effort:'max',service_tier:'priority',sandbox_policy:{type:'workspace-write'},approval_policy:'on-request',cwd:repo}})+'\n','utf8');
     const env={...process.env,CODEX_HOME:dir,CODEX_THREAD_ID:id,ORCH_AGENT:'codex'};
     delete env.ORCH_MODEL;delete env.ORCH_EFFORT;delete env.ORCH_SERVICE_TIER;
     for(const mode of ['headless','visible']){
       const result=spawnSync(process.execPath,[path.join(repo,'scripts','core','orchestrate-sdk.mjs'),'--doctor'],{encoding:'utf8',windowsHide:true,env:{...env,ORCH_EXEC_MODE:mode}});
       assert.equal(result.status,0,result.stderr);
       const report=JSON.parse(result.stdout.slice(result.stdout.indexOf('{')));
+      assert.equal(report.executionMode,'visible','approval-requiring initiators must use an interactive child');
+      assert.ok(report.args,JSON.stringify(report));
       assert.deepEqual(optionPair(report.args),{model:'initiator-default-model',effort:'max'});
       assert.ok(report.args.includes('service_tier="priority"'));
     }
@@ -65,10 +67,10 @@ test('interactive launcher keeps model and effort in one structured PowerShell a
   const dir=fs.mkdtempSync(path.join(family,'visible-'));
   const script=path.join(dir,'make-launcher.mjs');
   const module=new URL('../scripts/core/orchestrate-sdk.mjs',import.meta.url).href;
-  fs.writeFileSync(path.join(dir,'config.toml'),'model = "initiator-visible-model"\nmodel_reasoning_effort = "medium"\nservice_tier = "priority"\n','utf8');
+  fs.writeFileSync(path.join(dir,'config.toml'),'model = "initiator-visible-model"\nmodel_reasoning_effort = "medium"\nservice_tier = "priority"\nsandbox_mode = "workspace-write"\napproval_policy = "on-request"\n','utf8');
   fs.writeFileSync(script,`import {writeInteractiveLauncher} from ${JSON.stringify(module)};const f=writeInteractiveLauncher('acceptance','【本块唯一标识】acceptance-token','1');console.log(f.lp);`);
   try{
-    const env={...process.env,CODEX_HOME:dir,ORCH_AGENT:'codex',ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};delete env.CODEX_THREAD_ID;
+    const env={...process.env,CODEX_HOME:dir,ORCH_AGENT:'codex',ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};delete env.CODEX_THREAD_ID;delete env.CODEX_SESSION_ID;
     const result=spawnSync(process.execPath,[script],{cwd:dir,encoding:'utf8',windowsHide:true,env});
     assert.equal(result.status,0,result.stderr);
     const launcher=fs.readFileSync(result.stdout.trim(),'utf8');

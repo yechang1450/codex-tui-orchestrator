@@ -15,7 +15,7 @@ test('planner and workers inherit the initiating Codex provider by default', () 
     const args=launchArgs({id:'codex'}, {approval:['on','request'].join('-')});
     assert.equal(args.includes('model_provider='+JSON.stringify(OPENAI_HTTPS_PROVIDER)),false);
     assert.equal(args.some(a=>String(a).startsWith('model_providers.')),false);
-    assert.equal(args.includes('-a'), false);
+    assert.equal(args[args.indexOf('-a')+1], 'on-request');
     assert.equal(args.includes('never'), false);
   });
 });

@@ -115,7 +115,7 @@ test('verifyRun rebuilds the local goal mirror from verified task state',()=>{
   const evidence=path.join(root,'evidence.json');fs.writeFileSync(evidence,JSON.stringify({ok:true}));
   const checks=path.join(dir,'acceptance.json');fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'evidence.json',equals:{ok:true}}]}));
   fs.writeFileSync(path.join(dir,'goal.json'),JSON.stringify({version:1,runId:'goal-refresh',workspace:root,objective:'first',status:'active',tasks:[{id:'T001',status:'pending',block:'B1'}],blocks:[{key:'B1',title:'both',status:'active',taskIds:['T001']}]}));
-  assert.equal(verifyRun(root,'goal-refresh',checks),true);
+  assert.equal(verifyRun(root,'goal-refresh',checks,{coordinator:path.join(root,'temp/orchestrator/coordinator')}),true);
   const goal=JSON.parse(fs.readFileSync(path.join(dir,'goal.json'),'utf8'));
   assert.equal(goal.status,'completed');assert.equal(goal.tasks[0].status,'verified');assert.equal(goal.summaryGeneration,1);
   const final=JSON.parse(fs.readFileSync(path.join(dir,'summary.json')));
@@ -130,11 +130,11 @@ test('resume rejects a goal mirror with a different run identity',async()=>{
  const root=fs.mkdtempSync(path.join(family,'goal-identity-'));
  try{
   const dir=path.join(root,'temp/orchestrator/runs/ledger');fs.mkdirSync(dir,{recursive:true});
-  const saved=fixture(root);saved.finishedAt=1;fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(saved));
+   const saved=fixture(root);saved.finishedAt=1;saved.coordinator=path.join(root,'temp/orchestrator/coordinator');fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(saved));
   fs.writeFileSync(path.join(dir,'goal.json'),JSON.stringify({version:1,runId:'foreign',workspace:root}));
   fs.writeFileSync(path.join(dir,'acceptance.json'),'{}');let calls=0;
   const hooks=new Proxy({}, {get(){calls++;throw new Error('Unexpected execution hook');}});
-  await assert.rejects(runWindows('',hooks,{workspace:root,capacity:8,runId:'ledger',resume:true}),/goal mirror identity mismatch/);
+   await assert.rejects(runWindows('',hooks,{workspace:root,capacity:8,runId:'ledger',resume:true,coordinator:saved.coordinator}),/goal mirror identity mismatch/);
   assert.equal(calls,0);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

@@ -584,9 +584,9 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
   const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   const idxGrace = src.search(/const closeGrace = [\s\S]*?const deadline = Date\.now\(\) \+/);
-  const idxLeave = src.indexOf('leaving it to self-exit 0');
+  const idxFinalize = src.indexOf('const closed=terminateOwnedLauncher(expected)');
   assert.ok(idxGrace > -1, 'closeWindowByPid must poll/grace before giving up on a launcher');
-  assert.ok(idxLeave > -1, 'closeWindowByPid must leave a stuck launcher to self-exit 0 (no code-1 pane)');
+  assert.ok(idxFinalize > idxGrace, 'a stuck owned launcher gets an identity-checked exit-zero fallback only after its grace period');
   assert.doesNotMatch(src, /spawnSync\("taskkill", \["\/PID", String\(p\), "\/T", "\/F"\]/, 'closeWindowByPid must never force-kill the launcher (would cause a code-1 pane)');
 });
 

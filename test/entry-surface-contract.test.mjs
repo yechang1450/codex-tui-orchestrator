@@ -14,6 +14,8 @@ import {spawnSync} from 'node:child_process';
 // ④ `--workspace` 指向"存在但不是目录"的文件时 exit 0，把文件当工作区用。
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
+const testWorkspaceRoot = process.env.ORCH_TEST_WORKSPACE_ROOT || (process.platform === 'win32' ? path.join(os.homedir(), 'workspace', 'temp') : os.tmpdir());
+fs.mkdirSync(testWorkspaceRoot, {recursive: true});
 
 function invoke(script, args, {cwd = repo, extra = {}, timeout = 120000} = {}) {
   const env = {...process.env, ...extra};
@@ -26,9 +28,9 @@ function invoke(script, args, {cwd = repo, extra = {}, timeout = 120000} = {}) {
 }
 
 test('--plan keeps stdout pure JSON and sends diagnostics to stderr', () => {
-  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-plan-stdout-'));
+  const workspace = fs.mkdtempSync(path.join(testWorkspaceRoot, 'orch-plan-stdout-'));
   try {
-    const result = invoke('orchestrate-sdk.mjs', ['--workspace', workspace, '--plan', '只做一件小事：打印 node --version 的结果'], {cwd: workspace});
+    const result = invoke('orchestrate-sdk.mjs', ['--workspace', workspace, '--plan', '只做一件小事：检查 node --version 的结果'], {cwd: workspace});
     assert.equal(result.status, 0, result.stderr);
     const parsed = JSON.parse(result.stdout);
     assert.ok(Array.isArray(parsed.blocks) && parsed.blocks.length > 0, 'plan must return blocks');
@@ -65,7 +67,7 @@ test('a workspace path that exists but is not a directory fails closed', () => {
 // ⑤ `--version` / `--install-deps` 在引擎加载**之前**就要能用：引擎静态依赖锁定的 SDK，
 //    而这两个命令恰恰是"依赖坏了"时唯一还问得出版本号与修法的地方（穷举审计 P5/P8）。
 test('--version is a read-only, zero-state, machine-readable success surface', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-version-'));
+  const dir = fs.mkdtempSync(path.join(testWorkspaceRoot, 'orch-version-'));
   try {
     const result = invoke('orchestrate-sdk.mjs', ['--version'], {cwd: dir});
     assert.equal(result.status, 0, result.stderr);

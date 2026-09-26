@@ -1,32 +1,35 @@
-# 干净机器安装与验收（第二台机器）
+# 干净机器安装与验收
 
 目的：在一台**全新 Windows 机器**上证明"私有仓库 → 干净分发 → 依赖安装 → 完整性校验 → 真实执行"整条链路可用，并留下可核对的版本与结果证据。第二台机器（Lecoo mini pro）到货后按本清单执行；本仓库保持 private，安装只依赖私有 Git 凭据，不需要任何公网发布。
 
 ## 前置条件
 
 - Windows 11（记录版本号）+ Git（`git --version` 能在 PATH 里解析）。
-- Node 22/24（`node -v`），且是原生 Windows `node.exe`（WSL 里的 node 不能直接跑本插件）。
-- Codex CLI 已安装并登录（`codex --version`）；插件默认继承该 CLI 的 provider/模型配置，不在插件内保存任何凭据。
+- 不要求 Node/npm 或原生 Codex CLI 预先安装；PowerShell 引导入口负责检测和补齐。已有 Node 必须为 Windows 原生 22+。
+- 真正执行模型任务前需 Codex 登录；插件继承发起窗口设置，不在插件内保存任何凭据。
 - 可选：Windows Terminal（可见窗模式 `ORCH_TUI=wt` 需要）。
 - 私有仓库凭据：SSH key（`git clone git@github.com:yechang1450/codex-tui-orchestrator.git`）或 HTTPS + PAT。
 
 ## 一、克隆与完整性校验
 
+以下使用本机统一的插件父目录。已有解压包时可跳过 Git，直接运行 bootstrap。第二台机器仍需完整实测；本机隔离缺失依赖测试不能代替它。
+
 ```powershell
-git clone git@github.com:yechang1450/codex-tui-orchestrator.git C:\Users\<用户>\.codex\plugins\codex-tui-orchestrator
-cd C:\Users\<用户>\.codex\plugins\codex-tui-orchestrator
-node scripts\release-integrity.mjs
+git clone git@github.com:yechang1450/codex-tui-orchestrator.git "$HOME\plugins\codex-tui-orchestrator"
+if ($LASTEXITCODE -ne 0) { throw '克隆失败。' }
+& "$HOME\plugins\codex-tui-orchestrator\scripts\bootstrap.ps1" -Action install -Arguments @('--verify-skills')
+if ($LASTEXITCODE -ne 0) { throw '准备或安装失败。' }
 ```
 
-期望输出：`{"schema":2,"coreVersion":"1.4.0-rc.1","files":25,"runtimeFiles":53}`（数字随发布变化，以 `release.json` 为准）。失败即停止，不要跳过。
+期望：运行时准备、干净分发、安装缓存完整性和 doctor 全部成功。计数随发布变化，以当前 `release.json` 为准。宿主 hook 需单独信任，详见[环境准备](environment-setup.md)。
 
-## 二、生成干净分发并装依赖
+## 二、手工诊断路径（已有 Node/npm）
 
 开发树里的 `temp/`（本机证据与运行状态）与 `.git/` 不该进安装缓存，因此**从分发目录注册/运行**，不要直接把开发树挂成安装源：
 
 ```powershell
 node scripts\publish-dist.mjs
-cd C:\Users\<用户>\.codex\plugins\dist\codex-tui-orchestrator
+cd "$HOME\plugins\dist\codex-tui-orchestrator"
 npm ci --prefix .\scripts --omit=optional --ignore-scripts --no-audit --no-fund
 node scripts\orchestrate-sdk.mjs --doctor
 ```
@@ -44,14 +47,16 @@ node <安装缓存路径>\scripts\release-integrity.mjs      # 安装副本自�
 
 期望：安装缓存里只有运行时文件（约 194 个、2 MB，没有 `.git/`、`temp/`、`node_modules/`），且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
 
-## 三、离线回归（分发目录内）
+## 三、离线回归（源码目录内）
+
+测试文件不进入发布分发；在克隆源码目录执行。不要在分发目录声称测试通过。
 
 ```powershell
-set PATH=C:\Program Files\Git\cmd;%PATH%
-node --test --test-concurrency=1 test\*.test.mjs
+Set-Location "$HOME\plugins\codex-tui-orchestrator"
+node --test --test-concurrency=1 test/*.test.mjs
 ```
 
-期望：全部通过（本机为 302 项 / 301 通过 / 1 跳过；跳过项是需真机环境的用例）。任何失败先单独重跑该文件：机器繁忙时进程枚举（PowerShell CIM）会偶发超时，单独重跑可区分环境抖动与真实回归。
+期望：零失败；需显式启用的真实模型用例会跳过，再单独运行真实验收。最新计数见 [RC 记录](rc-validation.md)，不得拿历史的 302 项计数认证当前源码。任何失败保留原始诊断、查明根因、修复后重跑对应测试和完整回归。
 
 ## 四、真实执行验收（headless）
 

@@ -66,7 +66,7 @@ test('a fresh run binds the acceptance contract into the ledger and the manifest
     // 同一契约换个路径、换个排版（压缩 JSON）时摘要不变，历史与显式文件的用法继续可用。
     const copy=path.join(workspace,'contract-copy.json');
     fs.writeFileSync(copy,JSON.stringify(readJson(checksFile)));
-    assert.equal(verifyRun(workspace,'bound',copy),true);
+    assert.equal(verifyRun(workspace,'bound',copy,{coordinator:path.join(workspace,'coordinator')}),true);
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
@@ -74,18 +74,19 @@ test('verify rejects a weakened on-disk acceptance contract until the override i
   const runId='weakened';
   const {workspace,dir}=await runOnce(runId,contract({count:1}));
   try{
+    const trusted={coordinator:path.join(workspace,'coordinator')};
     const onDisk=path.join(dir,'acceptance.json');
     fs.writeFileSync(onDisk,JSON.stringify(weakened));
-    assert.throws(()=>verifyRun(workspace,runId),/Acceptance contract changed/);
-    assert.throws(()=>verifyRun(workspace,runId,onDisk),/Acceptance contract changed/);
-    assert.equal(verifyRun(workspace,runId,onDisk,{override:true}),true);
+    assert.throws(()=>verifyRun(workspace,runId,undefined,trusted),/Acceptance contract changed/);
+    assert.throws(()=>verifyRun(workspace,runId,onDisk,trusted),/Acceptance contract changed/);
+    assert.equal(verifyRun(workspace,runId,onDisk,{...trusted,override:true}),true);
     const rebound=readJson(path.join(dir,'summary.json'));
     assert.equal(rebound.acceptance.sha256,canonicalDigest(weakened),'显式 override 必须把新摘要重新绑定');
     assert.ok(rebound.history.some(entry=>entry.acceptanceRebound?.to===canonicalDigest(weakened)),
       'override 必须留痕到账本 history');
     // 重新绑定后：磁盘副本、摘要、账本三者一致，后续 verify/resume 不再需要 override。
     assert.deepEqual(readJson(onDisk),weakened,'重新绑定必须把磁盘副本一起改写');
-    assert.equal(verifyRun(workspace,runId),true,'重新绑定后同一契约不再触发拒绝');
+    assert.equal(verifyRun(workspace,runId,undefined,trusted),true,'重新绑定后同一契约不再触发拒绝');
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
@@ -96,7 +97,7 @@ test('resume rejects a rewritten acceptance contract before any execution hook r
     fs.writeFileSync(path.join(dir,'acceptance.json'),JSON.stringify(weakened));
     let calls=0;
     const hooks=new Proxy({},{get(){calls++;throw new Error('Unexpected execution hook');}});
-    await assert.rejects(()=>runWindows('',hooks,{workspace,capacity:8,runId,resume:true}),/Acceptance contract changed/);
+    await assert.rejects(()=>runWindows('',hooks,{workspace,capacity:8,runId,resume:true,coordinator:path.join(workspace,'coordinator')}),/Acceptance contract changed/);
     assert.equal(calls,0);
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
@@ -118,27 +119,28 @@ test('unbound historical ledgers stay verifiable and conflicting bindings are re
       taskResults:{T001:{status:'awaiting-verification'}},
       todoList:buildTodoList(tasks,blocks,{T001:{status:'awaiting-verification'}}),
       coordinator:path.join(workspace,'temp/orchestrator/coordinator')};
+    const trusted={coordinator:summary.coordinator};
     const checks=path.join(dir,'acceptance.json');
     fs.writeFileSync(checks,JSON.stringify(contract({count:1})));
     fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(summary));
-    assert.equal(verifyRun(workspace,'legacy'),true,'没有绑定的历史账本保持可验证');
+    assert.equal(verifyRun(workspace,'legacy',undefined,trusted),true,'没有绑定的历史账本保持可验证');
     // 重绑定要写两份账本；如果崩溃或篡改导致两份记录不一致，恢复必须拒绝选择任意一份。
     const digest=canonicalDigest(contract({count:1}));
     const bound={...summary,acceptance:{algorithm:'sha256',sha256:digest,boundAt:2}};
     fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(bound));
     fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({runId:'legacy',workspace,acceptance:{algorithm:'sha256',sha256:'0'.repeat(64),boundAt:1}}));
-    assert.throws(()=>verifyRun(workspace,'legacy'),/Acceptance binding records disagree or are incomplete/,'冲突绑定必须默认拒绝');
-    assert.equal(verifyRun(workspace,'legacy',undefined,{override:true}),true,'显式 override 才能修复冲突绑定');
+    assert.throws(()=>verifyRun(workspace,'legacy',undefined,trusted),/Acceptance binding records disagree or are incomplete/,'冲突绑定必须默认拒绝');
+    assert.equal(verifyRun(workspace,'legacy',undefined,{...trusted,override:true}),true,'显式 override 才能修复冲突绑定');
     const healed=readJson(path.join(dir,'summary.json'));
     assert.equal(healed.acceptance.sha256,digest,'override 必须重新绑定 summary');
     assert.equal(readJson(path.join(dir,'manifest.json')).acceptance.sha256,digest,'override 必须重新绑定 manifest');
     const oneMissing=readJson(path.join(dir,'manifest.json'));
     delete oneMissing.acceptance;
     fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify(oneMissing));
-    assert.throws(()=>verifyRun(workspace,'legacy'),/Acceptance binding records disagree or are incomplete/,'只剩一份绑定也必须拒绝');
-    assert.equal(verifyRun(workspace,'legacy',undefined,{override:true}),true,'显式 override 能修复缺失的一份绑定');
+    assert.throws(()=>verifyRun(workspace,'legacy',undefined,trusted),/Acceptance binding records disagree or are incomplete/,'只剩一份绑定也必须拒绝');
+    assert.equal(verifyRun(workspace,'legacy',undefined,{...trusted,override:true}),true,'显式 override 能修复缺失的一份绑定');
     // 绑定真正保护的是"磁盘契约必须与记录一致"：契约被改写就拒绝。
     fs.writeFileSync(checks,JSON.stringify(weakened));
-    assert.throws(()=>verifyRun(workspace,'legacy'),/Acceptance contract changed/);
+    assert.throws(()=>verifyRun(workspace,'legacy',undefined,trusted),/Acceptance contract changed/);
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });

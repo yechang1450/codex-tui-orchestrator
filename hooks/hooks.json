@@ -1,0 +1,20 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|clear|compact)$",
+        "hooks": [
+          {
+            "commandWindows": "\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand JABQAHIAbwBnAHIAZQBzAHMAUAByAGUAZgBlAHIAZQBuAGMAZQA9ACcAUwBpAGwAZQBuAHQAbAB5AEMAbwBuAHQAaQBuAHUAZQAnADsAIAAmACAAKABKAG8AaQBuAC0AUABhAHQAaAAgACQAZQBuAHYAOgBQAEwAVQBHAEkATgBfAFIATwBPAFQAIAAnAGgAbwBvAGsAcwBcAHMAZQBzAHMAaQBvAG4ALQBzAHQAYQByAHQALgBwAHMAMQAnACkA",
+            "command": "printf '%s\\n' '{\"continue\":true,\"hookSpecificOutput\":{\"hookEventName\":\"SessionStart\",\"additionalContext\":\"[codex-tui-orchestrator] WINDOWS_REQUIRED: Native environment preparation requires Windows; continue inline on this host.\"}}'",
+            "timeout": 120,
+            "additionalContextLimit": 500,
+            "type": "command",
+            "statusMessage": "Checking orchestrator runtime"
+          }
+        ]
+      }
+    ]
+  },
+  "description": "Prepare the Windows runtime at session start after the host trusts this hook definition."
+}

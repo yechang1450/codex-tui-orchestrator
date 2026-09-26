@@ -14,7 +14,7 @@ test('clean published package runs doctor and guards its public polling entry',(
   // A sibling of the copied fixture source avoids publishing into a source tree.
   const fixture=path.join(root,'candidate');
   fs.mkdirSync(fixture);
-  for(const name of ['scripts','skills','.codex-plugin','assets','docs'])fs.cpSync(path.join(source,name),path.join(fixture,name),{recursive:true,filter:p=>!['node_modules','temp','.agent-cache.json'].includes(path.basename(p))});
+  for(const name of ['scripts','skills','.codex-plugin','assets','docs','hooks'])if(fs.existsSync(path.join(source,name)))fs.cpSync(path.join(source,name),path.join(fixture,name),{recursive:true,filter:p=>!['node_modules','temp','.agent-cache.json'].includes(path.basename(p))});
   for(const name of ['repair.mjs','release.json','README.md','LICENSE'])fs.copyFileSync(path.join(source,name),path.join(fixture,name));
   const run=(file,args=[])=>spawnSync(process.execPath,[file,...args],{cwd:root,env:{...process.env,ORCH_AUTO_INSTALL_DEPS:'0'},encoding:'utf8',windowsHide:true,timeout:30000});
   const fault='import fs from "node:fs";const copy=fs.copyFileSync;let n=0;fs.copyFileSync=(...args)=>{if(++n===2)throw new Error("TEST_COPY_FAILURE");return copy(...args)};';

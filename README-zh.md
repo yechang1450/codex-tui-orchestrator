@@ -15,7 +15,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 
 ## 在 Codex 中的实际体验
 
-插件已经在宿主中注册并启用后，如果当前对话还没有加载技能，就新开一个对话，再把完整且已授权的多任务请求交给 Codex。首次执行会补齐锁定依赖，并在原生 CLI 缺失时进行一次有界的用户级自动安装与验证。技能会先准备独立验收条件，再从发起工作区调用插件的绝对路径。默认使用 `--exec`，需要观察或交互时才用 `--run-windows`。仅克隆仓库不会自动注册或启用插件。
+插件注册、启用且宿主信任 SessionStart hook（会话开始时运行的环境准备脚本）后，新会话会自动准备运行环境。PowerShell 引导入口不依赖预装 Node/npm：先验证并复用本机运行时，否则下载固定版本、核对 SHA-256 后安装到插件数据目录，再补齐锁定 SDK 和原生 CLI。直接安装入口会立即执行相同准备；插件不会自行修改宿主 hook 信任或制造登录凭据。编排子会话在宿主完成准备后禁用 hook，避免新 hook 的信任提示卡住可见任务，也不绕过信任。技能会先准备独立验收条件，再从发起工作区调用插件的绝对路径。默认使用 `--exec`，需要观察或交互时才用 `--run-windows`。仅克隆仓库不会自动注册或启用插件。
 
 运行开始后，插件先保留每个原始任务 ID，分析依赖、冲突和未知资源；有依赖或可能冲突的任务进入同一串行块，块与块之间确认无依赖、无冲突后才并发。只有一个块时直接回到发起对话执行。每次开窗前按预测峰值检查可用内存，必须给 4000 MB 安全预留；放不下的块排队，绝不把独立块合并或硬跑。TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数和等待原因。普通执行必须依次出现 `started`、`completed`，窗口关闭后由主控按该块的验收条件串行检查并写入同一份报告，才会成为 `verified`；关窗、结束标记或子窗口自报不能单独证明成功。
 
@@ -26,13 +26,22 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话，副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份，结果不明则停在 `needs-reconciliation` |
 
-因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
+因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前工作树已实测四块 headless 与四块可见 TUI 并发、父级串行验收和 77 个文件的离线回归，证据见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 
 ### 从 GitHub 安装或更新
 
-需要 Windows、Node 22+；首次使用会发现并在需要时安装原生 Codex CLI。真正执行任务前仍需完成 Codex 登录。更新该副本前先结束活动运行。下面命令会显式检查并拒绝已跟踪或未跟踪的本地改动；干净副本只做快进更新，首次使用则克隆，再恢复锁文件依赖、检查完整性并运行 doctor（安装诊断，检查依赖与 CLI 发现）。每条原生命令失败都会停止整段，处理失败原因后再重试。
+已有解压或克隆目录时，可直接运行下面命令，Node/npm 不必预先安装：
+
+```powershell
+powershell.exe -NoProfile -File "$HOME\plugins\codex-tui-orchestrator\scripts\bootstrap.ps1" -Action install
+if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
+```
+
+`-Action prepare` 只准备环境，`-Action doctor` 准备后检查环境，`-Action run -Arguments @('--exec', '<请求>')` 传递执行参数。运行时优先放 `PLUGIN_DATA/runtime`，否则放插件内 `temp/runtime`；不修改全局 PATH，下载暂存会清理。信任边界和离线诊断见[环境准备](docs/environment-setup.md)。
+
+下面的手工克隆流程需要 Git。真正执行任务前仍需完成 Codex 登录。更新副本前先结束活动运行；命令会拒绝本地改动，只做快进更新或首次克隆，再自动准备运行环境和运行 doctor。每条原生命令失败都会停止整段。
 
 ```powershell
 & {
@@ -51,11 +60,7 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
     git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
     if ($LASTEXITCODE -ne 0) { throw 'Git 克隆失败，安装已停止。' }
   }
-  npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
-  if ($LASTEXITCODE -ne 0) { throw '依赖安装失败。' }
-  node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
-  if ($LASTEXITCODE -ne 0) { throw '发布完整性检查失败。' }
-  node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
+  & (Join-Path $InstallRoot 'scripts/bootstrap.ps1') -Action doctor
   if ($LASTEXITCODE -ne 0) { throw '安装诊断失败。' }
 }
 ```
@@ -70,17 +75,15 @@ Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix
 & {
   $ErrorActionPreference = 'Stop'
   $InstallRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'   # 换成你的克隆位置
-  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --pull
+  & (Join-Path $InstallRoot 'scripts/bootstrap.ps1') -Action install -Arguments @('--pull', '--verify-skills')
   if ($LASTEXITCODE -ne 0) { throw '安装失败。' }
-  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --check --verify-skills
-  if ($LASTEXITCODE -ne 0) { throw '安装校验失败。' }
 }
 ```
 
 - 工作树不存在时先 `git clone`（见上）；`install-plugin.mjs` 不负责克隆。
 - `--pull` 要求工作树干净，只做 `git pull --ff-only`。
 - 个人 marketplace 文件 `<home>/.agents/plugins/marketplace.json` 不存在时按规范创建（顶层 `name: "personal"`，本插件条目指向 `./plugins/dist/codex-tui-orchestrator`）；其它路径仍然要求文件已存在，既有条目与其它插件原样保留。
-- `--check` 是只读复核：注册是否匹配、分发与工作树是否为同一份核心、安装缓存里是否有 `scripts/node_modules`、宿主 `config.toml` 是否已启用；`--verify-skills` 额外用宿主渲染一次新会话上下文，确认技能已进入可见清单。
+- `node scripts/install-plugin.mjs --check` 是只读复核：注册、分发一致性、缓存依赖与启用状态；`--verify-skills` 再检查技能可见性。PowerShell 引导入口会先准备依赖，严格只读复核请使用上述 Node 入口。
 - 缓存根跟随 `CODEX_HOME`：`CODEX_HOME` 放在默认位置之外（例如 D 盘或自定义目录）时，校验与安装都用同一个根，不会把别处的缓存当成已安装。
 - 换机器或换克隆目录后条目可能还指向旧路径：`--set-source` 会把唯一条目的安装源改写成本机分发（保留其它条目、策略与分类）；重复、远端或无匹配条目仍然停下报错。
 - `--verify-skills` 在宿主版本不支持该调试入口时只记为告警（`warnings`），不影响安装结论；需要把它当硬门槛时加 `--strict-skills`。
@@ -193,10 +196,10 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 ## Host contract / 宿主契约
 
 - 专用入口默认 Codex；`--agent` / `ORCH_AGENT` 可显式选择 Codex，非 Codex 值会被拒绝。`--workspace` 指定任务工作区，`--cli` 指定原生 CLI 覆盖路径。
-- --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH and npm packaged native binaries, verify with --version, then make one bounded `npm install --global --ignore-scripts @openai/codex@0.157.0` attempt if no verified native binary exists. `ORCH_CLI_INSTALL_SPEC` accepts only an exact `@openai/codex@x.y.z` release.
+- `--cli` / `ORCH_CLI`（或 `CODEX_EXE`）选择原生 CLI；显式路径无效时直接报错。自动安装只接受版本、Windows 原生二进制 SHA-256 和完整 47 文件平台包清单均已固定校验的 `@openai/codex@0.157.0`，安装到插件私有运行目录；首次和后续执行前都核对摘要。`ORCH_CLI_INSTALL_SPEC` 只能指定这一已固定版本。
 - 发起对话最近一轮结构化 `turn_context` 会提供发起窗口的 model、thinking level 和 service tier；缺失字段才从同一 `CODEX_HOME/config.toml` 补齐，两者都缺失时才使用 `ORCH_MODEL`、`ORCH_EFFORT`、`ORCH_SERVICE_TIER` 兜底，环境变量不能覆盖发起窗口设置。`ORCH_PROVIDER=openai-https`（或配置了中继地址，二者等价）会让规划器和执行窗改走 orchestrator-openai-https；`ORCH_PROVIDER=inherit` 保持继承，其它取值一律 fail-closed。
 - 传输断开、超时、流中断，或启动器在写入任务检查点前异常退出时，执行块会在 `maxAttempts`（默认 2 次）预算内自动重试；已经写入 started 但无法证明结果的任务会停在 `needs-reconciliation`，不会盲目重做副作用。
-- ORCH_SANDBOX / ORCH_APPROVAL pass the caller's authorized execution policy. Authorized execution windows default to danger-full-access / never. ORCH_SANDBOX can restrict the sandbox; approval is always never, including when a legacy ORCH_APPROVAL requests prompting. For the default authorized Codex TUI path, the launcher carries the effective never + danger-full-access envelope with `--dangerously-bypass-approvals-and-sandbox`, which also suppresses the CLI's project trust confirmation. Restricted sandbox values are preserved and never elevated. The exact workspace trust setting is passed for this invocation only; global config.toml is not modified. External host policy can still reject an operation. 这是一条明确的信任边界：只把插件用于已授权任务；任务不需要全盘访问时，用 `ORCH_SANDBOX` 保持受限策略。
+- 子窗口继承发起 Codex 会话的结构化沙箱、审批策略和工作目录。受限会话不能改用其他工作区；会话策略缺失时拒绝开窗。脱离会话直接调用 CLI，须在原生配置或 `ORCH_SANDBOX` / `ORCH_APPROVAL` 中明确给出策略。需要交互审批时，默认 headless 改用可见窗；显式 headless 请求会被拒绝。只有实际策略为 `danger-full-access` 加 `never` 时才加免审批参数和本次调用专用的项目信任覆盖；不改全局 `config.toml`。
 - Headless uses hidden workers and codex exec --json with stdin prompts. Visible mode prefers Windows Terminal with conhost fallback and inherited interactive stdout. ORCH_TUI applies only to visible mode. Accepted values are `wt`, `conhost` and `inactive`; any other `ORCH_TUI` value fails closed at startup.
 - WORKSPACE_DIR 选择任务工作区，CODEX_HOME 选择 Codex 配置和会话存储。默认工作区是调用者当前目录，也可用 --workspace / WORKSPACE_DIR 覆盖。ORCH_STATE_DIR 默认位于 workspace/temp/orchestrator；Codex 的协调器独立使用 `temp/orchestrator/codex-coordinator` 和 HKCU `Software/CodexTuiOrchestrator`，不会与 open-tui-orchestrator 共用租约池。不同工作区的 Codex 运行共享该定位器，运行结果仍留在各自工作区。ORCH_COORDINATOR_DIR 是仅用于明确共享 Codex 容量池的高级覆盖项。
 - Task temporary artifacts remain under workspace/temp and are handled by the existing cleanup protocol. Do not delete active runtime state. ORCH_SESSION_DIR can override session discovery.
@@ -218,7 +221,7 @@ Automated tests exercise grouping, dependency-ready scheduling, locks, native CL
 
 ## Capacity-constrained planning
 
-Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory below 4000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 4000 MB reserve; otherwise it remains queued until a lease is released. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
+Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory at or below 4000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 4000 MB reserve; otherwise it remains queued until a lease is released. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
 
 An explicit capacity below the number of independent blocks is rejected so the planner cannot silently change the user's concurrency graph. Tasks inside a dependency or conflict component execute serially in dependency order, and all task bodies and conflict keys are retained. The shared coordinator applies atomic leases across active and reserved windows.
 

@@ -4,10 +4,87 @@ export function capacityRequest({ids,root,workspace,nonce}) {
 
 export function validateCapacitySample(summary,expected,observed=0) {
   if(!Number.isInteger(expected)||expected<2)throw new Error('Capacity acceptance requires at least two windows');
-  // 旧的 formula 模式容量应等于 harness 计算值；dynamic 内存预算模式允许账本记录更小的真实块数
-  // （规划期按可用内存合并），此时只要求不超过 harness 的上限。
-  if(summary&&summary.capacity>expected)throw new Error(`Capacity snapshot changed: harness=${expected}, runner=${summary.capacity}; rerun with a fresh memory snapshot`);
+  // These fixtures are independent. Memory may queue them, never merge them.
+  if(summary&&(summary.capacity!==expected||summary.blocks?.length!==expected||
+      new Set(summary.blocks.map(b=>b.key)).size!==expected||
+      summary.blocks.some(b=>b.taskIds?.length!==1)||
+      new Set(summary.blocks.flatMap(b=>b.taskIds)).size!==expected||
+      summary.blocks.flatMap(b=>b.taskIds).some(id=>!/^T\d{3,}$/.test(id)||Number(id.slice(1))<1||Number(id.slice(1))>expected)))
+    throw new Error(`Independent block inventory changed: tasks=${expected}, runner=${summary.capacity}`);
   if(observed>expected)throw new Error(`Capacity exceeded: observed=${observed}, limit=${expected}`);
+}
+
+export function liveConcurrencyOptions(env=process.env) {
+  const taskCount=Number(env.ORCH_LIVE_TASKS||2);
+  const minimumConcurrency=Number(env.ORCH_LIVE_MIN_CONCURRENCY||taskCount);
+  if(!Number.isSafeInteger(taskCount)||taskCount<2)throw new Error('ORCH_LIVE_TASKS must be an integer >= 2');
+  if(!Number.isSafeInteger(minimumConcurrency)||minimumConcurrency<2||minimumConcurrency>taskCount)
+    throw new Error('ORCH_LIVE_MIN_CONCURRENCY must be an integer from 2 to ORCH_LIVE_TASKS');
+  return {taskCount,minimumConcurrency};
+}
+
+export function capacityBarrierDecision({summary,readyTaskIds,liveBlockKeys,minimumConcurrency}) {
+  const ready=new Set(readyTaskIds),live=new Set(liveBlockKeys);
+  const active=(summary?.blocks||[]).filter(b=>live.has(b.key));
+  const readyActive=active.filter(b=>b.taskIds.some(id=>ready.has(id))).length;
+  if(readyActive>=minimumConcurrency)return {release:true,reason:'concurrency-proven',concurrencyProven:true};
+  // A deferred block cannot start until an admitted worker exits. Release the
+  // admitted probes, but keep the requested concurrency proof unsatisfied.
+  const queued=Object.values(summary?.results||{}).some(r=>r.status==='deferred');
+  const admitted=(summary?.blocks||[]).filter(b=>['launching','running'].includes(summary.results?.[b.key]?.status));
+  if(queued&&admitted.length>0&&admitted.every(b=>live.has(b.key)&&b.taskIds.some(id=>ready.has(id))))
+    return {release:true,reason:'memory-queue',concurrencyProven:false};
+  return {release:false,reason:'waiting-for-probes',concurrencyProven:false};
+}
+
+// Decode native Windows argument quoting; never search the prompt for flags.
+export function settingsFromCommandLine(commandLine) {
+  const args=[];let value='',quoted=false,started=false;
+  const line=String(commandLine||'');
+  for(let i=0;i<line.length;i++){
+    if(line[i]==='\\'){
+      let end=i;while(line[end]==='\\')end++;
+      const count=end-i;
+      if(line[end]==='"'){
+        value+='\\'.repeat(Math.floor(count/2));
+        if(count%2)value+='"';else quoted=!quoted;
+        i=end;started=true;continue;
+      }
+      value+='\\'.repeat(count);i=end-1;started=true;continue;
+    }
+    if(line[i]==='"'){quoted=!quoted;started=true;continue;}
+    if(/\s/.test(line[i])&&!quoted){if(started){args.push(value);value='';started=false;}continue;}
+    value+=line[i];started=true;
+  }
+  if(started)args.push(value);
+  const settings={};
+  for(let i=1;i<args.length;i++){
+    const arg=args[i];if(arg==='--')break;
+    if(arg==='-m'||arg==='--model'){settings.model=args[++i];continue;}
+    if(arg.startsWith('--model=')){settings.model=arg.slice(8);continue;}
+    if(arg==='-c'||arg==='--config'){
+      const pair=args[++i]||'',at=pair.indexOf('='),key=pair.slice(0,at);
+      let setting=pair.slice(at+1);try{setting=JSON.parse(setting);}catch{}
+      if(key==='model_reasoning_effort')settings.effort=setting;
+      if(key==='service_tier')settings.serviceTier=setting;
+    }
+  }
+  return settings;
+}
+
+export function settingsMatch(expected,actual) {
+  return !!expected?.model&&!!expected?.effort&&
+    ['model','effort','serviceTier'].every(key=>(expected[key]??null)===(actual?.[key]??null));
+}
+
+export function receiptConcurrencyPeak(results) {
+  const events=[];
+  for(const receipt of results){
+    if(!Number.isFinite(receipt.started)||!Number.isFinite(receipt.finished)||receipt.finished<=receipt.started)return 0;
+    events.push([receipt.started,1],[receipt.finished,-1]);
+  }
+  events.sort((a,b)=>a[0]-b[0]||a[1]-b[1]);
+  let active=0,peak=0;for(const [,delta] of events){active+=delta;peak=Math.max(peak,active);}return peak;
 }
 
 export function observedTerminal(mode,output) {
@@ -18,15 +95,14 @@ export function observedTerminal(mode,output) {
 }
 
 export function capacityAcceptancePassed(r) {
-  // dynamic 内存预算模式下，账本记录的真实块数（runnerCapacity）可以小于 harness 上限；
-  // 判据改为：并发峰值 == 账本块数，且不超过 harness 上限。
-  const blocks = r.runnerCapacity ?? r.capacity;
-  return !r.monitorError&&r.coreUnchanged===true&&r.closed===true&&r.engineResult.code===0&&r.pollResult.code===0
-    &&r.runnerCapacity<=r.capacity&&r.peak===blocks&&r.receiptsValid===true&&r.ordered===true&&r.overlap===true
+  const blocks=r.taskCount,minimum=r.minimumConcurrency;
+  try{validateCapacitySample(r.summary,blocks,r.peak);}catch{return false;}
+  return Number.isInteger(minimum)&&minimum>=2&&minimum<=blocks&&!r.monitorError&&r.coreUnchanged===true&&r.closed===true&&r.settingsInherited===true&&r.engineResult.code===0&&r.pollResult.code===0
+    &&r.runnerCapacity===blocks&&r.peak>=minimum&&r.receiptPeak>=minimum&&r.receiptsValid===true&&r.ordered===true&&r.overlap===true
     &&r.windowLaunches===blocks&&r.uniqueLaunchers===blocks
     &&(r.executionMode==='headless'||['wt','conhost'].includes(r.terminal))
     &&r.summary?.success===true&&Object.keys(r.summary.results).length===blocks
-    &&Object.values(r.summary.results).every(result=>result.status==='verified');
+    &&Object.values(r.summary.results).every(result=>result.status==='verified'&&result.attempts?.length===1);
 }
 
 // The overflow ordering check only applies when the fixture intentionally

@@ -43,15 +43,17 @@ test('runtime state rejects symlinked workspace temp and state paths', () => {
     assert.throws(() => resolveRuntimeContext({ORCH_STATE_DIR:'linked'},workspace), /symbolic link|junction|reparse/i);
   } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
-test('authorized windows do not request approval; legacy approval overrides cannot reintroduce prompts', () => {
+test('child windows preserve restricted authorization and bypass only an unrestricted initiator', () => {
   const cwd = path.resolve('temp', "caller's workspace");
   const args = launchArgs({id:'codex'}, {cwd});
-  assert.equal(args.includes('-a'), false);
-  assert.equal(args.includes('never'), false);
-  assert.ok(args.includes('--dangerously-bypass-approvals-and-sandbox'));
-  assert.equal(args[args.indexOf('--sandbox') + 1], 'danger-full-access');
-  assert.ok(args.includes(`projects.${JSON.stringify(cwd)}.trust_level="trusted"`));
+  assert.equal(args[args.indexOf('-a') + 1], 'on-request');
+  assert.equal(args[args.indexOf('--sandbox') + 1], 'read-only');
+  assert.equal(args.includes('--dangerously-bypass-approvals-and-sandbox'), false);
   const restricted = launchArgs({id:'codex'}, {cwd, approval:['on','request'].join('-'), sandbox:'read-only'});
-  assert.equal(restricted[restricted.indexOf('-a') + 1], 'never');
+  assert.equal(restricted[restricted.indexOf('-a') + 1], 'on-request');
   assert.equal(restricted[restricted.indexOf('--sandbox') + 1], 'read-only');
+  const unrestricted = launchArgs({id:'codex'}, {cwd, approval:'never', sandbox:'danger-full-access'});
+  assert.equal(unrestricted.includes('-a'), false);
+  assert.ok(unrestricted.includes('--dangerously-bypass-approvals-and-sandbox'));
+  assert.ok(unrestricted.includes(`projects.${JSON.stringify(cwd)}.trust_level="trusted"`));
 });

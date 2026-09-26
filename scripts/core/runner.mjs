@@ -9,6 +9,7 @@ import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
 import {availableMB, admissionOk, unconsumedReservationMB, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost} from './memory-budget.mjs';
 import {createVerificationQueue} from './verification-queue.mjs';
+import {assertNoReparsePoints} from './runtime-context.mjs';
 
 function blockCostFor(sum, key, budget) {
   const block = (sum.blocks || []).find(item => item.key === key);
@@ -71,6 +72,45 @@ export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100
     if(Date.now()>=deadline)return false;
     await pause(Math.min(interval,Math.max(1,deadline-Date.now())));
   }
+}
+
+/** Final cleanup is scoped to this run's durable attempts, never terminal hosts. */
+export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExit,identify=launcherIdentity,onClosed=async()=>{},onFailed=()=>{}}={}) {
+  const stats={checked:0,closed:0,failed:0};
+  for(const block of sum?.blocks||[]){
+    const entry=sum.results?.[block.key],attempt=entry?.attempts?.at(-1);
+    if(!attempt&&!entry?.launcher&&!entry?.launcherFiles)continue;
+    stats.checked++;
+    try{
+      if(!attempt||attempt.runId!==sum.runId||!attempt.token||entry.token!==attempt.token||
+          !attempt.taskIds?.length||attempt.taskIds.some(id=>!block.taskIds.includes(id))||!entry.launcherFiles)
+        throw new Error('Final cleanup ownership is not bound to this run attempt');
+      validateSavedLauncherFiles(sum,block,entry,attempt);
+      let expected=entry.launcher;
+      if(!expected&&fs.existsSync(entry.launcherFiles.pidf)){
+        const pid=Number(fs.readFileSync(entry.launcherFiles.pidf,'utf8').replace(/^\uFEFF/,''));
+        validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveFiles:true});
+        expected=await identifyWithRetry(identify,pid,entry.launcherFiles.pidf);
+        if(expected)entry.launcher=expected;
+      }
+      if(!expected)throw new Error('Final cleanup cannot prove launcher identity or exit');
+      const wasConfirmed=entry.exitConfirmed===true;
+      if(!(await waitForExit(expected))){
+        const current=await identifyWithRetry(identify,expected.ProcessId,entry.launcherFiles.pidf);
+        if(!sameProcess(expected,current))throw new Error('Final cleanup launcher identity is unavailable or changed');
+        if(typeof close!=='function')throw new Error('Final cleanup has no owned-process closer');
+        await close(expected.ProcessId,expected);
+        if(!(await waitForExit(expected)))throw new Error('Owned launcher still alive after final cleanup; lease retained');
+      }
+      entry.exitConfirmed=true;
+      if(!wasConfirmed)stats.closed++;
+      await onClosed(block,entry,attempt,{wasConfirmed});
+    }catch(error){
+      stats.failed++;entry.status='failed';entry.reason=error?.message||String(error);entry.endedAt=Date.now();
+      onFailed(block,entry,error);
+    }
+  }
+  return stats;
 }
 async function coordinate(fn,deadline) {
   while(Date.now()<deadline){try{return fn();}catch(e){if(!/busy|initializing|abandoned/.test(e.message))throw e;await pause(200);}}
@@ -159,9 +199,32 @@ function acceptanceReboundRecord(acceptance,binding){
 }
 function goalDigest(sum) {
   return crypto.createHash('sha256').update(JSON.stringify({
-    generation:sum.generation,runId:sum.runId,tasks:sum.tasks,blocks:sum.blocks,
+    generation:sum.generation,runId:sum.runId,coordinator:sum.coordinator,tasks:sum.tasks,blocks:sum.blocks,
     results:sum.results,taskResults:sum.taskResults,
   })).digest('hex');
+}
+function canonicalCoordinator(value,label) {
+  if(typeof value!=='string'||!value.trim()||!path.isAbsolute(value))throw new Error('Invalid '+label+' coordinator path');
+  return assertNoReparsePoints(path.resolve(value),label+' coordinator');
+}
+function coordinatorEquals(a,b) {
+  const key=value=>process.platform==='win32'?value.toLowerCase():value;
+  return key(a)===key(b);
+}
+function trustedSavedCoordinator(workspace,saved,explicit,{required=false}={}) {
+  const trusted=explicit===undefined?undefined:canonicalCoordinator(explicit,'explicit');
+  if(saved===undefined){
+    if(required)throw new Error('Saved coordinator missing from recoverable ledger');
+    return trusted||coordinatorDir(workspace);
+  }
+  const selected=canonicalCoordinator(saved,'saved');
+  if(trusted){
+    if(!coordinatorEquals(selected,trusted))throw new Error('Saved coordinator mismatch with explicitly trusted coordinator');
+    return trusted;
+  }
+  const current=coordinatorDir(workspace);
+  if(!coordinatorEquals(selected,current))throw new Error('Untrusted coordinator mismatch with current locator');
+  return current;
 }
 function writeGoalMirror(dir,sum,event,status='active') {
   const todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
@@ -264,8 +327,10 @@ export function collectVerification(sum,checks,workspace,{allowStarted=false,all
 export function verifyRun(workspace,runId,acceptanceFile,options={}) {
   const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=readLedgerJson(file);
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
+  if(path.resolve(sum.workspace||'')!==path.resolve(workspace))throw new Error('Run workspace/identity mismatch');
   if(sum.protocol===2)validateRecoverySummary(sum);
-  const claim=claimRun(sum.coordinator||coordinatorDir(workspace),'run:'+path.resolve(dir).toLowerCase());
+  const coordinator=trustedSavedCoordinator(workspace,sum.coordinator,options.coordinator,{required:sum.protocol===2});
+  const claim=claimRun(coordinator,'run:'+path.resolve(dir).toLowerCase());
   try{
     const contractFile=acceptanceFile||path.join(dir,'acceptance.json');
     const acceptance=loadBoundChecks(contractFile,dir,sum,options.override===true);
@@ -285,11 +350,13 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
     createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed');
     writeGoalMirror(dir,sum,sum.success?'verify.completed':'verify.failed',sum.success?'completed':'failed');return sum.success;
   }
-  finally{releaseRun(sum.coordinator||coordinatorDir(workspace),'run:'+path.resolve(dir).toLowerCase(),claim);}
+  finally{releaseRun(coordinator,'run:'+path.resolve(dir).toLowerCase(),claim);}
 }
 
 export async function runWindows(request,hooks,options={}) {
   const workspace=path.resolve(options.workspace),capacity=options.capacity;
+  const authorization=options.authorization;
+  if(authorization!==undefined&&(!authorization||!['read-only','workspace-write','danger-full-access'].includes(authorization.sandbox)||!['never','on-request'].includes(authorization.approval)))throw new Error('Invalid initiating authorization policy');
   // Capacity is a safety boundary shared by planning, admission and recovery.
   // Reject malformed direct API calls before creating any run state; otherwise
   // an undefined/zero value can leave a partially initialized ledger behind.
@@ -306,7 +373,8 @@ export async function runWindows(request,hooks,options={}) {
     if(options.executionMode&&(savedResume.executionMode||'visible')!==options.executionMode)throw new Error('Resume execution mode must match the saved run');
     if(path.resolve(savedResume.workspace)!==workspace||savedResume.runId!==runId)throw new Error('Run workspace/identity mismatch');
     validateRecoverySummary(savedResume);
-    if(savedResume.coordinator!==undefined&&(typeof savedResume.coordinator!=='string'||!path.isAbsolute(savedResume.coordinator)))throw new Error('Invalid saved coordinator');
+    if(JSON.stringify(savedResume.authorization??null)!==JSON.stringify(authorization??null))throw new Error('Run authorization policy mismatch; refusing to widen or change a resumed run');
+    trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true});
     const savedGoalFile=path.join(dir,'goal.json');
     if(fs.existsSync(savedGoalFile)){
       const savedGoal=JSON.parse(fs.readFileSync(savedGoalFile,'utf8'));
@@ -316,7 +384,9 @@ export async function runWindows(request,hooks,options={}) {
     }
     if(savedResume.blocks.length>capacity)throw new Error('Current memory capacity is below the saved block count');
   }
-  const coordinator=options.coordinator||savedResume?.coordinator||coordinatorDir(workspace);
+  const coordinator=options.resume
+    ?trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true})
+    :(options.coordinator===undefined?coordinatorDir(workspace):canonicalCoordinator(options.coordinator,'explicit'));
   const runKey='run:'+dir.toLowerCase(),claim=await coordinate(()=>claimRun(coordinator,runKey),deadline);
   let sum,progressTimer,progressError;
   try {
@@ -343,7 +413,7 @@ export async function runWindows(request,hooks,options={}) {
       const {plan,tasks}=ledgerPlan(request,candidate,capacity,hooks.compact);
       const recs=plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[],keys:[...new Set([...(b.conflictKeys||[]),...b.tasks.flatMap(t=>hooks.infer(t.prompt||''))].map(k=>canonicalKey(k,workspace)))]}));
       levelWaves(recs);
-      sum={protocol:2,version:CORE_VERSION,agent:options.agent||'codex',executionMode:options.executionMode||'visible',runId,workspace,request,capacity,coordinator,generation:1,history:[],startedAt:Date.now(),tasks,plan:recs,
+      sum={protocol:2,version:CORE_VERSION,agent:options.agent||'codex',executionMode:options.executionMode||'visible',authorization,runId,workspace,request,capacity,coordinator,generation:1,history:[],startedAt:Date.now(),tasks,plan:recs,
         memoryBudget:memoryBudget?{mode:memoryBudget.mode,reserveMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,headroom:memoryBudget.headroom||1}:undefined,
         blocks:recs.map(r=>({key:r.key,title:r.title,taskIds:r.b.tasks.flatMap(t=>t.sourceIds)})),results:{},taskResults:{},todoList:[]};
       // dynamic 模式下 capacity 只是安全边界；账本记录真实块数，便于宿主与验收读取。
@@ -375,6 +445,24 @@ export async function runWindows(request,hooks,options={}) {
       if(!['waiting','launching','running','reserved','retrying','deferred'].includes(status))for(const id of sum.blocks.find(b=>b.key===r.key).taskIds)if(!['verified','needs-reconciliation','awaiting-verification'].includes(sum.taskResults[id]?.status))sum.taskResults[id]={...sum.taskResults[id],status,reason};
       persist(`block.${r.key}.${status}`);
     };
+    const inspectBlock=(b,e)=>verificationQueue.enqueue(b.key,async()=>{
+      let inspectionError=null;
+      try{collectVerification(sum,checks,workspace,{blockKey:b.key,allowParentInspection:true});}
+      catch(error){
+        inspectionError=error;e.status='failed';e.reason='Parent verification failed: '+(error?.message||String(error));
+        for(const id of b.taskIds)sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
+      }
+      const report={at:Date.now(),block:b.key,status:e.status,error:inspectionError?.message||null,tasks:b.taskIds.map(id=>({id,result:sum.taskResults[id]}))};
+      try{
+        fs.appendFileSync(path.join(dir,'verification-report.jsonl'),JSON.stringify(report)+'\n','utf8');
+        e.inspectedToken=e.attempts?.at(-1)?.token;
+      }catch(error){
+        e.status='failed';e.reason='Parent verification report could not be appended: '+(error?.message||String(error));
+        for(const id of b.taskIds)sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
+        console.error('[orchestrator] '+e.reason);
+      }
+      persist(`block.${b.key}.${e.status}`);
+    });
     persist(options.resume?'run.resumed':'plan.created');
     progressTimer=setInterval(()=>{try{if(refreshTaskProgress(sum))persist('task.progress');}catch(error){progressError=error;clearInterval(progressTimer);}},250);
     console.log(`[run] runId=${runId} mode=${sum.executionMode||'visible'} blocks=${sum.blocks.length} capacity=${capacity} generation=${sum.generation} summary=${summaryFile}`);
@@ -538,25 +626,7 @@ export async function runWindows(request,hooks,options={}) {
           e.exitConfirmed=!!identity;
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;
-          await verificationQueue.enqueue(r.key,async()=>{
-            let inspectionError=null;
-            try{collectVerification(sum,checks,workspace,{blockKey:r.key,allowParentInspection:true});}
-            catch(error){
-              inspectionError=error;
-              e.status='failed';
-              e.reason='Parent verification failed: '+(error?.message||String(error));
-              for(const id of b.taskIds)sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
-            }
-            const report={at:Date.now(),block:r.key,status:e.status,error:inspectionError?.message||null,tasks:b.taskIds.map(id=>({id,result:sum.taskResults[id]}))};
-            try{fs.appendFileSync(path.join(dir,'verification-report.jsonl'),JSON.stringify(report)+'\n','utf8');}
-            catch(error){
-              e.status='failed';
-              e.reason='Parent verification report could not be appended: '+(error?.message||String(error));
-              for(const id of b.taskIds)sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
-              console.error('[orchestrator] '+e.reason);
-            }
-            persist(`block.${r.key}.${e.status}`);
-          });
+          await inspectBlock(b,e);
         }
         // A capacity failure happens before any task checkpoint. Reclaim the window and
         // retry after the provider's suggested/backoff delay without consuming the normal
@@ -585,6 +655,18 @@ export async function runWindows(request,hooks,options={}) {
     }
     await scheduleReady(sum.plan,async r=>{try{await execute(r);}catch(e){mark(r,'failed',e.message);}},key=>sum.results[key]?.status,
       (r,failed)=>mark(r,'blocked','Predecessors not verified: '+failed.join(', ')));
+    sum.finalSweep=await sweepRunProcesses(sum,{
+      close:hooks.close,identify:hooks.identity||launcherIdentity,waitForExit:hooks.waitForExit||waitForProcessExit,
+      onClosed:async(b,e,attempt,{wasConfirmed})=>{
+        e.endedAt ||= Date.now();attempt.endedAt ||= e.endedAt;
+        if(!wasConfirmed){
+          await coordinate(()=>release(coordinator,e.leaseId),Date.now()+30000);
+          hooks.unregister(e.leaseId);hooks.cleanup(e.launcherFiles);
+        }
+        if(e.inspectedToken!==attempt.token)await inspectBlock(b,e);
+      },
+      onFailed:(_b,e)=>persist('run.cleanup-failed'),
+    });
     for(const r of sum.plan)if(!TERMINAL.has(sum.results[r.key]?.status))mark(r,'failed','No terminal result');
     await verificationQueue.drain();
     sum.verification=verificationQueue.stats();

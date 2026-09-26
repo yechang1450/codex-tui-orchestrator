@@ -3,8 +3,10 @@ import { networkArgs } from './network-policy.mjs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {createHash} from 'node:crypto';
 import { pickNpmCli } from '../npm-cli.mjs';
 import {resolvePiHost,piArgs} from './pi-host.mjs';
+import {assertNoReparsePoints} from './runtime-context.mjs';
 
 const WIN_TARGETS = Object.freeze([
   ['x86_64-pc-windows-msvc', 'codex.exe'],
@@ -135,35 +137,122 @@ function npmRoot({npm, env, platform, spawn}) {
 }
 
 export const DEFAULT_CLI_INSTALL_SPEC = '@openai/codex@0.157.0';
+// SHA-256 of the native executables in the official 0.157.0 platform tarballs.
+// Their archive SHA-512 values were cross-checked against npmjs and npmmirror
+// before sealing this release. Never execute npm-fetched bytes without this pin.
+const PINNED_CLI_SHA256=Object.freeze({
+  x64:'ed1c7b36e44536809c868864c833af8a857f56599a7a7fe23b908a1ba1093b1f',
+  arm64:'0f5d8893ed559dbf3ff082d84df71e3bf90bdd19261fc3c257acfdc8847ce342',
+});
+// SHA-256 of a canonical manifest of every regular file in the official
+// platform tarball. Checking the complete tree rejects DLL side-loading and
+// secondary executable substitution beside an otherwise genuine codex.exe.
+const PINNED_PLATFORM_TREE_SHA256=Object.freeze({
+  x64:'56e35e9609446f03fd6c610db467b0bca4861d588880a62454fcde401406333f',
+  arm64:'a6b1d34a8c89b3f771d999e22580b8ee4962ebb00302e9dce663b5b4214a7d25',
+});
+
+function pinnedBinaryHash(file,expected) {
+  let fd;
+  try {
+    if(!fs.statSync(file).isFile())return false;
+    fd=fs.openSync(file,'r');
+    const hash=createHash('sha256'),chunk=Buffer.allocUnsafe(1024*1024);
+    for(let bytes;(bytes=fs.readSync(fd,chunk,0,chunk.length,null))>0;)hash.update(chunk.subarray(0,bytes));
+    return hash.digest('hex')===expected;
+  } catch {return false;}
+  finally{if(fd!==undefined)fs.closeSync(fd);}
+}
+function platformTreeDigest(root,expected) {
+  try {
+    const rows=[];
+    const walk=(dir,relative='')=>{
+      for(const entry of fs.readdirSync(dir,{withFileTypes:true})){
+        const name=relative?relative+'/'+entry.name:entry.name;
+        const file=path.join(dir,entry.name);
+        assertNoReparsePoints(file,'Codex platform package');
+        if(entry.isSymbolicLink())throw new Error('Symlink in Codex platform package');
+        if(entry.isDirectory())walk(file,name);
+        else if(entry.isFile()){
+          const stat=fs.lstatSync(file);
+          const hash=createHash('sha256');
+          const fd=fs.openSync(file,'r'),chunk=Buffer.allocUnsafe(1024*1024);
+          try{for(let n;(n=fs.readSync(fd,chunk,0,chunk.length,null))>0;)hash.update(chunk.subarray(0,n));}
+          finally{fs.closeSync(fd);}
+          rows.push({name,size:stat.size,hash:hash.digest('hex')});
+        }else throw new Error('Non-file entry in Codex platform package');
+      }
+    };
+    walk(root);
+    rows.sort((a,b)=>a.name<b.name?-1:a.name>b.name?1:0);
+    const manifest=rows.map(row=>`${row.name}\0${row.size}\0${row.hash}\n`).join('');
+    return createHash('sha256').update(manifest,'utf8').digest('hex')===expected;
+  }catch{return false;}
+}
+
+function privateCliPath(env) {
+  const pluginRoot=fileURLToPath(new URL('../../',import.meta.url));
+  const runtimeHome=env.PLUGIN_DATA?path.resolve(env.PLUGIN_DATA,'runtime'):path.resolve(pluginRoot,'temp','runtime');
+  return path.join(runtimeHome,'cli');
+}
+function privateCliPrefix(env) {
+  return assertNoReparsePoints(privateCliPath(env),'Codex CLI runtime');
+}
+function isPrivateCliCandidate(file,env) {
+  const prefix=privateCliPath(env),relative=path.relative(prefix,path.resolve(file));
+  return relative!==''&&!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative);
+}
+function verifiedPrivateCodexCandidate(file,env,{verifyBinary=pinnedBinaryHash,verifyTree=platformTreeDigest}={}) {
+  if(process.platform!=='win32'||!PINNED_CLI_SHA256[process.arch])return false;
+  try{
+    const modules=path.join(privateCliPrefix(env),'node_modules');
+    const architecture=process.arch==='x64'?'x64':'arm64';
+    const packageName='codex-win32-'+architecture;
+    const triple=architecture==='x64'?'x86_64-pc-windows-msvc':'aarch64-pc-windows-msvc';
+    const roots=[path.join(modules,'@openai',packageName),
+      path.join(modules,'@openai','codex','node_modules','@openai',packageName)];
+    for(const root of roots){
+      const expected=path.join(root,'vendor',triple,'bin','codex.exe');
+      if(path.resolve(file).toLowerCase()!==path.resolve(expected).toLowerCase())continue;
+      assertNoReparsePoints(file,'Codex CLI candidate');
+      return verifyBinary(file,PINNED_CLI_SHA256[process.arch])&&verifyTree(root,PINNED_PLATFORM_TREE_SHA256[process.arch]);
+    }
+  }catch{return false;}
+  return false;
+}
 
 /** Install a native Codex package without logging npm output or credentials. */
-export function installCodexCli({env = process.env, platform = process.platform, spawn = spawnSync, localRoots = defaultLocalModuleRoots(platform), probe = file => nativeProbe(file, env)} = {}) {
-  const npm = pickNpmCli({env});
+export function installCodexCli({env = process.env, platform = process.platform, spawn = spawnSync, probe = file => nativeProbe(file, env), verifyBinary=pinnedBinaryHash,verifyTree=platformTreeDigest} = {}) {
   const spec = String(env.ORCH_CLI_INSTALL_SPEC || DEFAULT_CLI_INSTALL_SPEC).trim();
   if (!/^@openai\/codex@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(spec)) throw installerError('invalid_spec');
+  if(spec!==DEFAULT_CLI_INSTALL_SPEC||platform!=='win32'||!PINNED_CLI_SHA256[process.arch])throw installerError('unpinned_package');
   const timeout = Number(env.ORCH_CLI_INSTALL_TIMEOUT_MS || 120000);
   if(!Number.isSafeInteger(timeout)||timeout<1||timeout>600000)throw installerError('invalid_timeout');
+  const prefix=privateCliPrefix(env);
+  const installEnv={...env};
+  for(const key of Object.keys(installEnv))if(key.toLowerCase()==='npm_config_prefix')delete installEnv[key];
+  installEnv.npm_config_prefix=prefix;
+  const npm=pickNpmCli({env:installEnv});
   let result;
   try {
     result = spawn(npm.command, [...npm.args, 'install', '--global', '--ignore-scripts', '--no-audit', '--no-fund', spec], {
-      cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: npm.shell, timeout, env,
+      cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: npm.shell, timeout, env:installEnv,
     });
   } catch (error) {
     throw installerError(error?.code || 'spawn');
   }
   if (result?.error || result?.status !== 0) throw installerError(result?.error?.code || `exit_${result?.status ?? 'unknown'}`);
-  const roots = [npmRoot({npm, env, platform, spawn}), ...localRoots].filter(Boolean);
-  const candidates = [
-    ...roots.flatMap(root => packageNativeCandidates(root, platform)),
-    ...cliCandidates(env, platform, {localRoots}),
-  ];
-  const bin = [...new Set(candidates)].find(probe);
-  if (!bin) throw installerError('native_binary_not_found');
+  const root=npmRoot({npm,env:installEnv,platform,spawn});
+  if(path.resolve(root).toLowerCase()!==path.resolve(prefix,'node_modules').toLowerCase())throw installerError('private_root_mismatch');
+  const candidates=packageNativeCandidates(root,platform);
+  const bin=[...new Set(candidates)].find(file=>verifiedPrivateCodexCandidate(file,installEnv,{verifyBinary,verifyTree}));
+  if(!bin)throw installerError('integrity_mismatch');
+  if(!probe(bin))throw installerError('native_binary_not_found');
   return bin;
 }
 
 export function resolveHost({ env = process.env, agent, candidates = cliCandidates,
-  probe = (file) => nativeProbe(file, env), install, autoInstall } = {}) {
+  probe = (file) => nativeProbe(file, env), verifyPrivate=file=>verifiedPrivateCodexCandidate(file,env), install, autoInstall } = {}) {
   const id = agent || detectHostAgent(env);
   if(id==='pi')return resolvePiHost(env);
   const adapter = adapters[id];
@@ -172,13 +261,21 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
   // fail closed instead of silently installing a different CLI and hiding the
   // configuration error.
   const explicit = String(env.ORCH_CLI || env.CODEX_EXE || '').trim();
-  let bin = candidates(env).find(probe);
+  const verifiedProbe=file=>{
+    if(isPrivateCliCandidate(file,env)){
+      try{
+        if(!verifyPrivate(file))return false;
+      }catch{return false;}
+    }
+    return probe(file);
+  };
+  let bin = candidates(env).find(verifiedProbe);
   const shouldAutoInstall = !explicit && (autoInstall ?? (candidates === cliCandidates && env.ORCH_AUTO_INSTALL_CLI !== '0'));
   if (!bin && id === 'codex' && shouldAutoInstall) {
     try {
-      const installed = (install || (() => installCodexCli({env, probe})))();
+       const installed = (install || (() => installCodexCli({env, probe})))();
       const installedCandidates = Array.isArray(installed) ? installed : [installed];
-      bin = [...installedCandidates, ...candidates(env)].find(probe);
+       bin = [...installedCandidates, ...candidates(env)].find(verifiedProbe);
     } catch (error) {
       if (String(error?.message || '').startsWith('CLI_AUTO_INSTALL_FAILED')) throw error;
       throw installerError(error?.code || 'installer');
@@ -190,23 +287,31 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
 
 export function launchArgs(config, options = {}) {
   if(config?.id==='pi'){
-    if(options.sandbox&&options.sandbox!=='danger-full-access')throw new Error('PI_SANDBOX_UNSUPPORTED: pi does not implement the requested sandbox');
+    if(options.sandbox!=='danger-full-access'||options.approval!=='never')throw new Error('PI_SANDBOX_UNSUPPORTED: pi cannot enforce the initiating authorization policy');
     return piArgs(config,{model:process.env.ORCH_MODEL,effort:process.env.ORCH_EFFORT});
   }
   if (!adapters[config?.id]) throw new Error('ADAPTER_UNSUPPORTED: refusing Codex argv for another agent.');
   const cwd = options.cwd || process.cwd();
-  const sandbox = options.sandbox || 'danger-full-access';
+  const sandbox = options.sandbox || 'read-only';
+  const approval = options.approval || 'on-request';
+  if(!['read-only','workspace-write','danger-full-access'].includes(sandbox)||!['never','on-request'].includes(approval))throw new Error('INITIATOR_POLICY_UNAVAILABLE: unsupported child authorization');
   // Codex treats --dangerously-bypass-approvals-and-sandbox as a complete
   // authorization envelope and rejects it when -a/--ask-for-approval is also
   // supplied. Keep the explicit no-approval flag only for restricted modes.
   const args = ['--cd', cwd];
-  if (sandbox === 'danger-full-access') args.push('--sandbox', sandbox);
-  else args.push('-a', 'never', '--sandbox', sandbox);
+  const bypass=sandbox==='danger-full-access'&&approval==='never';
+  if (bypass) args.push('--sandbox', sandbox);
+  else args.push('-a', approval, '--sandbox', sandbox);
   // The orchestrator has already received the initiating window's effective
   // authorization and normalizes it to never + danger-full-access. Carry that
   // envelope into Codex so project trust and command confirmations cannot stop
   // an authorized TUI window at startup. Restricted callers keep their policy.
-  if (sandbox === 'danger-full-access') args.push('--dangerously-bypass-approvals-and-sandbox');
-  args.push('-c', `projects.${JSON.stringify(cwd)}.trust_level="trusted"`, ...networkArgs());
+  if (bypass)args.push('--dangerously-bypass-approvals-and-sandbox','-c',`projects.${JSON.stringify(cwd)}.trust_level="trusted"`);
+  args.push(...networkArgs());
+  // A worker starts after the host has already prepared the environment.
+  // Fresh plugin SessionStart hooks trigger an interactive trust review in the
+  // TUI before the task begins. Keep that decision with the initiating host;
+  // worker windows run without hooks and never bypass hook trust.
+  args.push('--disable','hooks');
   return args;
 }

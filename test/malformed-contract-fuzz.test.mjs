@@ -5,7 +5,7 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {verifyChecks, buildTodoList, canonicalDigest} from '../scripts/core/contracts.mjs';
-import {verifyRun} from '../scripts/core/runner.mjs';
+import {verifyRun as coreVerifyRun} from '../scripts/core/runner.mjs';
 import {decomposeHash, resolveHints} from '../scripts/core/orchestrate-sdk.mjs';
 
 // 审计线 C：计划文件 / 验收契约 / 单元命令三块契约面的畸形输入判据。
@@ -15,6 +15,10 @@ const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
 const family = path.join(repo, 'temp');
 fs.mkdirSync(family, {recursive: true});
 const newDir = (label) => fs.mkdtempSync(path.join(family, `fuzz-${label}-`));
+// These fixtures intentionally use their own coordinator; pass that trusted
+// fixture path explicitly rather than asking recovery to trust the ledger.
+const verifyRun=(workspace,runId,contract,options={})=>coreVerifyRun(workspace,runId,contract,
+  {coordinator:path.join(workspace,'temp','orchestrator','codex-coordinator'),...options});
 const seen = (name, value) => console.log(`[fuzz] ${name} :: ${value}`);
 const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 220);
 // 只允许"点名了文件/字段/命令"的可读真因；裸 Node 措辞（整句就是 Node 内部错误）才算越界。

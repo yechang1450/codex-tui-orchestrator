@@ -5,7 +5,7 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 
 # Codex TUI Orchestrator
 
-本技能只接 Codex CLI；编排器自身的只读分析、设计和修改留在主对话。首次运行先自动校验并补齐 SDK、CLI 等缺失依赖（无法替用户制造登录凭据），再执行任务。
+本技能只接 Codex CLI；编排器自身的只读分析、设计和修改留在主对话。宿主信任 SessionStart hook 后会自动准备环境；未准备或缺少 Node/npm 时先从 PowerShell 调 `<插件绝对路径>/scripts/bootstrap.ps1 -Action prepare`，补齐经校验的运行时、SDK 和 CLI，再执行任务。不得修改宿主 hook 信任或制造登录凭据；详见[环境准备](../../docs/environment-setup.md)。
 
 ## 硬性执行契约
 

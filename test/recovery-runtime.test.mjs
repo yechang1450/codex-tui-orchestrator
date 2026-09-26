@@ -141,7 +141,7 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
    assert.equal(sum.taskResults.T002.checkpoint.state,'started');assert.deepEqual(attempts,[['T001','T002']]);
    const resumed=await runWindows('',hooks,{...opts,resume:true});
    assert.equal(resumed.success,false);assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(attempts.length,1);
-   assert.equal(verifyRun(d,'partial',checks),true);
+   assert.equal(verifyRun(d,'partial',checks,{coordinator:opts.coordinator}),true);
    const verified=await runWindows('',hooks,{...opts,resume:true});
    assert.equal(verified.success,true);assert.equal(verified.taskResults.T002.reconciled,true);
    assert.equal(attempts.length,1);assert.equal(JSON.parse(fs.readFileSync(path.join(d,'count.json'))).count,1);
@@ -156,7 +156,7 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
    assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(requests,1);assert.equal(attempts.length,1);
   const reconciled=JSON.parse(fs.readFileSync(checks));reconciled.T002={checks:[{type:'json',path:'remote.json',equals:{count:1}}]};
    // 父代理在不确定结果后主动收紧契约属于"显式接管"：默认拒绝改写，必须打开 override 并留痕。
-   fs.writeFileSync(checks,JSON.stringify(reconciled));assert.equal(verifyRun(d,'partial',checks,{override:true}),true);
+   fs.writeFileSync(checks,JSON.stringify(reconciled));assert.equal(verifyRun(d,'partial',checks,{override:true,coordinator:opts.coordinator}),true);
    const verified=await runWindows('',hooks,{...opts,resume:true,acceptanceOverride:true});assert.equal(verified.success,true);
    assert.equal(requests,1);assert.equal(attempts.length,1);assert.equal(JSON.parse(fs.readFileSync(path.join(d,'count.json'))).count,1);
    return;

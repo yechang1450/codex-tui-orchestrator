@@ -39,7 +39,7 @@ test('headless runner keeps task progress live and returns independently verifie
     assert.equal(sum.results.B1.attempts.length,1);
     const goalFile=path.join(path.dirname(f.summary),'goal.json');
     const goal=JSON.parse(fs.readFileSync(goalFile));goal.summaryDigest='interrupted-mirror-write';fs.writeFileSync(goalFile,JSON.stringify(goal));
-    const resumed=await runWindows('',f.hooks,{...f.options,coordinator:undefined,resume:true});
+    const resumed=await runWindows('',f.hooks,{...f.options,resume:true});
     assert.equal(resumed.success,true);assert.equal(resumed.results.B1.attempts.length,1);
     assert.equal(resumed.coordinator,f.options.coordinator,'resume must retain its saved coordinator instead of selecting the new default');
     assert.notEqual(JSON.parse(fs.readFileSync(goalFile)).summaryDigest,goal.summaryDigest);

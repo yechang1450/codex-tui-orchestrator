@@ -24,6 +24,7 @@ export const {main,buildPsArrayLit,capPlanBlocks,buildWindowWaves,memoryPrefligh
  windowGenuinelyPopped,extractResult,extractUsage,readReportFromResult,sessionDir,writeInteractiveLauncher,
  staleTransientFiles,pidFileOfTransient,tryReserveWindow,commitReservation,cancelReservation,computeMaxWindows,isPluginOwnedTerminalCommand,closeOrphanTerminals,
  blockKeys,keysOverlap,findOwnedTurn,waitForSessionFile,scanTaskComplete,waitTaskComplete,isCapacityError,capacityRetryPolicy,isProviderQuotaError,rolloutQuotaError,withRegistryLock,__setOrchHooks,isOrchestratorSelfMod,resolveCodexHome,trustConfigPath,workspaceTrustState}=await import('./core/orchestrate-sdk.mjs');
+export const {prepareExecutionPlan,terminateOwnedLauncher}=await import('./core/orchestrate-sdk.mjs');
 // 公开入口必须与内核入口回同一行 FATAL；此前这里打 e.stack，导致 `--nope` 之类的拒绝
 // 把 Node 栈帧和载入器前言直接甩给用户（回归：test/public-fatal-contract.test.mjs）。
 if (IS_CLI) main().catch(reportFatal);

@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import { networkArgs } from '../scripts/network-policy.mjs';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import { detectHostAgent, installCodexCli, resolveHost, launchArgs, cliCandidates } from '../scripts/host-cli.mjs';
 test('unknown and explicitly unsupported hosts never become codex', () => {
   assert.throws(() => detectHostAgent({}), /HOST_UNKNOWN/);
@@ -45,6 +49,24 @@ test('an invalid explicit native CLI fails closed without installing a replaceme
   }), /CLI_MISSING/);
   assert.equal(installs, 0);
 });
+test('a tampered plugin-private CLI is rejected before its version probe',()=>{
+  const home=path.join(os.tmpdir(),'orch-cli-private-candidate');
+  const bin=path.join(home,'runtime','cli','node_modules','@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe');
+  let probed=0;
+  assert.throws(()=>resolveHost({env:{ORCH_AGENT:'codex',PLUGIN_DATA:home},candidates:()=>[bin],
+    verifyPrivate:()=>false,probe:()=>{probed++;return true;},autoInstall:false}),/CLI_MISSING/);
+  assert.equal(probed,0);
+});
+test('automatic installer replaces uppercase npm prefix before spawning npm',()=>{
+  const home=path.join(os.tmpdir(),'orch-cli-private-prefix');
+  const expected=path.join(home,'runtime','cli','node_modules','@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe');
+  const spawn=(_command,args,options)=>{
+    const child=spawnSync(process.execPath,['-e','process.stdout.write(process.env.npm_config_prefix||"")'],{env:options.env,encoding:'utf8'});
+    assert.equal(child.stdout,path.join(home,'runtime','cli'));
+    return args.at(-2)==='root'?{status:0,stdout:path.join(home,'runtime','cli','node_modules')}:{status:0};
+  };
+  assert.equal(installCodexCli({env:{PATH:process.env.PATH,NPM_CONFIG_PREFIX:'C:\\outside',PLUGIN_DATA:home},platform:'win32',spawn,verifyBinary:()=>true,verifyTree:()=>true,probe:()=>true}),expected);
+});
 test('automatic installation errors are reported without leaking installer output', () => {
   assert.throws(() => resolveHost({
     env: { ORCH_AGENT:'codex' },
@@ -60,28 +82,71 @@ test('automatic installation errors are reported without leaking installer outpu
 });
 test('automatic installer uses a bounded global npm install and verifies the installed native package', () => {
   const calls = [];
-  const expected = 'C:\\npm-root\\@openai\\codex\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe';
+  let integrityChecked=false;
+  const home=path.join(os.tmpdir(),'orch-cli-happy-fixture');
+  const root=path.join(home,'runtime','cli','node_modules');
+  const expected=path.join(root,'@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe');
   const spawn = (command, args, options) => {
     calls.push({command, args, options});
-    if (args.at(-2) === 'root' && args.at(-1) === '--global') return {status: 0, stdout: 'C:\\npm-root' + String.fromCharCode(13, 10)};
+    if (args.at(-2) === 'root' && args.at(-1) === '--global') return {status: 0, stdout: root + String.fromCharCode(13, 10)};
     return {status: 0, stdout: 'npm installed\n', stderr: 'diagnostic\n'};
   };
   const bin = installCodexCli({
-    env: {PATH: '', ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.149.0'},
+    env: {PATH: '', PLUGIN_DATA:home, ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.157.0'},
     platform: 'win32',
-    localRoots: [],
     spawn,
+    verifyBinary:()=>{integrityChecked=true;return true;},
+    verifyTree:()=>true,
     probe: file => file === expected,
   });
   assert.equal(bin, expected);
+  assert.equal(integrityChecked,true,'native executable must be authenticated before the version probe');
   assert.equal(calls.length, 2);
   assert.ok(calls[0].args.includes('install'));
   assert.ok(calls[0].args.includes('--global'));
   assert.ok(calls[0].args.includes('--ignore-scripts'));
   assert.ok(calls[0].args.includes('--no-audit'));
   assert.ok(calls[0].args.includes('--no-fund'));
-  assert.ok(calls[0].args.includes('@openai/codex@0.149.0'));
+  assert.ok(calls[0].args.includes('@openai/codex@0.157.0'));
   assert.equal(calls[0].options.timeout, 120000);
+});
+test('automatic installer rejects an altered platform package tree before probing the CLI',()=>{
+  const home=path.join(os.tmpdir(),'orch-cli-tree-fixture');
+  const root=path.join(home,'runtime','cli','node_modules');
+  let probed=0;
+  const spawn=(_command,args)=>args.at(-2)==='root'?{status:0,stdout:root}:{status:0};
+  assert.throws(()=>installCodexCli({env:{PATH:process.env.PATH,PLUGIN_DATA:home},platform:'win32',spawn,
+    verifyBinary:()=>true,verifyTree:()=>false,probe:()=>{probed++;return true;}}),/integrity_mismatch/);
+  assert.equal(probed,0);
+});
+
+test('automatic CLI installer rejects substituted native bytes before executing them',()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'orch-cli-integrity-'));
+  const root=path.join(home,'runtime','cli','node_modules');
+  const bin=path.join(root,'@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe');
+  fs.mkdirSync(path.dirname(bin),{recursive:true});fs.writeFileSync(bin,'substituted executable','utf8');
+  let probed=false;
+  try {
+    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,ORCH_CLI_INSTALL_SPEC:'@openai/codex@0.157.0'},platform:'win32',localRoots:[],
+      spawn:(_command,args)=>args.at(-2)==='root'?{status:0,stdout:root+'\n'}:{status:0},
+      probe:()=>{probed=true;return true;}}),/CLI_AUTO_INSTALL_FAILED.*integrity/i);
+    assert.equal(probed,false);
+  } finally {fs.rmSync(home,{recursive:true,force:true});}
+});
+
+test('automatic CLI installer never fetches a version without a release-controlled digest',()=>{
+  let spawned=false;
+  assert.throws(()=>installCodexCli({env:{...process.env,ORCH_CLI_INSTALL_SPEC:'@openai/codex@0.149.0'},spawn:()=>{spawned=true;return {status:1};}}),/CLI_AUTO_INSTALL_FAILED.*unpinned/i);
+  assert.equal(spawned,false);
+});
+
+test('direct automatic CLI installation overrides ambient npm global prefix with plugin-private runtime',()=>{
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'orch-cli-prefix-'));
+  let usedPrefix='';
+  try {
+    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,npm_config_prefix:path.join(home,'outside')},spawn:(_command,_args,options)=>{usedPrefix=options.env.npm_config_prefix;return {status:1};}}),/CLI_AUTO_INSTALL_FAILED/);
+    assert.equal(path.resolve(usedPrefix),path.join(home,'runtime','cli'));
+  } finally {fs.rmSync(home,{recursive:true,force:true});}
 });
 test('automatic installer converts npm failure to a bounded diagnostic without npm output', () => {
   assert.throws(() => installCodexCli({
@@ -125,7 +190,7 @@ test('host identity and resolved executable are preserved', () => {
   assert.equal(detectHostAgent({ CODEX_THREAD_ID:'x' }), 'codex');
   const host = resolveHost({env:{ORCH_AGENT:'codex'}, candidates:()=>['missing','native cli'], probe:p=>p==='native cli'});
   assert.equal(host.config.bin,'native cli');
-  assert.deepEqual(launchArgs(host.config,{cwd:'a b',sandbox:'read-only',approval:'never'}), ['--cd','a b','-a','never','--sandbox','read-only','-c','projects."a b".trust_level="trusted"',...networkArgs()]);
+  assert.deepEqual(launchArgs(host.config,{cwd:'a b',sandbox:'read-only',approval:'never'}), ['--cd','a b','-a','never','--sandbox','read-only',...networkArgs(),'--disable','hooks']);
   const authorized = launchArgs(host.config,{cwd:'a b',sandbox:'danger-full-access',approval:'never'});
   assert.ok(authorized.includes('--dangerously-bypass-approvals-and-sandbox'));
   // Codex rejects the approval flag together with the dangerous bypass flag;
@@ -133,6 +198,27 @@ test('host identity and resolved executable are preserved', () => {
   assert.equal(authorized.includes('-a'), false);
   assert.equal(authorized.includes('never'), false);
   assert.throws(()=>launchArgs({id:'unknown'}),/ADAPTER_UNSUPPORTED/);
+});
+
+test('restricted child argv preserves on-request approval and does not bypass sandbox or project trust',()=>{
+  const args=launchArgs({id:'codex'},{cwd:'C:\\work',sandbox:'workspace-write',approval:'on-request'});
+  assert.deepEqual(args.slice(0,6),['--cd','C:\\work','-a','on-request','--sandbox','workspace-write']);
+  assert.equal(args.includes('--dangerously-bypass-approvals-and-sandbox'),false);
+  assert.equal(args.some(arg=>arg.includes('trust_level="trusted"')),false);
+});
+
+test('Codex child windows disable session hooks so first-run hook review cannot block tasks',()=>{
+  const args=launchArgs({id:'codex'},{cwd:'C:\\work',sandbox:'workspace-write',approval:'on-request'});
+  const at=args.indexOf('--disable');
+  assert.ok(at>=0,'the worker must disable host session hooks');
+  assert.equal(args[at+1],'hooks');
+  assert.equal(args.includes('--dangerously-bypass-hook-trust'),false);
+});
+
+test('danger-full-access with on-request approval never receives no-approval bypass',()=>{
+  const args=launchArgs({id:'codex'},{cwd:'C:\\work',sandbox:'danger-full-access',approval:'on-request'});
+  assert.equal(args.includes('--dangerously-bypass-approvals-and-sandbox'),false);
+  assert.deepEqual(args.slice(0,6),['--cd','C:\\work','-a','on-request','--sandbox','danger-full-access']);
 });
 
 test('desktop CLI precedes the SDK bundled fallback and invalid explicit paths never install',()=>{

@@ -17,7 +17,7 @@ The dedicated entry defaults to Codex. An explicit non-Codex `--agent` / `ORCH_A
 
 ## Using it from Codex / 在 Codex 中的实际体验
 
-Once the plugin is registered with the host and enabled, start a new conversation if the skill is not loaded yet, then give Codex the complete authorized multi-part request. First use restores missing locked dependencies and, when needed, performs one bounded user-level installation of the native Codex CLI. The skill keeps the original task IDs, prepares independent acceptance checks and calls the absolute SDK entry from the initiating workspace. `--exec` is the default; use `--run-windows` when you need to watch or interact with a visible TUI. Cloning this repository alone does not register or enable the plugin.
+Once the plugin is registered and enabled, its trusted SessionStart hook prepares the environment when a conversation starts. The PowerShell bootstrap can start without Node/npm: it reuses a verified local runtime or installs a checksum-verified portable runtime in the plugin data directory, restores the locked SDK and discovers/installs native Codex CLI. Host hook trust is required and is never changed by the installer. Direct installation runs the same preparation immediately. Orchestrated child sessions disable hooks after host preparation so a fresh hook review cannot block visible tasks; they never bypass hook trust. The skill keeps original task IDs, prepares independent acceptance checks and calls the absolute entry from the initiating workspace. `--exec` is the default; use `--run-windows` for a visible TUI. Cloning alone does not enable the plugin, and installation cannot supply account credentials.
 
 一次实际运行会先把原始请求拆成带原始 ID 的原子任务，再按依赖、冲突和未知资源组成串行块；最终并行块之间没有前后依赖或资源冲突。只有一个块时直接在发起对话执行。每次开窗前按预测内存峰值检查，保留至少 4000 MB；不满足时排队，窗口结束后重新准入。你看到的是同一份任务账本的两条视图：TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数与等待原因。普通执行必须完成 `started`、`completed` 和主控独立验收，才算 `verified`；窗口关闭后，主控按块顺序串行检查真实产物，并把证据追加到同一份 verification report。关窗、结束标记或子窗口自报不会单独宣告成功。
 
@@ -28,13 +28,22 @@ Once the plugin is registered with the host and enabled, start a new conversatio
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话；外部副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份；结果不明的任务停在 `needs-reconciliation` |
 
-这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。此前流程证据覆盖 headless、可见 TUI、恢复接管、监督器和独立复核；当前候选仍须以最新真实自检和 RC 清单为准，不能把历史流程证据当作当前版本全流程通过。历史提交 `dea90f4` 曾完成覆盖 162 个文件的离线安全审计，未发现报告项；该结果不认证之后的修改；完整限制和未验证场景见 [RC 验收记录](docs/rc-validation.md)。当前只支持 Windows、Node.js 22+ 和已登录的原生 Codex CLI；模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测，离线回归不会替它们背书。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
+这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。当前工作树已完成 headless 与可见 TUI 的四块实机验收、父级串行独立检查和 77 个文件的离线回归；Codex Security 对修复前快照登记的四项问题已在当前代码修复。证据和适用范围见 [RC 验收记录](docs/rc-validation.md)。运行时需要 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网仍需单独实测，离线回归不会替它们背书。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 
 ### Install or update from GitHub
 
-Use Windows with Node 22+; the first-use bootstrap discovers and, when needed, installs the native Codex CLI. Authenticate Codex before a real task run. Finish active runs before updating this checkout. The block below explicitly rejects tracked or untracked local changes, fast-forwards a clean checkout or clones it, then restores locked dependencies and checks integrity and installation. Every native-command failure stops the block; resolve that failure before retrying.
+With an extracted or cloned plugin directory, this entry also works before Node/npm are on PATH:
+
+```powershell
+powershell.exe -NoProfile -File "$HOME\plugins\codex-tui-orchestrator\scripts\bootstrap.ps1" -Action install
+if ($LASTEXITCODE -ne 0) { throw 'Plugin installation failed.' }
+```
+
+`-Action prepare` only prepares dependencies and CLI, `-Action doctor` checks the environment, and `-Action run -Arguments @('--exec', '<request>')` forwards arguments without building a shell command. Runtime downloads are pinned and SHA-256 verified; staging is cleaned on failure. `PLUGIN_DATA/runtime` is preferred, falling back to the plugin's `temp/runtime`; global PATH and credentials are preserved. Git is needed for the optional clone/pull workflow below, not for execution from an extracted package. See [environment preparation](docs/environment-setup.md) for hook trust, offline errors and clean-machine reproduction.
+
+The manual clone/update workflow below needs Git. Authenticate Codex before a real task run. Finish active runs before updating this checkout. The block rejects local changes, fast-forwards a clean checkout or clones it, then prepares dependencies and checks installation. Every native-command failure stops the block.
 
 ```powershell
 & {
@@ -53,11 +62,7 @@ Use Windows with Node 22+; the first-use bootstrap discovers and, when needed, i
     git clone https://github.com/yechang1450/codex-tui-orchestrator.git $InstallRoot
     if ($LASTEXITCODE -ne 0) { throw 'Git clone failed. Installation stopped.' }
   }
-  npm ci --prefix (Join-Path $InstallRoot 'scripts') --omit=optional --ignore-scripts
-  if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
-  node (Join-Path $InstallRoot 'scripts/release-integrity.mjs')
-  if ($LASTEXITCODE -ne 0) { throw 'Release integrity failed.' }
-  node (Join-Path $InstallRoot 'scripts/orchestrate-sdk.mjs') --doctor
+  & (Join-Path $InstallRoot 'scripts/bootstrap.ps1') -Action doctor
   if ($LASTEXITCODE -ne 0) { throw 'Installation diagnostics failed.' }
 }
 ```
@@ -70,17 +75,15 @@ The block above only prepares a script checkout. Registering it with the plugin 
 & {
   $ErrorActionPreference = 'Stop'
   $InstallRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'   # your checkout
-  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --pull
+  & (Join-Path $InstallRoot 'scripts/bootstrap.ps1') -Action install -Arguments @('--pull', '--verify-skills')
   if ($LASTEXITCODE -ne 0) { throw 'Install failed.' }
-  node (Join-Path $InstallRoot 'scripts/install-plugin.mjs') --check --verify-skills
-  if ($LASTEXITCODE -ne 0) { throw 'Install verification failed.' }
 }
 ```
 
 - Clone first when the checkout does not exist; `install-plugin.mjs` does not clone.
 - `--pull` requires a clean tree and only runs `git pull --ff-only`.
 - When `<home>/.agents/plugins/marketplace.json` is missing the tool creates it with the canonical `name: "personal"` and an entry pointing at `./plugins/dist/codex-tui-orchestrator`; other paths still require an existing marketplace file, and existing entries and plugins are preserved.
-- `--check` is read-only: registration match, distribution-versus-checkout core equality, `scripts/node_modules` inside the installed cache, and host `config.toml` enablement. `--verify-skills` additionally renders one host prompt context and asserts the skills are listed.
+- `node scripts/install-plugin.mjs --check` is read-only: registration match, distribution-versus-checkout core equality, installed cache dependencies and host enablement. `--verify-skills` additionally checks skill visibility. The PowerShell wrapper prepares missing dependencies first, so use the direct Node command for a strictly read-only check.
 - The cache root follows `CODEX_HOME`, so a custom or relocated `CODEX_HOME` is checked against the same root the host CLI uses instead of assuming `~/.codex`.
 - After moving machines or clones, an entry can still point at the old path: `--set-source` rewrites the single matching entry to this machine's distribution while preserving other entries, policies and categories; duplicates, remote sources and unmatched entries still stop with a diagnostic.
 - `--verify-skills` degrades to a warning when the host build does not expose the debug entry point; add `--strict-skills` when that check must be a hard gate.
@@ -198,9 +201,9 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 ## Host contract / 宿主契约
 
 - Dedicated entry: Codex is the default. `--agent` / `ORCH_AGENT` may explicitly select Codex; non-Codex values are rejected. `--workspace` chooses the task workspace and `--cli` selects a native CLI override.
-- --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH, the desktop app native binary, and the installed plugin's npm packaged native binary, verify with `--version`, and make one bounded global `npm install --ignore-scripts @openai/codex@0.157.0` attempt when no verified native binary exists. `ORCH_CLI_INSTALL_SPEC` may select another exact `@openai/codex@x.y.z` release; tags, ranges, other packages and shell fragments are rejected. Set `ORCH_AUTO_INSTALL_CLI=0` to disable that attempt; installation output is never copied into the error message.
+- --cli / ORCH_CLI (or CODEX_EXE) selects the native executable. An explicit invalid path fails instead of searching for a replacement. Otherwise inspect PATH, the desktop app native binary, and the installed plugin's npm packaged native binary, verify with `--version`, and make one bounded private-prefix `npm install --global --ignore-scripts @openai/codex@0.157.0` attempt when no verified native binary exists. Before a private installed binary executes, both its native SHA-256 and a complete 47-file platform package manifest must match release-pinned digests; this also applies on later launches. `ORCH_CLI_INSTALL_SPEC` accepts only that pinned release; another version requires updated reviewed digests. Set `ORCH_AUTO_INSTALL_CLI=0` to disable that attempt; installation output is never copied into the error message.
 - The latest structured turn context in the same `CODEX_HOME` supplies the initiating conversation's model, reasoning effort and service tier. Native `config.toml` fills missing fields; `ORCH_MODEL`, `ORCH_EFFORT` and `ORCH_SERVICE_TIER` are fallback values only when neither source provides a field. `ORCH_PROVIDER=openai-https` — or a configured relay URL, which implies it — switches both the planner and the workers to the hardened OpenAI HTTPS provider; `ORCH_PROVIDER=inherit` keeps inheritance and any other value fails closed.
-- ORCH_SANDBOX / ORCH_APPROVAL pass the caller's authorized execution policy. Authorized execution windows default to danger-full-access / never. ORCH_SANDBOX can restrict the sandbox; approval is always never, including when a legacy ORCH_APPROVAL requests prompting. For the default authorized Codex TUI path, the launcher carries the effective never + danger-full-access envelope with `--dangerously-bypass-approvals-and-sandbox`, which also suppresses the CLI's project trust confirmation. Restricted sandbox values are preserved and never elevated. The exact workspace trust setting is passed for this invocation only; global config.toml is not modified. External host policy can still reject an operation. This is an explicit trust boundary: run the plugin only for tasks you have authorized, and use `ORCH_SANDBOX` to retain a restricted policy when the task does not need full access.
+- The initiating Codex turn's structured sandbox, approval policy and working directory govern child launches. A restricted turn cannot switch to another workspace; missing turn policy stops execution. Direct CLI use without a turn requires an explicit native policy or `ORCH_SANDBOX` / `ORCH_APPROVAL`. Children preserve `on-request` approval and restricted sandboxes. If the default headless mode would need interactive approval, it selects visible mode; an explicit headless request is refused. Only effective danger-full-access plus never uses `--dangerously-bypass-approvals-and-sandbox` and the invocation-specific project trust override. Global config.toml is not changed.
 - Headless uses hidden workers and codex exec --json with stdin prompts. Visible mode prefers Windows Terminal with conhost fallback and inherited interactive stdout. ORCH_TUI applies only to visible mode. Accepted values are `wt`, `conhost` and `inactive`; any other `ORCH_TUI` value fails closed at startup.
 - WORKSPACE_DIR selects the task workspace. CODEX_HOME selects Codex configuration/session storage. The default workspace is the caller's current directory; --workspace / WORKSPACE_DIR explicitly overrides it. ORCH_STATE_DIR defaults to workspace/temp/orchestrator for Codex; the Codex coordinator is isolated from open-tui-orchestrator under `temp/orchestrator/codex-coordinator` and HKCU `Software/CodexTuiOrchestrator`. Cross-workspace Codex runs share that locator; run results stay in their own workspace. ORCH_COORDINATOR_DIR is an explicit advanced override for intentionally shared Codex pools.
 - Task temporary artifacts remain under workspace/temp and are handled by the existing cleanup protocol. Do not delete active runtime state. ORCH_SESSION_DIR can override session discovery.
@@ -224,7 +227,7 @@ The focused execution acceptance suite is `node --test --test-concurrency=1 test
 
 ## Capacity-constrained planning
 
-Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory below 4000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 4000 MB reserve; otherwise it remains queued until a lease is released. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
+Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory at or below 4000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 4000 MB reserve; otherwise it remains queued until a lease is released. The low-level visible `--spawn` and `--selftest-close` windows use the same atomic memory admission and predicted-cost reservation. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
 
 An explicit capacity below the number of independent blocks is rejected so the planner cannot silently change the user's concurrency graph. Tasks inside a dependency or conflict component execute serially in dependency order, and all task bodies and conflict keys are retained. The shared coordinator applies atomic leases across active and reserved windows.
 

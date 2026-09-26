@@ -1,5 +1,9 @@
 # 安装与 CLI 兼容验收
 
+## 当前环境准备入口
+
+当前版提供不依赖预装 Node/npm 的 `scripts/bootstrap.ps1`，以及宿主信任后运行的 SessionStart hook。它复用已验证运行时，必要时安装经校验的便携 Node、锁定 SDK 和固定版本原生 CLI；登录仍由宿主账户提供。详见[环境准备](environment-setup.md)。下面关于“CLI 由宿主预装”的描述属于当时版本测试条件，不是当前自动准备能力的限制。
+
 当前专用核心为 1.4.0-rc.1，当前验证见 [RC 验收记录](rc-validation.md)。以下是 1.3.1 历史矩阵：现场当时已确认的 Codex CLI 为 0.153.4，Windows Terminal 为 1.24.11911.0；SDK 锁定版本和历史 1.2.x 记录仍按下表标注。下表只列实测范围，不是所有功能和环境的兼容保证。完整字段见 [1.3.1 兼容矩阵](../test/compatibility-matrix-1.3.1.json)。
 
 | Codex CLI | 环境 | 已通过 | 未覆盖 |
@@ -18,7 +22,7 @@ npm ci --prefix "<插件目录>/scripts" --omit=optional --ignore-scripts --no-a
 node "<插件目录>/scripts/orchestrate-sdk.mjs" --doctor
 ```
 
-测试另外指定了独立 `--cache` 目录。`--omit=optional` 不下载可选的原生 CLI 包，测试显式选择本机已有 CLI；这不是新 Windows 账户或无 CLI 环境的安装认证。原生 CLI 的安装仍由宿主环境负责。
+历史测试另外指定了独立 `--cache` 目录。`--omit=optional` 不下载可选的原生 CLI 包，测试显式选择本机已有 CLI；这条历史记录不是新 Windows 账户或无 CLI 环境的安装认证。当时由宿主预装原生 CLI。
 
 ## 依赖异常
 
