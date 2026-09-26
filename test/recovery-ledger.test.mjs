@@ -1,13 +1,18 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {validateRecoverySummary,validateSavedLauncherFiles} from '../scripts/core/recovery.mjs';
-import {runWindows,verifyRun} from '../scripts/core/runner.mjs';
+import {runWindows,verifyRun,sweepRunProcesses} from '../scripts/core/runner.mjs';
 import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 import {buildTodoList} from '../scripts/core/contracts.mjs';
 import {recoveryTasks} from '../scripts/core/recovery.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
+const controllerRoot=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'ledger-controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 
 function fixture(workspace) {
  return {protocol:2,runId:'ledger',workspace,request:'first;second',generation:1,history:[],
@@ -60,16 +65,67 @@ test('visible launcher evidence is bound to the current run token before adoptio
   const runId='ledger',workspace=root,attemptFile=path.join(root,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json');
   fs.mkdirSync(path.dirname(attemptFile),{recursive:true});
   const attempt={runId,token:'ledger-B1-a1-token',number:1,file:attemptFile,taskIds:['T001']};
-  const dir=path.join(root,'temp'),suffix='foreign-a1',files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
+  const dir=controllerWindowsDir(workspace),suffix='foreign-a1',files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
   fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(files.lp,`$token = '${attempt.token}'`);fs.writeFileSync(files.pf,'__ORCH_DONE__ '+attempt.token);fs.writeFileSync(files.pidf,'123');
   const sum={runId,workspace};const entry={token:attempt.token,launcherFiles:files};
   assert.throws(()=>validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt,{requireLiveFiles:true}),/bound to this run attempt/);
-  files.lp=path.join(dir,'win-launch-'+runId+'-a1.ps1');files.pf=path.join(dir,'agent-win-'+runId+'-a1.md');files.pidf=path.join(dir,'window-'+runId+'-a1.pid');files.rf=path.join(dir,'win-'+runId+'-a1.result.json');
+  files.lp=path.join(dir,'win-launch-B1-'+runId+'-a1.ps1');files.pf=path.join(dir,'agent-win-B1-'+runId+'-a1.md');files.pidf=path.join(dir,'window-B1-'+runId+'-a1.pid');files.rf=path.join(dir,'win-B1-'+runId+'-a1.result.json');
   fs.writeFileSync(files.lp,`$token = '${attempt.token}'`);fs.writeFileSync(files.pf,'__ORCH_DONE__ '+attempt.token);fs.writeFileSync(files.pidf,'123');
   validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt,{requireLiveFiles:true});
-  files.pf=path.join(dir,'agent-win-'+runId+'-a1.md');fs.writeFileSync(files.pf,'__ORCH_DONE__ foreign-token');
+  files.pf=path.join(dir,'agent-win-B1-'+runId+'-a1.md');fs.writeFileSync(files.pf,'__ORCH_DONE__ foreign-token');
   assert.throws(()=>validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt,{requireLiveFiles:true}),/ownership token mismatch/);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('saved visible launcher cannot adopt a sibling block with the same run and attempt',()=>{
+ const workspace=path.resolve('temp','sibling-ledger');
+ const runId='ledger',attempt={runId,token:'ledger-B1-a1-token',number:1,
+  file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json'),taskIds:['T001']};
+ const dir=controllerWindowsDir(workspace),suffix='B2-ledger-a1';
+ const files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),
+  pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
+ assert.throws(()=>validateSavedLauncherFiles({runId,workspace},{key:'B1'},
+  {token:attempt.token,launcherFiles:files},attempt),/bound to this run attempt/);
+ files.lp=path.join(dir,'win-launch-B1-ledger-a1-extra.ps1');
+ assert.throws(()=>validateSavedLauncherFiles({runId,workspace},{key:'B1'},
+  {token:attempt.token,launcherFiles:files},attempt),/bound to this run attempt/);
+});
+
+test('final sweep refuses a saved sibling launcher identity before closing any process',async()=>{
+ const workspace=path.resolve('temp','sibling-sweep'),runId='ledger';
+ const attempt={runId,token:'ledger-B1-a1-token',number:1,
+  file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json'),taskIds:['T001']};
+ const dir=controllerWindowsDir(workspace),suffix='B2-ledger-a1';
+ const launcherFiles={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),
+  pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
+ const summary={runId,workspace,blocks:[{key:'B1',taskIds:['T001']}],
+  results:{B1:{status:'failed',token:attempt.token,attempts:[attempt],launcherFiles,
+   launcher:{ProcessId:424242,Name:'powershell.exe',Started:'fixture',CommandLine:'fixture'}}}};
+ let closes=0;
+ const result=await sweepRunProcesses(summary,{close:async()=>{closes++;},waitForExit:async()=>false,
+  identify:()=>summary.results.B1.launcher});
+ assert.equal(closes,0);
+ assert.equal(result.failed,1);
+ assert.match(summary.results.B1.reason,/bound to this run attempt/);
+});
+
+test("visible recovery preserves the Pi launcher's distinct safe stem",()=>{
+ const workspace=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'pi-ledger-')),runId='ledger';
+ try{
+ const attempt={runId,token:'pi-token',number:1,
+  file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B.1','1','attempt.json'),taskIds:['T001']};
+ const dir=controllerWindowsDir(workspace),suffix='B-1-ledger-a1';
+ const files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),
+  pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
+ fs.mkdirSync(dir,{recursive:true});
+ fs.writeFileSync(files.lp,"$env:ORCH_PI_TOKEN = 'pi-token'",'utf8');
+ fs.writeFileSync(files.pf,'__ORCH_DONE__ pi-token','utf8');
+ fs.writeFileSync(files.pidf,'9001','utf8');
+ validateSavedLauncherFiles({runId,workspace,agent:'pi'},{key:'B.1'},
+  {token:attempt.token,launcherFiles:files},attempt,{requireLiveFiles:true});
+ assert.throws(()=>validateSavedLauncherFiles({runId,workspace,agent:'codex'},{key:'B.1'},
+  {token:attempt.token,launcherFiles:files},attempt),/bound to this run attempt/);
+ }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
 test('safe retry clears an old failed or verified task status before composing receipts',()=>{
@@ -110,12 +166,12 @@ test('verifyRun rebuilds the local goal mirror from verified task state',()=>{
    tasks,plan:[{key:'B1',title:'both',keys:[],dependsOn:[],b:{tasks:[{sourceIds:['T001']} ]}}],blocks,
    results:{B1:{status:'awaiting-verification',endedAt:1,attempts:[{...attempt,file:attemptFile}]}},
    taskResults:{T001:{status:'awaiting-verification'}},todoList:buildTodoList(tasks,blocks,{T001:{status:'awaiting-verification'}}),
-   coordinator:path.join(root,'temp/orchestrator/coordinator')};
+   coordinator:path.join(controllerRoot,'coordinator')};
   fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(summary));
   const evidence=path.join(root,'evidence.json');fs.writeFileSync(evidence,JSON.stringify({ok:true}));
   const checks=path.join(dir,'acceptance.json');fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'evidence.json',equals:{ok:true}}]}));
   fs.writeFileSync(path.join(dir,'goal.json'),JSON.stringify({version:1,runId:'goal-refresh',workspace:root,objective:'first',status:'active',tasks:[{id:'T001',status:'pending',block:'B1'}],blocks:[{key:'B1',title:'both',status:'active',taskIds:['T001']}]}));
-  assert.equal(verifyRun(root,'goal-refresh',checks,{coordinator:path.join(root,'temp/orchestrator/coordinator')}),true);
+  assert.equal(verifyRun(root,'goal-refresh',checks,{coordinator:path.join(controllerRoot,'coordinator'),override:true}),true);
   const goal=JSON.parse(fs.readFileSync(path.join(dir,'goal.json'),'utf8'));
   assert.equal(goal.status,'completed');assert.equal(goal.tasks[0].status,'verified');assert.equal(goal.summaryGeneration,1);
   const final=JSON.parse(fs.readFileSync(path.join(dir,'summary.json')));
@@ -130,7 +186,7 @@ test('resume rejects a goal mirror with a different run identity',async()=>{
  const root=fs.mkdtempSync(path.join(family,'goal-identity-'));
  try{
   const dir=path.join(root,'temp/orchestrator/runs/ledger');fs.mkdirSync(dir,{recursive:true});
-   const saved=fixture(root);saved.finishedAt=1;saved.coordinator=path.join(root,'temp/orchestrator/coordinator');fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(saved));
+   const saved=fixture(root);saved.finishedAt=1;saved.coordinator=path.join(controllerRoot,'coordinator');fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(saved));
   fs.writeFileSync(path.join(dir,'goal.json'),JSON.stringify({version:1,runId:'foreign',workspace:root}));
   fs.writeFileSync(path.join(dir,'acceptance.json'),'{}');let calls=0;
   const hooks=new Proxy({}, {get(){calls++;throw new Error('Unexpected execution hook');}});

@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,6 +11,10 @@ import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const family=path.join(repo,'temp','acceptance-binding');
 fs.mkdirSync(family,{recursive:true});
+const originalCodexHome=process.env.CODEX_HOME;
+const controllerHome=fs.mkdtempSync(path.join(family,'controller-home-'));
+process.env.CODEX_HOME=controllerHome;
+after(()=>{if(originalCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=originalCodexHome;fs.rmSync(controllerHome,{recursive:true,force:true});});
 const readJson=file=>JSON.parse(fs.readFileSync(file,'utf8'));
 const contract=equals=>({T001:[{type:'json',path:'evidence.json',equals}]});
 // 比原始契约宽松得多：只要文件存在就算通过，用来模拟有磁盘权限的执行窗自降验收条件。
@@ -39,7 +43,7 @@ async function runOnce(runId,checks){
     compact:value=>value,infer:()=>[],prompt:value=>value,register:()=>{},commit:()=>{},unregister:()=>{}};
   try{
     const sum=await runWindows('写证据',hooks,{workspace,capacity:1,executionMode:'headless',runId,
-      coordinator:path.join(workspace,'coordinator'),acceptanceFile:checksFile,auth:'binding',timeoutMs:30000});
+      coordinator:path.join(controllerHome,'coordinator'),acceptanceFile:checksFile,auth:'binding',timeoutMs:30000});
     return {workspace,checksFile,dir:runDirectory(workspace,runId),sum};
   }catch(error){
     // 失败路径同样不留工作区：调用方的 finally 只有在拿到返回值之后才会执行。
@@ -66,7 +70,32 @@ test('a fresh run binds the acceptance contract into the ledger and the manifest
     // 同一契约换个路径、换个排版（压缩 JSON）时摘要不变，历史与显式文件的用法继续可用。
     const copy=path.join(workspace,'contract-copy.json');
     fs.writeFileSync(copy,JSON.stringify(readJson(checksFile)));
-    assert.equal(verifyRun(workspace,'bound',copy,{coordinator:path.join(workspace,'coordinator')}),true);
+    assert.equal(verifyRun(workspace,'bound',copy,{coordinator:path.join(controllerHome,'coordinator')}),true);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
+test('workspace edits to the saved execution plan cannot be adopted by verification or resume',async()=>{
+  const runId='plan-forgery';
+  const {workspace,dir}=await runOnce(runId,contract({count:1}));
+  try{
+    const file=path.join(dir,'summary.json'),saved=readJson(file);
+    saved.plan[0].b.tasks[0].prompt='forged child instruction';
+    fs.writeFileSync(file,JSON.stringify(saved),'utf8');
+    const options={coordinator:path.join(controllerHome,'coordinator')};
+    assert.throws(()=>verifyRun(workspace,runId,undefined,options),/trusted run plan|plan binding/i);
+    await assert.rejects(runWindows('',{}, {workspace,runId,resume:true,capacity:1,
+      executionMode:'headless',...options}),/trusted run plan|plan binding/i);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
+test('a verified headless run removes private launch artifacts after finalization',async()=>{
+  const {workspace,sum}=await runOnce('completed-cleanup',contract({count:1}));
+  try{
+    assert.equal(sum.success,true);
+    const files=Object.values(sum.results)[0].launcherFiles;
+    for(const key of ['lp','pf','pidf','rf','stdout','stderr']){
+      assert.equal(fs.existsSync(files[key]),false,key+' should be removed after final verification');
+    }
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
@@ -74,7 +103,7 @@ test('verify rejects a weakened on-disk acceptance contract until the override i
   const runId='weakened';
   const {workspace,dir}=await runOnce(runId,contract({count:1}));
   try{
-    const trusted={coordinator:path.join(workspace,'coordinator')};
+    const trusted={coordinator:path.join(controllerHome,'coordinator')};
     const onDisk=path.join(dir,'acceptance.json');
     fs.writeFileSync(onDisk,JSON.stringify(weakened));
     assert.throws(()=>verifyRun(workspace,runId,undefined,trusted),/Acceptance contract changed/);
@@ -90,6 +119,45 @@ test('verify rejects a weakened on-disk acceptance contract until the override i
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
+test('verify rejects a contract forged together with both workspace digest records',async()=>{
+  const runId='coordinated-forgery';
+  const {workspace,dir}=await runOnce(runId,contract({count:1}));
+  try{
+    const marker=path.join(workspace,'forged-command-ran');
+    const forged={T001:[{type:'command',command:process.execPath,args:['-e',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran')`]}]};
+    fs.writeFileSync(path.join(dir,'acceptance.json'),JSON.stringify(forged),'utf8');
+    const digest=canonicalDigest(forged);
+    for(const name of ['summary.json','manifest.json']){
+      const file=path.join(dir,name),record=readJson(file);
+      record.acceptance.sha256=digest;
+      fs.writeFileSync(file,JSON.stringify(record),'utf8');
+    }
+    assert.throws(()=>verifyRun(workspace,runId,undefined,{coordinator:path.join(controllerHome,'coordinator')}),/trusted acceptance|controller-owned|contract changed/i);
+    assert.equal(fs.existsSync(marker),false);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
+test('explicit adoption rebinds controller authority even when both workspace digests were rewritten',async()=>{
+  const runId='adopt-forged-records';
+  const {workspace,dir}=await runOnce(runId,contract({count:1}));
+  try{
+    const next=contract({count:1,approved:true});
+    fs.writeFileSync(path.join(dir,'acceptance.json'),JSON.stringify(next),'utf8');
+    const digest=canonicalDigest(next);
+    for(const name of ['summary.json','manifest.json']){
+      const file=path.join(dir,name),record=readJson(file);
+      record.acceptance.sha256=digest;
+      fs.writeFileSync(file,JSON.stringify(record),'utf8');
+    }
+    const trusted={coordinator:path.join(controllerHome,'coordinator')};
+    assert.equal(verifyRun(workspace,runId,undefined,{...trusted,override:true}),false);
+    const rebound=readJson(path.join(dir,'summary.json'));
+    assert.equal(rebound.acceptance.sha256,digest);
+    assert.ok(rebound.history.some(entry=>entry.acceptanceRebound?.to===digest));
+    assert.equal(verifyRun(workspace,runId,undefined,trusted),false,'adopted contract no longer requires an override');
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
 test('resume rejects a rewritten acceptance contract before any execution hook runs',async()=>{
   const runId='resume-guard';
   const {workspace,dir}=await runOnce(runId,contract({count:1}));
@@ -97,12 +165,12 @@ test('resume rejects a rewritten acceptance contract before any execution hook r
     fs.writeFileSync(path.join(dir,'acceptance.json'),JSON.stringify(weakened));
     let calls=0;
     const hooks=new Proxy({},{get(){calls++;throw new Error('Unexpected execution hook');}});
-    await assert.rejects(()=>runWindows('',hooks,{workspace,capacity:8,runId,resume:true,coordinator:path.join(workspace,'coordinator')}),/Acceptance contract changed/);
+    await assert.rejects(()=>runWindows('',hooks,{workspace,capacity:8,runId,resume:true,coordinator:path.join(controllerHome,'coordinator')}),/Acceptance contract changed/);
     assert.equal(calls,0);
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
-test('unbound historical ledgers stay verifiable and conflicting bindings are rejected',()=>{
+test('unbound historical ledgers require explicit adoption and conflicting bindings are rejected',()=>{
   const workspace=fs.mkdtempSync(path.join(family,'legacy-'));
   try{
     const dir=path.join(workspace,'temp','orchestrator','runs','legacy');
@@ -118,12 +186,13 @@ test('unbound historical ledgers stay verifiable and conflicting bindings are re
       results:{B1:{status:'awaiting-verification',endedAt:1,attempts:[{...attempt,file:attemptFile}]}},
       taskResults:{T001:{status:'awaiting-verification'}},
       todoList:buildTodoList(tasks,blocks,{T001:{status:'awaiting-verification'}}),
-      coordinator:path.join(workspace,'temp/orchestrator/coordinator')};
+      coordinator:path.join(controllerHome,'coordinator')};
     const trusted={coordinator:summary.coordinator};
     const checks=path.join(dir,'acceptance.json');
     fs.writeFileSync(checks,JSON.stringify(contract({count:1})));
     fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(summary));
-    assert.equal(verifyRun(workspace,'legacy',undefined,trusted),true,'没有绑定的历史账本保持可验证');
+    assert.throws(()=>verifyRun(workspace,'legacy',undefined,trusted),/Trusted acceptance binding is missing/,'历史账本不能自动获得主控授权');
+    assert.equal(verifyRun(workspace,'legacy',undefined,{...trusted,override:true}),true,'显式 override 可接管历史账本');
     // 重绑定要写两份账本；如果崩溃或篡改导致两份记录不一致，恢复必须拒绝选择任意一份。
     const digest=canonicalDigest(contract({count:1}));
     const bound={...summary,acceptance:{algorithm:'sha256',sha256:digest,boundAt:2}};

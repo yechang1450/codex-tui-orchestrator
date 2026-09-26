@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased (controller-state boundary)
+
+- Cachebuster for the isolated candidate is `0.5.0-rc.1+codex.20260927035411`; the active installed plugin remains on the earlier version until a separately reviewed installation.
+- Move coordinator, worker launch files, acceptance authority, and supervisor authority to Codex-owned state outside the initiating workspace. Recovery validates derived paths; explicit acceptance adoption records a rebind even when workspace digests were both rewritten. Successfully finalized headless runs remove their launch artifacts; failed runs retain evidence. Add focused regressions and clarify the clean Windows test matrix. This branch remains a release candidate until current-patch live window and clean-machine checks pass.
+- Bind the immutable run plan in controller-owned state before execution, reject changed or unbound plans on resume, require exact visible launcher block identity, and recheck controller PID files before final cleanup accepts a saved process identity. Restore Pi live launcher token validation. Regressions cover cross-block adoption, plan rewriting and false exit confirmation.
+- Reject physical Windows path aliases that put controller or coordinator state under a writable workspace, including an uncreated workspace reached through an alternate UNC spelling. Apply the same boundary to direct API coordinator arguments and saved run coordinators. Document the fail-closed home-directory case and the need to drain old HKCU-coordinator runs before upgrading.
+- Recognize a project task immediately after a Chinese or ASCII semicolon during deterministic splitting. This keeps plainly independent project tasks on the multi-block path when the model planner is unavailable.
+
 ## 0.5.0-rc.1+codex.20260926211700
 
 - 可见 Codex 子窗启动时禁用会话钩子，避免新安装钩子的宿主信任审查卡住并发任务；不绕过钩子信任，环境准备仍由发起会话的已信任钩子或显式 bootstrap 完成。四窗 headless 与修复后的四窗可见 TUI 实测通过，父级验收保持串行。

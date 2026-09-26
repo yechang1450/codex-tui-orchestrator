@@ -9,7 +9,8 @@ import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
 import {availableMB, admissionOk, unconsumedReservationMB, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost} from './memory-budget.mjs';
 import {createVerificationQueue} from './verification-queue.mjs';
-import {assertNoReparsePoints} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicallySameOrChild} from './runtime-context.mjs';
+import {controllerStateDir} from './controller-state.mjs';
 
 function blockCostFor(sum, key, budget) {
   const block = (sum.blocks || []).find(item => item.key === key);
@@ -75,7 +76,7 @@ export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100
 }
 
 /** Final cleanup is scoped to this run's durable attempts, never terminal hosts. */
-export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExit,identify=launcherIdentity,onClosed=async()=>{},onFailed=()=>{}}={}) {
+export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExit,identify=launcherIdentity,snapshot=processSnapshot,onClosed=async()=>{},onFailed=()=>{}}={}) {
   const stats={checked:0,closed:0,failed:0};
   for(const block of sum?.blocks||[]){
     const entry=sum.results?.[block.key],attempt=entry?.attempts?.at(-1);
@@ -86,16 +87,24 @@ export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExi
           !attempt.taskIds?.length||attempt.taskIds.some(id=>!block.taskIds.includes(id))||!entry.launcherFiles)
         throw new Error('Final cleanup ownership is not bound to this run attempt');
       validateSavedLauncherFiles(sum,block,entry,attempt);
-      let expected=entry.launcher;
-      if(!expected&&fs.existsSync(entry.launcherFiles.pidf)){
+      let expected=entry.launcher,confirmedExitedByPidFile=false;
+      if(fs.existsSync(entry.launcherFiles.pidf)){
         const pid=Number(fs.readFileSync(entry.launcherFiles.pidf,'utf8').replace(/^\uFEFF/,''));
+        if(!Number.isSafeInteger(pid)||pid<=0||pid>4194304)throw new Error('Final cleanup controller PID file is invalid');
         validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveFiles:true});
-        expected=await identifyWithRetry(identify,pid,entry.launcherFiles.pidf);
-        if(expected)entry.launcher=expected;
+        const current=await identifyWithRetry(identify,pid,entry.launcherFiles.pidf);
+        if(current){
+          if(expected&&!sameProcess(expected,current))throw new Error('Final cleanup saved launcher identity mismatch');
+          expected=current;entry.launcher=current;
+        }else{
+          if(expected&&Number(expected.ProcessId)!==pid)throw new Error('Final cleanup saved launcher identity mismatch');
+          if(snapshot().has(pid))throw new Error('Final cleanup cannot prove launcher exit from its controller PID file');
+          confirmedExitedByPidFile=true;
+        }
       }
-      if(!expected)throw new Error('Final cleanup cannot prove launcher identity or exit');
+      if(!expected&&!confirmedExitedByPidFile)throw new Error('Final cleanup cannot prove launcher identity or exit');
       const wasConfirmed=entry.exitConfirmed===true;
-      if(!(await waitForExit(expected))){
+      if(!confirmedExitedByPidFile&&!(await waitForExit(expected))){
         const current=await identifyWithRetry(identify,expected.ProcessId,entry.launcherFiles.pidf);
         if(!sameProcess(expected,current))throw new Error('Final cleanup launcher identity is unavailable or changed');
         if(typeof close!=='function')throw new Error('Final cleanup has no owned-process closer');
@@ -118,7 +127,7 @@ async function coordinate(fn,deadline) {
 }
 export function runDirectory(workspace,runId) {
   if(!/^[a-zA-Z0-9_-]{1,100}$/.test(runId||''))throw new Error('A valid --run-id is required');
-  return path.join(workspace,'temp','orchestrator','runs',runId);
+  return assertNoReparsePoints(path.join(workspace,'temp','orchestrator','runs',runId),'run directory');
 }
 // 验收契约是安全闸门：畸形文件**不能**被当成"没有检查"静默放行（那样任务会停在
 // awaiting-verification 而调用方看不出真因），也不能只回一句 JSON.parse 的裸措辞。
@@ -171,21 +180,59 @@ function recordedAcceptanceDigest(sum,dir,{allowConflict=false}={}){
   console.warn('[orchestrator] acceptance override: binding records disagree ('+details+'); rebinding both records');
   return {digest:null,conflict:true,records};
 }
+function trustedAcceptanceFile(workspace,runId){
+  const identity=crypto.createHash('sha256').update(path.resolve(workspace).toLowerCase()).digest('hex');
+  return assertNoReparsePoints(path.join(controllerStateDir(workspace),'acceptance',identity,runId+'.json'),'trusted acceptance');
+}
+function trustedPlanFile(workspace,runId){
+  const identity=crypto.createHash('sha256').update(path.resolve(workspace).toLowerCase()).digest('hex');
+  return assertNoReparsePoints(path.join(controllerStateDir(workspace),'plans',identity,runId+'.json'),'trusted run plan');
+}
+function immutableRunPlan(sum){
+  return {workspace:sum.workspace,runId:sum.runId,request:sum.request,agent:sum.agent||'codex',
+    executionMode:sum.executionMode||'visible',authorization:sum.authorization??null,
+    tasks:sum.tasks,blocks:sum.blocks,plan:sum.plan};
+}
+function bindRunPlan(sum){
+  const file=trustedPlanFile(sum.workspace,sum.runId);
+  if(fs.existsSync(file))throw new Error('Trusted run plan binding already exists for this run ID');
+  atomicJson(file,{version:1,workspace:sum.workspace,runId:sum.runId,sha256:canonicalDigest(immutableRunPlan(sum))});
+}
+function validateBoundRunPlan(sum,{required=false}={}){
+  const binding=readJsonIfPresent(trustedPlanFile(sum.workspace,sum.runId));
+  if(!binding){if(required)throw new Error('Trusted run plan binding is missing; cannot resume this run');return false;}
+  if(binding.version!==1||binding.runId!==sum.runId||path.resolve(binding.workspace||'')!==path.resolve(sum.workspace)||
+    typeof binding.sha256!=='string'||!/^[a-f0-9]{64}$/.test(binding.sha256))throw new Error('Trusted run plan binding is invalid');
+  if(binding.sha256!==canonicalDigest(immutableRunPlan(sum)))throw new Error('Trusted run plan binding differs from the workspace ledger');
+  return true;
+}
 function loadBoundChecks(file,dir,sum,override){
   const checks=loadChecks(file),digest=canonicalDigest(checks),recorded=recordedAcceptanceDigest(sum,dir,{allowConflict:override===true});
+  const authority=readJsonIfPresent(trustedAcceptanceFile(sum.workspace,sum.runId));
+  if(authority&&(
+    authority.version!==1||authority.runId!==sum.runId||path.resolve(authority.workspace||'')!==path.resolve(sum.workspace)||
+    typeof authority.sha256!=='string'||!/^[a-f0-9]{64}$/.test(authority.sha256)
+  ))throw new Error('Trusted acceptance binding is invalid');
+  if(!authority&&!override)throw new Error('Trusted acceptance binding is missing; use an explicit acceptance override to adopt a historical run');
+  if(authority&&authority.sha256!==digest&&!override)throw new Error('Acceptance contract changed since the controller-owned binding was recorded (recorded '+authority.sha256.slice(0,12)+', current '+digest.slice(0,12)+')');
   if(recorded.conflict)return {checks,digest,rebound:true,conflict:true,previousRecords:recorded.records};
   if(!recorded.digest){
-    // 旧账本（本版本之前记录的运行）没有摘要可比，保持可验证，但必须说清楚。
-    console.warn('[orchestrator] this run has no recorded acceptance binding (historical ledger); the on-disk contract is used as-is');
-    return {checks,digest,rebound:false};
+    if(!override)throw new Error('Acceptance binding records are missing; use an explicit acceptance override to adopt a historical run');
+    return {checks,digest,rebound:true,previous:authority?.sha256};
+  }
+  if(!authority)return {checks,digest,rebound:true,previous:recorded.digest};
+  if(authority.sha256!==digest){
+    console.warn('[orchestrator] acceptance override: controller binding changed ('+authority.sha256.slice(0,12)+' -> '+digest.slice(0,12)+'); rebinding '+file);
+    return {checks,digest,rebound:true,previous:authority.sha256};
   }
   if(recorded.digest===digest)return {checks,digest,rebound:false};
   if(!override)throw new Error('Acceptance contract changed since the run was recorded (recorded '+recorded.digest.slice(0,12)+', current '+digest.slice(0,12)+'): '+file+'。确认契约没有被削弱后才可以用 --allow-acceptance-change（或 ORCH_ACCEPTANCE_OVERRIDE=1）显式接管。');
   console.warn('[orchestrator] acceptance override: contract digest changed ('+recorded.digest.slice(0,12)+' -> '+digest.slice(0,12)+'); rebinding '+file);
   return {checks,digest,rebound:true,previous:recorded.digest};
 }
-function bindAcceptance(dir,checks,source){
+function bindAcceptance(workspace,runId,dir,checks,source){
   const binding=acceptanceBinding(checks,source);
+  atomicJson(trustedAcceptanceFile(workspace,runId),{version:1,workspace,runId,sha256:binding.sha256});
   // 磁盘副本、摘要和账本必须始终是一份契约，否则下一次恢复会拿旧副本对不上新摘要。
   atomicJson(path.join(dir,'acceptance.json'),checks);
   const manifestFile=path.join(dir,'manifest.json'),manifest=readJsonIfPresent(manifestFile);
@@ -203,21 +250,23 @@ function goalDigest(sum) {
     results:sum.results,taskResults:sum.taskResults,
   })).digest('hex');
 }
-function canonicalCoordinator(value,label) {
+function canonicalCoordinator(workspace,value,label) {
   if(typeof value!=='string'||!value.trim()||!path.isAbsolute(value))throw new Error('Invalid '+label+' coordinator path');
-  return assertNoReparsePoints(path.resolve(value),label+' coordinator');
+  const selected=assertNoReparsePoints(path.resolve(value),label+' coordinator');
+  if(physicallySameOrChild(workspace,selected))throw new Error(label+' coordinator cannot be inside the initiating workspace');
+  return selected;
 }
 function coordinatorEquals(a,b) {
   const key=value=>process.platform==='win32'?value.toLowerCase():value;
   return key(a)===key(b);
 }
 function trustedSavedCoordinator(workspace,saved,explicit,{required=false}={}) {
-  const trusted=explicit===undefined?undefined:canonicalCoordinator(explicit,'explicit');
+  const trusted=explicit===undefined?undefined:canonicalCoordinator(workspace,explicit,'explicit');
   if(saved===undefined){
     if(required)throw new Error('Saved coordinator missing from recoverable ledger');
     return trusted||coordinatorDir(workspace);
   }
-  const selected=canonicalCoordinator(saved,'saved');
+  const selected=canonicalCoordinator(workspace,saved,'saved');
   if(trusted){
     if(!coordinatorEquals(selected,trusted))throw new Error('Saved coordinator mismatch with explicitly trusted coordinator');
     return trusted;
@@ -328,7 +377,7 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
   const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=readLedgerJson(file);
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
   if(path.resolve(sum.workspace||'')!==path.resolve(workspace))throw new Error('Run workspace/identity mismatch');
-  if(sum.protocol===2)validateRecoverySummary(sum);
+  if(sum.protocol===2){validateRecoverySummary(sum);validateBoundRunPlan(sum);}
   const coordinator=trustedSavedCoordinator(workspace,sum.coordinator,options.coordinator,{required:sum.protocol===2});
   const claim=claimRun(coordinator,'run:'+path.resolve(dir).toLowerCase());
   try{
@@ -342,7 +391,7 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
     }
     // 先校验再用新契约覆盖账本：无效的 override 契约不能把原来能用的绑定改坏。
     if(acceptance.rebound){
-      const binding=bindAcceptance(dir,checks,path.resolve(contractFile));
+      const binding=bindAcceptance(workspace,runId,dir,checks,path.resolve(contractFile));
       sum.acceptance=binding;
       sum.history.push({generation:sum.generation,acceptanceRebound:acceptanceReboundRecord(acceptance,binding)});
     }
@@ -383,10 +432,11 @@ export async function runWindows(request,hooks,options={}) {
       if(savedGoal.version===2&&savedGoal.summaryDigest!==goalDigest(savedResume))console.warn('[resume] rebuilding stale goal mirror from the validated ledger');
     }
     if(savedResume.blocks.length>capacity)throw new Error('Current memory capacity is below the saved block count');
+    validateBoundRunPlan(savedResume,{required:true});
   }
   const coordinator=options.resume
     ?trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true})
-    :(options.coordinator===undefined?coordinatorDir(workspace):canonicalCoordinator(options.coordinator,'explicit'));
+    :(options.coordinator===undefined?coordinatorDir(workspace):canonicalCoordinator(workspace,options.coordinator,'explicit'));
   const runKey='run:'+dir.toLowerCase(),claim=await coordinate(()=>claimRun(coordinator,runKey),deadline);
   let sum,progressTimer,progressError;
   try {
@@ -431,10 +481,11 @@ export async function runWindows(request,hooks,options={}) {
       if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
     }
     {
-      const binding=bindAcceptance(dir,checks,options.acceptanceFile?path.resolve(options.acceptanceFile):path.join(dir,'acceptance.json'));
+      const binding=bindAcceptance(workspace,runId,dir,checks,options.acceptanceFile?path.resolve(options.acceptanceFile):path.join(dir,'acceptance.json'));
       sum.acceptance=binding;
       if(acceptance.rebound)sum.history.push({generation:sum.generation,acceptanceRebound:acceptanceReboundRecord(acceptance,binding)});
     }
+    if(!options.resume)bindRunPlan(sum);
     const publisher=createStatusPublisher(dir,{onEvent:options.onEvent});
     const persist=(event='run.updated')=>{
       publisher.publish(sum,event);
@@ -673,6 +724,10 @@ export async function runWindows(request,hooks,options={}) {
     if(progressError)throw progressError;
     clearInterval(progressTimer);
     sum.finishedAt=Date.now();sum.success=summaryComplete(sum,true);persist(sum.success?'run.completed':'run.failed');
+    if(sum.success&&hooks.cleanupCompleted){
+      const warnings=await hooks.cleanupCompleted(sum);
+      if(warnings?.length){sum.cleanupWarnings=warnings;persist('run.cleanup-warning');}
+    }
     console.log(`[run] finalized runId=${runId} success=${sum.success} summary=${summaryFile}`);return sum;
   }finally{clearInterval(progressTimer);await coordinate(()=>releaseRun(coordinator,runKey,claim),Date.now()+30000);}
 }

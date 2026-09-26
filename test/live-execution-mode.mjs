@@ -27,7 +27,11 @@ const tasks=[1,2].map(index=>{
 });
 const checks=path.join(root,'acceptance.json');
 fs.writeFileSync(checks,JSON.stringify(Object.fromEntries(tasks.map(task=>[task.id,[{type:'json',path:task.output,equals:{nonce:task.nonce,cwd:workspace,answer:42}}]]))));
-const request=tasks.map(task=>`执行 node "${task.probe}" 创建 "${task.output}"，等待完成并读回核验，按主持命令逐项记录检查点，禁止额外操作`).join('；');
+// A numbered, independent-project lane exercises real concurrent workers even
+// when the optional model planner is unavailable. Leave the ordinary planner
+// lane unchanged unless the caller explicitly selects this controlled probe.
+const deterministicPlan=process.env.ORCH_LIVE_DETERMINISTIC_PLAN==='1';
+const request=tasks.map((task,index)=>`${deterministicPlan?`项目${91+index}：`:''}执行 node "${task.probe}" 创建 "${task.output}"，等待完成并读回核验，按主持命令逐项记录检查点，禁止额外操作`).join('；');
 // Real model-backed runs can spend several minutes in one turn at max effort.
 // Keep the smoke test bounded by default, while allowing a caller to choose a
 // longer explicit budget without changing the product's normal six-hour limit.
@@ -49,7 +53,7 @@ const receiptsValid=receipts.every((value,index)=>value?.nonce===tasks[index].no
 const tasksCovered=Array.isArray(summary?.tasks)&&summary.tasks.length===tasks.length&&tasks.every(task=>task.id&&summary.tasks.some(saved=>saved.id===task.id));
 let coreUnchanged=hash()===releaseJsonSha256;
 try{verifyRelease(path.dirname(releaseFile));}catch{coreUnchanged=false;}
-const report={mode,runId,root,workspace,entry,releaseJsonSha256,coreUnchanged,startedAt,elapsedMs:Date.now()-startedMs,exitCode,closed,
+const report={mode,planMode:deterministicPlan?'deterministic-project-split':'model-planner',runId,root,workspace,entry,releaseJsonSha256,coreUnchanged,startedAt,elapsedMs:Date.now()-startedMs,exitCode,closed,
   passed:exitCode===0&&summary?.success===true&&closed&&coreUnchanged&&receiptsValid&&tasksCovered,
   receipts,tasks:tasks.map(task=>task.id),summary,events};
 fs.writeFileSync(path.join(root,'engine.log'),log);fs.writeFileSync(path.join(root,'report.json'),JSON.stringify(report,null,2));

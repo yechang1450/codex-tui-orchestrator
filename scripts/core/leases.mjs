@@ -5,7 +5,8 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {keysOverlap} from './contracts.mjs';
 import os from 'node:os';
-import {assertNoReparsePoints} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicallySameOrChild} from './runtime-context.mjs';
+import {controllerStateDir} from './controller-state.mjs';
 
 function shapeOf(value) {
   if (value === null) return 'null';
@@ -81,23 +82,13 @@ export function launcherIdentity(pid,pidFile,snapshot=processSnapshot()) {
   return actual;
 }
 
-// Only a locator is kept in HKCU; all runtime files remain beneath the first
-// initiating workspace's temp. A named mutex makes first discovery atomic.
 export function coordinatorDir(workspace,env=process.env) {
   if(env.ORCH_COORDINATOR_DIR){
     const selected=path.resolve(workspace,env.ORCH_COORDINATOR_DIR);
+    if(physicallySameOrChild(workspace,selected))throw new Error('ORCH_COORDINATOR_DIR cannot be inside the initiating workspace');
     return assertNoReparsePoints(selected,'ORCH_COORDINATOR_DIR');
   }
-  // Codex owns an independent pool. The former generic locator was also used
-  // by open-tui-orchestrator, whose sweeper can only understand its own
-  // launcher identities and therefore removes valid Codex reservations.
-  const fallback=path.join(workspace,'temp','orchestrator','codex-coordinator');
-  if(process.platform!=='win32')return assertNoReparsePoints(fallback,'Codex coordinator');
-  const quoted=fallback.replaceAll("'","''");
-  const script=`$held=$false; $m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.Coordinator'); try {try{$held=$m.WaitOne(15000)}catch [Threading.AbandonedMutexException]{$held=$true}; if(-not $held){throw 'Coordinator locator busy'}; $key='HKCU:\\Software\\CodexTuiOrchestrator'; $p=(Get-ItemProperty -LiteralPath $key -Name CoordinatorRoot -ErrorAction SilentlyContinue).CoordinatorRoot; if(-not $p){$p='${quoted}'; New-Item -Path $key -Force|Out-Null; New-ItemProperty -LiteralPath $key -Name CoordinatorRoot -Value $p -PropertyType String -Force|Out-Null}; Write-Output $p}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
-  const r=spawnSync('powershell.exe',['-NoProfile','-Command','[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); '+script],{encoding:'utf8',windowsHide:true,timeout:20000});
-  if(r.status!==0||!r.stdout.trim())throw new Error('Unable to locate machine window coordinator');
-  return assertNoReparsePoints(path.resolve(r.stdout.trim()),'Codex coordinator');
+  return path.join(controllerStateDir(workspace,env),'codex-coordinator');
 }
 export function atomicJson(file,value){
   fs.mkdirSync(path.dirname(file),{recursive:true});

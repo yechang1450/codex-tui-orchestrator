@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,6 +8,11 @@ import {runWindows} from '../scripts/core/runner.mjs';
 import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
 import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
 const family=fileURLToPath(new URL('../temp/',import.meta.url));
+fs.mkdirSync(family,{recursive:true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'headless-controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 function fixture(){
   fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'headless-run-'));
@@ -23,7 +28,7 @@ if(id==='T002'&&fs.existsSync('hold'))while(!fs.existsSync('release'))await new 
 await new Promise(r=>setTimeout(r,400));fs.writeFileSync(id+'.json',JSON.stringify({done:true}));recordCheckpoint(file,id,'completed');}
 console.log(JSON.stringify({type:'turn.completed'}));`);
   fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'count.json',equals:{count:1}}],T002:[{type:'json',path:'T002.json',equals:{done:true}}]}));
-  const options={workspace,capacity:8,executionMode:'headless',runId:'headless',coordinator:path.join(workspace,'temp','coordinator'),acceptanceFile:checks,auth:'Controlled execution',timeoutMs:120000};
+  const options={workspace,capacity:8,executionMode:'headless',runId:'headless',coordinator:path.join(controllerRoot,'coordinator'),acceptanceFile:checks,auth:'Controlled execution',timeoutMs:120000};
   const hooks={...createHeadlessHooks({workspace,cli:process.execPath,args:[cli],timeoutMs:120000}),plan:async()=>[{title:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,register:()=>{},commit:()=>{},unregister:()=>{}};
   return {workspace,cli,checks,hooks,options,summary:path.join(workspace,'temp','orchestrator','runs','headless','summary.json')};
 }

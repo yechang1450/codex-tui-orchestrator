@@ -53,3 +53,56 @@ export function assertNoReparsePoints(target, label = 'path') {
   }
   return absolute;
 }
+
+// Security-sensitive containment must compare physical directories as well as
+// path spellings: on Windows an 8.3 name can refer to the same workspace.
+export function physicallySameOrChild(parent, child) {
+  const root = assertNoReparsePoints(parent, 'workspace');
+  const target = assertNoReparsePoints(child, 'candidate path');
+  const canonical = absolute => {
+    let existing = absolute;
+    const tail = [];
+    while (true) {
+      try { return path.resolve(fs.realpathSync.native(existing), ...tail); }
+      catch (error) {
+        if (error?.code !== 'ENOENT') throw error;
+        const next = path.dirname(existing);
+        if (next === existing) throw error;
+        tail.unshift(path.basename(existing));
+        existing = next;
+      }
+    }
+  };
+  const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;
+  const realRoot = normalize(canonical(root));
+  const realTarget = normalize(canonical(target));
+  if (realTarget === realRoot || realTarget.startsWith(realRoot + path.sep)) return true;
+  // Drive mappings and UNC spellings may retain different strings even after
+  // realpath. The workspace itself may not exist yet, so compare the nearest
+  // existing workspace ancestor with candidate ancestors and then compare the
+  // remaining path components below that same physical directory.
+  let rootAnchor = root, rootStat;
+  while (true) {
+    try { rootStat = fs.statSync(rootAnchor, { bigint: true }); break; }
+    catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      const next = path.dirname(rootAnchor);
+      if (next === rootAnchor) throw error;
+      rootAnchor = next;
+    }
+  }
+  const rootTail = normalize(path.relative(rootAnchor, root));
+  let current = target;
+  while (true) {
+    try {
+      const stat = fs.statSync(current, { bigint: true });
+      if (stat.dev === rootStat.dev && stat.ino === rootStat.ino) {
+        const targetTail = normalize(path.relative(current, target));
+        if (!rootTail || targetTail === rootTail || targetTail.startsWith(rootTail + path.sep)) return true;
+      }
+    } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    const next = path.dirname(current);
+    if (next === current) return false;
+    current = next;
+  }
+}

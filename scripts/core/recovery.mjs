@@ -3,6 +3,7 @@ import path from 'node:path';
 import {levelWaves,verifyChecks,requestTasks,buildTodoList} from './contracts.mjs';
 import {checkpointMatches} from './checkpoint.mjs';
 import {assertNoReparsePoints} from './runtime-context.mjs';
+import {controllerWindowsDir,controllerHeadlessBase} from './controller-state.mjs';
 
 const object=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const pathInside=(root,value)=>{
@@ -19,10 +20,18 @@ export function resolveAttemptFile(sum,value,label='attempt file'){
  assertNoReparsePoints(resolved,label);
  return resolved;
 }
-function resolveTempFile(sum,value,label){
+function resolveWindowFile(sum,value,label){
  if(typeof value!=='string'||!value||value.includes('\0'))throw new Error('Invalid recovery ledger: '+label+' must be a safe path');
- const resolved=pathInside(path.join(String(sum.workspace),'temp'),value);
- if(!resolved)throw new Error('Invalid recovery ledger: '+label+' escapes workspace temp');
+ const resolved=pathInside(controllerWindowsDir(String(sum.workspace)),value);
+ if(!resolved)throw new Error('Invalid recovery ledger: '+label+' escapes controller windows');
+ assertNoReparsePoints(resolved,label);
+ return resolved;
+}
+function resolveHeadlessFile(sum,attemptFile,key,value,label){
+ if(typeof value!=='string'||!value||value.includes('\0'))throw new Error('Invalid recovery ledger: '+label+' must be a safe path');
+ const base=controllerHeadlessBase(String(sum.workspace),attemptFile,key);
+ const resolved=pathInside(path.dirname(base),value);
+ if(!resolved)throw new Error('Invalid recovery ledger: '+label+' escapes controller headless files');
  assertNoReparsePoints(resolved,label);
  return resolved;
 }
@@ -33,18 +42,18 @@ export function validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveF
  if(files===undefined)return;
  if(!object(files)||!attempt||attempt.runId!==sum.runId||entry.token!==attempt.token)throw new Error('Invalid recovery ledger: launcher identity is not bound to the latest attempt');
  const attemptFile=resolveAttemptFile(sum,attempt.file,'attempt file');
- const temp=path.join(String(sum.workspace),'temp');
  const headless=files.mode==='headless'||Object.hasOwn(files,'stdout')||Object.hasOwn(files,'stderr');
  const required=headless?['lp','pf','pidf','rf','stdout','stderr']:['lp','pf','pidf','rf'];
  for(const key of required)if(typeof files[key]!=='string'||!files[key])throw new Error('Invalid recovery ledger: launcherFiles.'+key+' is missing');
  for(const [key,value] of Object.entries(files)){
   if(key==='mode')continue;
   if(typeof value!=='string'||!value)throw new Error('Invalid recovery ledger: launcherFiles.'+key+' must be a path');
-  resolveTempFile(sum,value,'launcherFiles.'+key);
+  if(headless)resolveHeadlessFile(sum,attemptFile,block.key,value,'launcherFiles.'+key);
+  else resolveWindowFile(sum,value,'launcherFiles.'+key);
  }
- const attemptDir=path.dirname(attemptFile),key=safeStem(block.key);
+ const key=safeStem(block.key);
  if(headless){
-  const base=path.join(attemptDir,'exec-'+key);
+  const base=controllerHeadlessBase(String(sum.workspace),attemptFile,key);
   const expected={lp:base+'.json',pf:base+'.prompt.txt',pidf:base+'.pid',rf:base+'.result.json',stdout:base+'.stdout.jsonl',stderr:base+'.stderr.log'};
   for(const [name,value] of Object.entries(expected))if(!samePath(files[name],value))throw new Error('Invalid recovery ledger: headless launcherFiles.'+name+' is not derived from the attempt path');
   if(requireLiveFiles){
@@ -54,14 +63,19 @@ export function validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveF
    if(!object(config)||config.version!==1||config.runId!==sum.runId||config.token!==attempt.token||path.resolve(String(config.workspace||''))!==path.resolve(String(sum.workspace))||!Array.isArray(config.args)||!object(config.files))throw new Error('Invalid recovery ledger: headless launcher configuration identity mismatch');
    for(const [name,value] of Object.entries(expected))if(!samePath(config.files[name],value))throw new Error('Invalid recovery ledger: headless launcher configuration path mismatch');
    for(const name of ['ready','cancel','runtime']){
-    if(typeof config[name]!=='string'||!samePath(config[name],path.join(attemptDir,'exec-'+key+'.'+({ready:'go',cancel:'cancel',runtime:'runtime.json'}[name]))))throw new Error('Invalid recovery ledger: headless launcher control path mismatch');
-    resolveAttemptFile(sum,config[name],'headless control path');
+    if(typeof config[name]!=='string'||!samePath(config[name],base+'.'+({ready:'go',cancel:'cancel',runtime:'runtime.json'}[name])))throw new Error('Invalid recovery ledger: headless launcher control path mismatch');
+    resolveHeadlessFile(sum,attemptFile,block.key,config[name],'headless control path');
    }
   }
  }else{
+  const temp=controllerWindowsDir(String(sum.workspace));
   const lp=path.basename(files.lp),match=/^win-launch-(.+)\.ps1$/i.exec(lp);
   const suffix=match?.[1];
-  if(!suffix||!suffix.includes(String(sum.runId)+'-a'+String(attempt.number)))throw new Error('Invalid recovery ledger: visible launcher is not bound to this run attempt');
+  const launchKey=String(sum.agent||'codex')==='pi'
+   ?String(block.key).replace(/[^A-Za-z0-9_-]/g,'-')
+   :(safeStem(block.key)||'codex-task');
+  const expectedSuffix=launchKey+'-'+String(sum.runId)+'-a'+String(attempt.number);
+  if(suffix!==expectedSuffix)throw new Error('Invalid recovery ledger: visible launcher is not bound to this run attempt');
   const expected={pf:'agent-win-'+suffix+'.md',pidf:'window-'+suffix+'.pid',rf:'win-'+suffix+'.result.json'};
   if(!samePath(files.lp,path.join(temp,lp))||Object.entries(expected).some(([name,value])=>!samePath(files[name],path.join(temp,value))))throw new Error('Invalid recovery ledger: visible launcher file set is inconsistent');
   if(requireLiveFiles){
@@ -70,7 +84,8 @@ export function validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveF
    try{script=fs.readFileSync(files.lp,'utf8');prompt=fs.readFileSync(files.pf,'utf8');}
    catch{throw new Error('Invalid recovery ledger: visible launcher files are unreadable');}
    const token=String(attempt.token).replaceAll("'","''");
-   if(!script.includes(`$token = '${token}'`)||!prompt.includes('__ORCH_DONE__ '+attempt.token))throw new Error('Invalid recovery ledger: visible launcher ownership token mismatch');
+   const tokenAssignment=String(sum.agent||'codex')==='pi'?`$env:ORCH_PI_TOKEN = '${token}'`:`$token = '${token}'`;
+   if(!script.includes(tokenAssignment)||!prompt.includes('__ORCH_DONE__ '+attempt.token))throw new Error('Invalid recovery ledger: visible launcher ownership token mismatch');
   }
  }
 }

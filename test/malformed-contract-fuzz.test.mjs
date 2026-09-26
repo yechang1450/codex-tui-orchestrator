@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -14,11 +14,13 @@ const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
 const family = path.join(repo, 'temp');
 fs.mkdirSync(family, {recursive: true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'fuzz-controller-'));
+after(()=>fs.rmSync(controllerRoot,{recursive:true,force:true}));
 const newDir = (label) => fs.mkdtempSync(path.join(family, `fuzz-${label}-`));
 // These fixtures intentionally use their own coordinator; pass that trusted
 // fixture path explicitly rather than asking recovery to trust the ledger.
 const verifyRun=(workspace,runId,contract,options={})=>coreVerifyRun(workspace,runId,contract,
-  {coordinator:path.join(workspace,'temp','orchestrator','codex-coordinator'),...options});
+  {coordinator:path.join(controllerRoot,'codex-coordinator'),...options});
 const seen = (name, value) => console.log(`[fuzz] ${name} :: ${value}`);
 const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 220);
 // 只允许"点名了文件/字段/命令"的可读真因；裸 Node 措辞（整句就是 Node 内部错误）才算越界。
@@ -193,7 +195,7 @@ test('Q7 summary.json 被截断时 --resume-run 必须点名文件，而不是�
 function acceptanceFixture(workspace, runId, checks, {binding = true} = {}) {
   const dir = path.join(workspace, 'temp', 'orchestrator', 'runs', runId);
   fs.mkdirSync(dir, {recursive: true});
-  const coordinator = path.join(workspace, 'temp', 'orchestrator', 'codex-coordinator');
+  const coordinator = path.join(controllerRoot, 'codex-coordinator');
   const contract = path.join(workspace, 'contract.json');
   const tasks = [{id: 'T001', prompt: '写证据'}];
   let digest = 'a'.repeat(64);
@@ -280,7 +282,7 @@ test('A6 契约被换成削弱版（摘要不匹配）必须拒绝，且真因�
   fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({
     runId: 'r1', workspace, acceptance: summary.acceptance,
   }), 'utf8');
-  verifyRun(workspace, 'r1', contract);                       // 首次绑定（无条件改写和重新绑定）
+  verifyRun(workspace, 'r1', contract,{override:true});       // Explicitly adopt a historical ledger without controller authority.
   fs.writeFileSync(contract, JSON.stringify({T001: []}), 'utf8'); // 执行窗把契约换成空检查
   let error = null;
   try {

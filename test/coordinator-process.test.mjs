@@ -2,9 +2,10 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
+import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {coordinatorDir} from '../scripts/core/leases.mjs';
+import {controllerStateDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 test('Codex default coordinator is isolated from the generic TUI pool',()=>{
@@ -14,13 +15,44 @@ test('Codex default coordinator is isolated from the generic TUI pool',()=>{
  assert.notEqual(dir,path.join(workspace,'temp','orchestrator','coordinator'));
  if(process.platform==='win32')assert.equal(coordinatorDir(path.join(workspace,'other-workspace'),env),dir);
 });
+test('default coordinator authority stays outside a child-writable workspace',()=>{
+ fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'coordinator-authority-'));
+ try{
+  const workspace=path.join(root,'workspace'),codexHome=path.join(root,'codex-home');
+  fs.mkdirSync(workspace);fs.mkdirSync(codexHome);
+  const env={...process.env,CODEX_HOME:codexHome,ORCH_COORDINATOR_DIR:''};
+  const dir=coordinatorDir(workspace,env);
+  assert.ok(dir.startsWith(path.join(codexHome,'state','plugins','codex-tui-orchestrator')));
+  assert.equal(coordinatorDir(path.join(root,'other-workspace'),env),dir);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 test('explicit coordinator refuses a symlink or junction in its path',()=>{
  fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'coordinator-link-'));
  try{
+  const workspace=path.join(root,'workspace');fs.mkdirSync(workspace);
   const real=path.join(root,'real');fs.mkdirSync(real);
   const link=path.join(root,'linked');
   try{fs.symlinkSync(real,link,'junction');}catch{try{fs.symlinkSync(real,link,'dir');}catch{return;}}
-  assert.throws(()=>coordinatorDir(root,{ORCH_COORDINATOR_DIR:path.join(link,'pool')}),/symbolic link|junction|reparse/i);
+  assert.throws(()=>coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:path.join(link,'pool')}),/symbolic link|junction|reparse/i);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('Windows short aliases cannot place controller or coordinator state inside a workspace',t=>{
+ if(process.platform!=='win32')return t.skip('Windows 8.3 path aliases only');
+ fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'short-alias-family-'));
+ try{
+  const workspace=path.join(root,'long-workspace-directory-name');fs.mkdirSync(workspace);
+  if(workspace.includes(' '))return t.skip('short-path fixture requires a workspace without spaces');
+  const result=spawnSync('cmd.exe',['/d','/c',`for %I in (${workspace}) do @echo %~sI`],{encoding:'utf8',windowsHide:true});
+  assert.equal(result.status,0,result.stderr);
+  const alias=result.stdout.trim();
+  if(alias.toLowerCase()===workspace.toLowerCase())return t.skip('8.3 aliases are unavailable on this volume');
+  assert.equal(fs.realpathSync.native(alias).toLowerCase(),fs.realpathSync.native(workspace).toLowerCase());
+  assert.throws(()=>controllerStateDir(workspace,{CODEX_HOME:alias}),/inside the initiating workspace/i);
+  assert.throws(()=>controllerStateDir(workspace,{ORCH_CONTROLLER_ROOT:path.join(alias,'not-yet-created')}),/inside the initiating workspace/i);
+  assert.throws(()=>coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:path.join(alias,'not-yet-created')}),/inside the initiating workspace/i);
+  const external=path.join(root,'external-not-yet-created');
+  assert.equal(controllerStateDir(workspace,{ORCH_CONTROLLER_ROOT:external}),external);
+  assert.equal(coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:external}),external);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 test('nine independent parent processes contend for eight shared slots without lost updates',async()=>{

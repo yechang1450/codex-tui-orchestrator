@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -7,6 +7,11 @@ import {spawnSync} from 'node:child_process';
 import {processSnapshot} from '../scripts/core/leases.mjs';
 import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
 const family=fileURLToPath(new URL('../temp/',import.meta.url));
+fs.mkdirSync(family,{recursive:true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'headless-controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 function fixture(source,options={}){
   fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'headless-中文 '));
   const cli=path.join(workspace,'fixture.mjs');fs.writeFileSync(cli,source);
@@ -26,6 +31,7 @@ test('headless worker sends prompt over stdin and persists structured completion
     const received=JSON.parse(fs.readFileSync(path.join(f.workspace,'received.json')));
     assert.deepEqual(received,{prompt:'真实 prompt with "quotes" and 中文',cwd:f.workspace,args:['-']});
     assert.equal(f.files.mode,'headless');assert.equal(path.extname(f.files.lp),'.json');
+    assert.ok(f.files.lp.startsWith(controllerRoot+path.sep));
     assert.match(fs.readFileSync(f.files.stdout,'utf8'),/turn.completed/);
   }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
 });
@@ -100,6 +106,45 @@ test('cancelling a running hidden worker terminates its owned exec process and p
     const result=JSON.parse(fs.readFileSync(f.files.rf));assert.equal(result.done,false);assert.match(result.text,/cancelled/i);
     assert.equal(processSnapshot().has(childPid),false);
   }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
+});
+
+test('worker-edited ready path cannot make the controller write outside its attempt',async()=>{
+  const f=fixture("console.log(JSON.stringify({type:'thread.started',thread_id:'tamper-test'}));setInterval(()=>{},1000);");
+  const outside=path.join(f.workspace,'outside-control.txt');
+  fs.writeFileSync(outside,'untouched','utf8');
+  const original=fs.readFileSync(f.files.lp,'utf8');
+  try{
+    const config=JSON.parse(original);
+    config.ready=outside;
+    fs.writeFileSync(f.files.lp,JSON.stringify(config),'utf8');
+    f.hooks.ready(f.files);
+    assert.equal(fs.readFileSync(outside,'utf8'),'untouched');
+  }finally{
+    fs.writeFileSync(f.files.lp,original,'utf8');
+    f.close();
+  }
+});
+
+test('worker-edited cancel path cannot make the controller write outside its attempt',async()=>{
+  const f=fixture("console.log(JSON.stringify({type:'thread.started',thread_id:'tamper-test'}));setInterval(()=>{},1000);");
+  const outside=path.join(f.workspace,'outside-control.txt');
+  fs.writeFileSync(outside,'untouched','utf8');
+  const original=fs.readFileSync(f.files.lp,'utf8');
+  try{
+    const config=JSON.parse(original);
+    await f.hooks.spawn(f.files.lp,'test',f.files.pidf);
+    f.hooks.ready(f.files);
+    config.cancel=outside;
+    config.files.rf=path.join(f.workspace,'missing-result.json');
+    fs.writeFileSync(f.files.lp,JSON.stringify(config),'utf8');
+    await f.hooks.close(f.hooks.readPid(f.files.pidf));
+    assert.equal(fs.readFileSync(outside,'utf8'),'untouched');
+  }finally{
+    fs.writeFileSync(f.files.lp,original,'utf8');
+    await f.hooks.close(f.hooks.readPid(f.files.pidf));
+    await new Promise(resolve=>setTimeout(resolve,100));
+    f.close();
+  }
 });
 
 test('execution guard recognizes a registered hidden worker and rejects an unrelated Node PID',async()=>{

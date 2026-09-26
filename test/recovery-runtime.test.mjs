@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +8,13 @@ import {fileURLToPath} from 'node:url';
 import {runWindows,collectVerification,verifyRun,waitForProcessExit} from '../scripts/core/runner.mjs';
 import {recordCheckpoint,readCheckpoints} from '../scripts/core/checkpoint.mjs';
 import {claimRun,releaseRun} from '../scripts/core/leases.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+fs.mkdirSync(family,{recursive:true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'runtime-controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 test('launcher exit verification tolerates a short process teardown race',async()=>{
  const expected={ProcessId:7,Name:'powershell.exe',Started:'s',CommandLine:'win-launch-test.ps1'};let calls=0;
@@ -122,8 +128,8 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
  const checks=path.join(d,'acceptance.json');fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'count.json',equals:{count:1}}],T002:{retrySafe:fault==='safe-retry',checks:[{type:'json',path:'done.json',equals:{done:true}}]}}));
  const hooks={plan:async()=>[{title:'linked',type:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
   launcher:(key,prompt,suffix)=>{const file=/开始前：node "[^"]+" "([^"]+)"/.exec(prompt)[1];attempts.push(JSON.parse(fs.readFileSync(file)).taskIds);
-   const launchDir=path.join(d,'temp');fs.mkdirSync(launchDir,{recursive:true});
-   const pidf=path.join(launchDir,'window-'+suffix+'.pid'),lp=path.join(launchDir,'win-launch-'+suffix+'.ps1'),pf=path.join(launchDir,'agent-win-'+suffix+'.md'),rf=path.join(launchDir,'win-'+suffix+'.result.json');
+   const launchDir=controllerWindowsDir(d);fs.mkdirSync(launchDir,{recursive:true});
+   const stem=key+'-'+suffix,pidf=path.join(launchDir,'window-'+stem+'.pid'),lp=path.join(launchDir,'win-launch-'+stem+'.ps1'),pf=path.join(launchDir,'agent-win-'+stem+'.md'),rf=path.join(launchDir,'win-'+stem+'.result.json');
    // Start-Process -Wait 让夹具不依赖父进程类型：从 WSL 启动时，PowerShell 对 `& <控制台子进程>`
    // 会立即返回（实测 252ms），窗口身份校验就会因为启动器已退出而失败；-Wait 在两种父进程下都等待。
    const token=JSON.parse(fs.readFileSync(file,'utf8')).token;
@@ -134,7 +140,7 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
   exitCode:rf=>fs.existsSync(rf)?JSON.parse(fs.readFileSync(rf)).exitCode:null,
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},close:async()=>{await pause(300);},
  };
- try{const opts={workspace:d,capacity:8,runId:'partial',acceptanceFile:checks,coordinator:path.join(d,'temp','coordinator'),auth:'test'};
+ try{const opts={workspace:d,capacity:8,runId:'partial',acceptanceFile:checks,coordinator:path.join(controllerRoot,'coordinator'),auth:'test'};
   const sum=await runWindows('执行甲；执行乙',hooks,opts);
   if(fault==='started-only'){
    assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation',JSON.stringify(sum));

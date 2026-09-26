@@ -8,6 +8,8 @@ import {reportFatal} from './core/fatal.mjs';
 import {resolveHost} from './core/host-cli.mjs';
 import {networkConfig,resolveOpenAIBaseUrl,resolveProviderMode} from './core/network-policy.mjs';
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
+import {controllerStateDir} from './core/controller-state.mjs';
+import {assertNoReparsePoints} from './core/runtime-context.mjs';
 import {ensureRuntimeDependencies} from './entry-bootstrap.mjs';
 import {
   canSupervisorRetry,
@@ -59,7 +61,16 @@ function parseArgs(argv) {
 }
 
 function statePath(options) {
-  return path.join(options.workspace, 'temp', 'orchestrator', 'supervisor', 'runs', options.runId, 'state.json');
+  return assertNoReparsePoints(path.join(options.workspace, 'temp', 'orchestrator', 'supervisor', 'runs', options.runId, 'state.json'),'supervisor state');
+}
+
+function authorityPath(options){
+  const workspaceId=crypto.createHash('sha256').update(path.resolve(options.workspace).toLowerCase()).digest('hex');
+  return assertNoReparsePoints(path.join(controllerStateDir(options.workspace),'supervisor',workspaceId,options.runId+'.json'),'supervisor authority');
+}
+
+function authorityDigest(state){
+  return crypto.createHash('sha256').update(JSON.stringify(state)).digest('hex');
 }
 
 function sameWorkspace(left, right) {
@@ -89,10 +100,17 @@ function readState(file, options) {
   if (!valid || !attemptsValid || !validStatus.has(state?.status) || !validHistory || state.history.length !== state.attempts) {
     throw new Error('Invalid supervisor state or identity mismatch');
   }
+  let authority;
+  try{authority=JSON.parse(fs.readFileSync(authorityPath(options),'utf8'));}
+  catch(error){throw new Error('Invalid supervisor authority: '+error.message);}
+  if(authority?.version!==1||authority.runId!==state.runId||!sameWorkspace(authority.workspace,state.workspace)||authority.sha256!==authorityDigest(state)){
+    throw new Error('Invalid supervisor authority or tampered prompt/thread identity');
+  }
   return state;
 }
 
 function writeState(file, state) {
+  atomicJson(authorityPath(state),{version:1,runId:state.runId,workspace:state.workspace,sha256:authorityDigest(state)});
   atomicJson(file, state);
 }
 
@@ -112,7 +130,7 @@ export async function supervise(options, {codexFactory = config => new Codex({..
   } else if (options.resume) {
     throw new Error(`Saved supervisor state not found: ${options.runId}`);
   }
-  const lockDir = path.join(options.workspace, 'temp', 'orchestrator', 'supervisor', 'locks');
+  const lockDir = path.join(controllerStateDir(options.workspace), 'supervisor', 'locks');
   const runKey = `supervisor:${path.resolve(file).toLowerCase()}`;
   let claim;
   try {

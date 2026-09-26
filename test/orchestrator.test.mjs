@@ -45,6 +45,9 @@ process.env.WORKSPACE_DIR = wsDir;
 fs.mkdirSync(path.join(wsDir, 'temp'), { recursive: true });
 const stDir = fs.mkdtempSync(path.join(wsDir, 'temp', "orch-force-state-"));
 process.env.ORCH_STATE_DIR = stDir;
+const originalControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+const controllerRoot=fs.mkdtempSync(path.join(fixtureFamily,'orch-controller-'));
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
 const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG, STATE_DIR } = await import(importUrl(path.join(scripts, 'codex-TUI-orchestrator-force.mjs')));
 test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
   // fresh workspace -> not armed, no windows
@@ -362,9 +365,17 @@ test('orchestrate-sdk checkDiskSpace: returns true on a disk with space (thresho
 // 全部测试完成后统一清理顶层临时工作区（wsDir 与 stDir 都是测试专用一次性目录），
 // 避免像原先那样只清理 wsDir、导致每次运行都在 %TEMP% 遗留 orch-force-state-* 目录。
 after(() => {
+  if(originalControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=originalControllerRoot;
+  fs.rmSync(controllerRoot,{recursive:true,force:true});
   fs.rmSync(wsDir, { recursive: true, force: true });
   fs.rmSync(stDir, { recursive: true, force: true });
   console.log('orchestrator tests passed.');
+});
+
+test('visible launcher artifacts are protected from workspace-write children',()=>{
+  const files=writeInteractiveLauncher('security-boundary','【本块唯一标识】SAFE-token 完成','authority');
+  for(const file of Object.values(files))assert.ok(file.startsWith(controllerRoot),file+' must be controller-owned');
+  assert.ok(fs.readFileSync(files.lp).subarray(0,3).equals(Buffer.from([0xEF,0xBB,0xBF])));
 });
 
 // ---------- 运行时逻辑覆盖（弹窗确认 / 汇报提取 / launcher 模板 / 宽松完成判定） ----------

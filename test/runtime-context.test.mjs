@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { resolveRuntimeContext } from '../scripts/runtime-context.mjs';
 import { launchArgs } from '../scripts/host-cli.mjs';
+import { runDirectory } from '../scripts/core/runner.mjs';
 
 test('invocation directory owns windows and all default orchestration state', () => {
   const cwd = path.resolve('temp', 'caller workspace');
@@ -42,6 +43,17 @@ test('runtime state rejects symlinked workspace temp and state paths', () => {
     catch { try { fs.symlinkSync(stateTarget,path.join(workspace,'temp','linked'),'dir'); } catch { return; } }
     assert.throws(() => resolveRuntimeContext({ORCH_STATE_DIR:'linked'},workspace), /symbolic link|junction|reparse/i);
   } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});
+test('run directory rejects a nested runs junction before any ledger write',()=>{
+  const root=fs.mkdtempSync(path.join(path.resolve('temp'),'run-junction-'));
+  try{
+    const workspace=path.join(root,'workspace'),state=path.join(workspace,'temp','orchestrator'),outside=path.join(root,'outside');
+    fs.mkdirSync(state,{recursive:true});fs.mkdirSync(outside);
+    try{fs.symlinkSync(outside,path.join(state,'runs'),'junction');}
+    catch{try{fs.symlinkSync(outside,path.join(state,'runs'),'dir');}catch{return;}}
+    assert.throws(()=>runDirectory(workspace,'new-run'),/symbolic link|junction|reparse/i);
+    assert.equal(fs.existsSync(path.join(outside,'new-run')),false);
+  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 test('child windows preserve restricted authorization and bypass only an unrestricted initiator', () => {
   const cwd = path.resolve('temp', "caller's workspace");

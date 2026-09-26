@@ -1,12 +1,18 @@
-import test from 'node:test';
+import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {runWindows} from '../scripts/core/runner.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
+const family=fileURLToPath(new URL('../temp/',import.meta.url));fs.mkdirSync(family,{recursive:true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'capacity-controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 
 for(const mixed of [false,true])test(mixed?'capacity recovery never disables the ordinary failure budget':'capacity retries use their own budget and restore pending TodoList state',async()=>{
- const workspace=fs.mkdtempSync(path.join(os.tmpdir(),'orch-capacity-run-'));
+ const workspace=fs.mkdtempSync(path.join(family,'orch-capacity-run-'));
  fs.mkdirSync(path.join(workspace,'temp'),{recursive:true});
  const original={ORCH_CAPACITY_RETRIES:process.env.ORCH_CAPACITY_RETRIES,ORCH_CAPACITY_RETRY_MS:process.env.ORCH_CAPACITY_RETRY_MS};
  process.env.ORCH_CAPACITY_RETRIES='3';process.env.ORCH_CAPACITY_RETRY_MS='0';
@@ -15,7 +21,7 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
  const hooks={
   plan:async()=>[{title:'capacity',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],
   prompt:p=>{prompts.push(p);return p;},
-  launcher:(key,_prompt,suffix)=>{++launches;return {key,lp:path.join(workspace,'temp',`win-launch-${suffix}.ps1`),pf:path.join(workspace,'temp',`agent-win-${suffix}.md`),pidf:path.join(workspace,'temp',`window-${suffix}.pid`),rf:path.join(workspace,'temp',`win-${suffix}.result.json`)};},
+  launcher:(key,_prompt,suffix)=>{++launches;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return {key,lp:path.join(dir,`win-launch-${stem}.ps1`),pf:path.join(dir,`agent-win-${stem}.md`),pidf:path.join(dir,`window-${stem}.pid`),rf:path.join(dir,`win-${stem}.result.json`)};},
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
   spawn:async(...args)=>{spawnRetries.push(args[3]);live=true;return true;},
   readPid:()=>1,identity:()=>live?identity:null,waitForExit:async()=>true,
@@ -24,7 +30,7 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
   exitCode:()=>1,
  };
  try {
-  const sum=await runWindows('执行任务',hooks,{workspace,capacity:8,runId:'capacity',auth:'test',maxAttempts:1,coordinator:path.join(workspace,'coordinator')});
+  const sum=await runWindows('执行任务',hooks,{workspace,capacity:8,runId:'capacity',auth:'test',maxAttempts:1,coordinator:path.join(controllerRoot,'coordinator')});
   const expected=mixed?2:4;
   assert.equal(launches,expected,'capacity attempts must not disable the normal failure limit');
   assert.equal(sum.success,false);
@@ -41,13 +47,13 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
 });
 
 test('terminal provider quota does not consume the ordinary failure budget',async()=>{
- const workspace=fs.mkdtempSync(path.join(os.tmpdir(),'orch-quota-run-'));
+ const workspace=fs.mkdtempSync(path.join(family,'orch-quota-run-'));
  fs.mkdirSync(path.join(workspace,'temp'),{recursive:true});
  let launches=0;
  const identity={ProcessId:9002,Name:'powershell.exe',Started:'test',CommandLine:'test launcher'};
  const hooks={
   plan:async()=>[{title:'quota',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],
-  prompt:p=>p,launcher:(key,_prompt,suffix)=>{++launches;return {key,lp:path.join(workspace,'temp',`win-launch-${suffix}.ps1`),pf:path.join(workspace,'temp',`agent-win-${suffix}.md`),pidf:path.join(workspace,'temp',`window-${suffix}.pid`),rf:path.join(workspace,'temp',`win-${suffix}.result.json`)};},
+  prompt:p=>p,launcher:(key,_prompt,suffix)=>{++launches;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return {key,lp:path.join(dir,`win-launch-${stem}.ps1`),pf:path.join(dir,`agent-win-${stem}.md`),pidf:path.join(dir,`window-${stem}.pid`),rf:path.join(dir,`win-${stem}.result.json`)};},
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
   spawn:async()=>true,readPid:()=>1,identity:()=>identity,waitForExit:async()=>true,
   close:async()=>{},session:async()=>true,
@@ -55,7 +61,7 @@ test('terminal provider quota does not consume the ordinary failure budget',asyn
   exitCode:()=>1,
  };
  try {
-  const sum=await runWindows('执行任务',hooks,{workspace,capacity:8,runId:'quota',auth:'test',maxAttempts:3,coordinator:path.join(workspace,'coordinator')});
+  const sum=await runWindows('执行任务',hooks,{workspace,capacity:8,runId:'quota',auth:'test',maxAttempts:3,coordinator:path.join(controllerRoot,'coordinator')});
   assert.equal(launches,1,'quota failures must stop before a second window');
   assert.equal(sum.success,false);
   assert.equal(sum.results.B1.status,'failed');

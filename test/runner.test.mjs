@@ -1,10 +1,16 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {runWindows,runDirectory,verifyRun,identifyWithRetry} from '../scripts/core/runner.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+fs.mkdirSync(family,{recursive:true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'runner-controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 test('transient process-enumeration failures retry instead of failing the whole block',async()=>{
   let calls=0;
   const sleep=[];
@@ -33,11 +39,11 @@ test('failed prerequisite retains both original tasks and never starts its depen
  const hooks={
   plan:async()=>[{title:'A',tasks:[{prompt:'执行甲'}]},{title:'B',dependsOn:['A'],tasks:[{prompt:'执行乙'}]}],
   compact:p=>p,infer:()=>[],prompt:p=>{prompts.push(p);return p;},
-  launcher:(key,_prompt,suffix)=>{launches++;return{lp:path.join(workspace,'temp','win-launch-'+suffix+'.ps1'),pf:path.join(workspace,'temp','agent-win-'+suffix+'.md'),pidf:path.join(workspace,'temp','window-'+suffix+'.pid'),rf:path.join(workspace,'temp','win-'+suffix+'.result.json')};},
+  launcher:(key,_prompt,suffix)=>{launches++;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return{lp:path.join(dir,'win-launch-'+stem+'.ps1'),pf:path.join(dir,'agent-win-'+stem+'.md'),pidf:path.join(dir,'window-'+stem+'.pid'),rf:path.join(dir,'win-'+stem+'.result.json')};},
   register:()=>{},unregister:()=>{},cleanup:()=>{},spawn:async()=>false,readPid:()=>0,
  };
  try{
-  const sum=await runWindows('执行甲；执行乙',hooks,{workspace,capacity:8,runId:'failure',auth:'test',coordinator:path.join(workspace,'temp','coordinator')});
+  const sum=await runWindows('执行甲；执行乙',hooks,{workspace,capacity:8,runId:'failure',auth:'test',coordinator:path.join(controllerRoot,'coordinator')});
   assert.equal(launches,2);assert.equal(sum.success,false);
   assert.match(prompts[0],/Global TodoList/);
   assert.match(prompts[0],/Current block TodoList/);

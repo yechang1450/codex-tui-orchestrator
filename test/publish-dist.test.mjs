@@ -13,8 +13,10 @@ test('publish-dist builds a clean distribution that registration accepts as inst
   // repair.mjs 拒绝把分发目标建在源码树内部，所以这里用系统临时目录，测试结束即清理。
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-dist-'));
   try {
+    const checkout=path.basename(repo)==='codex-tui-orchestrator'?repo:path.join(root,'codex-tui-orchestrator');
+    if(checkout!==repo)fs.cpSync(repo,checkout,{recursive:true,filter:source=>!['.git','temp','node_modules'].includes(path.basename(source))});
     const target = path.join(root, 'dist');
-    const output = execFileSync(process.execPath, [path.join(repo, 'scripts', 'publish-dist.mjs'), '--target', target], {encoding: 'utf8', cwd: repo});
+    const output = execFileSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', target], {encoding: 'utf8', cwd: checkout});
     assert.match(output, /codex plugin add codex-tui-orchestrator@personal/);
     const dist = path.join(target, 'codex-tui-orchestrator');
     assert.ok(fs.existsSync(path.join(dist, '.codex-plugin', 'plugin.json')), '分发必须带插件清单');
@@ -36,7 +38,7 @@ test('publish-dist builds a clean distribution that registration accepts as inst
       interface: {displayName: 'Personal'},
       plugins: [{name: 'codex-tui-orchestrator', source: {source: 'local', path: relative}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Developer Tools'}],
     }, null, 2) + '\n');
-    const result = inspectRegistration({pluginPath: repo, marketplacePath: marketplace, marketplaceRoot: marketRoot, distRoot: target});
+    const result = inspectRegistration({pluginPath: checkout, marketplacePath: marketplace, marketplaceRoot: marketRoot, distRoot: target});
     assert.equal(result.status, 'matched', JSON.stringify(result));
     assert.equal(result.sourceKind, 'dist');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }

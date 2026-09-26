@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,6 +11,10 @@ import {createStatusPublisher,readEvents,readRunStatus} from '../scripts/core/st
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const family=path.join(repo,'temp','execution-acceptance');
 fs.mkdirSync(family,{recursive:true});
+const controllerRoot=fs.mkdtempSync(path.join(family,'controller-'));
+const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 
 function doctor(mode,model,effort){
   const entry=path.join(repo,'scripts','core','orchestrate-sdk.mjs');
@@ -65,13 +69,14 @@ test('both doctors inherit thread model, effort and Fast without explicit ORCH o
 
 test('interactive launcher keeps model and effort in one structured PowerShell argv list',()=>{
   const dir=fs.mkdtempSync(path.join(family,'visible-'));
+  const workspace=path.join(dir,'project');fs.mkdirSync(workspace);
   const script=path.join(dir,'make-launcher.mjs');
   const module=new URL('../scripts/core/orchestrate-sdk.mjs',import.meta.url).href;
   fs.writeFileSync(path.join(dir,'config.toml'),'model = "initiator-visible-model"\nmodel_reasoning_effort = "medium"\nservice_tier = "priority"\nsandbox_mode = "workspace-write"\napproval_policy = "on-request"\n','utf8');
   fs.writeFileSync(script,`import {writeInteractiveLauncher} from ${JSON.stringify(module)};const f=writeInteractiveLauncher('acceptance','【本块唯一标识】acceptance-token','1');console.log(f.lp);`);
   try{
-    const env={...process.env,CODEX_HOME:dir,ORCH_AGENT:'codex',ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};delete env.CODEX_THREAD_ID;delete env.CODEX_SESSION_ID;
-    const result=spawnSync(process.execPath,[script],{cwd:dir,encoding:'utf8',windowsHide:true,env});
+    const env={...process.env,CODEX_HOME:dir,WORKSPACE_DIR:workspace,ORCH_AGENT:'codex',ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};delete env.CODEX_THREAD_ID;delete env.CODEX_SESSION_ID;
+    const result=spawnSync(process.execPath,[script],{cwd:workspace,encoding:'utf8',windowsHide:true,env});
     assert.equal(result.status,0,result.stderr);
     const launcher=fs.readFileSync(result.stdout.trim(),'utf8');
     assert.match(launcher,/initiator-visible-model/);
@@ -92,7 +97,7 @@ test('headless runner sends the initiating model and effort to the worker and pu
   const hooks={...executor,plan:async()=>[{title:'acceptance',tasks:[{prompt:'执行验收'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,register:()=>{},commit:()=>{},unregister:()=>{}};
   const events=[];
   try{
-    const sum=await runWindows('执行验收',hooks,{workspace,capacity:1,executionMode:'headless',runId:'acceptance',coordinator:path.join(workspace,'coordinator'),acceptanceFile:checks,auth:'acceptance',timeoutMs:30000,onEvent:e=>events.push(e)});
+    const sum=await runWindows('执行验收',hooks,{workspace,capacity:1,executionMode:'headless',runId:'acceptance',coordinator:path.join(controllerRoot,'coordinator'),acceptanceFile:checks,auth:'acceptance',timeoutMs:30000,onEvent:e=>events.push(e)});
     assert.equal(sum.success,true,JSON.stringify(sum.results));
     const captured=JSON.parse(fs.readFileSync(capture,'utf8'));
     assert.deepEqual(captured.args,['-m','initiator-worker-model','-c','model_reasoning_effort=high','-']);

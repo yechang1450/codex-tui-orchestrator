@@ -1,10 +1,18 @@
 # 0.5.0-rc.1 验收记录
 
-## 2026-09-26 当前工作树验收
+## 2026-09-27 隔离修复分支验收
+
+本轮在独立工作树中修复控制端状态边界：协调租约、headless/可见启动文件、验收契约权威摘要、不可变运行计划摘要与 supervisor 权威摘要转到 Codex 状态目录；工作区仍保存任务账本和检查点。显式改写验收契约时，即使工作区里的两个摘要同步被改写，也必须与控制端摘要比较并留下 `acceptanceRebound` 记录。恢复可见窗时逐项验证块键、尝试序号、文件组和令牌；最终清理重新核对控制端 PID 文件与实际进程身份。成功完成的 headless 运行清理自己的控制端启动文件，失败运行保留诊断证据。插件候选缓存版本为 `0.5.0-rc.1+codex.20260927035411`，当前已安装插件未被本分支替换。
+
+- 本机串行完整离线回归覆盖 79 个测试文件，退出码 0；版本元数据调整后，安装、分发、完整性和新增边界测试再次退出码 0。新增的计划绑定、验收绑定、PID 身份、Pi 可见窗令牌、相邻块伪造、Windows 8.3/UNC 路径别名、直接 API 协调器和中文分号拆块测试均已覆盖。`release-integrity.mjs` schema 2 校验为 31 个核心文件、70 个运行时文件；`git diff --check` 通过。
+- Plugin Eval 对只含发布文件的隔离副本评为 95/A、0 fail、1 项静态文本体量警告；直接扫描含本地测试 `temp/` 的开发工作树会把诊断数据计入预算，因此不能用该分数评价分发包。首次 Codex Security 差异扫描报告两项低危候选：可见窗跨块恢复属实并已修复，稳定 PID 伪造复核后不成立。第二次扫描发现 Windows 8.3 别名绕过控制端状态目录限制；本轮用真实 8.3 与 UNC 别名红/绿测试修复。最终安全结论以新补丁的完成扫描为准，历史报告不能证明零发现。
+- 真实 `--doctor` 在发起工作区成功。当前补丁的真实双块 headless 运行 `mode-headless-a0ce3ffe-dc01-47f8-a189-7bccd76a5581` 和可见 Windows Terminal 运行 `mode-visible-dd72ac62-1134-4e47-a7dd-3874436fb907` 均 `passed=true`、退出码 0：各自的 T001/T002 独立 `verified`，回执与验收契约逐字段一致，两个块运行时间重叠，全部启动器退出，可见窗实际启动参数均为 `gpt-6-sol` / `max` / `priority`。本次通过确定性项目拆块验证真实执行器；此前两次模型规划请求超时并安全退回单串行块，不能把本次成功写成模型规划器已通过。证据分别位于本机工作区 `temp/mode-headless-a0ce3ffe-dc01-47f8-a189-7bccd76a5581/report.json` 与 `temp/mode-visible-dd72ac62-1134-4e47-a7dd-3874436fb907/report.json`。全新 Windows 首次安装仍待虚拟机或第二台实体机执行 [干净机器清单](clean-machine-validation.md)。
+
+## 2026-09-26 基线快照验收
 
 当前候选包含免预装 Node/npm 的 PowerShell 引导、受宿主信任控制的 SessionStart 环境准备、按当前任务数核查的多窗验收工具，以及按运行身份回收异常窗口的改动。本节下方的旧版本窗口数量、内存阈值及回归计数均为历史记录；当前契约固定预留 4000 MB，块数由依赖与冲突决定，执行时按预测峰值逐个准入，不在内存不足时合并独立块或硬跑。安装步骤见[环境准备](environment-setup.md)。
 
-当前工作树版本为 `0.5.0-rc.1+codex.20260926211700`。2026-09-26 的串行全量回归覆盖 77 个测试文件，退出码 0；50 个源文件的行覆盖为 6306/7758（81.28%）。发布完整性封存采用 schema 2，包含 30 个核心文件与 69 个运行时文件。测试中的可选真实模型项单独由下述实机运行验收，不以离线测试代替。
+该快照版本为 `0.5.0-rc.1+codex.20260926211700`。2026-09-26 的串行全量回归覆盖 77 个测试文件，退出码 0；50 个源文件的行覆盖为 6306/7758（81.28%）。发布完整性封存采用 schema 2，包含 30 个核心文件与 69 个运行时文件。测试中的可选真实模型项单独由下述实机运行验收，不以离线测试代替。
 
 - 已安装缓存入口的 headless+exec 四块验收：`acceptance-ad1127fe-3872-476c-a168-8a3838dcb3d6`，`passed=true`、`peak=4`、四项均独立 `verified`、四个启动器均退出。证据在本机 `<user-home>\workspace\temp\orch-final-live\temp\codex-live-headless-bdfcaddabe\report.json`；它使用修复会话钩子前的已安装缓存，因此只认证该快照的 headless 路径。
 - 当前工作树可见 TUI 四块验收：`acceptance-95de3c1a-6103-4815-9b89-0dfc82b7a20d`，`passed=true`、`peak=4`、四项均独立 `verified`，四个 Windows Terminal 启动器均退出，父级验收队列 `maxConcurrency=1`。模型/推理力度/服务等级的四份继承证据均与本次发起窗口的 `gpt-6-sol` / `max` / `priority` 一致。证据在本机 `<user-home>\workspace\temp\orch-final-live\temp\codex-live-visible-cbcadbcdafbbee\report.json`。

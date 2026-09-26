@@ -8,18 +8,22 @@ The Codex CLI or another supported host may contact its own provider according
 to that host's configuration. Credentials, model selection, provider requests,
 and provider retention are controlled by that host and its published policy.
 
-The plugin writes run state, receipts, and temporary launch data below the
-initiating workspace's `temp` directory. These files can contain task text,
-local paths, checkpoint commands, provider diagnostics, and verification
-evidence in plaintext because the parent needs them for recovery and independent
-inspection. Users can remove completed run data with the normal workspace
-cleanup process. Use headless mode when prompt text must not appear in a visible
-TUI process command line.
+The initiating workspace's `temp` directory holds run ledgers, checkpoints,
+receipts, and verification evidence. Controller-owned launch files, the shared
+coordinator, acceptance and immutable run-plan bindings, and supervisor authority live under
+`CODEX_HOME/state/plugins/codex-tui-orchestrator` by default. Headless launch
+files there include the prompt and CLI output streams in plaintext. A headless
+run successfully finalized by its controller removes its launch files; an unfinished or
+failed run retains them for recovery and inspection. Visible launch files are
+removed after their owned process exits. A user who discards a failed run must
+clean its workspace run record and associated controller files together after
+confirming no worker is active. Use headless mode when prompt text must not
+appear in a visible TUI process command line.
 
-For Codex coordination across workspaces, the plugin also stores the path to
-the shared coordinator directory in the current user's Windows registry at
-`HKCU\\Software\\CodexTuiOrchestrator\\CoordinatorRoot`. It stores a locator
-only; task content, credentials, and provider responses are not written there.
+The coordinator location is derived from `CODEX_HOME` unless an explicit
+`ORCH_COORDINATOR_DIR` outside the initiating workspace is supplied. The plugin
+does not use the former `HKCU\\Software\\CodexTuiOrchestrator\\CoordinatorRoot`
+locator for new runs.
 
 Questions about this policy can be raised in the project repository:
 <https://github.com/yechang1450/codex-tui-orchestrator>.

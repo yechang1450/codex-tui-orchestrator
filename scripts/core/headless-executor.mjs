@@ -3,10 +3,16 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
 import {atomicJson,launcherIdentity,sameProcess,processSnapshot} from './leases.mjs';
+import {assertNoReparsePoints} from './runtime-context.mjs';
+import {controllerHeadlessBase} from './controller-state.mjs';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const worker=fileURLToPath(new URL('./headless-worker.mjs',import.meta.url));
 const readJson=file=>JSON.parse(fs.readFileSync(file,'utf8'));
 const readPid=file=>{try{return Number(fs.readFileSync(file,'utf8').trim())||0;}catch{return 0;}};
+const controlPath=(lp,suffix)=>{
+  if(typeof lp!=='string'||!lp.endsWith('.json')||!path.basename(lp).startsWith('exec-'))throw new Error('Invalid headless control path');
+  return assertNoReparsePoints(lp.slice(0,-'.json'.length)+suffix,'headless control');
+};
 
 export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readinessTimeoutMs=60000}){
   const configs=new Map();
@@ -19,7 +25,7 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
   return {
     launcher(key,prompt,_suffix,{attemptFile,runId,token}={}){
       if(!attemptFile||!runId||!token)throw new Error('Headless execution requires a durable attempt');
-      const base=path.join(path.dirname(attemptFile),'exec-'+key.replace(/[^A-Za-z0-9_-]/g,'_'));
+      const base=controllerHeadlessBase(workspace,attemptFile,key);
       const files={mode:'headless',lp:base+'.json',pf:base+'.prompt.txt',pidf:base+'.pid',rf:base+'.result.json',stdout:base+'.stdout.jsonl',stderr:base+'.stderr.log'};
       fs.mkdirSync(path.dirname(base),{recursive:true});fs.writeFileSync(files.pf,prompt,'utf8');
       atomicJson(files.lp,{version:1,cli,args,workspace,runId,token,timeoutMs,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'});
@@ -42,9 +48,9 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
         await pause(25);
       }
       // Do not spawn a second worker into this attempt on a readiness timeout.
-      fs.writeFileSync(readJson(lp).cancel,'cancel');throw new Error('Headless worker readiness timed out');
+      fs.writeFileSync(controlPath(lp,'.cancel'),'cancel');throw new Error('Headless worker readiness timed out');
     },
-    ready(files){const config=readJson(files.lp);fs.writeFileSync(config.ready,'ready');},
+    ready(files){fs.writeFileSync(controlPath(files.lp,'.go'),'ready');},
     identity(pid,pidf){const found=launcherIdentity(pid,pidf);if(found)configs.set(Number(pid),configOf(pidf));return found;},
     readPid,
     session:async(_token,_timeout,rf)=>rf,
@@ -72,14 +78,30 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
     },
     async close(pid,expected){
       const lp=configs.get(Number(pid));if(!lp)return;
-      const config=readJson(lp);
-      if(fs.existsSync(config.files.rf))return;
+      const result=controlPath(lp,'.result.json');
+      if(fs.existsSync(result))return;
       if(expected&&!sameProcess(expected,processSnapshot().get(Number(pid))))return;
-      fs.writeFileSync(config.cancel,'cancel');
+      fs.writeFileSync(controlPath(lp,'.cancel'),'cancel');
       const deadline=Date.now()+10000;
-      while(!fs.existsSync(config.files.rf)&&Date.now()<deadline)await pause(50);
+      while(!fs.existsSync(result)&&Date.now()<deadline)await pause(50);
     },
     // Attempts are recovery evidence. Only a completed run's owner may remove them.
     cleanup() {},
+    cleanupCompleted(sum){
+      if(sum?.success!==true||!sum.finishedAt)return [];
+      const warnings=[];
+      for(const block of sum.blocks||[]){
+        const entry=sum.results?.[block.key],attempt=entry?.attempts?.at(-1),files=entry?.launcherFiles;
+        if(!entry?.exitConfirmed||!attempt||files?.mode!=='headless')continue;
+        const base=controllerHeadlessBase(workspace,attempt.file,block.key);
+        if(files.lp!==base+'.json')continue;
+        for(const suffix of ['.json','.prompt.txt','.pid','.result.json','.stdout.jsonl','.stderr.log','.go','.cancel','.runtime.json']){
+          try{fs.rmSync(base+suffix,{force:true});}
+          catch(error){warnings.push({file:base+suffix,code:error.code||'UNKNOWN'});}
+        }
+        try{fs.rmdirSync(path.dirname(base));}catch(error){if(error.code!=='ENOTEMPTY'&&error.code!=='ENOENT')warnings.push({file:path.dirname(base),code:error.code||'UNKNOWN'});}
+      }
+      return warnings;
+    },
   };
 }

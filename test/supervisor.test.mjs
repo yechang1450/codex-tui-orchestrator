@@ -1,6 +1,7 @@
 import {test, after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import {
   classifySupervisorError,
@@ -11,11 +12,41 @@ import {
 import {supervise} from '../scripts/supervise.mjs';
 
 const TEST_TEMP_ROOT = path.join(process.cwd(), 'temp', 'supervisor-tests');
+const ORIGINAL_CODEX_HOME=process.env.CODEX_HOME;
+process.env.CODEX_HOME=path.join(TEST_TEMP_ROOT,'controller-home');
 const makeWorkspace = prefix => {
   fs.mkdirSync(TEST_TEMP_ROOT, {recursive: true});
   return fs.mkdtempSync(path.join(TEST_TEMP_ROOT, prefix));
 };
-after(() => fs.rmSync(TEST_TEMP_ROOT, {recursive: true, force: true}));
+after(() => {if(ORIGINAL_CODEX_HOME===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=ORIGINAL_CODEX_HOME;fs.rmSync(TEST_TEMP_ROOT, {recursive: true, force: true});});
+
+test('resume rejects a valid-shaped but altered prompt and thread identity',async()=>{
+  const workspace=makeWorkspace('tampered-resume-'),runId='tampered';
+  const options={runId,workspace,prompt:'approved prompt',maxAttempts:1,backoffMs:0,backoffMaxMs:0};
+  try{
+    await assert.rejects(()=>supervise(options,{codexFactory:()=>({startThread:()=>({id:'approved-thread',runStreamed:async()=>{throw new Error('ECONNRESET');}})})}),/ECONNRESET/);
+    const file=path.join(workspace,'temp','orchestrator','supervisor','runs',runId,'state.json');
+    const state=JSON.parse(fs.readFileSync(file,'utf8'));
+    state.prompt='attacker prompt';state.threadId='attacker-thread';
+    fs.writeFileSync(file,JSON.stringify(state),'utf8');
+    let calls=0;
+    await assert.rejects(()=>supervise({...options,resume:true,maxAttempts:2},{codexFactory:()=>{calls++;throw new Error('untrusted SDK call');}}),/supervisor (authority|identity)|tampered/i);
+    assert.equal(calls,0);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
+test('resume rejects a worker-edited completion status',async()=>{
+  const workspace=makeWorkspace('tampered-status-'),runId='status';
+  const options={runId,workspace,prompt:'approved prompt',maxAttempts:1,backoffMs:0,backoffMaxMs:0};
+  try{
+    await assert.rejects(()=>supervise(options,{codexFactory:()=>({startThread:()=>({id:'approved-thread',runStreamed:async()=>{throw new Error('ECONNRESET');}})})}),/ECONNRESET/);
+    const file=path.join(workspace,'temp','orchestrator','supervisor','runs',runId,'state.json');
+    const state=JSON.parse(fs.readFileSync(file,'utf8'));
+    state.status='completed';
+    fs.writeFileSync(file,JSON.stringify(state),'utf8');
+    await assert.rejects(()=>supervise({...options,resume:true,maxAttempts:2},{codexFactory:()=>{throw new Error('SDK should not run');}}),/supervisor authority|tampered/i);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
 
 test('classifies transport, timeout, capacity and server errors as retryable', () => {
   for (const message of [
@@ -212,6 +243,10 @@ test('serializes concurrent resume controllers for one workspace and run id', as
   saved.status = 'waiting';
   fs.mkdirSync(path.dirname(file), {recursive: true});
   fs.writeFileSync(file, JSON.stringify(saved, null, 2), 'utf8');
+  const workspaceId=crypto.createHash('sha256').update(path.resolve(workspace).toLowerCase()).digest('hex');
+  const authorityFile=path.join(process.env.CODEX_HOME,'state','plugins','codex-tui-orchestrator','supervisor',workspaceId,runId+'.json');
+  fs.mkdirSync(path.dirname(authorityFile),{recursive:true});
+  fs.writeFileSync(authorityFile,JSON.stringify({version:1,workspace,runId,sha256:crypto.createHash('sha256').update(JSON.stringify(saved)).digest('hex')}),'utf8');
   let enteredResolve;
   let unblockResolve;
   const entered = new Promise(resolve => { enteredResolve = resolve; });

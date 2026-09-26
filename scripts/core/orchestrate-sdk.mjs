@@ -17,6 +17,7 @@ import {runWindows,verifyRun,readLedgerJson,sweepRunProcesses} from "./runner.mj
 import {resolveExecutionMode,resolveTuiMode,buildExecArgs} from './execution-mode.mjs';
 import {createHeadlessHooks} from './headless-executor.mjs';
 import {resolveInitiatorSettings,resolveInitiatorPolicy,assertInitiatorWorkspace} from './initiator-settings.mjs';
+import {controllerWindowsDir} from './controller-state.mjs';
 import {renderRunStatus} from './status-events.mjs';
 import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,bind,release,prepare} from "./leases.mjs";
 import {admitAuxiliaryWindow} from './auxiliary-admission.mjs';
@@ -65,6 +66,7 @@ function readAuthPrompt() {
 }
 
 const { workspace: WORKSPACE, temp: TMP, state: STATE_DIR } = resolveRuntimeContext();
+const windowTemp = () => controllerWindowsDir(WORKSPACE);
 process.env.WORKSPACE_DIR = WORKSPACE;
 process.env.ORCH_STATE_DIR = STATE_DIR;
 const AGENT = resolveAgent();
@@ -548,7 +550,7 @@ function genericProjectSplit(request) {
   // 保守、确定性拆分（权威修复）：仅当请求能被可靠切成"每个编号各有一个专属句子"时才拆，
   // 且每个块 prompt 只针对该项目（绝不整段重复）。混合/歧义请求返回 null 交给 LLM 语义拆块。
   const dirs = new Set();
-  const re = /(?:^|[\s,/\\：:])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\s/\\：:]*(\d{1,3})(?=\D|$)/gi;
+  const re = /(?:^|[\s,/\\：:；;])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\s/\\：:]*(\d{1,3})(?=\D|$)/gi;
   let m;
   while ((m = re.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   // fallback: bare 2-3 digit project numbers only in a task/action context
@@ -584,7 +586,7 @@ function genericProjectSplit(request) {
 function projectRef(s, n) {
   // Require a project keyword/path or an action-context bare number.  A loose
   // optional prefix would also match UUID chunks, receipt ids, and sums.
-  const named = new RegExp("(?:^|[\\s,/\\\\：:])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\\s/\\\\：:]*" + n + "(?![0-9])", "i");
+  const named = new RegExp("(?:^|[\\s,/\\\\：:；;])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\\s/\\\\：:]*" + n + "(?![0-9])", "i");
   const bare = new RegExp("(?:^|[\\s，,、:：;；])(?:(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)\\s*)?" + n + "(?![0-9])", "i");
   return named.test(s) || bare.test(s);
 }
@@ -1174,17 +1176,18 @@ function Read-OwnedRollout([string]$raw, [string]$tok, [string]$ownerTurnId = ''
 
 function writeInteractiveLauncher(title, prompt, sfx, metadata={}) {
   requireInitiatorPolicy();
-  if(AGENT.agent==='pi')return writePiLauncher(AGENT.config,{key:title,prompt,suffix:sfx,workspace:WORKSPACE,temp:TMP});
+  if(AGENT.agent==='pi')return writePiLauncher(AGENT.config,{key:title,prompt,suffix:sfx,workspace:WORKSPACE,temp:windowTemp()});
   // Runner metadata is authoritative. Legacy direct callers append their own
   // marker after task text, so its last occurrence is the compatibility fallback.
   const token=metadata.token??[...String(prompt||'').matchAll(/【本块唯一标识】\s*([A-Za-z0-9][A-Za-z0-9_\-]*)/g)].at(-1)?.[1]??'';
   if(typeof token!=='string'||(token&&!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(token)))throw new Error('Invalid launcher ownership token');
   const s = safe(title) + (sfx ? "-" + sfx : "");
-  mkdirSync(TMP, { recursive: true });
-  const pf = path.join(TMP, `agent-win-${s}.md`);
-  const lp = path.join(TMP, `win-launch-${s}.ps1`);
-  const pidf = path.join(TMP, `window-${s}.pid`);
-  const rf = path.join(TMP, `win-${s}.result.json`);
+  const dir=windowTemp();
+  mkdirSync(dir, { recursive: true });
+  const pf = path.join(dir, `agent-win-${s}.md`);
+  const lp = path.join(dir, `win-launch-${s}.ps1`);
+  const pidf = path.join(dir, `window-${s}.pid`);
+  const rf = path.join(dir, `win-${s}.result.json`);
   // 加固：生成新窗启动脚本时清掉本块路径上可能残留的旧 result / .self-closed 标记，避免窗内 watchdog 把
   // “旧块已完成的残留标记”误当成“本窗 agent 已退出”，从而提前 exit 0 不再杀 codex，造成“窗口任务完成但
   // agent 仍存活、窗未自动关”的常驻窗。仅删本块自己的 result 产物，绝不触碰其它窗/活窗。
@@ -1795,7 +1798,7 @@ async function closeWindowByPid(pid, expected) {
   return closed;
 }
 
-export function terminateOwnedLauncher(expected,{tempDir=TMP,snapshot=processSnapshot,run=spawnSync}={}) {
+export function terminateOwnedLauncher(expected,{tempDir=windowTemp(),snapshot=processSnapshot,run=spawnSync}={}) {
   if(!expected||!Number.isSafeInteger(expected.ProcessId)||expected.ProcessId<=0||
     !/^(powershell|pwsh)\.exe$/i.test(expected.Name||'')||!ownedTerminalToken(expected.CommandLine,tempDir))return false;
   try{
@@ -2124,28 +2127,30 @@ function pidFileOfTransient(f) {
   return null;
 }
 function staleTransientFiles() {
-  const alivePids = new Set();
   const res = [];
+  for(const dir of [windowTemp(),TMP]){
+  const alivePids = new Set();
   let names = [];
-  try { names = readdirSync(TMP); } catch { return res; }
+  try { names = readdirSync(dir); } catch { continue; }
   // 先扫一遍全部 window-*.pid：只要进程仍存活即受保护（无论是否已入 registry）。
   for (const f of names) {
     if (!/^window-.*\.pid$/.test(f)) continue;
     try {
-      const pid = Number(String(readFileSync(path.join(TMP, f), "utf8")).trim());
+      const pid = Number(String(readFileSync(path.join(dir, f), "utf8")).trim());
       if (pid > 0 && pidAliveCheck(pid)) alivePids.add(pid);
     } catch { /* unreadable -> stale */ }
   }
   for (const f of names) {
-    const p = path.join(TMP, f);
+    const p = path.join(dir, f);
     if (!/^(agent-win-.*\.md|win-launch-.*\.ps1|win-.*\.(result\.json|log)|window-.*\.pid(\.self-closed)?|win-.*\.result\.json\.self-closed)$/.test(f)) continue;
     const pidf = pidFileOfTransient(f);
     if (!pidf) continue;
     try {
-      const pid = Number(String(readFileSync(path.join(TMP, pidf), "utf8")).trim());
+      const pid = Number(String(readFileSync(path.join(dir, pidf), "utf8")).trim());
       if (pid > 0 && alivePids.has(pid)) continue; // 活窗的附属文件一律不删
     } catch { /* pid 文件缺失/不可读 -> 残留 */ }
     res.push(p);
+  }
   }
   return res;
 }
@@ -2194,14 +2199,17 @@ async function cleanStaleWindows() {
       return;
     }
     const protectedPids = new Set();
-    let names = [];
-    try { names = readdirSync(TMP); } catch { names = []; }
-    for (const f of names) {
-      if (!/^window-.*\.pid$/.test(f)) continue;
-      try {
-        const pid = Number(String(readFileSync(path.join(TMP, f), "utf8")).trim());
-        if (pid > 0 && pidAliveCheck(pid)) protectedPids.add(pid);
-      } catch { /* ignore */ }
+    const dirs=[windowTemp(),TMP];
+    for (const dir of dirs) {
+      let names=[];
+      try { names=readdirSync(dir); } catch { continue; }
+      for (const f of names) {
+        if (!/^window-.*\.pid$/.test(f)) continue;
+        try {
+          const pid = Number(String(readFileSync(path.join(dir, f), "utf8")).trim());
+          if (pid > 0 && pidAliveCheck(pid)) protectedPids.add(pid);
+        } catch { /* ignore */ }
+      }
     }
     for (const w of loadWindows()) {
       if (windowAlive(w) && w.pidFile && existsSync(w.pidFile)) {
@@ -2212,8 +2220,12 @@ async function cleanStaleWindows() {
       "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*win-launch-*' } | ForEach-Object { $_.ProcessId }"], { encoding: "utf8", windowsHide: true });
     const stale = String(r.stdout || "").split(/\r?\n/).map((s) => Number(String(s).trim())).filter((n) => Number.isFinite(n) && n > 0 && !protectedPids.has(n));
     const pidFiles = new Map();
-    for (const f of names) if (/^window-.*\.pid$/.test(f)) {
-      try { const pid = Number(String(readFileSync(path.join(TMP, f), "utf8")).trim()); if (pid > 0) pidFiles.set(pid, path.join(TMP, f)); } catch { /* stale */ }
+    for (const dir of dirs) {
+      let names=[];
+      try { names=readdirSync(dir); } catch { continue; }
+      for (const f of names) if (/^window-.*\.pid$/.test(f)) {
+        try { const pid = Number(String(readFileSync(path.join(dir, f), "utf8")).trim()); if (pid > 0) pidFiles.set(pid, path.join(dir, f)); } catch { /* stale */ }
+      }
     }
     const ids = stale.filter((pid) => pidFiles.has(pid));
     if (!ids.length) { console.log("[orchestrator] no stale orchestrator windows from previous run."); await closeOrphanTerminals(); return; }

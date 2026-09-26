@@ -1,6 +1,14 @@
 # 干净机器安装与验收
 
-目的：在一台**全新 Windows 机器**上证明"私有仓库 → 干净分发 → 依赖安装 → 完整性校验 → 真实执行"整条链路可用，并留下可核对的版本与结果证据。第二台机器（Lecoo mini pro）到货后按本清单执行；本仓库保持 private，安装只依赖私有 Git 凭据，不需要任何公网发布。
+目的：在一台**全新 Windows 机器**上证明"私有仓库 → 干净分发 → 依赖安装 → 完整性校验 → 真实执行"整条链路可用，并留下可核对的版本与结果证据。可以使用新装系统的虚拟机或第二台实体机器；本仓库保持 private，安装只依赖私有 Git 凭据，不需要任何公网发布。
+
+## 如何取得干净环境
+
+- GitHub Actions 的 Windows 托管作业每次取得新虚拟机，适合重复运行离线回归、完整性校验和无凭据的安装脚本检查。镜像预装开发工具，因此**不能**证明从没有 Node/npm/Codex CLI 的系统自动补齐成功。微软的 Windows 应用测试文档说明托管 Windows 作业可以运行自动化 GUI 测试，但这里仍须另写可见 TUI 自动化与登录方案；目前的离线作业不能替代手动观察真实交互窗。仓库的 `validate.yml` 当前在 GitHub 上处于 `disabled_manually`，没有远端回执。
+- 本地 Windows 虚拟机适合首次安装、GUI 登录、可见窗口、失败后的快照恢复。先安装正版或符合许可条件的 Windows 11，建立“只有 Windows 和 Git、无 Node/npm、无 Codex CLI”的快照，再依次运行下面的引导、离线回归、真实双模式验收。第二个快照可保存已登录的 Codex GUI；凭据不要放入可分享镜像或提交到仓库。
+- 第二台实体机用于确认虚拟硬件和宿主特性没有掩盖驱动、终端、代理或内存问题。三个环境的测试结果分别记录，不能相互冒充。
+
+本机 Windows 11 家庭版不支持 Windows Sandbox 或 Hyper-V 管理功能。若在这台机器上选用第三方虚拟机，需先验证其与已运行的 WSL2/Windows 虚拟化层能否稳定共存；不得为测试擅自停用 WSL、改启动配置或重装系统。
 
 ## 前置条件
 
@@ -87,7 +95,7 @@ node scripts\orchestrate-sdk.mjs --verify-run <ID> --allow-acceptance-change  # 
 ## 六、可见 TUI 验收（可选但建议）
 
 ```powershell
-set ORCH_TUI=wt
+$env:ORCH_TUI = 'wt'
 node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acceptance-file <checks.json> --run-windows "同样的两任务请求"
 ```
 
