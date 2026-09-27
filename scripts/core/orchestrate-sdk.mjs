@@ -3,7 +3,7 @@
  * codex-tui-orchestrator: conflict/dependency-based Codex execution.
  * --exec / --headless: hidden Codex exec, the default for --run and bare requests.
  * --run-windows / --visible: visible interactive TUI, with the same runner ledger.
- * --plan: read-only classification. --status --run-id ID --watch: live dual status.
+ * --plan: classification without task edits; may update the decompose cache. --status --run-id ID --watch: live dual status.
  * WORKSPACE_DIR selects the initiating workspace; ORCH_EXEC_MODE selects the default
  * execution mode, ORCH_TUI selects the terminal only for visible execution.
  * All tasks retain their original identities. Dependent tasks await verification;
@@ -24,7 +24,7 @@ import {admitAuxiliaryWindow} from './auxiliary-admission.mjs';
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
 import {configureEntryArgs,leadingModeFlags} from '../entry-options.mjs';
-import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode } from "./network-policy.mjs";
+import { networkConfig, resolveOpenAIBaseUrl, resolveProviderMode, applyWindowsProxyEnv } from "./network-policy.mjs";
 import {budgetSettings, budgetStateFile, loadBudgetState, firstRunHeadroom, availableMB, DEFAULT_MIN_AVAILABLE_MB} from "./memory-budget.mjs";
 import {partitionIndependentBlocks} from './plan-policy.mjs';
 import {reportFatal} from "./fatal.mjs";
@@ -235,13 +235,40 @@ function classifyPrompt(request, hints = {}) {
     "每个自然任务一条，字段如下：id(字符串编号)、summary(保留原意的一句话)、kind(project|tool|system)、" +
     "project(请求中明确出现的任意项目编号或名称，只在请求里明确写了才填，否则填 null)、" +
     "hint(该任务涉及模块/资源关键词，如 会员管理、商品、订单)、" +
-    "conflict_hints(会碰到的资源字符串数组，如 [\"db:订单\",\"dir:管理端\"]，无则 [])、" +
+    "conflict_hints(会碰到的全部资源字符串数组；请求明确给出文件或目录时逐一列出，如 [\"file:README.md\",\"dir:test/fixtures\"]，无则 [])、" +
     "depends_on(依赖的其它任务 id 数组，无则 [])、" +
     "feasible(是否可行，布尔)、already_done(是否已达成无需做，布尔)。" +
     "规则：不遗漏任何任务；不合并；请求没写项目号时 project 必须为 null，交给模块映射校正，不许猜；" +
     "禁止调用任何工具/读文件/搜索/联网；只输出一个 JSON 对象 {\"tasks\":[...]}，能被 JSON.parse 直接解析，不要 Markdown 代码块、不要任何前后缀文字。" +
     hintText + "\n请求：" + request + '\n以下原始任务清单是权威清单。逐条返回相同的 T001 等 id，不添加、不遗漏、不合并任务。summary 可概述，执行正文由主控按 id 恢复；depends_on 也使用原始 id。\n'+JSON.stringify(requestTasks(request))
   );
+}
+// Model paths are only useful after grounding each hint against the original
+// task and checking that no explicit path was omitted. Ambiguity stays serial.
+function groundedResourceKeys(item) {
+  const summary = item.summary;
+  if (/\w+:\/\//.test(summary) || /[?*]/.test(summary) ||
+      /\b[A-Za-z0-9_.-]+[\\/](?![A-Za-z0-9_.-])/.test(summary) ||
+      /\b[A-Za-z0-9_.-]+\s*(?:目录|文件夹|directory|folder)/i.test(summary)) return null;
+  const token = /[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*/g;
+  const paths = [...summary.matchAll(token)].map(match => match[0].replaceAll('\\','/'))
+    .filter(value => value.includes('/') || /\.[A-Za-z0-9]{1,8}$/.test(value));
+  const explicit = new Set(paths.map(value => value.toLowerCase()));
+  if (!explicit.size || !item.conflict_hints.length) return null;
+  const keys = [];
+  for (const hint of item.conflict_hints) {
+    const match = /^(file|dir):(.+)$/i.exec(hint);
+    if (!match) return null;
+    const kind = match[1].toLowerCase();
+    const value = match[2].replaceAll('\\','/');
+    if (!/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(value) ||
+        value.split('/').some(part => part === '.' || part === '..') ||
+        (kind === 'file' && !/\.[A-Za-z0-9]{1,8}$/.test(value)) ||
+        !explicit.has(value.toLowerCase())) return null;
+    keys.push(kind + ':' + value);
+  }
+  if (new Set(keys.map(key => key.slice(key.indexOf(':')+1).toLowerCase())).size !== explicit.size) return null;
+  return [...new Set(keys)];
 }
 // 阶段 B：确定性分块引擎。消费扁平任务清单 -> 产出 blocks（可行性过滤 + 模块归位 + 工具独立 + 未知串行 + 依赖映射）。
 function buildBlocksFromTasks(tasks, hints = {}) {
@@ -251,6 +278,7 @@ function buildBlocksFromTasks(tasks, hints = {}) {
   const tailKeywords = Array.isArray(hints && hints.tailKeywords) ? hints.tailKeywords : [];
   const byProj = {};      // proj-N -> [item]
   const toolItems = [];   // kind=tool/system
+  const scopedItems = []; // 无项目号但有经原文验证的文件/目录范围
   const unkItems = [];    // 无归属 -> linked 串行（绝不并行孤儿）
   for (const t of tasks) {
     if (!t || typeof t !== "object") continue;
@@ -259,16 +287,19 @@ function buildBlocksFromTasks(tasks, hints = {}) {
     if (!summary) continue;
     let p = String(t.project || "").replace(/[^0-9]/g, "");
     if (!p) for (const [mod, pn] of Object.entries(modToProj)) { if (summary.includes(mod)) { p = String(pn).replace(/[^0-9]/g, ""); break; } }
-    const item = { id: String(t.id || "t" + (byProjKeyCount(byProj) + toolItems.length + unkItems.length + 1)), summary, kind: String(t.kind || ""), depends_on: Array.isArray(t.depends_on) ? t.depends_on.map(String) : [], conflict_hints: Array.isArray(t.conflict_hints) ? t.conflict_hints.map(String) : [] };
+    const item = { id: String(t.id || "t" + (byProjKeyCount(byProj) + toolItems.length + scopedItems.length + unkItems.length + 1)), summary, kind: String(t.kind || ""), depends_on: Array.isArray(t.depends_on) ? t.depends_on.map(String) : [], conflict_hints: Array.isArray(t.conflict_hints) ? t.conflict_hints.map(String) : [] };
     if (p) (byProj["proj-" + p] = byProj["proj-" + p] || []).push(item);
     else if (item.kind === "tool" || item.kind === "system") toolItems.push(item);
-    else unkItems.push(item);
+    else {
+      item.groundedKeys = groundedResourceKeys(item);
+      if (item.groundedKeys) scopedItems.push(item); else unkItems.push(item);
+    }
   }
   // Validate task-level dependencies BEFORE grouping can hide internal cycles.
-  const allItems=[...Object.values(byProj).flat(),...toolItems,...unkItems];
+  const allItems=[...Object.values(byProj).flat(),...toolItems,...scopedItems,...unkItems];
   const orderedItems=levelWaves(allItems.map(it=>({key:it.id,b:{},dependsOn:it.depends_on,it}))).flat().map(r=>r.it);
   const rank=new Map(orderedItems.map((it,i)=>[it.id,i]));
-  for(const list of [...Object.values(byProj),toolItems,unkItems])list.sort((a,b)=>rank.get(a.id)-rank.get(b.id));
+  for(const list of [...Object.values(byProj),toolItems,scopedItems,unkItems])list.sort((a,b)=>rank.get(a.id)-rank.get(b.id));
   // fold 规则：某工具/系统任务命中 fold 关键字 -> 折进指定项目（作为该项目任务一环，不再独立并行，避免与项目竞态）。
   for (const key of Object.keys(foldRules)) {
     const targets = (foldRules[key] || []).map((x) => String(x).replace(/[^0-9]/g, ""));
@@ -283,6 +314,8 @@ function buildBlocksFromTasks(tasks, hints = {}) {
       }
     }
   }
+  if (unkItems.length) return [{type:'linked',title:'linked-ambiguous',dependsOn:[],conflictKeys:['dir:.'],
+    tasks:orderedItems.map((it,idx)=>({id:'t1-'+(idx+1),title:it.summary.slice(0,40),prompt:it.summary}))}];
   const blocks = [];
   const blockItems = [];   // 与 blocks 平行的源 item 数组，用于依赖映射
   for (const [title, arr] of Object.entries(byProj)) {
@@ -295,10 +328,11 @@ function buildBlocksFromTasks(tasks, hints = {}) {
     blocks.push({ type: "independent", title, dependsOn: [], conflictKeys: it.conflict_hints.map((h) => (h.includes(":") ? h : "file:" + h)), tasks: [{ id: "t" + (blocks.length + 1), title, prompt: it.summary }] });
     blockItems.push([it]);
   }
-  if (unkItems.length) {
-    const title = "linked-ambiguous";
-    blocks.push({ type: "linked", title, dependsOn: [], conflictKeys: [], tasks: unkItems.map((it, idx) => ({ id: "t" + (blocks.length + 1) + "-" + (idx + 1), title: it.summary.slice(0, 40), prompt: it.summary })) });
-    blockItems.push(unkItems);
+  for (const it of scopedItems) {
+    const title = 'scoped-' + (blocks.length + 1);
+    blocks.push({type:'independent',title,dependsOn:[],conflictKeys:it.groundedKeys,
+      tasks:[{id:'t'+(blocks.length+1),title,prompt:it.summary}]});
+    blockItems.push([it]);
   }
   // 依赖映射：item.depends_on (task id) -> 所在块 title
   for (let i = 0; i < blocks.length; i++) {
@@ -2293,6 +2327,8 @@ export async function main() {
   const modeFlags = new Set(['--run-windows','--visible','--run','--exec','--headless','--resume-run','--spawn','--selftest-close','--doctor','--plan','--status','--clear-cache','--verify-run']);
   const requestedModes = leadingModeFlags(process.argv.slice(2),modeFlags);
   if (requestedModes.length > 1) throw new Error('Conflicting execution modes: ' + requestedModes.join(', '));
+  if (AGENT.agent === 'codex' && ['--plan','--run','--exec','--headless','--visible','--run-windows','--spawn','--selftest-close','--resume-run'].includes(mode))
+    applyWindowsProxyEnv();
   if(['--plan','--run','--exec','--headless','--visible','--run-windows','--spawn','--selftest-close','--resume-run'].includes(mode))requireInitiatorPolicy();
   if (mode === "--doctor") {
     const requestedMode=resolveExecutionMode('',process.env);

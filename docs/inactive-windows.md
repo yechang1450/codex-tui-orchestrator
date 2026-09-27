@@ -1,6 +1,6 @@
 # Execution visibility
 
-Core 1.4.0-rc.1 defaults to headless exec without a terminal window. `--run-windows` or `--visible` selects visible execution. `ORCH_TUI` applies only to visible mode.
+Core 1.4.1-rc.1 defaults to headless exec without a terminal window. `--run-windows` or `--visible` selects visible execution. `ORCH_TUI` applies only to visible mode.
 
 Windows Terminal remains the preferred visible host. Its launcher requests `SW_SHOWNOACTIVATE` and briefly restores the initiating foreground window during startup. Input accompanied by a focus change ends that guard. This is a request to the host, not a guarantee against external focus changes; Windows restricts which processes can set the foreground window ([Microsoft documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setforegroundwindow)).
 

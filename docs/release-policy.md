@@ -19,7 +19,7 @@ Runtime upgrades must retain the task ledger, calculated memory capacity, indepe
 
 The legacy mixed-case invocation remains documented for existing local references, while the canonical manifest and skill identifiers use lowercase hyphen-case. On Windows the existing marketplace source path remains compatible; any non-Windows migration must update that path explicitly.
 
-## Current candidate: core 1.4.0-rc.1
+## Current candidate: core 1.4.1-rc.1
 
 Plugin 0.5.0-rc.1 introduces default headless exec, optional visible TUI and a shared task/block status stream. The planner and both execution modes inherit the initiating Codex provider and credentials by default, including third-party providers configured in CODEX_HOME; only `ORCH_PROVIDER=openai-https` or an explicit relay base URL selects the hardened OpenAI HTTPS provider, and any other `ORCH_PROVIDER` value fails closed. The current candidate remains Private until the installed selftest-close, capacity run and environment gates are recorded as passed. See [RC validation](rc-validation.md) for fresh source/package and live results. Publication still requires the complete source and fresh package gates. The official manager Git lifecycle (add, install, upgrade, rollback, remove and uninstall) is recorded in [manager lifecycle evidence](../test/manager-lifecycle-validation.json) using an isolated local Git transport; it validates manager/cache behavior, not external GitHub reachability. Native Codex UI cards are a host integration interface, not injected by the skill.
 

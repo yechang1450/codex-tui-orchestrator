@@ -68,7 +68,7 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
     ok: floor <= 0 || (Number(availableMB) - requiredMB > floor)};
 }
 
-export const CORE_VERSION = '1.4.0-rc.1';
+export const CORE_VERSION = '1.4.1-rc.1';
 export const SUCCESS = new Set(['verified']);
 export const TERMINAL = new Set(['verified','failed','blocked','cancelled','awaiting-verification','preflight-failed','popup-failed','timeout','needs-reconciliation']);
 

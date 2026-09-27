@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {verifyChecks, buildTodoList, canonicalDigest} from '../scripts/core/contracts.mjs';
+import {verifyChecks, buildTodoList, canonicalDigest, CORE_VERSION} from '../scripts/core/contracts.mjs';
 import {verifyRun as coreVerifyRun} from '../scripts/core/runner.mjs';
 import {decomposeHash, resolveHints} from '../scripts/core/orchestrate-sdk.mjs';
 
@@ -58,7 +58,7 @@ test('P1-P4 拆块缓存里的畸形计划必须被隔离掉，不得以裸 Node
   for (const [label, blocks] of cases) {
     const workspace = newDir(`plan-${label}`);
     const request = '修复 README 排版';
-    const {cacheFile, hash} = seedPlanCache(workspace, request, blocks, '1.4.0-rc.1');
+    const {cacheFile, hash} = seedPlanCache(workspace, request, blocks, CORE_VERSION);
     const {status, stdout, stderr} = cli(['--plan', request], {workspace});
     const after = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     const entryAfter = after.entries[hash];
@@ -86,7 +86,7 @@ test('P5 拆块缓存里的超长 prompt 与带 ; | & 换行 引号的 prompt �
   const {hash} = seedPlanCache(workspace, request, [
     {title: 'nasty', type: 'independent', dependsOn: [], conflictKeys: [], tasks: [{id: '1', title: 'nasty', prompt: nasty}]},
     {title: 'long', type: 'independent', dependsOn: [], conflictKeys: [], tasks: [{id: '2', title: 'long', prompt: long}]},
-  ], '1.4.0-rc.1');
+  ], CORE_VERSION);
   const {status, stdout, stderr} = cli(['--plan', request], {workspace});
   // --plan 的 stdout = 若干 [orchestrator] 诊断行 + 缩进 JSON；只取最后那个独立成行的 '{' 之后的内容。
   const payload = stdout.slice(stdout.lastIndexOf('\n{\n') + 1);
@@ -109,7 +109,7 @@ test('P6-P9 拆块缓存里的依赖错误（未知依赖/自依赖/环/重复�
   for (const [label, blocks, expected] of cases) {
     const workspace = newDir(`plan-${label}`);
     const request = '修复 README 排版';
-    const {cacheFile, hash} = seedPlanCache(workspace, request, blocks, '1.4.0-rc.1');
+    const {cacheFile, hash} = seedPlanCache(workspace, request, blocks, CORE_VERSION);
     const {status, stdout, stderr} = cli(['--plan', request], {workspace});
     const after = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     seen(`plan.${label}`, `status=${status} stderr=${JSON.stringify(firstLine(stderr))} poisonLeft=${Object.hasOwn(after.entries, hash)}`);
@@ -137,7 +137,7 @@ function ledgerFixture(workspace, runId, mutate = () => {}) {
   const results = {B1: {status: 'pending', attempts: []}, B2: {status: 'pending', attempts: []}};
   const taskResults = {T001: {status: 'pending'}, T002: {status: 'pending'}};
   const sum = {
-    protocol: 2, version: '1.4.0-rc.1', agent: 'codex', executionMode: 'headless', runId, workspace,
+    protocol: 2, version: CORE_VERSION, agent: 'codex', executionMode: 'headless', runId, workspace,
     request, capacity: 2, generation: 1, history: [], startedAt: Date.now(),
     tasks, plan, blocks, results, taskResults, todoList: buildTodoList(tasks, blocks, taskResults),
   };

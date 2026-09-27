@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased (semantic planning and local proxy)
+
+- Core `1.4.1-rc.1`, cachebuster `0.5.0-rc.1+codex.20260927090557`: keep independently scoped file/directory work separate when the model supplies complete hints grounded in the original task; keep unknown or incomplete scope serial. Conflicting paths and dependencies still join serial blocks.
+- On Windows, inherit an enabled user system proxy into the orchestrator process tree only when no explicit proxy environment is set. This restores model planning through a local proxy without changing host-wide settings. The plan cache version changes with the core.
+
 ## Unreleased (controller-state boundary)
 
 - Cachebuster for the isolated candidate is `0.5.0-rc.1+codex.20260927035411`; the active installed plugin remains on the earlier version until a separately reviewed installation.

@@ -9,6 +9,45 @@
 // failing WebSocket probe. It keeps the configured model and login, uses no
 // third-party endpoint or credentials, and is selected explicitly through
 // ORCH_PROVIDER=openai-https or through a relay base URL.
+import {spawnSync} from 'node:child_process';
+
+function systemProxyRegistry() {
+  const result = spawnSync('reg.exe', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
+    {encoding:'utf8', windowsHide:true, timeout:3000, maxBuffer:64 * 1024});
+  return result.status === 0 ? result.stdout : '';
+}
+
+function proxyEndpoint(value) {
+  const raw = String(value || '').trim();
+  if (!raw || /\s/.test(raw)) return undefined;
+  let url;
+  try { url = new URL(/^[a-z]+:\/\//i.test(raw) ? raw : 'http://' + raw); } catch { return undefined; }
+  if (!['http:','https:'].includes(url.protocol) || !url.hostname || !url.port ||
+      url.username || url.password || url.pathname !== '/' || url.search || url.hash) return undefined;
+  return url.origin;
+}
+
+// Copy only a safe, enabled Windows user proxy into this process. Codex children
+// inherit it; the host's registry and global environment are never changed.
+export function applyWindowsProxyEnv(env = process.env, {platform = process.platform, query = systemProxyRegistry} = {}) {
+  if (platform !== 'win32') return 'none';
+  if (['HTTPS_PROXY','https_proxy','HTTP_PROXY','http_proxy','ALL_PROXY','all_proxy']
+    .some(key => String(env[key] || '').trim())) return 'explicit';
+  let output = '';
+  try { output = String(query() || ''); } catch { return 'none'; }
+  if (!/^\s*ProxyEnable\s+REG_DWORD\s+0x0*1\s*$/im.test(output)) return 'none';
+  const raw = /^\s*ProxyServer\s+REG_SZ\s+(.+)\s*$/im.exec(output)?.[1]?.trim();
+  if (!raw) return 'none';
+  const protocol = raw.includes('=')
+    ? Object.fromEntries(raw.split(';').map(part => part.trim().split('=', 2))): null;
+  const https = proxyEndpoint(protocol ? protocol.https : raw);
+  if (!https) return 'none';
+  const http = proxyEndpoint(protocol ? protocol.http || protocol.https : raw);
+  env.HTTPS_PROXY = https;
+  if (http) env.HTTP_PROXY = http;
+  return 'system';
+}
+
 export const OPENAI_HTTPS_PROVIDER = 'orchestrator-openai-https';
 export function resolveOpenAIBaseUrl(env = process.env) {
   const raw = String(env.ORCH_OPENAI_BASE_URL || env.ORCH_STEADY_RELAY_BASE_URL || '').trim();
