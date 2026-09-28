@@ -10,6 +10,9 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const ps=path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
 const windows=process.platform==='win32';
 const q=s=>`'${String(s).replaceAll("'","''")}'`;
+// Signed portable Node installations can take over 30 seconds to hash their
+// bundled npm tree on a cold Windows filesystem.
+const bootstrapProbeTimeoutMs=180000;
 function fixture(t){
   const base=path.join(process.env.USERPROFILE||os.homedir(),'workspace','temp');
   fs.mkdirSync(base,{recursive:true});
@@ -22,7 +25,7 @@ function fixture(t){
   return dir;
 }
 function run(dir,args=[],env={}){
-  return spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),...args],{env:{...process.env,...env},encoding:'utf8',windowsHide:true,timeout:30000});
+  return spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),...args],{env:{...process.env,...env},encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
 }
 function nativeCliFixture(file){
   fs.mkdirSync(path.dirname(file),{recursive:true});
@@ -59,20 +62,28 @@ test('bootstrap doctor forwards doctor flag and run keeps the original argument 
 test('bootstrap restores parent process PATH and npm environment after completion',{skip:!windows},t=>{
   const dir=fixture(t);
   const code=`$before=$env:PATH; $npm=$env:npm_execpath; $prefix=$env:npm_config_prefix; & ${q(path.join(dir,'scripts','bootstrap.ps1'))} -Action prepare -NoDownload -NodePath ${q(process.execPath)} -Json; if($env:PATH -ne $before -or $env:npm_execpath -ne $npm -or $env:npm_config_prefix -ne $prefix){throw 'leaked environment'}`;
-  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(code,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:30000});
+  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(code,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
   assert.equal(r.status,0,r.stderr);
 });
 test('run streams progress immediately and is not killed by the preparation budget',{skip:!windows},async t=>{
   const dir=fixture(t);
-  fs.writeFileSync(path.join(dir,'scripts','orchestrate-sdk.mjs'),'console.log("START"); setTimeout(()=>console.log("END"),6500);','utf8');
-  const child=spawn(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),'-Action','run','-NoDownload','-NodePath',process.execPath,'-TimeoutSeconds','5'],{windowsHide:true});
+  // This case isolates streaming from the separately tested native runtime
+  // verification cost, so the run can outlast a short preparation budget.
+  fs.appendFileSync(path.join(dir,'scripts','runtime-bootstrap.ps1'),`
+function Resolve-OrchNode {
+  param([string[]]$Candidates,[string]$RuntimeHome,[switch]$NoDownload,[switch]$AllowUnverified,[switch]$AllowUnverifiedNpm,[int]$TimeoutSeconds)
+  return [pscustomobject]@{NodePath=${q(process.execPath)};NpmPath=${q(path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js'))};Version='fixture';NpmTrusted=$true}
+}
+`,'utf8');
+  fs.writeFileSync(path.join(dir,'scripts','orchestrate-sdk.mjs'),'console.log("START"); setTimeout(()=>console.log("END"),11500);','utf8');
+  const child=spawn(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),'-Action','run','-NoDownload','-NodePath',process.execPath,'-TimeoutSeconds','10'],{windowsHide:true});
   let firstAt=0,stdout='',stderr='';
   child.stdout.on('data',b=>{if(!firstAt)firstAt=Date.now();stdout+=b;});
   child.stderr.on('data',b=>stderr+=b);
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
   assert.equal(code,0,stderr);
   assert.match(stdout,/START[\s\S]*END/);
-  assert.ok(Date.now()-firstAt>6000,'progress was buffered until exit');
+  assert.ok(Date.now()-firstAt>11000,'progress was buffered until exit');
 });
 test('runtime prepare resolves an explicitly approved test CLI without invoking a model',{skip:!windows},t=>{
   const dir=fixture(t),cli=path.join(dir,'codex.exe');
