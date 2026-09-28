@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {createHash} from 'node:crypto';
-import { pickNpmCli } from '../npm-cli.mjs';
+import { assertTrustedNpm, pickNpmCli } from '../npm-cli.mjs';
 import {resolvePiHost,piArgs} from './pi-host.mjs';
 import {assertNoReparsePoints} from './runtime-context.mjs';
 
@@ -63,6 +63,41 @@ function nativeProbe(file, env = process.env) {
     });
     return result.status === 0 && /^codex-cli\s/m.test(result.stdout || '');
   } catch { return false; }
+}
+
+function fileIdentity(file) {
+  try {
+    const stat = fs.statSync(file);
+    return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  } catch { return null; }
+}
+
+// Desktop Codex and the pinned @openai/codex@0.157.0 Windows package use
+// different valid OpenAI signing certificates. The latter can be external to
+// an installed cache even when bootstrap authenticated its package tree.
+const TRUSTED_CLI_CERTIFICATES = Object.freeze([
+  'DB9831002B26D78F14E07806F595C6A429E9B6E9',
+  '41977145C93B7A096405E230DDCC8FED1AB82AC3',
+]);
+const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine($s.SignerCertificate.Thumbprint)';
+
+export function verifyAuthenticodePublisher(file, env = process.env, spawn = spawnSync, allowedThumbprints = TRUSTED_CLI_CERTIFICATES) {
+  if (process.platform !== 'win32') return true;
+  try {
+    if (!fs.statSync(file).isFile()) return false;
+    const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
+    const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const systemModules = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+    const result = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', AUTHENTICODE_SCRIPT], {
+      encoding: 'utf8', windowsHide: true, shell: false, timeout: 8000,
+      env: {...env, PSModulePath: systemModules, ORCH_AUTHENTICODE_TARGET: path.resolve(file)},
+    });
+    if (result?.status !== 0) return false;
+    const thumbprint = String(result.stdout || '').trim().replace(/\s+/g, '').toUpperCase();
+    return allowedThumbprints.includes(thumbprint);
+  } catch {
+    return false;
+  }
 }
 
 // Adapter contract: resolve a real CLI before any planner/window is started.
@@ -228,6 +263,8 @@ export function installCodexCli({env = process.env, platform = process.platform,
   if(spec!==DEFAULT_CLI_INSTALL_SPEC||platform!=='win32'||!PINNED_CLI_SHA256[process.arch])throw installerError('unpinned_package');
   const timeout = Number(env.ORCH_CLI_INSTALL_TIMEOUT_MS || 120000);
   if(!Number.isSafeInteger(timeout)||timeout<1||timeout>600000)throw installerError('invalid_timeout');
+  try { assertTrustedNpm(env); }
+  catch { throw installerError('npm_untrusted'); }
   const prefix=privateCliPrefix(env);
   const installEnv={...env};
   for(const key of Object.keys(installEnv))if(key.toLowerCase()==='npm_config_prefix')delete installEnv[key];
@@ -252,7 +289,8 @@ export function installCodexCli({env = process.env, platform = process.platform,
 }
 
 export function resolveHost({ env = process.env, agent, candidates = cliCandidates,
-  probe = (file) => nativeProbe(file, env), verifyPrivate=file=>verifiedPrivateCodexCandidate(file,env), install, autoInstall } = {}) {
+  probe = (file) => nativeProbe(file, env), verifyPrivate=file=>verifiedPrivateCodexCandidate(file,env),
+  verifyExternal=file=>verifyAuthenticodePublisher(file,env), install, autoInstall } = {}) {
   const id = agent || detectHostAgent(env);
   if(id==='pi')return resolvePiHost(env);
   const adapter = adapters[id];
@@ -261,11 +299,32 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
   // fail closed instead of silently installing a different CLI and hiding the
   // configuration error.
   const explicit = String(env.ORCH_CLI || env.CODEX_EXE || '').trim();
+  const allowExplicitUnverified = Boolean(explicit && String(env.ORCH_ALLOW_UNVERIFIED_CLI || '') === '1');
+  const explicitlyAllowed = file => allowExplicitUnverified
+    && path.resolve(file).toLowerCase() === path.resolve(explicit).toLowerCase();
+  let untrustedCandidate = false;
+  let selectedIdentity = null;
   const verifiedProbe=file=>{
+    if (!fileIdentity(file)) return false;
+    const allowUnverified = explicitlyAllowed(file);
     if(isPrivateCliCandidate(file,env)){
       try{
         if(!verifyPrivate(file))return false;
       }catch{return false;}
+    } else if (!allowUnverified && !verifyExternal(file)) {
+      untrustedCandidate = true;
+      return false;
+    } else if (!allowUnverified) {
+      const beforeProbe = fileIdentity(file);
+      if (!beforeProbe) { untrustedCandidate = true; return false; }
+      if (fileIdentity(file) !== beforeProbe) { untrustedCandidate = true; return false; }
+      const accepted = probe(file);
+      if (fileIdentity(file) !== beforeProbe || !verifyExternal(file)) {
+        untrustedCandidate = true;
+        return false;
+      }
+      if (accepted) selectedIdentity = beforeProbe;
+      return accepted;
     }
     return probe(file);
   };
@@ -280,6 +339,13 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
       if (String(error?.message || '').startsWith('CLI_AUTO_INSTALL_FAILED')) throw error;
       throw installerError(error?.code || 'installer');
     }
+  }
+  if (bin && !explicitlyAllowed(bin) && !isPrivateCliCandidate(bin, env)
+      && (fileIdentity(bin) !== selectedIdentity || !verifyExternal(bin))) {
+    throw new Error(`CLI_UNTRUSTED: ${id}; the candidate changed after verification. Retry after restoring the signed executable.`);
+  }
+  if (!bin && untrustedCandidate) {
+    throw new Error(`CLI_UNTRUSTED: ${id}; the candidate is not signed by a trusted publisher. Set ORCH_ALLOW_UNVERIFIED_CLI=1 only for an explicitly selected custom executable.`);
   }
   if (!bin) throw new Error(`CLI_MISSING: ${id}; install its CLI yourself or set ORCH_CLI to its native executable. Automatic installation was disabled or did not produce a verified native binary.`);
   return { agent: id, config: { ...adapter, bin, available: true } };

@@ -1,5 +1,20 @@
 # 0.5.0-rc.1 验收记录
 
+## 2026-09-28 公开准备候选（core 1.4.2-rc.1）
+
+当前候选的插件版本为 `0.5.0-rc.1+codex.20260928152733`。本节只记录该候选实测过的内容；下方 `1.4.1-rc.1` 及更早记录均为历史证据。此候选尚未公开发布。
+
+- 安全修复包括：验证外部 Codex CLI 与 Node 的签名、验证自动安装的原生 CLI 包与 npm 文件树、封存锁定 SDK 的逐文件摘要，并在自动恢复依赖前要求可信 npm。Node 启动 Windows PowerShell 时若继承 PowerShell 7 模块路径，现在按绝对路径加载系统安全与实用模块；相关回归已通过。
+- 公开入口 `--plan-file` 曾在帮助中列出却返回 `Unknown mode`；本轮用真实入口复现，加入有界文件读取、路径/类型诊断和回归后通过。`--doctor` 从本机读取到 `gpt-6-sol`、`max`、`priority` 与工作区 `%USERPROFILE%\workspace`。
+- 原始五目录请求的首次模型规划给出五个可并行块，但句内分号使原始清单变成十项，每块两项；改成每目录一项后，第二次模型规划两次请求均中止，安全退回 `autosafe-serialized`。这说明模型规划仍受提供方可用性影响，不能把首次成功当作稳定成功。执行前 `own-skills` 已不在工作区原位置，因此没有对其旧路径创建或执行清理任务。
+- 对当时实际存在的 `build`、`memory`、`ops`、`temp` 四个顶层目录，使用显式项目号的确定性规划得到四个独立块，每块恰好一条原始任务，互无依赖。真实 headless 执行 `public-cleanup-20260928-a` 的首轮四个工作进程时间重叠（峰值 4），四块均由控制器确认退出；`build`、`memory`、`ops` 的专用演练标记实际删除并经父级分别验收为 `verified`。
+- `temp` 的专用演练标记删除命令被宿主自动审批审查以 `blocked by policy` 拒绝，两次有界尝试后任务为 `failed`，目标仍存在；控制器没有伪造 `completed` 或 `verified`。因此这次整体运行 `success=false`，不能称作四目录清理全部通过。根工作区的 Git 状态条目在运行前后相同，未观察到本次运行遗留的 headless worker 进程。原始账本、验收报告和计划保存在本机 `workspace/temp/orchestrator/runs/public-cleanup-20260928-a/` 与 `workspace/temp/codex-tui-public-readiness-20260928/`。
+- 最终源码的串行离线全量回归共 488 项：487 通过、0 失败、1 项按设定跳过（需显式启用真实模型）。之后仅修正 `--doctor`/`--tasks` 首次调用可能准备依赖的帮助与说明文字，并重新封存；受影响的入口、自动依赖和分发 13 项测试通过。封存结果为 schema 2、31 个核心文件、72 个运行时文件。
+- 最终干净分发为 115 个文件，安装器已从该分发更新本机 Codex 缓存；缓存的发行完整性、doctor 和 `install-plugin --check` 均通过，后者无问题或警告。隔离的原生 CLI 自动安装路径先以锁定包与签名实测通过，再用该 CLI 完成实际安装。缓存版 `--selftest-close` 在 Windows Terminal 真正弹窗、收到完成事件后自动关窗：`selftestPassed=true`、`launcherStillAlive=false`、`orphanChildren=false`。
+- 当前源码的真实双模式两任务验收均通过：可见 TUI 与 headless 各自 `passed=true`、峰值并发 2，两项独立 `verified`，顺序、回执、时间重叠和退出检查均有效。证据分别在工作区 `temp/codex-live-visible-ddebddedbad/report.json` 与 `temp/codex-live-headless-bddcaddcab/report.json`。帮助文字修正不改变这两次运行的执行逻辑。
+- Codex Security 最后一轮差异扫描 `b3d996c4-aa6a-4dd9-bef6-684c3290cdc4` 对帮助文字修正前的安全相关改动审查了 16 个源码/配置项，0 项可报告漏洞。npm 校验后的时间窗口被作为候选验证；旧版本原本没有该校验，且未建立普通已安装环境中的独立低信任写入者，因此未列为本差异漏洞。Plugin Eval 对最终源码与干净分发均评为 86/B；唯一失败项是整包延后文本量的静态估算（分发 182649 token），实际常驻/触发预算估计为 1218 token，尚无真实 token 用量样本。
+- GitHub Windows CI 的 `Validate orchestrator` 工作流已重新启用，远端结果以本候选分支的 PR 检查为准。全新第二台 Windows 首次安装、公开后匿名 HTTPS 克隆仍需按 [干净机器清单](clean-machine-validation.md) 单独验收；模型规划提供方中止时仍会安全退回串行。上面的四目录演练有一次宿主策略拒绝，不能称作四目录全部清理成功。
+
 ## 2026-09-27 模型语义拆分与本机代理验收
 
 当前封存核心为 `1.4.1-rc.1`，插件 cachebuster 为 `0.5.0-rc.1+codex.20260927090557`。模型给出的文件、目录和依赖提示只有逐项对应原始任务后才用于并发；编造、漏报、通配符或含糊目录均退回串行。Windows 已启用的用户代理只复制进编排器进程树，不改全局设置。
@@ -24,8 +39,8 @@
 
 该快照版本为 `0.5.0-rc.1+codex.20260926211700`。2026-09-26 的串行全量回归覆盖 77 个测试文件，退出码 0；50 个源文件的行覆盖为 6306/7758（81.28%）。发布完整性封存采用 schema 2，包含 30 个核心文件与 69 个运行时文件。测试中的可选真实模型项单独由下述实机运行验收，不以离线测试代替。
 
-- 已安装缓存入口的 headless+exec 四块验收：`acceptance-ad1127fe-3872-476c-a168-8a3838dcb3d6`，`passed=true`、`peak=4`、四项均独立 `verified`、四个启动器均退出。证据在本机 `<user-home>\workspace\temp\orch-final-live\temp\codex-live-headless-bdfcaddabe\report.json`；它使用修复会话钩子前的已安装缓存，因此只认证该快照的 headless 路径。
-- 当前工作树可见 TUI 四块验收：`acceptance-95de3c1a-6103-4815-9b89-0dfc82b7a20d`，`passed=true`、`peak=4`、四项均独立 `verified`，四个 Windows Terminal 启动器均退出，父级验收队列 `maxConcurrency=1`。模型/推理力度/服务等级的四份继承证据均与本次发起窗口的 `gpt-6-sol` / `max` / `priority` 一致。证据在本机 `<user-home>\workspace\temp\orch-final-live\temp\codex-live-visible-cbcadbcdafbbee\report.json`。
+- 已安装缓存入口的 headless+exec 四块验收：`acceptance-ad1127fe-3872-476c-a168-8a3838dcb3d6`，`passed=true`、`peak=4`、四项均独立 `verified`、四个启动器均退出。证据在本机 `%USERPROFILE%\workspace\temp\orch-final-live\temp\codex-live-headless-bdfcaddabe\report.json`；它使用修复会话钩子前的已安装缓存，因此只认证该快照的 headless 路径。
+- 当前工作树可见 TUI 四块验收：`acceptance-95de3c1a-6103-4815-9b89-0dfc82b7a20d`，`passed=true`、`peak=4`、四项均独立 `verified`，四个 Windows Terminal 启动器均退出，父级验收队列 `maxConcurrency=1`。模型/推理力度/服务等级的四份继承证据均与本次发起窗口的 `gpt-6-sol` / `max` / `priority` 一致。证据在本机 `%USERPROFILE%\workspace\temp\orch-final-live\temp\codex-live-visible-cbcadbcdafbbee\report.json`。
 - 首次可见窗实测被新安装的 SessionStart 钩子信任审查阻塞；子窗增加 `--disable hooks` 后，工作树 `--selftest-close` 通过，随后上述四窗验收通过。宿主仍负责钩子信任，子窗不会批准钩子。异常尝试的四个自有启动器已按身份关闭。
 - Codex Security 对修复前快照的标准扫描登记四项发现（两项高危、两项中危）；当前代码分别补上发起会话权限边界、原生 CLI 包完整性验证、辅助窗 4000 MB 准入和恢复协调器路径绑定，并用红/绿回归验证。原扫描绑定旧快照，不能误写成当前快照零发现。Plugin Eval 对干净分发包评为 95/A、0 fail；其延后成本警告仍在，属于整包文本规模提示。
 

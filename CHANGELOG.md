@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased (public readiness candidate)
+
+- Core `1.4.2-rc.1`, cachebuster `0.5.0-rc.1+codex.20260928152733`: authenticate native CLI and Node executables before use, verify the downloaded npm tree and sealed SDK dependency files, and require a trusted npm tree for automatic repair. Keep the 1.4.1 semantic task scoping and proxy behavior.
+- Load Windows PowerShell's system security and utility modules by absolute path when Node passes in a PowerShell 7 module path. Add regression checks for executable trust and dependency byte integrity. Public release remains gated on current-version live concurrency and package validation.
+- Make the documented `--plan-file` option read a bounded UTF-8 request file and invoke the read-only planner; reject missing, empty, oversized, or non-regular inputs with a clear diagnostic.
+
 ## Unreleased (semantic planning and local proxy)
 
 - Core `1.4.1-rc.1`, cachebuster `0.5.0-rc.1+codex.20260927090557`: keep independently scoped file/directory work separate when the model supplies complete hints grounded in the original task; keep unknown or incomplete scope serial. Conflicting paths and dependencies still join serial blocks.

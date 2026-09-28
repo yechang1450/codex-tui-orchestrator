@@ -27,6 +27,34 @@ import {
 const TEST_TEMP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'temp');
 fs.mkdirSync(TEST_TEMP, {recursive: true});
 
+test('direct installer selects npm packaged native CLI beside a codex.cmd shim', t => {
+  if (process.platform !== 'win32') return t.skip('Windows native CLI layout');
+  const dir = fs.mkdtempSync(path.join(TEST_TEMP, 'install-cli-shim-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const native = path.join(dir, 'node_modules', '@openai', 'codex-win32-x64', 'vendor', 'x86_64-pc-windows-msvc', 'bin', 'codex.exe');
+  fs.mkdirSync(path.dirname(native), {recursive: true});
+  fs.writeFileSync(path.join(dir, 'codex.cmd'), '@echo off\r\n');
+  fs.writeFileSync(native, 'fixture');
+  assert.equal(pickCodexCli({env: {PATH: dir, Path: ''}}), native);
+});
+test('installer host resolution skips an untrusted discovered CLI and preserves explicit choice', async t => {
+  const {resolveInstallCli} = await import('../scripts/install-plugin.mjs');
+  assert.equal(typeof resolveInstallCli, 'function');
+  const dir = fs.mkdtempSync(path.join(TEST_TEMP, 'install-cli-trust-'));
+  t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+  const unsigned = path.join(dir, 'first.exe');
+  const signed = path.join(dir, 'second.exe');
+  fs.writeFileSync(unsigned, 'unsigned fixture');
+  fs.writeFileSync(signed, 'signed fixture');
+  const hostOptions = {
+    candidates: env => env.ORCH_CLI ? [env.ORCH_CLI] : [unsigned, signed],
+    verifyExternal: file => file === signed,
+    probe: file => file === signed,
+  };
+  assert.equal(resolveInstallCli({env: {ORCH_AGENT: 'codex'}, hostOptions}), signed);
+  assert.throws(() => resolveInstallCli({candidate: unsigned, env: {ORCH_AGENT: 'codex'}, hostOptions}), /CLI_UNTRUSTED/);
+});
+
 function coreFixture(pluginDir) {
   const core = path.join(pluginDir, 'scripts', 'core');
   fs.mkdirSync(core, {recursive: true});
@@ -266,7 +294,7 @@ test('skill visibility is advisory unless --strict-skills is requested', () => {
 test('verifySkillsVisible reports an unavailable host CLI instead of throwing', () => {
   const result = verifySkillsVisible({codexCli: path.join(TEST_TEMP, 'missing-codex.exe'), pluginName: 'demo-plugin', skillNames: ['demo-skill']});
   assert.equal(result.ok, false);
-  assert.match(result.reason, /host CLI/);
+  assert.match(result.reason, /CLI_MISSING|host CLI/);
 });
 
 test('parseArgs covers the generalization flags', () => {

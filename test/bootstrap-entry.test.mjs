@@ -64,30 +64,30 @@ test('bootstrap restores parent process PATH and npm environment after completio
 });
 test('run streams progress immediately and is not killed by the preparation budget',{skip:!windows},async t=>{
   const dir=fixture(t);
-  fs.writeFileSync(path.join(dir,'scripts','orchestrate-sdk.mjs'),'console.log("START"); setTimeout(()=>console.log("END"),2500);','utf8');
-  const child=spawn(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),'-Action','run','-NoDownload','-NodePath',process.execPath,'-TimeoutSeconds','2'],{windowsHide:true});
+  fs.writeFileSync(path.join(dir,'scripts','orchestrate-sdk.mjs'),'console.log("START"); setTimeout(()=>console.log("END"),6500);','utf8');
+  const child=spawn(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),'-Action','run','-NoDownload','-NodePath',process.execPath,'-TimeoutSeconds','5'],{windowsHide:true});
   let firstAt=0,stdout='',stderr='';
   child.stdout.on('data',b=>{if(!firstAt)firstAt=Date.now();stdout+=b;});
   child.stderr.on('data',b=>stderr+=b);
   const code=await new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
   assert.equal(code,0,stderr);
   assert.match(stdout,/START[\s\S]*END/);
-  assert.ok(Date.now()-firstAt>2000,'progress was buffered until exit');
+  assert.ok(Date.now()-firstAt>6000,'progress was buffered until exit');
 });
-test('runtime prepare reports verified SDK and CLI without invoking a model',{skip:!windows},t=>{
+test('runtime prepare resolves an explicitly approved test CLI without invoking a model',{skip:!windows},t=>{
   const dir=fixture(t),cli=path.join(dir,'codex.exe');
   nativeCliFixture(cli);
-  const r=spawnSync(process.execPath,[path.join(root,'scripts','runtime-prepare.mjs')],{env:{...process.env,ORCH_CLI:cli,ORCH_AUTO_INSTALL_CLI:'0',ORCH_AUTO_INSTALL_DEPS:'0'},encoding:'utf8',windowsHide:true,timeout:30000});
+  const r=spawnSync(process.execPath,[path.join(root,'scripts','runtime-prepare.mjs')],{env:{...process.env,ORCH_CLI:cli,ORCH_ALLOW_UNVERIFIED_CLI:'1',ORCH_AUTO_INSTALL_CLI:'0',ORCH_AUTO_INSTALL_DEPS:'0'},encoding:'utf8',windowsHide:true,timeout:30000});
   assert.equal(r.status,0,r.stderr);
   const result=JSON.parse(r.stdout);
   assert.equal(result.ok,true);assert.equal(result.stage,'ready');assert.equal(result.agent,'codex');
   assert.equal(result.sdkVersion,'0.149.0');assert.match(result.cliPath,/codex\.exe$/i);
 });
-test('runtime prepare reuses a private CLI with desktop candidates unavailable and installs disabled',{skip:!windows},t=>{
+test('runtime prepare rejects an unsigned CLI in npm prefix when desktop candidates are unavailable',{skip:!windows},t=>{
   const dir=fixture(t),prefix=path.join(dir,'private-cli');
   const cli=path.join(prefix,'node_modules','@openai','codex','vendor','x86_64-pc-windows-msvc','bin','codex.exe');
   nativeCliFixture(cli);
   const r=spawnSync(process.execPath,[path.join(root,'scripts','runtime-prepare.mjs')],{env:{...process.env,PATH:'',LOCALAPPDATA:path.join(dir,'no-desktop'),ORCH_CLI:'',CODEX_EXE:'',npm_config_prefix:prefix,ORCH_AUTO_INSTALL_CLI:'0',ORCH_AUTO_INSTALL_DEPS:'0'},encoding:'utf8',windowsHide:true,timeout:30000});
-  assert.equal(r.status,0,r.stderr);
-  assert.equal(JSON.parse(r.stdout).cliPath,cli);
+  assert.notEqual(r.status,0);
+  assert.match(r.stderr,/CLI_UNTRUSTED|CLI_MISSING/);
 });

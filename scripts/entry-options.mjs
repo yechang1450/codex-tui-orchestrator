@@ -1,4 +1,7 @@
 import path from 'node:path';
+import fs from 'node:fs';
+
+const MAX_PLAN_FILE_BYTES = 1024 * 1024;
 
 // Host and workspace options must be applied before the engine snapshots its
 // environment. Return the remaining argv unchanged, including quoted prompts.
@@ -18,6 +21,19 @@ export function configureEntryArgs(argv,env=process.env,cwd=process.cwd()){
     values[fields[flag]]=flag==='--agent'?value.trim().toLowerCase():flag==='--run-id'?value:path.resolve(cwd,value);
   }
   Object.assign(env,values);
+  if(remaining[0]==='--plan-file'){
+    if(remaining.length!==2||!remaining[1]?.trim()||remaining[1].startsWith('--'))throw new Error('PLAN_FILE_ARGUMENTS: --plan-file requires exactly one path');
+    const file=path.resolve(cwd,remaining[1]);
+    let info;
+    try{info=fs.lstatSync(file);}catch{throw new Error('PLAN_FILE_MISSING: '+file);}
+    if(!info.isFile())throw new Error('PLAN_FILE_INVALID: expected a regular file: '+file);
+    if(info.size>MAX_PLAN_FILE_BYTES)throw new Error('PLAN_FILE_TOO_LARGE: request exceeds 1 MiB');
+    let request;
+    try{request=fs.readFileSync(file,'utf8').replace(/^\uFEFF/,'').trim();}
+    catch{throw new Error('PLAN_FILE_UNREADABLE: '+file);}
+    if(!request)throw new Error('PLAN_FILE_EMPTY: '+file);
+    return ['--plan',request];
+  }
   return remaining;
 }
 

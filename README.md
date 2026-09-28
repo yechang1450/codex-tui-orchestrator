@@ -1,4 +1,4 @@
-> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.1-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
+> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.2-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
 
 默认使用 exec+headless（通过 Codex CLI 非交互执行，不弹出终端窗口）；--run-windows 或 --visible 显式选择可见 TUI（终端交互界面）。两种模式共用调度、检查点、恢复和验收。
 
@@ -45,7 +45,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Plugin installation failed.' }
 
 `-Action prepare` only prepares dependencies and CLI, `-Action doctor` checks the environment, and `-Action run -Arguments @('--exec', '<request>')` forwards arguments without building a shell command. Runtime downloads are pinned and SHA-256 verified; staging is cleaned on failure. `PLUGIN_DATA/runtime` is preferred, falling back to the plugin's `temp/runtime`; global PATH and credentials are preserved. Git is needed for the optional clone/pull workflow below, not for execution from an extracted package. See [environment preparation](docs/environment-setup.md) for hook trust, offline errors and clean-machine reproduction.
 
-The manual clone/update workflow below needs Git. Authenticate Codex before a real task run. Finish active runs before updating this checkout. The block rejects local changes, fast-forwards a clean checkout or clones it, then prepares dependencies and checks installation. Every native-command failure stops the block.
+The manual clone/update workflow below needs Git. Authenticate Codex before a real task run. Finish active runs before updating this checkout. The block rejects local changes, fast-forwards a clean checkout or clones it, then prepares dependencies and runs doctor; it does not register the plugin. Every native-command failure stops the block.
 
 ```powershell
 & {
@@ -92,7 +92,7 @@ The block above only prepares a script checkout. Registering it with the plugin 
 - When the host CLI is not on `PATH` (for example only the desktop app's bundled `codex.exe` exists), point `CODEX_CLI_PATH` (or `CODEX_CLI`) at it first; the tool prefers that path and prints an actionable message instead of an ENOENT stack when no CLI can be found.
 - Skills load in a new conversation; open one after installing.
 
-`~/plugins/<name>` is the recommended checkout location because it matches the personal-marketplace convention; any other parent directory works as well, since the clean distribution and the marketplace entry are both derived from it. The older `~/.codex/plugins/<name>` location still works. Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. A plugin-manager install also creates a fresh cache without `scripts/node_modules`: after every `codex plugin add` or upgrade/rollback, run `npm ci --prefix <the installed plugin path>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`, then run release integrity and doctor against that same installed path. Doctor checks installation and CLI discovery, not provider access or task completion. The command block installs a script checkout; it does not register, activate, update or roll back a plugin-manager installation. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Actual manager registration/upgrade/rollback remains a separate installation check. Preserve Codex credentials and active workspace state.
+`~/plugins/<name>` is the recommended checkout location because it matches the personal-marketplace convention; any other parent directory works as well, since the clean distribution and the marketplace entry are both derived from it. The older `~/.codex/plugins/<name>` location still works. Dependencies are restored from the lockfile; old `node_modules` and run artifacts are not required. Preserve the exact `skills/codex-tui-orchestrator` path casing. A plugin-manager install creates a fresh cache without `scripts/node_modules`; the recommended `bootstrap.ps1 -Action install` restores those dependencies, verifies release integrity and runs doctor against the cache path returned by the manager. Doctor checks installation and CLI discovery, not provider access or task completion; a first direct `--doctor` or `--tasks` call may prepare missing runtime dependencies. The manual clone/update block above only prepares a checkout; the recommended install command registers and updates the plugin. Direct script execution needs no registration. Automatic skill loading requires registration through the host's supported plugin installation flow, enabling the plugin, and a new conversation. Preserve Codex credentials and active workspace state.
 
 For a local (personal-marketplace) install, point the marketplace entry at the **clean distribution** rather than this working tree: the manager copies the whole plugin directory into its cache, so a working-tree source also copies `.git/` and `temp/` (local run state and acceptance evidence). `install-plugin.mjs` installs that way; to do it by hand:
 
@@ -276,11 +276,13 @@ cmd.exe /c "cd /d C:\path\to\codex-tui-orchestrator && node --test --test-concur
 
 core 1.2.1、1.2.3 与 1.3.1 的记录属于历史证据，详情见对应实机验收文档。当前候选版的验收边界见 [RC 验收记录](docs/rc-validation.md)。
 
-当前候选 core 1.4.1-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前 1.4.0-rc.1 与更早版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
+当前候选 core 1.4.2-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前 1.4.1-rc.1 与更早版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
 
 2026-09-13 的真实 Windows 重启后，提交 `0fca067` 的发行完整性、doctor 和 marketplace 注册经显式补收集全部通过。登录后的自动收集未触发，未完成模型任务的跨重启恢复也未认证；具体证据和补收集方式见 [重启验收说明](docs/network-reboot-validation.md)。
 
 隐私与使用条款见 [隐私说明](docs/privacy.md) 与 [使用条款](docs/terms.md)。
+
+许可采用 [MIT License](LICENSE)；[中文说明](LICENSE-zh.md) 供阅读参考。
 
 已增加请求生效后断线、响应超时的真实进程恢复测试，验证不盲目重试及核对结果后的恢复，见 [网络异常恢复验证](docs/network-recovery-validation.md)。
 

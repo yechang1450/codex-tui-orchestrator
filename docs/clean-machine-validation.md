@@ -1,10 +1,10 @@
 # 干净机器安装与验收
 
-目的：在一台**全新 Windows 机器**上证明"私有仓库 → 干净分发 → 依赖安装 → 完整性校验 → 真实执行"整条链路可用，并留下可核对的版本与结果证据。可以使用新装系统的虚拟机或第二台实体机器；本仓库保持 private，安装只依赖私有 Git 凭据，不需要任何公网发布。
+目的：在一台**全新 Windows 机器**上证明"GitHub 仓库 → 干净分发 → 依赖安装 → 完整性校验 → 真实执行"整条链路可用，并留下可核对的版本与结果证据。可以使用新装系统的虚拟机或第二台实体机器。当前候选在公开审批前仍为 private；公开后应另外验证匿名 HTTPS 克隆。
 
 ## 如何取得干净环境
 
-- GitHub Actions 的 Windows 托管作业每次取得新虚拟机，适合重复运行离线回归、完整性校验和无凭据的安装脚本检查。镜像预装开发工具，因此**不能**证明从没有 Node/npm/Codex CLI 的系统自动补齐成功。微软的 Windows 应用测试文档说明托管 Windows 作业可以运行自动化 GUI 测试，但这里仍须另写可见 TUI 自动化与登录方案；目前的离线作业不能替代手动观察真实交互窗。仓库的 `validate.yml` 当前在 GitHub 上处于 `disabled_manually`，没有远端回执。
+- GitHub Actions 的 Windows 托管作业每次取得新虚拟机，适合重复运行离线回归、完整性校验和无凭据的安装脚本检查。镜像预装开发工具，因此**不能**证明从没有 Node/npm/Codex CLI 的系统自动补齐成功。微软的 Windows 应用测试文档说明托管 Windows 作业可以运行自动化 GUI 测试，但这里仍须另写可见 TUI 自动化与登录方案；目前的离线作业不能替代手动观察真实交互窗。仓库的 `validate.yml` 已重新启用；每次候选提交的远端回执以对应 PR 检查为准。
 - 本地 Windows 虚拟机适合首次安装、GUI 登录、可见窗口、失败后的快照恢复。先安装正版或符合许可条件的 Windows 11，建立“只有 Windows 和 Git、无 Node/npm、无 Codex CLI”的快照，再依次运行下面的引导、离线回归、真实双模式验收。第二个快照可保存已登录的 Codex GUI；凭据不要放入可分享镜像或提交到仓库。
 - 第二台实体机用于确认虚拟硬件和宿主特性没有掩盖驱动、终端、代理或内存问题。三个环境的测试结果分别记录，不能相互冒充。
 
@@ -16,7 +16,7 @@
 - 不要求 Node/npm 或原生 Codex CLI 预先安装；PowerShell 引导入口负责检测和补齐。已有 Node 必须为 Windows 原生 22+。
 - 真正执行模型任务前需 Codex 登录；插件继承发起窗口设置，不在插件内保存任何凭据。
 - 可选：Windows Terminal（可见窗模式 `ORCH_TUI=wt` 需要）。
-- 私有仓库凭据：SSH key（`git clone git@github.com:yechang1450/codex-tui-orchestrator.git`）或 HTTPS + PAT。
+- 仓库仍为 private 时需 SSH key 或 HTTPS + PAT；公开后匿名用户应可直接通过 HTTPS 克隆。
 
 ## 一、克隆与完整性校验
 
@@ -28,6 +28,8 @@ if ($LASTEXITCODE -ne 0) { throw '克隆失败。' }
 & "$HOME\plugins\codex-tui-orchestrator\scripts\bootstrap.ps1" -Action install -Arguments @('--verify-skills')
 if ($LASTEXITCODE -ne 0) { throw '准备或安装失败。' }
 ```
+
+公开后把上面的克隆地址换成 `https://github.com/yechang1450/codex-tui-orchestrator.git`，并在未登录 GitHub 的环境中重复本节；私有仓库的成功记录不能代替匿名访问验证。
 
 期望：运行时准备、干净分发、安装缓存完整性和 doctor 全部成功。计数随发布变化，以当前 `release.json` 为准。宿主 hook 需单独信任，详见[环境准备](environment-setup.md)。
 
@@ -42,7 +44,7 @@ npm ci --prefix .\scripts --omit=optional --ignore-scripts --no-audit --no-fund
 node scripts\orchestrate-sdk.mjs --doctor
 ```
 
-期望：`publish-dist` 报告分发路径与文件数（本候选实测 112 个，后续以发布器输出为准）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
+期望：`publish-dist` 报告分发路径与文件数（本候选实测 115 个，后续以发布器输出为准）；分发目录里没有 `.git/`、`temp/`、`node_modules/`；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
 
 注册并安装（个人 marketplace 条目指向分发，而不是开发工作树）：
 
@@ -53,7 +55,7 @@ npm ci --prefix <安装缓存路径>\scripts --omit=optional --ignore-scripts --
 node <安装缓存路径>\scripts\release-integrity.mjs      # 安装副本自校验
 ```
 
-期望：安装缓存里只有分发文件（本候选实测 112 个，没有 `.git/`、`temp/`、`node_modules/`），且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
+期望：安装缓存里只有分发文件（本候选实测 115 个，没有 `.git/`、`temp/`、`node_modules/`），且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。若注册校验报 `stale_dist`，说明分发比工作树旧，重新跑一次 `publish-dist` 再安装。
 
 ## 三、离线回归（源码目录内）
 

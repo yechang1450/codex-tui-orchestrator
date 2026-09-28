@@ -1,6 +1,14 @@
 ﻿# Windows PowerShell 5.1 compatible helpers; this file has no startup side effects.
 Set-StrictMode -Version 2.0
 
+# Windows PowerShell launched by Node may inherit PowerShell 7's module path.
+# Load the system modules by absolute path so signature and hash checks do not
+# silently fail when auto-loading finds an incompatible module first.
+if ($PSVersionTable.PSEdition -eq 'Desktop') {
+    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1') -ErrorAction Stop
+    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -ErrorAction Stop
+}
+
 function Get-OrchRuntimeHome {
     param([Parameter(Mandatory)][string]$PluginRoot, [AllowEmptyString()][string]$DataRoot = $env:PLUGIN_DATA)
     if ($DataRoot) { return [IO.Path]::GetFullPath((Join-Path $DataRoot 'runtime')) }
@@ -118,9 +126,66 @@ function Invoke-OrchAttachedProcess {
     } finally { $process.Dispose() }
 }
 
+function Test-OrchTrustedSignature {
+    param([Parameter(Mandatory)][string]$Path,
+          [string[]]$AllowedThumbprints = @('DB9831002B26D78F14E07806F595C6A429E9B6E9', '8EA1D142EA3F46023BACA38C23A7E7AE6AFCE30C', '5A2C440219B027EF812E24A1E15F671D7CD379DE'))
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    try {
+        $signature = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
+        if ([string]$signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { return $false }
+        $thumbprint = ([string]$signature.SignerCertificate.Thumbprint).Replace(' ', '').ToUpperInvariant()
+        foreach ($allowed in $AllowedThumbprints) {
+            if ($thumbprint -eq $allowed.ToUpperInvariant()) { return $true }
+        }
+    } catch { return $false }
+    return $false
+}
+
+function Get-OrchTreeDigest {
+    param([Parameter(Mandatory)][string]$Root)
+    try {
+        $rootFull = (Assert-OrchSafePath $Root).TrimEnd('\')
+        if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) { return $null }
+        $rows = [Collections.Generic.List[string]]::new()
+        $stack = [Collections.Generic.Stack[string]]::new()
+        $stack.Push($rootFull)
+        $totalBytes = [long]0
+        while ($stack.Count -gt 0) {
+            $directory = $stack.Pop()
+            foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($directory)) {
+                $attributes = [IO.File]::GetAttributes($entry)
+                if ($attributes -band [IO.FileAttributes]::ReparsePoint) { return $null }
+                if ($attributes -band [IO.FileAttributes]::Directory) { $stack.Push($entry); continue }
+                $fileInfo = [IO.FileInfo]::new($entry)
+                $totalBytes += $fileInfo.Length
+                if ($rows.Count -ge 10000 -or $totalBytes -gt 200MB) { return $null }
+                $relative = $entry.Substring($rootFull.Length + 1).Replace('\', '/')
+                $hash = (Get-FileHash -LiteralPath $entry -Algorithm SHA256).Hash.ToLowerInvariant()
+                [void]$rows.Add("$relative`0$($fileInfo.Length)`0$hash`n")
+            }
+        }
+        $rows.Sort([StringComparer]::Ordinal)
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($rows -join ''))
+        $digest = [Security.Cryptography.SHA256]::Create().ComputeHash($bytes)
+        return ([BitConverter]::ToString($digest).Replace('-', '')).ToLowerInvariant()
+    } catch { return $null }
+}
+
+function Test-OrchTrustedNpm {
+    param([Parameter(Mandatory)][string]$NpmPath,
+          [string[]]$AllowedDigests = @('eeef933fe6227a6f65e8464a589a1b4812b01978c57703d9fe26e375991cd05e', '66efc12cb3dd07ec12c6d2a30353803445cc6ba476f35f679a3fe2c676ffc691'))
+    try {
+        $npmRoot = Split-Path -Parent (Split-Path -Parent $NpmPath)
+        $digest = Get-OrchTreeDigest -Root $npmRoot
+        return $null -ne $digest -and $AllowedDigests -contains $digest
+    } catch { return $false }
+}
+
 function Test-OrchNode {
-    param([Parameter(Mandatory)][string]$NodePath, [ValidateRange(1,1800)][int]$TimeoutSeconds = 20)
+    param([Parameter(Mandatory)][string]$NodePath, [ValidateRange(1,1800)][int]$TimeoutSeconds = 20,
+          [switch]$AllowUnverified, [switch]$AllowUnverifiedNpm)
     if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { return $null }
+    if (-not $AllowUnverified -and -not (Test-OrchTrustedSignature -Path $NodePath)) { return $null }
     try {
         $timer = [Diagnostics.Stopwatch]::StartNew()
         $probe = Invoke-OrchProcess -FilePath $NodePath -ArgumentList @('-p', 'JSON.stringify({version:process.versions.node,platform:process.platform})') -TimeoutSeconds ([Math]::Min(8,$TimeoutSeconds))
@@ -131,11 +196,13 @@ function Test-OrchNode {
         $npmCandidates = @((Join-Path $nodeDir 'node_modules\npm\bin\npm-cli.js'), (Join-Path (Split-Path -Parent $nodeDir) 'node_modules\npm\bin\npm-cli.js'))
         foreach ($npmPath in $npmCandidates) {
             if (-not (Test-Path -LiteralPath $npmPath -PathType Leaf)) { continue }
+            $npmTrusted = Test-OrchTrustedNpm -NpmPath $npmPath
+            if (-not $npmTrusted -and -not $AllowUnverifiedNpm) { continue }
             $left = $TimeoutSeconds - [int][Math]::Floor($timer.Elapsed.TotalSeconds)
             if ($left -lt 1) { return $null }
             $npm = Invoke-OrchProcess -FilePath $NodePath -ArgumentList @($npmPath, '--version') -TimeoutSeconds ([Math]::Min(10,$left))
             if ($npm.ExitCode -eq 0 -and $npm.Stdout.Trim() -match '^\d+\.\d+\.\d+') {
-                return [pscustomobject]@{ NodePath = [IO.Path]::GetFullPath($NodePath); NpmPath = [IO.Path]::GetFullPath($npmPath); Version = $version.version }
+                return [pscustomobject]@{ NodePath = [IO.Path]::GetFullPath($NodePath); NpmPath = [IO.Path]::GetFullPath($npmPath); Version = $version.version; NpmTrusted = $npmTrusted }
             }
         }
     } catch { return $null }
@@ -296,7 +363,8 @@ function Save-OrchNodeArchive {
 }
 
 function Resolve-OrchNode {
-    param([AllowEmptyCollection()][string[]]$Candidates = @(), [Parameter(Mandatory)][string]$RuntimeHome, [switch]$NoDownload,
+    param([AllowEmptyCollection()][string[]]$Candidates = @(), [Parameter(Mandatory)][string]$RuntimeHome, [switch]$NoDownload, [switch]$AllowUnverified,
+          [switch]$AllowUnverifiedNpm,
           [ValidateRange(1,1800)][int]$TimeoutSeconds = 900)
     $timer = [Diagnostics.Stopwatch]::StartNew()
     function Get-RemainingNodeSeconds {
@@ -305,7 +373,7 @@ function Resolve-OrchNode {
         return $left
     }
     foreach ($candidate in $Candidates) {
-        $runtime = Test-OrchNode $candidate -TimeoutSeconds (Get-RemainingNodeSeconds)
+        $runtime = Test-OrchNode $candidate -TimeoutSeconds (Get-RemainingNodeSeconds) -AllowUnverified:$AllowUnverified -AllowUnverifiedNpm:$AllowUnverifiedNpm
         if ($runtime) { return $runtime }
     }
     if ($NoDownload) { throw 'NODE_RUNTIME_MISSING: a Windows Node 22+ runtime with npm is required; rerun bootstrap without -NoDownload for verified automatic installation.' }

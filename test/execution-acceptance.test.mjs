@@ -53,7 +53,7 @@ test('both doctors inherit thread model, effort and Fast without explicit ORCH o
   try{
     const sessions=path.join(dir,'sessions','2026','09','24');fs.mkdirSync(sessions,{recursive:true});
     fs.writeFileSync(path.join(sessions,'rollout-example-'+id+'.jsonl'),JSON.stringify({type:'turn_context',payload:{model:'initiator-default-model',effort:'max',service_tier:'priority',sandbox_policy:{type:'workspace-write'},approval_policy:'on-request',cwd:repo}})+'\n','utf8');
-    const env={...process.env,CODEX_HOME:dir,CODEX_THREAD_ID:id,ORCH_AGENT:'codex'};
+    const env={...process.env,CODEX_HOME:dir,CODEX_THREAD_ID:id,ORCH_AGENT:'codex',WORKSPACE_DIR:repo};
     delete env.ORCH_MODEL;delete env.ORCH_EFFORT;delete env.ORCH_SERVICE_TIER;
     for(const mode of ['headless','visible']){
       const result=spawnSync(process.execPath,[path.join(repo,'scripts','core','orchestrate-sdk.mjs'),'--doctor'],{encoding:'utf8',windowsHide:true,env:{...env,ORCH_EXEC_MODE:mode}});

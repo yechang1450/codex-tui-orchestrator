@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {pickNpmCli, quoteShellArg} from './npm-cli.mjs';
+import {assertTrustedNpm, pickNpmCli, quoteShellArg} from './npm-cli.mjs';
 import {verifyLockedSdk} from './sdk-dependency-verify.mjs';
 
 // 引擎加载**之前**就要能跑完的命令。
@@ -20,8 +20,8 @@ export const USAGE = [
   'Usage:',
   '  node orchestrate-sdk.mjs --version                  (read-only: plugin + core version)',
   '  node orchestrate-sdk.mjs --install-deps             (idempotent: restore the locked SDK)',
-  '  node orchestrate-sdk.mjs --doctor                   (read-only: resolved host/CLI/workspace/mode)',
-  '  node orchestrate-sdk.mjs --tasks [--run-id <id>]    (read-only: TodoList + execution status)',
+  '  node orchestrate-sdk.mjs --doctor                   (check host/CLI/workspace/mode; first use may prepare dependencies)',
+  '  node orchestrate-sdk.mjs --tasks [--run-id <id>]    (TodoList + execution status; first use may prepare dependencies)',
   '  node orchestrate-sdk.mjs --plan "<request>"',
   '  node orchestrate-sdk.mjs --plan-file <path>         (same as --plan, request read from a file)',
   '  node orchestrate-sdk.mjs --run  "<request>"',
@@ -34,14 +34,15 @@ export const USAGE = [
 
 const BOOTSTRAP_COMMANDS = new Set(['--help', '-h', '--version', '--install-deps']);
 
-// First-use setup is automatic; explicit read-only diagnostics can opt out.
+// First-use SDK setup is automatic; ORCH_AUTO_INSTALL_DEPS=0 opts out.
 // Reuse the bounded locked installer and keep all diagnostics off JSON stdout.
 export async function ensureRuntimeDependencies({env=process.env,verify=verifyLockedSdk,install=installLockedDependencies}={}) {
   const before=await verify();
   if(before.ok)return before;
   if(env.ORCH_AUTO_INSTALL_DEPS==='0'||before.code!=='RELEASE_DEPENDENCY_MISSING')throw new Error(before.message);
+  assertTrustedNpm(env);
   console.error('[orchestrator] installing missing locked SDK dependency');
-  await install();
+  await install({env});
   const after=await verify();
   if(!after.ok)throw new Error(after.message);
   return after;
@@ -75,31 +76,32 @@ export function versionReport() {
  * 幂等恢复锁定依赖：已经满足就报 already-present，绝不做多余安装。
  * 判据 test/entry-surface-audit.test.mjs（二次调用必须是 already-present）。
  */
-export async function installLockedDependencies({timeoutMs = 15 * 60 * 1000} = {}) {
-  const before = await verifyLockedSdk();
+export async function installLockedDependencies({timeoutMs = 15 * 60 * 1000, env = process.env, verify = verifyLockedSdk, spawn = spawnSync} = {}) {
+  const before = await verify();
   if (before.ok) {
     return {ok: true, status: 'already-present', dependency: '@openai/codex-sdk', version: before.version,
       expected: before.expected, scriptsDir, reason: 'locked SDK dependency already satisfies scripts/package.json'};
   }
-  const invocation = resolveInvocation(['ci', '--prefix', scriptsDir, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund']);
+  assertTrustedNpm(env);
+  const invocation = resolveInvocation(['ci', '--prefix', scriptsDir, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], env);
   const started = Date.now();
-  const result = spawnSync(invocation.command, invocation.args, {
+  const result = spawn(invocation.command, invocation.args, {
     cwd: scriptsDir, encoding: 'utf8', windowsHide: true, shell: invocation.shell, timeout: timeoutMs,
-    maxBuffer: 16 * 1024 * 1024,
+    maxBuffer: 16 * 1024 * 1024, env,
   });
   if (result.error) throw new Error('npm ci could not start: ' + (result.error.code || result.error.message));
   if (result.status !== 0) {
     const tail = String(result.stderr || result.stdout || '').trim().split(/\r?\n/).slice(-3).join(' | ').slice(0, 400);
     throw new Error(`npm ci failed (exit ${result.status}): ${tail}`);
   }
-  const after = await verifyLockedSdk();
+  const after = await verify();
   if (!after.ok) throw new Error('dependencies were restored but the lock check still fails: ' + after.message);
   return {ok: true, status: 'installed', dependency: '@openai/codex-sdk', version: after.version,
     expected: after.expected, scriptsDir, ms: Date.now() - started};
 }
 
-function resolveInvocation(args) {
-  const npm = pickNpmCli();
+function resolveInvocation(args, env = process.env) {
+  const npm = pickNpmCli({env});
   const argv = [...npm.args, ...args];
   // 走 shell 时参数要自己加引号，否则含空格的工作路径会被拆开。
   return {command: npm.command, args: npm.shell ? argv.map(quoteShellArg) : argv, shell: npm.shell, source: npm.source};

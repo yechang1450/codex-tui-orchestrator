@@ -33,13 +33,16 @@ try {
     $pluginRoot = Split-Path -Parent $PSScriptRoot
     $runtimeHome = Get-OrchRuntimeHome -PluginRoot $pluginRoot
     $candidates = @(Get-OrchNodeCandidates -RuntimeHome $runtimeHome -NodePath $NodePath)
-    $runtime = Resolve-OrchNode -Candidates $candidates -RuntimeHome $runtimeHome -NoDownload:($NoDownload -or [bool]$NodePath) -TimeoutSeconds (Get-RemainingBootstrapSeconds)
+    $allowUnverifiedNode = [bool]$NodePath -and [string]$env:ORCH_ALLOW_UNVERIFIED_NODE -eq '1'
+    $allowUnverifiedNpm = [bool]$NodePath -and [string]$env:ORCH_ALLOW_UNVERIFIED_NPM -eq '1'
+    $runtime = Resolve-OrchNode -Candidates $candidates -RuntimeHome $runtimeHome -NoDownload:($NoDownload -or [bool]$NodePath) -AllowUnverified:$allowUnverifiedNode -AllowUnverifiedNpm:$allowUnverifiedNpm -TimeoutSeconds (Get-RemainingBootstrapSeconds)
     $lock = Enter-OrchRuntimeLock -RuntimeHome $runtimeHome -TimeoutSeconds (Get-RemainingBootstrapSeconds)
-    foreach ($name in @('PATH','npm_execpath','npm_config_prefix','npm_config_cache','CODEX_CLI_PATH','ORCH_CLI')) {
+    foreach ($name in @('PATH','npm_execpath','npm_config_prefix','npm_config_cache','CODEX_CLI_PATH','ORCH_CLI','ORCH_NPM_TRUSTED','ORCH_GIT_PATH')) {
         $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
     $env:PATH = (Split-Path -Parent $runtime.NodePath) + ';' + $env:PATH
     $env:npm_execpath = $runtime.NpmPath
+    $env:ORCH_NPM_TRUSTED = if ($runtime.NpmTrusted) { '1' } else { '0' }
     $env:npm_config_prefix = Join-Path $runtimeHome 'cli'
     [void](Assert-OrchSafePath $env:npm_config_prefix)
     $npmCache = Join-Path $runtimeHome ('.npm-cache-' + [guid]::NewGuid().ToString('N'))
@@ -63,7 +66,9 @@ try {
             if ($Arguments -contains '--pull') {
                 $git = Get-Command git.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
                 if (-not $git) { throw 'GIT_REQUIRED_FOR_PULL: --pull requires Git for Windows; install Git or omit --pull when using a downloaded release.' }
-                $gitProbe = Invoke-OrchProcess -FilePath $git.Source -ArgumentList @('--version') -TimeoutSeconds 8
+                if (-not (Test-OrchTrustedSignature -Path $git.Source -AllowedThumbprints @('3E9627155B7A6F29856321EE56D7FC25CF808407'))) { throw 'GIT_UNTRUSTED: --pull requires a verified Git for Windows executable; run git pull manually to use another Git build.' }
+                $env:ORCH_GIT_PATH = [IO.Path]::GetFullPath($git.Source)
+                $gitProbe = Invoke-OrchProcess -FilePath $env:ORCH_GIT_PATH -ArgumentList @('--version') -TimeoutSeconds 8
                 if ($gitProbe.ExitCode -ne 0) { throw 'GIT_REQUIRED_FOR_PULL: Git failed its version probe.' }
             }
             $entry = Join-Path $PSScriptRoot 'install-plugin.mjs'

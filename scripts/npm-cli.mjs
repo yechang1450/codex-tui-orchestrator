@@ -1,6 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+/** Bootstrap marks its verified npm tree and passes the exact JS entry. */
+export function assertTrustedNpm(env = process.env) {
+  if (process.platform !== 'win32' || env.ORCH_ALLOW_UNVERIFIED_NPM === '1') return;
+  const entry = String(env.npm_execpath || '');
+  let regular = false;
+  try { regular = path.isAbsolute(entry) && /\.(?:c?js|mjs)$/i.test(entry) && fs.lstatSync(entry).isFile(); }
+  catch { /* missing or linked npm entry is not a verified runtime */ }
+  if (env.ORCH_NPM_TRUSTED !== '1' || !regular) {
+    throw new Error('NPM_UNTRUSTED: run scripts/bootstrap.ps1 so Node/npm are checked before installation, or explicitly set ORCH_ALLOW_UNVERIFIED_NPM=1 for repair.');
+  }
+}
+
 /** 走 shell 时必须自己加引号：Node 只把参数用空格拼起来，含空格/中文的路径会被拆开。 */
 export function quoteShellArg(value) {
   const text = String(value);

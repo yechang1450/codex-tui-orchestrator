@@ -21,6 +21,21 @@ test('dedicated public doctor works outside a Codex conversation',()=>{
   const report=JSON.parse(result.stdout);
   assert.equal(report.agent,'codex');assert.equal(report.workspace,path.resolve(repo));
 });
+test('--plan-file reads the request and enters the same read-only planner as --plan',()=>{
+  const family=path.join(repo,'temp');fs.mkdirSync(family,{recursive:true});
+  const workspace=fs.mkdtempSync(path.join(family,'public-plan-file-'));
+  try{
+    const request=path.join(workspace,'request.txt');
+    fs.writeFileSync(request,'只读检查 node --version 的结果\n','utf8');
+    const result=invoke(['--workspace',workspace,'--plan-file',request],{ORCH_AGENT:'codex'});
+    assert.equal(result.status,0,result.stderr);
+    const plan=JSON.parse(result.stdout);
+    assert.ok(Array.isArray(plan.blocks)&&plan.blocks.length>0);
+    const missing=invoke(['--workspace',workspace,'--plan-file',path.join(workspace,'missing.txt')],{ORCH_AGENT:'codex'});
+    assert.notEqual(missing.status,0);
+    assert.match(missing.stderr,/PLAN_FILE_/);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
 test('public workspace and explicit CLI flags configure the engine before it loads',()=>{
   const family=path.join(repo,'temp');fs.mkdirSync(family,{recursive:true});
   const workspace=fs.mkdtempSync(path.join(family,'public workspace-'));

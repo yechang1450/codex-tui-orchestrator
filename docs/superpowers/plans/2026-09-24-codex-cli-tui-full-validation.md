@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Source target: `<user-home>\plugins\codex-tui-orchestrator`.
+- Source target: `%USERPROFILE%\plugins\codex-tui-orchestrator`.
 - Real execution is Windows-only and must use the native Windows Node/CLI path.
 - Default execution remains headless; visible mode is explicit.
 - Every real run requires acceptance evidence and independent verification.

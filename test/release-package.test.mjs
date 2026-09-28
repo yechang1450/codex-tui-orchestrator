@@ -54,15 +54,16 @@ test('clean published package runs doctor and guards its public polling entry',(
   assert.notEqual(missingSupervisor.status,0);assert.match(missingSupervisor.stderr,/RELEASE_DEPENDENCY_MISSING.*npm ci/);
   const noSdkPoll=run(path.join(pkg,'scripts','poll-windows.mjs'),['--run-id','no-sdk-test','--timeoutMs','0']);
   assert.equal(noSdkPoll.status,1);assert.match(noSdkPoll.stderr,/timeout runId=no-sdk-test/);
-  // Install the already-tested SDK fixture without downloading or copying CLI binaries.
-  fs.cpSync(path.join(source,'scripts','node_modules','@openai','codex-sdk'),path.join(pkg,'scripts','node_modules','@openai','codex-sdk'),{recursive:true});
+  // The current release seals the complete dependency tree, so restore the
+  // already-tested local install rather than a partial SDK-only fixture.
+  fs.cpSync(path.join(source,'scripts','node_modules'),path.join(pkg,'scripts','node_modules'),{recursive:true});
   const sdkManifest=path.join(pkg,'scripts','node_modules','@openai','codex-sdk','package.json');
   const original=fs.readFileSync(sdkManifest,'utf8');
   fs.writeFileSync(sdkManifest,JSON.stringify({...JSON.parse(original),version:'0.0.0-test'}));
   const mismatch=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
-  assert.notEqual(mismatch.status,0);assert.match(mismatch.stderr,/RELEASE_DEPENDENCY_VERSION/);
+  assert.notEqual(mismatch.status,0);assert.match(mismatch.stderr,/RELEASE_DEPENDENCY_INTEGRITY/);
   const mismatchSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-  assert.notEqual(mismatchSupervisor.status,0);assert.match(mismatchSupervisor.stderr,/RELEASE_DEPENDENCY_VERSION/);
+  assert.notEqual(mismatchSupervisor.status,0);assert.match(mismatchSupervisor.stderr,/RELEASE_DEPENDENCY_INTEGRITY/);
   fs.writeFileSync(sdkManifest,original);
   const sdkEntry=path.join(path.dirname(sdkManifest),'dist','index.js');
   const entryBytes=fs.readFileSync(sdkEntry);fs.unlinkSync(sdkEntry);
@@ -72,9 +73,9 @@ test('clean published package runs doctor and guards its public polling entry',(
   for(const damaged of ['export const broken = ;','export const unrelated = true;','export class Codex {}','import "./missing-runtime-module.js";']){
    fs.writeFileSync(sdkEntry,damaged);
    const unusable=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
-   assert.notEqual(unusable.status,0);assert.match(unusable.stderr,/RELEASE_DEPENDENCY_DAMAGED: SDK cannot load or lacks required interfaces.*npm ci/);
+   assert.notEqual(unusable.status,0);assert.match(unusable.stderr,/RELEASE_DEPENDENCY_INTEGRITY.*npm ci/);
    const unusableSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-   assert.notEqual(unusableSupervisor.status,0);assert.match(unusableSupervisor.stderr,/RELEASE_DEPENDENCY_DAMAGED: SDK cannot load or lacks required interfaces.*npm ci/);
+   assert.notEqual(unusableSupervisor.status,0);assert.match(unusableSupervisor.stderr,/RELEASE_DEPENDENCY_INTEGRITY.*npm ci/);
   }
   fs.writeFileSync(sdkEntry,entryBytes);
   fs.writeFileSync(sdkManifest,'{');

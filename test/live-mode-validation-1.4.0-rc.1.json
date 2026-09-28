@@ -15,7 +15,7 @@
       "closed": true,
       "coreUnchanged": true,
       "elapsedMs": 206006,
-      "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-tui-orchestrator\\0.5.0-rc.1+codex.20260919211020\\scripts\\orchestrate-sdk.mjs",
+      "entry": "%USERPROFILE%\\.codex\\plugins\\cache\\personal\\codex-tui-orchestrator\\0.5.0-rc.1+codex.20260919211020\\scripts\\orchestrate-sdk.mjs",
       "releaseJsonSha256": "45413c1c7490b0b796c391effb9486b97e45ad432c38504ecad91f424a593ca0",
       "tasks": [
         "T001",
@@ -37,7 +37,7 @@
       "closed": true,
       "coreUnchanged": true,
       "elapsedMs": 114036,
-      "entry": "C:\\Users\\fixture-user\\.codex\\plugins\\cache\\personal\\codex-tui-orchestrator\\0.5.0-rc.1+codex.20260919211020\\scripts\\orchestrate-sdk.mjs",
+      "entry": "%USERPROFILE%\\.codex\\plugins\\cache\\personal\\codex-tui-orchestrator\\0.5.0-rc.1+codex.20260919211020\\scripts\\orchestrate-sdk.mjs",
       "releaseJsonSha256": "45413c1c7490b0b796c391effb9486b97e45ad432c38504ecad91f424a593ca0",
       "tasks": [
         "T001",

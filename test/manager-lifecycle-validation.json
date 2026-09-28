@@ -2,7 +2,7 @@
   "schema": 1,
   "validatedAt": "2026-09-14T02:54:03.648Z",
   "transport": "local Git origin mapped through a scoped child-only insteadOf rule; this proves official manager Git lifecycle and cache behavior, not external GitHub network reachability",
-  "cli": "C:\\Users\\fixture-user\\.tools\\node24-fresh\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
+  "cli": "%USERPROFILE%\\.tools\\node24-fresh\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe",
   "marketplace": "manager-validation",
   "sourceUrl": "https://marketplace-validation.invalid/codex-tui-orchestrator.git",
   "sourceCommits": {

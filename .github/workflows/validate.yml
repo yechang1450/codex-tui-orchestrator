@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - name: Install locked dependencies
-        run: npm ci --prefix scripts --ignore-scripts
+        run: npm ci --prefix scripts --omit=optional --ignore-scripts --no-audit --no-fund
       - name: Configure offline test host
         shell: pwsh
         run: |

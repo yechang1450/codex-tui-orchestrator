@@ -1,4 +1,4 @@
-> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.1-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
+> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.2-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
 
 # codex-tui-orchestrator
 
@@ -43,7 +43,7 @@ if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
 
 `-Action prepare` 只准备环境，`-Action doctor` 准备后检查环境，`-Action run -Arguments @('--exec', '<请求>')` 传递执行参数。运行时优先放 `PLUGIN_DATA/runtime`，否则放插件内 `temp/runtime`；不修改全局 PATH，下载暂存会清理。信任边界和离线诊断见[环境准备](docs/environment-setup.md)。
 
-下面的手工克隆流程需要 Git。真正执行任务前仍需完成 Codex 登录。更新副本前先结束活动运行；命令会拒绝本地改动，只做快进更新或首次克隆，再自动准备运行环境和运行 doctor。每条原生命令失败都会停止整段。
+下面的手工克隆流程需要 Git。真正执行任务前仍需完成 Codex 登录。更新副本前先结束活动运行；命令会拒绝本地改动，只做快进更新或首次克隆，再自动准备运行环境和运行 doctor；这一步尚未注册插件。每条原生命令失败都会停止整段。
 
 ```powershell
 & {
@@ -92,7 +92,7 @@ if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
 - 宿主 CLI 不在 PATH 上时（例如只装了桌面版自带的 `codex.exe`），先设 `CODEX_CLI_PATH`（或 `CODEX_CLI`）指向它；脚本优先使用该路径，找不到 CLI 时给出可执行提示而不是 ENOENT 堆栈。
 - 技能在**新开对话**时加载，装完请开一个新对话。
 
-依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；每次 `codex plugin add`、升级或回退后，都要对该次安装返回的插件路径运行 `npm ci --prefix <安装路径>/scripts --omit=optional --ignore-scripts --no-audit --no-fund`，再用同一个安装路径运行完整性检查和 doctor。doctor 不代表服务商可用或任务已完成。上述命令只安装或更新脚本副本，不会注册、启用、升级或回滚插件管理器中的安装。直接调用脚本无需注册；自动加载技能需要先按宿主支持的插件安装流程注册并启用，再新开对话。实际插件管理器注册、升级和回滚仍需单独验证。保留 Codex 登录配置与活动工作区状态。
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；推荐的 `bootstrap.ps1 -Action install` 会在管理器返回的新缓存路径恢复依赖、校验发行完整性并运行 doctor。doctor 不代表服务商可用或任务已完成；首次直接调用 `--doctor` 或 `--tasks` 可能补齐缺失的运行依赖。上面的手工克隆流程只准备副本；推荐的一条命令会注册并更新插件。直接调用脚本无需注册；自动加载技能需要注册、启用并新开对话。保留 Codex 登录配置与活动工作区状态。
 
 本机安装（个人 marketplace）应把条目指向**干净分发**，不要指向开发工作树：管理器会把插件目录整体复制进安装缓存，指向工作树会连 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制。`install-plugin.mjs` 已经按这个口径安装；只想手工执行时：
 
@@ -268,10 +268,12 @@ cmd.exe /c "cd /d C:\path\to\codex-tui-orchestrator && node --test --test-concur
 ## 发行成熟度
 当前属于候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；每次代码或封存哈希变化后，都要重新确认适用的验证证据。
 
-当前候选 core 1.4.1-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前 1.4.0-rc.1 与更早版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
+当前候选 core 1.4.2-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前 1.4.1-rc.1 与更早版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
 
 2026-09-13 的真实 Windows 重启后，提交 `0fca067` 的发行完整性、doctor 和 marketplace 注册经显式补收集全部通过。登录后的自动收集未触发，未完成模型任务的跨重启恢复也未认证；具体证据和补收集方式见 [重启验收说明](docs/network-reboot-validation.md)。
 
 隐私与使用条款见 [隐私说明](docs/privacy.md) 与 [使用条款](docs/terms.md)。
+
+许可采用 [MIT License](LICENSE)；[中文说明](LICENSE-zh.md) 供阅读参考。
 
 安装与不同 CLI 版本的已验证范围见 [兼容验收](docs/compatibility.md)。

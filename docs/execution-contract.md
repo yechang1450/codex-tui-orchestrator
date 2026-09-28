@@ -1,4 +1,4 @@
-# Dedicated execution contract (core 1.4.1-rc.1, run protocol 2)
+# Dedicated execution contract (core 1.4.2-rc.1, run protocol 2)
 
 The dedicated Codex plugin uses a physical release snapshot of scripts/core and verifies release.json at startup. Generic development is isolated from the dedicated source and installed cache. Changes are promoted explicitly only after verification; repair.mjs --target creates a fresh release directory. See release-policy.md. This repository accepts Codex only; generic adapters evolve separately in open-tui-orchestrator.
 

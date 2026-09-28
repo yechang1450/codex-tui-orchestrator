@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
+import {verifyDependencyTree} from './dependency-integrity.mjs';
+import {verifyRelease} from './release-integrity.mjs';
 
 // 锁定的 SDK 依赖（@openai/codex-sdk）自检器。
 //
@@ -23,6 +25,11 @@ export function lockedSdkVersion(dir = scriptsDir) {
 }
 
 export async function verifyLockedSdk({dir = scriptsDir, instruction = dependencyRepairInstruction(dir)} = {}) {
+  try {
+    verifyRelease(path.resolve(scriptsDir, '..'));
+  } catch (error) {
+    return {ok: false, code: 'RELEASE_INTEGRITY_FAILED', message: `RELEASE_INTEGRITY_FAILED: ${error?.message || 'release files differ from the sealed package'}`};
+  }
   let expected;
   try {
     expected = lockedSdkVersion(dir);
@@ -47,6 +54,13 @@ export async function verifyLockedSdk({dir = scriptsDir, instruction = dependenc
   } catch {
     return {ok: false, code: 'RELEASE_DEPENDENCY_DAMAGED', message: 'RELEASE_DEPENDENCY_DAMAGED: SDK entry is missing or unreadable; restore with ' + instruction};
   }
+  const dependencyRoot = path.resolve(scriptsDir, 'node_modules');
+  const relativeEntry = path.relative(dependencyRoot, path.resolve(entry));
+  if (relativeEntry === '' || relativeEntry.startsWith('..' + path.sep) || path.isAbsolute(relativeEntry)) {
+    return {ok: false, code: 'RELEASE_DEPENDENCY_INTEGRITY', message: 'RELEASE_DEPENDENCY_INTEGRITY: SDK resolved outside the sealed dependency tree; restore with ' + instruction};
+  }
+  const integrity = verifyDependencyTree({dir: scriptsDir});
+  if (!integrity.ok) return {...integrity, message: integrity.message + '; restore with ' + instruction};
   let found;
   let walk = path.dirname(entry);
   while (true) {

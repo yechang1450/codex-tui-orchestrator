@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "packageLockSha256": "dfbce17e82a5108c5352519d078bdfeb585473e9dd5512e9510501c87a076f90",
+  "files": {
+    "@openai/codex/bin/codex.js": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
+    "@openai/codex/package.json": "0580493a92b83d962b8fdc8585a66c963431c6ddb54fabe4b3797970095f000d",
+    "@openai/codex/README.md": "ba4e1f69ff48386e72a9c5e1edaf76aad64a475c2d51af79ccba6d1128261ba7",
+    "@openai/codex-sdk/dist/index.d.ts": "b71d10f21031ec084c433127777ff419b15a67b52a35412cd4e679a8f42f30b7",
+    "@openai/codex-sdk/dist/index.js": "7edc65d67e470c9e63ca722bd48725612e2908ef7208c8371cf008de594ab1ef",
+    "@openai/codex-sdk/dist/index.js.map": "57555f545307e38c9e099993001fe307707157f94f95a78ee0b6e8097e871076",
+    "@openai/codex-sdk/LICENSE": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
+    "@openai/codex-sdk/package.json": "3cb8d0e8c7ae7dc76c080aad3d062390c930cc10ffa1e6502f49e764441b595b",
+    "@openai/codex-sdk/README.md": "bc454b26a6920efb1826912be6b6ba96348ab39d9f4e70078465deb586dbbfe7"
+  }
+}

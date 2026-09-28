@@ -12,12 +12,11 @@
  * 以及条目还指向旧克隆或别的机器时用 `--set-source` 重新指向本机分发。
  *
  * 用法：
- *   node scripts/install-plugin.mjs                 # 安装/更新（幂等）
+ *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install # 安装/更新（幂等）
  *   node scripts/install-plugin.mjs --check         # 只读校验：注册、分发新鲜度、缓存依赖、宿主启用状态（跟随 CODEX_HOME）
- *   node scripts/install-plugin.mjs --pull          # 先 git pull --ff-only（要求工作树干净）
- *   node scripts/install-plugin.mjs --set-source    # 条目指向旧克隆/别的机器时，改写成本机分发
- *   node scripts/install-plugin.mjs --verify-skills # 额外用宿主渲染一次新会话上下文（不可用只告警）
- *   node scripts/install-plugin.mjs --strict-skills # 技能可见性验证失败也当作安装失败
+ *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install -Arguments @('--pull')
+ *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install -Arguments @('--set-source','--verify-skills')
+ *   # --pull、--set-source、--verify-skills、--strict-skills 均由可信引导入口转交。
  *   node scripts/install-plugin.mjs --json          # 机器可读输出
  *   node scripts/install-plugin.mjs --source checkout|dist --timeout-ms <ms> --marketplace <path> --marketplace-root <path> --dist-root <path>
  */
@@ -28,6 +27,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {publishDist} from './publish-dist.mjs';
+import {cliCandidates, resolveHost, verifyAuthenticodePublisher} from './core/host-cli.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
@@ -85,21 +85,38 @@ function requireValue(argv, index, flag) {
   return value;
 }
 
-/** 宿主 CLI 解析顺序：显式环境变量优先，其次 PATH 上的 codex.exe（Windows 上避免落到 .cmd 直启）。 */
+/** 宿主 CLI 解析顺序：显式环境变量优先，其次已安装包内的原生可执行文件。 */
 export function pickCodexCli({env = process.env} = {}) {
   for (const key of ['CODEX_CLI_PATH', 'CODEX_CLI']) {
     const value = env[key];
     if (value && fs.existsSync(value)) return value;
   }
-  const entries = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
-  const names = process.platform === 'win32' ? ['codex.exe', 'codex.cmd', 'codex.bat', 'codex'] : ['codex'];
-  for (const name of names) {
-    for (const dir of entries) {
-      const candidate = path.join(dir, name);
-      if (fs.existsSync(candidate)) return candidate;
-    }
-  }
+  for (const candidate of cliCandidates(env)) if (fs.existsSync(candidate)) return candidate;
   return 'codex';
+}
+
+function requireTrustedInstallRuntime(env = process.env) {
+  if (process.platform !== 'win32') return;
+  const npmEntry = String(env.npm_execpath || '');
+  if ((env.ORCH_NPM_TRUSTED !== '1' && env.ORCH_ALLOW_UNVERIFIED_NPM !== '1')
+      || !path.isAbsolute(npmEntry) || !fs.existsSync(npmEntry) || !fs.statSync(npmEntry).isFile()) {
+    throw new Error('INSTALL_RUNTIME_UNTRUSTED: run installation through scripts/bootstrap.ps1 so Node/npm are checked before use.');
+  }
+}
+
+export function resolveInstallCli({candidate = null, env = process.env, hostOptions = {}} = {}) {
+  const explicit = candidate || env.CODEX_CLI_PATH || env.CODEX_CLI;
+  const selectedEnv = explicit ? {...env, ORCH_CLI: explicit} : env;
+  return resolveHost({...hostOptions, env: selectedEnv, agent: 'codex', autoInstall: false}).config.bin;
+}
+
+const TRUSTED_GIT_CERTIFICATES = Object.freeze(['3E9627155B7A6F29856321EE56D7FC25CF808407']);
+function trustedGitPath(env = process.env) {
+  const candidate = String(env.ORCH_GIT_PATH || '').trim();
+  if (!path.isAbsolute(candidate) || !verifyAuthenticodePublisher(candidate, env, spawnSync, TRUSTED_GIT_CERTIFICATES)) {
+    throw new Error('GIT_UNTRUSTED: --pull requires a verified Git for Windows executable prepared by bootstrap.ps1; run git pull manually to use another Git build.');
+  }
+  return candidate;
 }
 
 /** `codex plugin add --json` 可能夹带日志行：取最后一段可解析的 JSON 对象。 */
@@ -237,7 +254,7 @@ export function checkInstall(options = {}) {
   }
   let skills = null;
   if (options.verifySkills) {
-    skills = verifySkillsVisible({codexCli: options.codexCli || pickCodexCli(), pluginName, skillNames: skillNamesOf(pluginPath)});
+    skills = verifySkillsVisible({codexCli: options.codexCli, pluginName, skillNames: skillNamesOf(pluginPath)});
     if (!skills.ok) {
       const entry = {step: 'skills_visible', status: 'unverified', reason: skills.reason || `host prompt context does not list: ${skills.missing.join(', ')}`};
       if (options.strictSkills) problems.push(entry); else warnings.push(entry);
@@ -266,7 +283,9 @@ export function checkInstall(options = {}) {
 }
 
 /** 用宿主渲染一次新会话上下文，确认技能已进入可见清单（技能只在**新对话**里加载）。 */
-export function verifySkillsVisible({codexCli = pickCodexCli(), pluginName, skillNames, cwd = root, timeoutMs = 60000} = {}) {
+export function verifySkillsVisible({codexCli = null, pluginName, skillNames, cwd = root, timeoutMs = 60000} = {}) {
+  try { codexCli = resolveInstallCli({candidate: codexCli}); }
+  catch (error) { return {ok: false, missing: skillNames || [], reason: String(error?.message || error)}; }
   const result = spawnSync(codexCli, ['debug', 'prompt-input', 'install-plugin-verification'], {
     cwd,
     encoding: 'utf8',
@@ -294,6 +313,7 @@ export function skillNamesOf(pluginPath) {
 }
 
 export function installPlugin(options = {}) {
+  requireTrustedInstallRuntime();
   const pluginPath = path.resolve(options.pluginPath || root);
   const manifest = readManifest(pluginPath);
   const pluginName = manifest.name;
@@ -305,13 +325,15 @@ export function installPlugin(options = {}) {
   const marketplaceRoot = path.resolve(options.marketplaceRoot || os.homedir());
   const homeDir = options.homeDir || os.homedir();
   const distRoot = options.distRoot ? path.resolve(options.distRoot) : null;
-  const codexCli = options.codexCli || pickCodexCli();
+  const codexCli = resolveInstallCli({candidate: options.codexCli});
   const steps = [];
 
   if (options.pull) {
-    const dirty = run('git', ['-C', pluginPath, 'status', '--porcelain']).stdout.trim();
+    const git = trustedGitPath();
+    const dirty = run(git, ['-C', pluginPath, 'status', '--porcelain']).stdout.trim();
     if (dirty) throw new Error('refusing to pull: the working tree has local changes');
-    run('git', ['-C', pluginPath, 'pull', '--ff-only']);
+    if (!verifyAuthenticodePublisher(git, process.env, spawnSync, TRUSTED_GIT_CERTIFICATES)) throw new Error('GIT_UNTRUSTED: Git changed after the initial check.');
+    run(git, ['-C', pluginPath, 'pull', '--ff-only']);
     steps.push({step: 'pull', status: 'ok'});
   }
   if (!options.skipDist) {
@@ -386,6 +408,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
     if (options.help) {
       console.log('Usage: install-plugin.mjs [--check] [--install] [--pull] [--set-source] [--verify-skills] [--strict-skills] [--json] [--quiet]');
       console.log('       [--source dist|checkout] [--timeout-ms ms] [--plugin path] [--marketplace path] [--marketplace-root path] [--dist-root path] [--home path]');
+      console.log('On Windows use scripts/bootstrap.ps1 -Action install -Arguments @(...) for installs; direct --check is read-only.');
       process.exit(0);
     }
     const result = options.mode === 'check' ? checkInstall(options) : installPlugin(options);

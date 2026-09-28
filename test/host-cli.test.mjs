@@ -5,7 +5,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import { detectHostAgent, installCodexCli, resolveHost, launchArgs, cliCandidates } from '../scripts/host-cli.mjs';
+import { detectHostAgent, installCodexCli, resolveHost, launchArgs, cliCandidates, verifyAuthenticodePublisher } from '../scripts/host-cli.mjs';
+function fakeCli(t){
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orch-cli-test-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'codex.exe');
+  fs.writeFileSync(file,'test-only native CLI fixture');
+  return file;
+}
 test('unknown and explicitly unsupported hosts never become codex', () => {
   assert.throws(() => detectHostAgent({}), /HOST_UNKNOWN/);
   assert.equal(detectHostAgent({ ORCH_AGENT: 'unknown', CODEX_THREAD_ID: 'x' }), 'unknown');
@@ -14,29 +21,36 @@ test('unknown and explicitly unsupported hosts never become codex', () => {
 test('missing CLI cannot start or install anything', () => {
   assert.throws(() => resolveHost({env:{ ORCH_AGENT:'codex' }, candidates:()=>[], probe:()=>false, autoInstall:false}), /CLI_MISSING/);
 });
-test('missing native CLI invokes one bounded automatic installer and re-probes the result', () => {
+test('missing native CLI invokes one bounded automatic installer and re-probes the result', t => {
   let installs = 0;
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orch-cli-private-test-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const installed=path.join(dir,'runtime','cli','node_modules','@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe');
+  fs.mkdirSync(path.dirname(installed),{recursive:true});
+  fs.writeFileSync(installed,'test-only private CLI fixture');
   const host = resolveHost({
-    env: { ORCH_AGENT:'codex' },
+    env: { ORCH_AGENT:'codex', PLUGIN_DATA:dir },
     candidates: () => [],
-    probe: file => file === 'installed-native-codex',
-    install: () => { installs += 1; return 'installed-native-codex'; },
+    probe: file => file === installed,
+    verifyPrivate:()=>true,
+    install: () => { installs += 1; return installed; },
     autoInstall: true,
   });
   assert.equal(installs, 1);
-  assert.equal(host.config.bin, 'installed-native-codex');
+  assert.equal(host.config.bin, installed);
 });
-test('explicit native CLI remains authoritative and suppresses automatic installation', () => {
+test('explicit native CLI remains authoritative and suppresses automatic installation', t => {
   let installs = 0;
+  const bin=fakeCli(t);
   const host = resolveHost({
-    env: { ORCH_AGENT:'codex', ORCH_CLI:'C:\\tools\\codex.exe' },
-    candidates: () => ['C:\\tools\\codex.exe'],
-    probe: file => file === 'C:\\tools\\codex.exe',
+    env: { ORCH_AGENT:'codex', ORCH_CLI:bin, ORCH_ALLOW_UNVERIFIED_CLI:'1' },
+    candidates: () => [bin],
+    probe: file => file === bin,
     install: () => { installs += 1; return 'other-native-codex'; },
     autoInstall: true,
   });
   assert.equal(installs, 0);
-  assert.equal(host.config.bin, 'C:\\tools\\codex.exe');
+  assert.equal(host.config.bin, bin);
 });
 test('an invalid explicit native CLI fails closed without installing a replacement', () => {
   let installs = 0;
@@ -48,6 +62,21 @@ test('an invalid explicit native CLI fails closed without installing a replaceme
     autoInstall: undefined,
   }), /CLI_MISSING/);
   assert.equal(installs, 0);
+});
+test('unsigned external CLI is rejected before its version probe', t => {
+  const bin = fakeCli(t);
+  let probed = 0;
+  assert.throws(() => resolveHost({
+    env: {ORCH_AGENT:'codex', ORCH_CLI:bin}, candidates:()=>[bin],
+    verifyExternal:()=>false, probe:()=>{probed++; return true;}, autoInstall:false,
+  }), /CLI_UNTRUSTED/);
+  assert.equal(probed, 0);
+});
+test('pinned npm-distributed native CLI signer remains trusted when a cache sees it as external', t => {
+  if (process.platform !== 'win32') return t.skip('Windows Authenticode contract');
+  const bin = fakeCli(t);
+  const sign = (_command, _args, _options) => ({status:0, stdout:'41977145C93B7A096405E230DDCC8FED1AB82AC3\n'});
+  assert.equal(verifyAuthenticodePublisher(bin, process.env, sign), true);
 });
 test('a tampered plugin-private CLI is rejected before its version probe',()=>{
   const home=path.join(os.tmpdir(),'orch-cli-private-candidate');
@@ -65,7 +94,16 @@ test('automatic installer replaces uppercase npm prefix before spawning npm',()=
     assert.equal(child.stdout,path.join(home,'runtime','cli'));
     return args.at(-2)==='root'?{status:0,stdout:path.join(home,'runtime','cli','node_modules')}:{status:0};
   };
-  assert.equal(installCodexCli({env:{PATH:process.env.PATH,NPM_CONFIG_PREFIX:'C:\\outside',PLUGIN_DATA:home},platform:'win32',spawn,verifyBinary:()=>true,verifyTree:()=>true,probe:()=>true}),expected);
+  assert.equal(installCodexCli({env:{PATH:process.env.PATH,NPM_CONFIG_PREFIX:'C:\\outside',PLUGIN_DATA:home,ORCH_ALLOW_UNVERIFIED_NPM:'1'},platform:'win32',spawn,verifyBinary:()=>true,verifyTree:()=>true,probe:()=>true}),expected);
+});
+test('automatic CLI installation refuses ambient npm before spawning it',()=>{
+  let spawned=false;
+  assert.throws(()=>installCodexCli({
+    env:{PATH:process.env.PATH,PLUGIN_DATA:path.join(os.tmpdir(),'orch-cli-untrusted-npm')},
+    platform:'win32',
+    spawn:()=>{spawned=true;return {status:0};},
+  }),/CLI_AUTO_INSTALL_FAILED.*npm_untrusted/i);
+  assert.equal(spawned,false);
 });
 test('automatic installation errors are reported without leaking installer output', () => {
   assert.throws(() => resolveHost({
@@ -92,7 +130,7 @@ test('automatic installer uses a bounded global npm install and verifies the ins
     return {status: 0, stdout: 'npm installed\n', stderr: 'diagnostic\n'};
   };
   const bin = installCodexCli({
-    env: {PATH: '', PLUGIN_DATA:home, ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.157.0'},
+    env: {PATH: '', PLUGIN_DATA:home, ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.157.0', ORCH_ALLOW_UNVERIFIED_NPM:'1'},
     platform: 'win32',
     spawn,
     verifyBinary:()=>{integrityChecked=true;return true;},
@@ -115,7 +153,7 @@ test('automatic installer rejects an altered platform package tree before probin
   const root=path.join(home,'runtime','cli','node_modules');
   let probed=0;
   const spawn=(_command,args)=>args.at(-2)==='root'?{status:0,stdout:root}:{status:0};
-  assert.throws(()=>installCodexCli({env:{PATH:process.env.PATH,PLUGIN_DATA:home},platform:'win32',spawn,
+  assert.throws(()=>installCodexCli({env:{PATH:process.env.PATH,PLUGIN_DATA:home,ORCH_ALLOW_UNVERIFIED_NPM:'1'},platform:'win32',spawn,
     verifyBinary:()=>true,verifyTree:()=>false,probe:()=>{probed++;return true;}}),/integrity_mismatch/);
   assert.equal(probed,0);
 });
@@ -127,7 +165,7 @@ test('automatic CLI installer rejects substituted native bytes before executing 
   fs.mkdirSync(path.dirname(bin),{recursive:true});fs.writeFileSync(bin,'substituted executable','utf8');
   let probed=false;
   try {
-    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,ORCH_CLI_INSTALL_SPEC:'@openai/codex@0.157.0'},platform:'win32',localRoots:[],
+    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,ORCH_CLI_INSTALL_SPEC:'@openai/codex@0.157.0',ORCH_ALLOW_UNVERIFIED_NPM:'1'},platform:'win32',localRoots:[],
       spawn:(_command,args)=>args.at(-2)==='root'?{status:0,stdout:root+'\n'}:{status:0},
       probe:()=>{probed=true;return true;}}),/CLI_AUTO_INSTALL_FAILED.*integrity/i);
     assert.equal(probed,false);
@@ -144,7 +182,7 @@ test('direct automatic CLI installation overrides ambient npm global prefix with
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'orch-cli-prefix-'));
   let usedPrefix='';
   try {
-    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,npm_config_prefix:path.join(home,'outside')},spawn:(_command,_args,options)=>{usedPrefix=options.env.npm_config_prefix;return {status:1};}}),/CLI_AUTO_INSTALL_FAILED/);
+    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,npm_config_prefix:path.join(home,'outside'),ORCH_ALLOW_UNVERIFIED_NPM:'1'},spawn:(_command,_args,options)=>{usedPrefix=options.env.npm_config_prefix;return {status:1};}}),/CLI_AUTO_INSTALL_FAILED/);
     assert.equal(path.resolve(usedPrefix),path.join(home,'runtime','cli'));
   } finally {fs.rmSync(home,{recursive:true,force:true});}
 });
@@ -186,10 +224,11 @@ test('Windows CLI discovery checks the installed plugin dependency tree', () => 
   });
   assert.ok(candidates.includes('C:\\plugin\\scripts\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe'));
 });
-test('host identity and resolved executable are preserved', () => {
+test('host identity and resolved executable are preserved', t => {
   assert.equal(detectHostAgent({ CODEX_THREAD_ID:'x' }), 'codex');
-  const host = resolveHost({env:{ORCH_AGENT:'codex'}, candidates:()=>['missing','native cli'], probe:p=>p==='native cli'});
-  assert.equal(host.config.bin,'native cli');
+  const bin=fakeCli(t);
+  const host = resolveHost({env:{ORCH_AGENT:'codex',ORCH_CLI:bin,ORCH_ALLOW_UNVERIFIED_CLI:'1'}, candidates:()=>['missing',bin], probe:p=>p===bin});
+  assert.equal(host.config.bin,bin);
   assert.deepEqual(launchArgs(host.config,{cwd:'a b',sandbox:'read-only',approval:'never'}), ['--cd','a b','-a','never','--sandbox','read-only',...networkArgs(),'--disable','hooks']);
   const authorized = launchArgs(host.config,{cwd:'a b',sandbox:'danger-full-access',approval:'never'});
   assert.ok(authorized.includes('--dangerously-bypass-approvals-and-sandbox'));
