@@ -8,6 +8,24 @@ function directory(workspace,runId){
   if(!/^[A-Za-z0-9_-]{1,100}$/.test(runId||''))throw new Error('Invalid run ID');
   return path.join(path.resolve(workspace),'temp','orchestrator','runs',runId);
 }
+export function latestRunId(workspace){
+  const root=path.join(path.resolve(workspace),'temp','orchestrator','runs');
+  let entries;
+  try{entries=fs.readdirSync(root,{withFileTypes:true});}
+  catch(error){if(error.code==='ENOENT')return null;throw error;}
+  const candidates=[];
+  for(const entry of entries){
+    if(!entry.isDirectory()||!/^[A-Za-z0-9_-]{1,100}$/.test(entry.name))continue;
+    for(const name of ['summary.json','manifest.json']){
+      const file=path.join(root,entry.name,name);
+      let stat;
+      try{stat=fs.lstatSync(file);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+      if(stat.isFile()){candidates.push({runId:entry.name,mtimeMs:stat.mtimeMs});break;}
+    }
+  }
+  candidates.sort((a,b)=>b.mtimeMs-a.mtimeMs||b.runId.localeCompare(a.runId));
+  return candidates[0]?.runId||null;
+}
 export function buildExecutionStatus(sum){
   return (sum.blocks||[]).map(block=>{
     const entry=sum.results?.[block.key]||{},attempt=entry.attempts?.at(-1);
@@ -77,6 +95,7 @@ function readLedger(file){
   return value;
 }
 export function renderRunStatus(state){
+  if(!state.runId)return ['No orchestrator runs found in '+state.workspace,'TodoList','Execution'].join('\n');
   const rows=['Run '+state.runId+' | '+(state.finishedAt?(state.success?'verified':'finished with unresolved tasks'):'active'),
     'TodoList',...(state.todoList||[]).map(t=>`${t.status==='verified'?'[x]':'[ ]'} ${t.id} ${t.status} (${t.block||'planning'}) ${t.prompt}`),
     'Execution',...(state.executionStatus||[]).map(e=>`${e.block} ${e.mode} ${e.status} | attempt ${e.attempt} | PID ${e.pid??'-'} | tasks ${e.taskIds.join(', ')}${e.reason?' | '+e.reason:''}`)];

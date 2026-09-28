@@ -72,6 +72,27 @@ test('unsigned external CLI is rejected before its version probe', t => {
   }), /CLI_UNTRUSTED/);
   assert.equal(probed, 0);
 });
+
+test('an untrusted existing CLI does not invoke the automatic installer', t => {
+  const bin = fakeCli(t);
+  let installs = 0;
+  assert.throws(() => resolveHost({
+    env: {ORCH_AGENT:'codex'}, candidates:()=>[bin],
+    verifyExternal:()=>false, probe:()=>true, autoInstall:true,
+    install:()=>{installs++; return bin;},
+  }), /CLI_UNTRUSTED/);
+  assert.equal(installs,0);
+});
+
+test('Authenticode verification allows a bounded slow Windows trust check', t => {
+  if (process.platform !== 'win32') return t.skip('Windows Authenticode contract');
+  const bin = fakeCli(t);
+  const sign = (_command, _args, options) => {
+    assert.ok(options.timeout >= 30000);
+    return {status:0, stdout:'41977145C93B7A096405E230DDCC8FED1AB82AC3\n'};
+  };
+  assert.equal(verifyAuthenticodePublisher(bin, process.env, sign), true);
+});
 test('pinned npm-distributed native CLI signer remains trusted when a cache sees it as external', t => {
   if (process.platform !== 'win32') return t.skip('Windows Authenticode contract');
   const bin = fakeCli(t);

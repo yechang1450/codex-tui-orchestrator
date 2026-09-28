@@ -622,6 +622,10 @@ export async function runWindows(request,hooks,options={}) {
             const result=session?await hooks.wait(session,Math.max(0,deadline-Date.now()),la.rf,'【本块唯一标识】'+active.token,la.pidf):{done:fs.existsSync(la.rf)||fs.existsSync(la.rf+'.self-closed'),exitCode:hooks.exitCode(la.rf)};
             e.exitCode=result.exitCode??hooks.exitCode(la.rf);
             e.status=result.done?'awaiting-verification':e.exitCode!=null?'failed':'timeout';
+            if(!session||!result.done||result.verified===false||(e.exitCode!=null&&e.exitCode!==0)){
+              active.diagnostic={sessionFound:Boolean(session),launcherFinished:Boolean(result.done),reportCaptured:result.verified===true,
+                launcherExitCode:e.exitCode??null,selfCloseMarkerPresent:fs.existsSync(la.rf+'.self-closed')};
+            }
             if(result.threadId)active.threadId=result.threadId;
             if(!result.done&&result.text)e.reason=result.text;
             // The worker may have flushed its final completed checkpoint just

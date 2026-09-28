@@ -132,7 +132,7 @@ export function orderedCapacityReceipts(results, expectedLive, blocks) {
 }
 
 export function liveTimeout(env=process.env){
-  const value=Number(env.ORCH_LIVE_TIMEOUT_MS||180000);
+  const value=Number(env.ORCH_LIVE_TIMEOUT_MS||600000);
   if(!Number.isSafeInteger(value)||value<1000||value>21600000)throw new Error('Invalid ORCH_LIVE_TIMEOUT_MS: expected 1000..21600000');
   return value;
 }

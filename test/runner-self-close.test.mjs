@@ -41,3 +41,29 @@ for (const {capacityError,validReceipt,withChecks,terminalFailure=false} of case
     assert.equal(sum.results.B1.attempts.length,1);
   } finally {fs.rmSync(workspace,{recursive:true,force:true});}
 });
+
+test('visible launcher failure before a rollout leaves bounded attempt diagnostics',async()=>{
+  const workspace=fs.mkdtempSync(path.join(family,'early-exit-'));
+  let files,live=false;
+  const hooks={
+    plan:async()=>[{title:'early',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
+    launcher:(key,_prompt,suffix)=>{
+      const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;
+      return files={lp:path.join(dir,'win-launch-'+stem+'.ps1'),pf:path.join(dir,'agent-win-'+stem+'.md'),pidf:path.join(dir,'window-'+stem+'.pid'),rf:path.join(dir,'win-'+stem+'.result.json')};
+    },
+    spawn:async()=>{live=true;return true;},readPid:()=>9002,
+    identity:()=>live?({ProcessId:9002,Name:'powershell.exe',Started:'fixture',CommandLine:'fixture'}):null,
+    register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},close:async()=>{live=false;},waitForExit:async()=>true,
+    session:async()=>{fs.mkdirSync(path.dirname(files.rf),{recursive:true});fs.writeFileSync(files.rf+'.self-closed','closed');return null;},
+    exitCode:()=>1,
+  };
+  try{
+    const sum=await runWindows('执行任务',hooks,{workspace,runId:'early-exit',executionMode:'visible',capacity:1,maxAttempts:1,coordinator:path.join(controllerRoot,'coordinator')});
+    assert.equal(sum.success,false);
+    assert.equal(sum.results.B1.attempts.length,1);
+    const diagnostic=sum.results.B1.attempts[0].diagnostic;
+    assert.deepEqual(diagnostic,{sessionFound:false,launcherFinished:true,reportCaptured:false,launcherExitCode:1,selfCloseMarkerPresent:true});
+    const saved=JSON.parse(fs.readFileSync(path.join(workspace,'temp','orchestrator','runs','early-exit','summary.json'),'utf8'));
+    assert.deepEqual(saved.results.B1.attempts[0].diagnostic,diagnostic);
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import path from 'node:path';
 import {pathToFileURL} from 'node:url';
-import {readRunStatus,watchRunStatus,renderRunStatus} from './core/status-events.mjs';
+import {latestRunId,readRunStatus,watchRunStatus,renderRunStatus} from './core/status-events.mjs';
 import {reportFatal} from './core/fatal.mjs';
 
 export async function main(argv=process.argv.slice(2)){
@@ -17,6 +17,12 @@ export async function main(argv=process.argv.slice(2)){
     if(options.json)console.log(JSON.stringify(event));
     else{if(options.watch&&process.stdout.isTTY)process.stdout.write('\x1b[2J\x1b[H');console.log(renderRunStatus(event));}
   };
+  if(!options.runId)options.runId=latestRunId(options.workspace);
+  if(!options.runId){
+    if(options.watch)throw new Error('No orchestrator runs to watch in '+options.workspace);
+    output({schema:1,type:'empty',runId:null,workspace:path.resolve(options.workspace),todoList:[],executionStatus:[],finishedAt:null,success:null});
+    return;
+  }
   if(!options.watch){output(readRunStatus(options.workspace,options.runId));return;}
   const controller=new AbortController(),cancel=()=>controller.abort();process.once('SIGINT',cancel);
   try{await watchRunStatus({...options,onEvent:output,signal:controller.signal});}finally{process.removeListener('SIGINT',cancel);}

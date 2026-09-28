@@ -89,7 +89,7 @@ export function verifyAuthenticodePublisher(file, env = process.env, spawn = spa
     const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const systemModules = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
     const result = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', AUTHENTICODE_SCRIPT], {
-      encoding: 'utf8', windowsHide: true, shell: false, timeout: 8000,
+      encoding: 'utf8', windowsHide: true, shell: false, timeout: 30000,
       env: {...env, PSModulePath: systemModules, ORCH_AUTHENTICODE_TARGET: path.resolve(file)},
     });
     if (result?.status !== 0) return false;
@@ -329,7 +329,7 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
     return probe(file);
   };
   let bin = candidates(env).find(verifiedProbe);
-  const shouldAutoInstall = !explicit && (autoInstall ?? (candidates === cliCandidates && env.ORCH_AUTO_INSTALL_CLI !== '0'));
+  const shouldAutoInstall = !explicit && !untrustedCandidate && (autoInstall ?? (candidates === cliCandidates && env.ORCH_AUTO_INSTALL_CLI !== '0'));
   if (!bin && id === 'codex' && shouldAutoInstall) {
     try {
        const installed = (install || (() => installCodexCli({env, probe})))();

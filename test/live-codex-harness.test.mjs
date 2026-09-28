@@ -96,7 +96,7 @@ test('merged block ordering follows task membership and rejects missing or dupli
 });
 
 test('live timeout is configurable but always finite and bounded',()=>{
-  assert.equal(liveTimeout({}),180000);
+  assert.equal(liveTimeout({}),600000);
   assert.equal(liveTimeout({ORCH_LIVE_TIMEOUT_MS:'900000'}),900000);
   for(const v of ['NaN','Infinity','-1','0','21600001'])assert.throws(()=>liveTimeout({ORCH_LIVE_TIMEOUT_MS:v}),/Invalid ORCH_LIVE_TIMEOUT_MS/);
 });

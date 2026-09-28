@@ -2,8 +2,60 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import fs from 'node:fs';
+import path from 'node:path';
+
+const repo=fileURLToPath(new URL('..',import.meta.url));
+function runFixture(t){
+ const family=path.join(repo,'temp');fs.mkdirSync(family,{recursive:true});
+ const workspace=fs.mkdtempSync(path.join(family,'tasks-entry-'));
+ t.after(()=>fs.rmSync(workspace,{recursive:true,force:true}));
+ const runs=path.join(workspace,'temp','orchestrator','runs');
+ for(const [runId,prompt,mtime] of [['older','old task',1000],['newer','new task',2000]]){
+  const dir=path.join(runs,runId);fs.mkdirSync(dir,{recursive:true});
+  const file=path.join(dir,'summary.json');
+  fs.writeFileSync(file,JSON.stringify({runId,workspace,tasks:[{id:'T001',prompt}],blocks:[{key:'B1',title:'work',taskIds:['T001']}],results:{B1:{status:'verified',attempts:[{number:1}]}},taskResults:{T001:{status:'verified'}},success:true,finishedAt:1}));
+  fs.utimesSync(file,new Date(mtime*1000),new Date(mtime*1000));
+ }
+ return workspace;
+}
 test('public SDK status dispatch returns an actual read-only status, not usage',()=>{
  const file=fileURLToPath(new URL('../scripts/orchestrate-sdk.mjs',import.meta.url));
  const result=spawnSync(process.execPath,[file,'--status','--readonly'],{env:{...process.env,ORCH_AGENT:'codex'},encoding:'utf8',windowsHide:true,timeout:20000});
  assert.equal(result.status,0,result.stderr);assert.match(result.stdout,/=== alive agent TUI windows ===/);assert.doesNotMatch(result.stdout,/Usage:/);
+});
+
+test('tasks status selects the most recently updated run and supports JSON',t=>{
+ const workspace=runFixture(t);
+ const file=fileURLToPath(new URL('../scripts/status.mjs',import.meta.url));
+ const result=spawnSync(process.execPath,[file,'--json','--workspace',workspace],{encoding:'utf8',windowsHide:true,timeout:20000});
+ assert.equal(result.status,0,result.stderr);
+ const state=JSON.parse(result.stdout);
+ assert.equal(state.runId,'newer');
+ assert.equal(state.todoList[0].prompt,'new task');
+ assert.equal(state.executionStatus[0].status,'verified');
+});
+
+test('tasks status reports an empty workspace without inventing a run',t=>{
+ const workspace=fs.mkdtempSync(path.join(repo,'temp','tasks-empty-'));
+ t.after(()=>fs.rmSync(workspace,{recursive:true,force:true}));
+ const file=fileURLToPath(new URL('../scripts/status.mjs',import.meta.url));
+ const result=spawnSync(process.execPath,[file,'--json','--workspace',workspace],{encoding:'utf8',windowsHide:true,timeout:20000});
+ assert.equal(result.status,0,result.stderr);
+ const state=JSON.parse(result.stdout);
+ assert.equal(state.runId,null);
+ assert.deepEqual(state.todoList,[]);
+ assert.deepEqual(state.executionStatus,[]);
+});
+
+test('public SDK --tasks dispatch reads the selected run',t=>{
+ const workspace=runFixture(t);
+ const file=fileURLToPath(new URL('../scripts/orchestrate-sdk.mjs',import.meta.url));
+ const result=spawnSync(process.execPath,[file,'--tasks','--run-id','older','--json'],{
+  env:{...process.env,WORKSPACE_DIR:workspace,ORCH_RUN_ID:'',ORCH_AGENT:'codex'},encoding:'utf8',windowsHide:true,timeout:120000,
+ });
+ assert.equal(result.status,0,result.stderr);
+ const state=JSON.parse(result.stdout);
+ assert.equal(state.runId,'older');
+ assert.equal(state.todoList[0].prompt,'old task');
 });

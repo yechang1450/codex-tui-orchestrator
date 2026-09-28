@@ -1,6 +1,20 @@
 # 0.5.0-rc.1 验收记录
 
-## 2026-09-28 公开准备候选（core 1.4.2-rc.1）
+## 2026-09-28 本机完整测试后的修复候选（core 1.4.3-rc.1）
+
+当前候选版本为 `0.5.0-rc.1+codex.20260928200041`。以下修复来自本机对已安装 `core 1.4.2-rc.1` 的完整测试；下节及更早记录均为对应旧快照的历史证据。
+
+- `--tasks` 现在读取指定或最近更新的运行账本，返回 TodoList 与执行状态；空工作区返回明确的空状态。
+- 确定性规划只把紧贴项目动作词的裸编号当作项目引用，避免把普通数字结果值 `42`、`84` 误拆成项目。
+- Windows CLI 签名校验的有界等待延长至 30 秒；已有候选验签失败时直接报告 `CLI_UNTRUSTED`，不再误入自动安装。
+- 可见启动器在会话发现前结束时，尝试账本保留会话、完成标志、汇报捕获与退出码等结构化诊断；安全重试规则不变。
+- 真实双任务 smoke 验收默认给 Max 推理 10 分钟；先前本机 180 秒夹具时限在第二项写出结果、尚未写完检查点时触发，控制器正确停止并标为需核验。
+- 最终源码离线回归为 495 项：494 通过、0 失败、1 项按设定跳过；核心与依赖封印均通过，分发仍为 115 个文件。
+- 新缓存 `<user-home>\.codex\plugins\cache\personal\codex-tui-orchestrator\0.5.0-rc.1+codex.20260928200041` 的 `release-integrity`、`--doctor` 和 `install-plugin --check --json` 均通过；doctor 实测继承 `gpt-6-sol`、`max`、`priority` 与 `<user-home>\workspace`。
+- 新缓存真实 headless 双任务通过：`passed=true`、2/2 verified、退出码 0、核心未变、父级收尾完成。证据为 `workspace/temp/mode-headless-2c0df496-53e8-4177-ab85-aa8dbbaf61a2/report.json` 与对应运行账本。
+- 新缓存真实 visible 双任务通过：`passed=true`、2/2 verified、退出码 0、核心未变、两个 Windows Terminal 窗口最终关闭；B1 首窗后按安全重试规则再次启动并通过。证据为 `workspace/temp/mode-visible-590cf271-f526-4f51-84c2-b2a0cb78f666/report.json` 与对应运行账本。
+
+## 2026-09-28 公开准备候选（core 1.4.2-rc.1，历史记录）
 
 当前候选的插件版本为 `0.5.0-rc.1+codex.20260928152733`。本节只记录该候选实测过的内容；下方 `1.4.1-rc.1` 及更早记录均为历史证据。此候选尚未公开发布。
 

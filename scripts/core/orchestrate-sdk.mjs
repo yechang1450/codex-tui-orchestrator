@@ -591,7 +591,7 @@ function genericProjectSplit(request) {
   // (e.g. "给80的前端", "修复81的空白").  Do not scan every standalone number:
   // UUID nonces, ids embedded in filenames, and numeric acceptance values are
   // data, not project references, and must not change the parallel plan.
-  const bareRe = /(?:^|[\s，,、:：;；])(?:(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)\s*)?(\d{2,3})(?=\D|$)/g;
+  const bareRe = /(?:^|[\s，,、:：;；])(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)(\d{2,3})(?=\D|$)/g;
   while ((m = bareRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   if (dirs.size < 2) return null;
   const sentences = requestTasks(request).map(t=>t.prompt);
@@ -621,7 +621,7 @@ function projectRef(s, n) {
   // Require a project keyword/path or an action-context bare number.  A loose
   // optional prefix would also match UUID chunks, receipt ids, and sums.
   const named = new RegExp("(?:^|[\\s,/\\\\：:；;])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\\s/\\\\：:]*" + n + "(?![0-9])", "i");
-  const bare = new RegExp("(?:^|[\\s，,、:：;；])(?:(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)\\s*)?" + n + "(?![0-9])", "i");
+  const bare = new RegExp("(?:^|[\\s，,、:：;；])(?:修复|优化|修改|更新|检查|创建|处理|给|为|对|向|在|针对)" + n + "(?![0-9])", "i");
   return named.test(s) || bare.test(s);
 }
 // 通用单任务快速判定（不写死 build/N）：无"多动作/多目标"标记、且命中明确动作词 -> 生成单一独立块。
@@ -2324,7 +2324,7 @@ export async function main() {
   process.argv=[...process.argv.slice(0,2),...configureEntryArgs(process.argv.slice(2))];
   const bareRequest=process.argv[2]&&!process.argv[2].startsWith('--');
   const mode = bareRequest?'--run':process.argv[2];
-  const modeFlags = new Set(['--run-windows','--visible','--run','--exec','--headless','--resume-run','--spawn','--selftest-close','--doctor','--plan','--status','--clear-cache','--verify-run']);
+  const modeFlags = new Set(['--run-windows','--visible','--run','--exec','--headless','--resume-run','--spawn','--selftest-close','--doctor','--plan','--status','--tasks','--clear-cache','--verify-run']);
   const requestedModes = leadingModeFlags(process.argv.slice(2),modeFlags);
   if (requestedModes.length > 1) throw new Error('Conflicting execution modes: ' + requestedModes.join(', '));
   if (AGENT.agent === 'codex' && ['--plan','--run','--exec','--headless','--visible','--run-windows','--spawn','--selftest-close','--resume-run'].includes(mode))
@@ -2672,6 +2672,10 @@ export async function main() {
     showStatus(process.argv.includes("--readonly"));
     return;
   }
+  if(mode==='--tasks'){
+    const {main:statusMain}=await import('../status.mjs');
+    await statusMain([...process.argv.slice(3),'--workspace',WORKSPACE]);return;
+  }
   if(mode?.startsWith('--')&&mode!=='--help')throw new Error('Unknown mode: '+mode);
   console.log(
     "Usage:\n" +
@@ -2680,6 +2684,7 @@ export async function main() {
       "  node orchestrate-sdk.mjs --exec \"<request>\"  (default: headless)\n" +
       "  node orchestrate-sdk.mjs --run-windows \"<request>\"\n" +
       "  node orchestrate-sdk.mjs --status --run-id <id> --watch\n" +
+      "  node orchestrate-sdk.mjs --tasks [--run-id <id>] [--json]\n" +
       "  node orchestrate-sdk.mjs --spawn <title> \"<prompt or .md>\"",
   );
 }

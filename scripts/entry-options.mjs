@@ -11,7 +11,7 @@ export function configureEntryArgs(argv,env=process.env,cwd=process.cwd()){
   const remaining=[],values={};let idCommand=false;
   for(let i=0;i<argv.length;i++){
     const flag=argv[i];
-    if(['--verify-run','--resume-run','--status'].includes(flag))idCommand=true;
+    if(['--verify-run','--resume-run','--status','--tasks'].includes(flag))idCommand=true;
     if((!flag.startsWith('--')&&!idCommand)||flag==='--'){remaining.push(...argv.slice(i));break;}
     if(!Object.hasOwn(fields,flag)){remaining.push(flag);continue;}
     if(Object.hasOwn(values,fields[flag]))throw new Error('Duplicate option: '+flag);

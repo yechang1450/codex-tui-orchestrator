@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (local comprehensive-test fixes)
+
+- Core `1.4.3-rc.1`, cachebuster `0.5.0-rc.1+codex.20260928200041`: make the documented `--tasks` command read the selected or latest run, avoid treating numeric result values as project directories, allow a bounded 30-second Windows signature check, and preserve structured diagnostics for a launcher that exits before its session is found. An untrusted existing CLI now reports the trust failure without invoking the automatic installer. The real-model smoke fixture allows ten minutes by default for Max-effort turns.
+
 ## Unreleased (public readiness candidate)
 
 - Core `1.4.2-rc.1`, cachebuster `0.5.0-rc.1+codex.20260928152733`: authenticate native CLI and Node executables before use, verify the downloaded npm tree and sealed SDK dependency files, and require a trusted npm tree for automatic repair. Keep the 1.4.1 semantic task scoping and proxy behavior.

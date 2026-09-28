@@ -12,3 +12,8 @@ test('adjacent Chinese semicolon project tasks split into independent blocks',()
   assert.match(result.blocks[1].tasks[0].prompt,/probe92\.mjs/);
   assert.doesNotMatch(result.blocks[1].tasks[0].prompt,/probe91\.mjs/);
 });
+
+test('numeric output values are not treated as project references',()=>{
+  const request='在 alpha/result.json 写入结果 42；在 beta/result.json 写入结果 84';
+  assert.equal(genericProjectSplit(request),null);
+});
