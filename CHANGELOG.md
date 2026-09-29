@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.29-rc.1
+
+- Plugin/package version is now standard `0.9.29-rc.1`; the execution core remains sealed at `1.4.4-rc.1`.
+- Added `npm --prefix scripts run version:next` (`node scripts/bump-version.mjs --next-rc`) so later candidates advance `rc.1` to `rc.2`, `rc.3`, and so on while keeping all three release manifests synchronized.
+- Carried forward the 1000 MB dynamic admission floor and its current source/package verification scope.
+
 ## Unreleased (1000 MB admission floor)
 
 - Core `1.4.4-rc.1`, cachebuster `0.5.0-rc.1+codex.20260929103036`: lower the dynamic memory admission reserve from 4000 MB to 1000 MB across the runner, auxiliary windows, low-level visible probes and SessionStart. Keep strict predicted-peak admission and allow `ORCH_MIN_AVAILABLE_MB` only to raise the floor. Add boundary coverage for the new default and higher override.

@@ -4,11 +4,13 @@
 
 # codex-tui-orchestrator
 
-> 当前版本为 `0.5.0-rc.1` 候选版。它优先支持 Windows + Node.js 22 + Codex CLI；未验证的跨机器、插件管理器升级/回滚和长时间断网场景不会被当作稳定保证。
+> 当前版本为 `0.9.29-rc.1` 候选版。它优先支持 Windows + Node.js 22 + Codex CLI；未验证的跨机器、插件管理器升级/回滚和长时间断网场景不会被当作稳定保证。
 
 Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, default headless exec, optional visible TUI, durable checkpoints and independent result verification.
 
-版本：`0.5.0-rc.1`。验收记录按实际封存快照区分，见 [RC 验收记录](docs/rc-validation.md)；相同版本号不代表不同哈希之间的实测证据可通用。
+版本：`0.9.29-rc.1`。验收记录按实际封存快照区分，见 [RC 验收记录](docs/rc-validation.md)；相同版本号不代表不同哈希之间的实测证据可通用。
+
+后续 RC 版本由发布脚本递增：在仓库根目录运行 `npm --prefix scripts run version:next`，例如从 `0.9.29-rc.1` 生成 `0.9.29-rc.2`，并同步三个发行清单。首次设定新版本线可运行 `node scripts/bump-version.mjs --set <版本号>`。随后记录 CHANGELOG、重封依赖与发行清单并验证新分发。
 
 ## Current support / 当前支持
 

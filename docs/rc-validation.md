@@ -1,11 +1,12 @@
-# 0.5.0-rc.1 验收记录
+# 0.9.29-rc.1 验收记录
 
-## 2026-09-29 内存准入下限调整候选（core 1.4.4-rc.1）
+## 2026-09-29 0.9.29-rc.1 内存准入下限调整候选（core 1.4.4-rc.1）
 
 本轮把动态内存准入的默认且不可降低的可用内存预留从 4000 MB 调整为 1000 MB。执行判据不变：每次开窗仍原子复检实时可用内存，预测峰值必须严格小于可用内存减去预留值；显式 `ORCH_MIN_AVAILABLE_MB` 只能把预留提高，不能低于 1000 MB。SessionStart、辅助窗口、headless 与可见窗口共用这一边界。由于预留降低会增加高峰期的系统压力，发布前必须重新跑离线边界回归、分发封印、安装缓存校验和本机真实双任务验收。
 
 - 源码串行回归为 496 项：495 通过、0 失败、1 项按配置跳过；新增的 1000 MB 边界、低值钳制和高值覆盖测试全部通过。`git diff --check`、依赖封印和发行封印均通过（schema 2，31 个核心文件、72 个运行时文件）。
-- 新分发已安装到 `<user-home>\.codex\plugins\cache\personal\codex-tui-orchestrator\0.5.0-rc.1+codex.20260929103036`；缓存 `release-integrity`、`--doctor` 和 `install-plugin --check --json` 均通过，doctor 继承 `gpt-6-sol`、`max`、`priority` 与 `<user-home>\workspace`。
+- 本轮分发已安装到 `<user-home>\.codex\plugins\cache\personal\codex-tui-orchestrator\0.9.29-rc.1`；缓存 `release-integrity`、依赖封印、`--doctor` 和 `install-plugin --check --json` 均通过，doctor 继承 `gpt-6-sol`、`max`、`priority` 与 `<user-home>\workspace`。
+- 版本同步与自动递增聚焦测试通过：三个发行清单统一为 `0.9.29-rc.1`，`version:next` 夹具从 `rc.1` 正确生成 `rc.2`；Git 分发路径门禁 6/6 通过，畸形账本 fuzz 11/11 通过。
 - 新缓存真实 headless 双任务 `mode-headless-27e5fcde-807a-4938-8910-99be9bd39d65` 和 visible 双任务 `mode-visible-30ef110c-df67-46f8-88fa-35d19ac6b566` 均 `passed=true`、2/2 `verified`、两个独立块实际重叠运行、启动器全部退出、core 未漂移。证据分别在 `<user-home>\workspace\temp\mode-headless-27e5fcde-807a-4938-8910-99be9bd39d65\report.json` 与 `<user-home>\workspace\temp\mode-visible-30ef110c-df67-46f8-88fa-35d19ac6b566\report.json`。
 - 这两次真实运行把滚动窗口成本更新到约 2.5–2.6 GB；这验证了 1000 MB 只改变最低可用内存底线，实际并发仍由预测峰值、已有租约和实时可用内存共同决定。它也保留了首轮样本不足时估算偏低的架构风险，见下方剩余问题。
 
