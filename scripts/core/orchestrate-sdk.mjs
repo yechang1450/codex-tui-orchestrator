@@ -2357,7 +2357,7 @@ export async function main() {
   }
   if (mode === "--spawn") {
     const spawnFloor=budgetSettings().floorMB;
-    if(!memoryPreflight(availableMB(),spawnFloor).ok){console.log('spawn REFUSED: available memory is below the mandatory 4000 MB reserve');process.exitCode=1;return;}
+    if(!memoryPreflight(availableMB(),spawnFloor).ok){console.log(`spawn REFUSED: available memory is below the mandatory ${spawnFloor} MB reserve`);process.exitCode=1;return;}
     armEnforcement();
     await cleanStaleWindows();
     cleanStaleTransients();
@@ -2464,7 +2464,7 @@ export async function main() {
     // fallback if the launcher is still alive after the timeout. Run by the authorized window for the
     // required "弹一个窗确认约 1 秒后自动关、无残留进程".
     const selftestFloor=budgetSettings().floorMB;
-    if(!memoryPreflight(availableMB(),selftestFloor).ok){console.log('selftest REFUSED: available memory is below the mandatory 4000 MB reserve');process.exitCode=1;return;}
+    if(!memoryPreflight(availableMB(),selftestFloor).ok){console.log(`selftest REFUSED: available memory is below the mandatory ${selftestFloor} MB reserve`);process.exitCode=1;return;}
     armEnforcement();
     await cleanStaleWindows();
     cleanStaleTransients();

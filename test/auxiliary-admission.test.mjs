@@ -10,19 +10,19 @@ function fakeReserve(calls) {
   };
 }
 
-test('auxiliary admission enforces the strict 4000 MB reserve and records its predicted peak',async()=>{
+test('auxiliary admission enforces the strict 1000 MB reserve and records its predicted peak',async()=>{
   const calls=[];
-  await assert.rejects(admitAuxiliaryWindow({...args,available:()=>4000,reserveLease:fakeReserve(calls)}),/4000 MB reserve/);
+  await assert.rejects(admitAuxiliaryWindow({...args,available:()=>1000,reserveLease:fakeReserve(calls)}),/1000 MB reserve/);
   assert.equal(calls.length,0);
-  await assert.rejects(admitAuxiliaryWindow({...args,available:()=>4500,reserveLease:fakeReserve(calls),timeoutMs:1,pause:async()=>{}}),/timed out/);
+  await assert.rejects(admitAuxiliaryWindow({...args,available:()=>1500,reserveLease:fakeReserve(calls),timeoutMs:1,pause:async()=>{}}),/timed out/);
   assert.equal(calls[0].memoryCostMB,500);
-  const accepted=await admitAuxiliaryWindow({...args,available:()=>4501,reserveLease:fakeReserve(calls)});
+  const accepted=await admitAuxiliaryWindow({...args,available:()=>1501,reserveLease:fakeReserve(calls)});
   assert.equal(accepted.costMB,500);
 });
 
 test('auxiliary memory wait queues until a later capacity check succeeds',async()=>{
-  const calls=[],readings=[4501,4500,4500,4501];
-  const accepted=await admitAuxiliaryWindow({...args,available:()=>readings.shift()??4501,reserveLease:fakeReserve(calls),pause:async()=>{}});
+  const calls=[],readings=[1501,1500,1500,1501];
+  const accepted=await admitAuxiliaryWindow({...args,available:()=>readings.shift()??1501,reserveLease:fakeReserve(calls),pause:async()=>{}});
   assert.equal(calls.length,3);
   assert.equal(accepted.id,'aux-1');
 });

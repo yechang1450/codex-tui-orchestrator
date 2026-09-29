@@ -37,7 +37,15 @@ function Invoke-OrchSessionStart {
         $available = [double](Get-OrchSessionAvailableMemoryMB)
         if ([double]::IsNaN($available) -or [double]::IsInfinity($available) -or $available -le 0) { throw 'invalid memory reading' }
     } catch { return New-OrchSessionOutput 'MEMORY_UNAVAILABLE' 'Available memory could not be confirmed; continue inline without orchestration.' }
-    if ($available -le 4000) { return New-OrchSessionOutput 'LOW_MEMORY' 'Available memory is at or below the 4000 MB reserve; continue inline without orchestration.' }
+    $reserve = [double]1000
+    if ($env:ORCH_MIN_AVAILABLE_MB) {
+        $requested = [double]0
+        if ([double]::TryParse($env:ORCH_MIN_AVAILABLE_MB, [Globalization.NumberStyles]::Float, [Globalization.CultureInfo]::InvariantCulture, [ref]$requested) -and
+            -not [double]::IsNaN($requested) -and -not [double]::IsInfinity($requested)) {
+            $reserve = [math]::Max($reserve, [math]::Floor($requested))
+        }
+    }
+    if ($available -le $reserve) { return New-OrchSessionOutput 'LOW_MEMORY' "Available memory is at or below the $reserve MB reserve; continue inline without orchestration." }
 
     $lock = $null
     try {

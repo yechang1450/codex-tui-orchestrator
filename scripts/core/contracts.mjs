@@ -10,7 +10,7 @@ import {assertNoReparsePoints} from './runtime-context.mjs';
  * 动态内存预算（dynamic capacity）：
  *   - 计划阶段只确定依赖、冲突和资源边界，绝不因为内存压力改写任务块；
  *   - 执行阶段由 leases.mjs 原子预留预测成本，不够就排队，窗口结束后重新准入；
- *   - 4000 MB 是不可降低的安全底线，实际峰值样本可以把后续预测成本提高。
+ *   - 1000 MB 是不可降低的安全底线，实际峰值样本可以把后续预测成本提高。
  */
 export function planMemoryCosts(plan, {windowCostMB = DEFAULT_WINDOW_COST_MB, taskCosts = {}} = {}) {
   return (plan || []).map(block => ({key: block.key, title: block.title, costMB: budgetBlockCostMB(block, windowCostMB, taskCosts)}));
@@ -68,7 +68,7 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
     ok: floor <= 0 || (Number(availableMB) - requiredMB > floor)};
 }
 
-export const CORE_VERSION = '1.4.3-rc.1';
+export const CORE_VERSION = '1.4.4-rc.1';
 export const SUCCESS = new Set(['verified']);
 export const TERMINAL = new Set(['verified','failed','blocked','cancelled','awaiting-verification','preflight-failed','popup-failed','timeout','needs-reconciliation']);
 
@@ -81,7 +81,7 @@ export function acceptanceKeyDiff(checks,tasks) {
 }
 
 // 历史兼容辅助：当前 live runner 不使用固定公式，而是按 availableMB、预测峰值和
-// 4000 MB 底线动态排队。保留此函数只为旧调用方和诊断脚本提供稳定的纯函数接口。
+// 1000 MB 底线动态排队。保留此函数只为旧调用方和诊断脚本提供稳定的纯函数接口。
 export function computeMaxWindows(memoryMb) {
   const mb = Number(memoryMb);
   // 每个执行块按 2 GB 预算：容量 = floor(机器内存MB / 1000) / 2 向下取整（等价于 floor(机器内存MB / 2000)）。

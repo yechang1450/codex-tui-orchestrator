@@ -67,12 +67,19 @@ winTest('child execution and compaction do not recursively prepare or launch wor
   assert.match(run(f,{input:JSON.stringify({...event,source:'compact'})}).text,/COMPACTION/);
   assert.equal(fs.existsSync(f.called),false);
 });
-winTest('4000 MB reserve boundary skips preparation and explains inline execution',t=>{
+winTest('1000 MB reserve boundary skips preparation and explains inline execution',t=>{
   const f=fixture(t);
-  for(const memory of [3999,4000]){
+  for(const memory of [999,1000]){
     assert.match(run(f,{memory}).text,/LOW_MEMORY.*inline/);assert.equal(fs.existsSync(f.called),false);
   }
-  assert.match(run(f,{memory:4001}).text,/READY/);assert.equal(fs.existsSync(f.called),true);
+  assert.match(run(f,{memory:1001}).text,/READY/);assert.equal(fs.existsSync(f.called),true);
+});
+winTest('session hook honors a higher reserve override and clamps a lower one',t=>{
+  const f=fixture(t);
+  assert.match(run(f,{memory:1500,env:{ORCH_MIN_AVAILABLE_MB:'2000'}}).text,/LOW_MEMORY.*2000 MB/);
+  assert.equal(fs.existsSync(f.called),false);
+  assert.match(run(f,{memory:1000,env:{ORCH_MIN_AVAILABLE_MB:'512'}}).text,/LOW_MEMORY.*1000 MB/);
+  assert.match(run(f,{memory:1001,env:{ORCH_MIN_AVAILABLE_MB:'512'}}).text,/READY/);
 });
 winTest('unavailable or invalid memory readings conservatively keep work inline',t=>{
   const f=fixture(t);

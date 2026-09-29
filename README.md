@@ -1,4 +1,4 @@
-> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.3-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
+> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.4-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
 
 默认使用 exec+headless（通过 Codex CLI 非交互执行，不弹出终端窗口）；--run-windows 或 --visible 显式选择可见 TUI（终端交互界面）。两种模式共用调度、检查点、恢复和验收。
 
@@ -19,7 +19,7 @@ The dedicated entry defaults to Codex. An explicit non-Codex `--agent` / `ORCH_A
 
 Once the plugin is registered and enabled, its trusted SessionStart hook prepares the environment when a conversation starts. The PowerShell bootstrap can start without Node/npm: it reuses a verified local runtime or installs a checksum-verified portable runtime in the plugin data directory, restores the locked SDK and discovers/installs native Codex CLI. Host hook trust is required and is never changed by the installer. Direct installation runs the same preparation immediately. Orchestrated child sessions disable hooks after host preparation so a fresh hook review cannot block visible tasks; they never bypass hook trust. The skill keeps original task IDs, prepares independent acceptance checks and calls the absolute entry from the initiating workspace. `--exec` is the default; use `--run-windows` for a visible TUI. Cloning alone does not enable the plugin, and installation cannot supply account credentials.
 
-一次实际运行会先把原始请求拆成带原始 ID 的原子任务，再按依赖、冲突和未知资源组成串行块；最终并行块之间没有前后依赖或资源冲突。只有一个块时直接在发起对话执行。每次开窗前按预测内存峰值检查，保留至少 4000 MB；不满足时排队，窗口结束后重新准入。你看到的是同一份任务账本的两条视图：TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数与等待原因。普通执行必须完成 `started`、`completed` 和主控独立验收，才算 `verified`；窗口关闭后，主控按块顺序串行检查真实产物，并把证据追加到同一份 verification report。关窗、结束标记或子窗口自报不会单独宣告成功。
+一次实际运行会先把原始请求拆成带原始 ID 的原子任务，再按依赖、冲突和未知资源组成串行块；最终并行块之间没有前后依赖或资源冲突。只有一个块时直接在发起对话执行。每次开窗前按预测内存峰值检查，保留至少 1000 MB；不满足时排队，窗口结束后重新准入。你看到的是同一份任务账本的两条视图：TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数与等待原因。普通执行必须完成 `started`、`completed` 和主控独立验收，才算 `verified`；窗口关闭后，主控按块顺序串行检查真实产物，并把证据追加到同一份 verification report。关窗、结束标记或子窗口自报不会单独宣告成功。
 
 模型语义拆分（由模型识别原子任务、依赖和资源提示）现在可以把没有项目编号、但明确写出文件或目录的任务拆开；确定性分块器逐项核对提示与原文，遗漏或编造路径时整批保守串行。相同文件、父子目录或显式依赖仍归入同一串行块。Windows 用户代理启用且没有显式代理环境变量时，编排器仅给自身进程树继承该代理，供规划和 Codex 子进程联网；不改系统代理或全局环境。`--plan` 只规划、不执行任务改动，但可能更新编排器的拆分缓存；语义判断仍需主控审查，不能把自然语言分析当作绝对无冲突证明。
 
@@ -229,7 +229,7 @@ The focused execution acceptance suite is `node --test --test-concurrency=1 test
 
 ## Capacity-constrained planning
 
-Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory at or below 4000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 4000 MB reserve; otherwise it remains queued until a lease is released. The low-level visible `--spawn` and `--selftest-close` windows use the same atomic memory admission and predicted-cost reservation. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
+Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory at or below 1000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 1000 MB reserve; otherwise it remains queued until a lease is released. The low-level visible `--spawn` and `--selftest-close` windows use the same atomic memory admission and predicted-cost reservation. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
 
 An explicit capacity below the number of independent blocks is rejected so the planner cannot silently change the user's concurrency graph. Tasks inside a dependency or conflict component execute serially in dependency order, and all task bodies and conflict keys are retained. The shared coordinator applies atomic leases across active and reserved windows.
 
@@ -276,7 +276,7 @@ cmd.exe /c "cd /d C:\path\to\codex-tui-orchestrator && node --test --test-concur
 
 core 1.2.1、1.2.3 与 1.3.1 的记录属于历史证据，详情见对应实机验收文档。当前候选版的验收边界见 [RC 验收记录](docs/rc-validation.md)。
 
-当前候选 core 1.4.3-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
+当前候选 core 1.4.4-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
 
 2026-09-13 的真实 Windows 重启后，提交 `0fca067` 的发行完整性、doctor 和 marketplace 注册经显式补收集全部通过。登录后的自动收集未触发，未完成模型任务的跨重启恢复也未认证；具体证据和补收集方式见 [重启验收说明](docs/network-reboot-validation.md)。
 

@@ -1,4 +1,4 @@
-> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.3-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
+> 当前执行协议已升级：参见 [执行与验收协议](docs/execution-contract.md)。专用版固定 core 1.4.4-rc.1 快照并校验 release.json；通用版独立开发；历史验收报告只代表当时版本。
 
 # codex-tui-orchestrator
 
@@ -17,7 +17,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 
 插件注册、启用且宿主信任 SessionStart hook（会话开始时运行的环境准备脚本）后，新会话会自动准备运行环境。PowerShell 引导入口不依赖预装 Node/npm：先验证并复用本机运行时，否则下载固定版本、核对 SHA-256 后安装到插件数据目录，再补齐锁定 SDK 和原生 CLI。直接安装入口会立即执行相同准备；插件不会自行修改宿主 hook 信任或制造登录凭据。编排子会话在宿主完成准备后禁用 hook，避免新 hook 的信任提示卡住可见任务，也不绕过信任。技能会先准备独立验收条件，再从发起工作区调用插件的绝对路径。默认使用 `--exec`，需要观察或交互时才用 `--run-windows`。仅克隆仓库不会自动注册或启用插件。
 
-运行开始后，插件先保留每个原始任务 ID，分析依赖、冲突和未知资源；有依赖或可能冲突的任务进入同一串行块，块与块之间确认无依赖、无冲突后才并发。只有一个块时直接回到发起对话执行。每次开窗前按预测峰值检查可用内存，必须给 4000 MB 安全预留；放不下的块排队，绝不把独立块合并或硬跑。TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数和等待原因。普通执行必须依次出现 `started`、`completed`，窗口关闭后由主控按该块的验收条件串行检查并写入同一份报告，才会成为 `verified`；关窗、结束标记或子窗口自报不能单独证明成功。
+运行开始后，插件先保留每个原始任务 ID，分析依赖、冲突和未知资源；有依赖或可能冲突的任务进入同一串行块，块与块之间确认无依赖、无冲突后才并发。只有一个块时直接回到发起对话执行。每次开窗前按预测峰值检查可用内存，必须给 1000 MB 安全预留；放不下的块排队，绝不把独立块合并或硬跑。TodoList 保留原始任务身份，Execution 显示块的模式、进程、尝试次数和等待原因。普通执行必须依次出现 `started`、`completed`，窗口关闭后由主控按该块的验收条件串行检查并写入同一份报告，才会成为 `verified`；关窗、结束标记或子窗口自报不能单独证明成功。
 
 模型语义拆分（由模型识别原子任务、依赖和资源提示）支持无项目编号但原文列明文件或目录的任务。分块器会核对所有路径提示；漏报或编造路径时整批串行，相同文件、父子目录或依赖任务也串行。Windows 系统代理仅在没有显式代理环境变量时复制到编排器进程树，不改变全局设置。`--plan` 只规划、不执行任务改动，但可能更新拆分缓存；自然语言中的隐含副作用仍须主控判断。
 
@@ -223,7 +223,7 @@ Automated tests exercise grouping, dependency-ready scheduling, locks, native CL
 
 ## Capacity-constrained planning
 
-Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory at or below 4000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 4000 MB reserve; otherwise it remains queued until a lease is released. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
+Capacity is dynamic by default (`ORCH_CAPACITY_MODE=dynamic`): planning preserves every atomic task and groups only dependency, conflict or unknown-scope components into serial blocks. If the result has one block, the initiating conversation executes it directly. Before orchestration, available memory at or below 1000 MB returns an inline decision. Before every window opens, the runner atomically rechecks available memory and reserves the predicted peak. A block starts only when its predicted peak is strictly below available memory minus the mandatory 1000 MB reserve; otherwise it remains queued until a lease is released. Independent blocks are never merged to fit memory, and there is no hard-run escape. Each window uses the rolling observed cost (default 400 MB, with declared task memory added once per serial block). Capacity limits the number of independently planned blocks only as an explicit safety bound; memory admission is the live queue.
 
 An explicit capacity below the number of independent blocks is rejected so the planner cannot silently change the user's concurrency graph. Tasks inside a dependency or conflict component execute serially in dependency order, and all task bodies and conflict keys are retained. The shared coordinator applies atomic leases across active and reserved windows.
 
@@ -268,7 +268,7 @@ cmd.exe /c "cd /d C:\path\to\codex-tui-orchestrator && node --test --test-concur
 ## 发行成熟度
 当前属于候选版。发布校验、清理保护和跨环境验收要求见 [发布规则](docs/release-policy.md)；每次代码或封存哈希变化后，都要重新确认适用的验证证据。
 
-当前候选 core 1.4.3-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
+当前候选 core 1.4.4-rc.1 的证据边界见 [RC 验收记录](docs/rc-validation.md)。此前版本的窗口、包、容量和缓存同步记录均是对应快照的历史证据，不能证明当前代码已实测或当前缓存仍同步。
 
 2026-09-13 的真实 Windows 重启后，提交 `0fca067` 的发行完整性、doctor 和 marketplace 注册经显式补收集全部通过。登录后的自动收集未触发，未完成模型任务的跨重启恢复也未认证；具体证据和补收集方式见 [重启验收说明](docs/network-reboot-validation.md)。
 

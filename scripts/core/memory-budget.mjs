@@ -4,7 +4,7 @@
  * 目标：不再用固定的机器内存公式改写并发计划，而是按运行时的可用内存动态准入：
  *   - 规划期只确认依赖、冲突和资源边界，独立块保持独立；
  *   - 执行期每次开新块前原子复检，预测成本放不下就排队；
- *   - 窗口结束释放预留并重新检查队列，永不使用 hard-run 绕过 4000 MB 底线。
+ *   - 窗口结束释放预留并重新检查队列，永不使用 hard-run 绕过 1000 MB 底线。
  *
  * 成本口径来自真机标定（2026-09-18，8 窗全绿）：单窗进程峰值中位 120 / 最大 129 MB，
  * 但含宿主、引擎与子进程的边际成本约 193 MB（轻载标定）；2026-09-18 的 7 窗并发实测在竞争下
@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-export const DEFAULT_MIN_AVAILABLE_MB = 4000;
+export const DEFAULT_MIN_AVAILABLE_MB = 1000;
 export const DEFAULT_WINDOW_COST_MB = 400;
 export const COST_MIN_MB = 256;
 export const COST_MAX_MB = Number.MAX_SAFE_INTEGER;

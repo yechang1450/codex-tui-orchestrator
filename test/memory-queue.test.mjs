@@ -6,14 +6,15 @@ import path from 'node:path';
 import {budgetSettings, admissionOk, observedCostMB, updateRollingCost, unconsumedReservationMB} from '../scripts/core/memory-budget.mjs';
 import {reserve, release} from '../scripts/core/leases.mjs';
 
-test('4000 MB reserve is mandatory even with a stale lower override',()=>{
-  for(const env of [{},{ORCH_MIN_AVAILABLE_MB:'512'},{ORCH_MIN_AVAILABLE_MB:'0'}])assert.equal(budgetSettings(env).floorMB,4000);
+test('1000 MB reserve is mandatory even with a stale lower override',()=>{
+  for(const env of [{},{ORCH_MIN_AVAILABLE_MB:'512'},{ORCH_MIN_AVAILABLE_MB:'0'}])assert.equal(budgetSettings(env).floorMB,1000);
+  assert.equal(budgetSettings({ORCH_MIN_AVAILABLE_MB:'2000'}).floorMB,2000);
 });
 test('memory admission is strict and never bypassed by zero or invalid floors',()=>{
-  assert.equal(admissionOk({availableMB:4500,blockCostMB:500,floorMB:4000}),false);
-  assert.equal(admissionOk({availableMB:4501,blockCostMB:500,floorMB:4000}),true);
+  assert.equal(admissionOk({availableMB:1500,blockCostMB:500,floorMB:1000}),false);
+  assert.equal(admissionOk({availableMB:1501,blockCostMB:500,floorMB:1000}),true);
   assert.equal(admissionOk({availableMB:10,blockCostMB:500,floorMB:0}),false);
-  assert.equal(admissionOk({availableMB:5000,blockCostMB:NaN,floorMB:4000}),false);
+  assert.equal(admissionOk({availableMB:2000,blockCostMB:NaN,floorMB:1000}),false);
 });
 test('large observed peaks are not truncated to 800 MB',()=>{
   assert.equal(observedCostMB({processPeakMB:2000}),3000);

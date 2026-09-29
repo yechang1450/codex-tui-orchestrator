@@ -3,21 +3,23 @@ import assert from 'node:assert/strict';
 import {planMemoryCosts, levelWaves} from '../scripts/core/contracts.mjs';
 import {admissionOk, blockCostMB, budgetSettings, clampCost, observedCostMB, resolveBudgetMode, updateRollingCost, DEFAULT_MIN_AVAILABLE_MB, DEFAULT_WINDOW_COST_MB, COST_MIN_MB, COST_MAX_MB, firstRunHeadroom, DEFAULT_FIRST_RUN_HEADROOM} from '../scripts/core/memory-budget.mjs';
 
-test('dynamic memory admission is the only mode and keeps a 4000 MB reserve',()=>{
+test('dynamic memory admission is the only mode and keeps a 1000 MB reserve',()=>{
   assert.equal(resolveBudgetMode({}),'dynamic');
   assert.throws(()=>resolveBudgetMode({ORCH_CAPACITY_MODE:'formula'}),/expected dynamic/);
   const settings=budgetSettings({});
   assert.equal(settings.mode,'dynamic');assert.equal(settings.floorMB,DEFAULT_MIN_AVAILABLE_MB);assert.equal(settings.windowCostMB,DEFAULT_WINDOW_COST_MB);
   assert.equal(budgetSettings({ORCH_MIN_AVAILABLE_MB:'0'}).floorMB,DEFAULT_MIN_AVAILABLE_MB);
   assert.equal(budgetSettings({ORCH_MIN_AVAILABLE_MB:'512'}).floorMB,DEFAULT_MIN_AVAILABLE_MB);
+  assert.equal(budgetSettings({ORCH_MIN_AVAILABLE_MB:'2000'}).floorMB,2000);
 });
 
 test('admission requires predicted peak to stay strictly below available minus reserve',()=>{
-  assert.equal(admissionOk({availableMB:4500,runningCostMB:0,blockCostMB:500,floorMB:4000}),false);
-  assert.equal(admissionOk({availableMB:4501,runningCostMB:0,blockCostMB:500,floorMB:4000}),true);
-  assert.equal(admissionOk({availableMB:5000,runningCostMB:500,blockCostMB:500,floorMB:4000}),false);
+  assert.equal(admissionOk({availableMB:1500,runningCostMB:0,blockCostMB:500,floorMB:1000}),false);
+  assert.equal(admissionOk({availableMB:1501,runningCostMB:0,blockCostMB:500,floorMB:1000}),true);
+  assert.equal(admissionOk({availableMB:2000,runningCostMB:500,blockCostMB:500,floorMB:1000}),false);
   assert.equal(admissionOk({availableMB:10,runningCostMB:0,blockCostMB:256,floorMB:0}),false);
-  assert.equal(admissionOk({availableMB:5000,runningCostMB:0,blockCostMB:NaN,floorMB:4000}),false);
+  assert.equal(admissionOk({availableMB:2000,runningCostMB:0,blockCostMB:NaN,floorMB:1000}),false);
+  assert.equal(admissionOk({availableMB:2500,runningCostMB:0,blockCostMB:500,floorMB:2000}),false);
 });
 
 test('declared task memory raises the block estimate once, not per serial task',()=>{

@@ -10,7 +10,7 @@ export async function admitAuxiliaryWindow({coordinator,stateDir,id,keys,env=pro
   const budget=budgetSettings(env),state=loadBudgetState(budgetStateFile(stateDir));
   const base=state.samples>0?Math.max(budget.windowCostMB,state.windowCostMB):budget.windowCostMB;
   const costMB=Math.ceil(base*firstRunHeadroom(state.samples,budget.headroom));
-  if(available()<=budget.floorMB)throw new Error('Auxiliary window refused: below mandatory 4000 MB reserve');
+  if(available()<=budget.floorMB)throw new Error(`Auxiliary window refused: below mandatory ${budget.floorMB} MB reserve`);
   const rec={id,keys,memoryCostMB:costMB};
   const deadline=Date.now()+Math.max(1,Number(timeoutMs)||1);
   while(true){

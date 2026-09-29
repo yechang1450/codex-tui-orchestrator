@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased (1000 MB admission floor)
+
+- Core `1.4.4-rc.1`, cachebuster `0.5.0-rc.1+codex.20260929103036`: lower the dynamic memory admission reserve from 4000 MB to 1000 MB across the runner, auxiliary windows, low-level visible probes and SessionStart. Keep strict predicted-peak admission and allow `ORCH_MIN_AVAILABLE_MB` only to raise the floor. Add boundary coverage for the new default and higher override.
+
 ## Unreleased (local comprehensive-test fixes)
 
 - Core `1.4.3-rc.1`, cachebuster `0.5.0-rc.1+codex.20260928200041`: make the documented `--tasks` command read the selected or latest run, avoid treating numeric result values as project directories, allow a bounded 30-second Windows signature check, and preserve structured diagnostics for a launcher that exits before its session is found. An untrusted existing CLI now reports the trust failure without invoking the automatic installer. The real-model smoke fixture allows ten minutes by default for Max-effort turns.

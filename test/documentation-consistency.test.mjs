@@ -37,7 +37,7 @@ test('current documentation points at the sealed core and labels older evidence 
   assert.match(read('docs/live-validation-1.2.3.md'), /历史|historical/i);
   assert.doesNotMatch(readme + readmeZh + policy + compatibility, new RegExp(['blocked', 'by', 'policy'].join('\\s+'), 'i'));
 
-  // The active release uses current available memory and a 4000 MB reserve.
+  // The active release uses current available memory and a 1000 MB reserve.
   // Historical implementation plans intentionally retain the formula that was
   // in effect when they were written and are excluded from this assertion.
   const activeDocs = [readme, readmeZh, skill, contract, policy].join('\n');
@@ -50,5 +50,5 @@ test('current documentation points at the sealed core and labels older evidence 
     read('test/live-codex.mjs'),
   ].join('\n');
   assert.match(capacitySources, /os\.freemem\s*\(/, 'admission must use current available memory');
-  assert.match(capacitySources, /DEFAULT_MIN_AVAILABLE_MB\s*=\s*4000/, 'admission must keep the 4000 MB reserve');
+  assert.match(capacitySources, /DEFAULT_MIN_AVAILABLE_MB\s*=\s*1000/, 'admission must keep the 1000 MB reserve');
 });
