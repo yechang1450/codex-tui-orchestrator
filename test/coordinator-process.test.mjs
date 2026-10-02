@@ -6,6 +6,7 @@ import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {coordinatorDir} from '../scripts/core/leases.mjs';
 import {controllerStateDir} from '../scripts/core/controller-state.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 test('Codex default coordinator is isolated from the generic TUI pool',()=>{
@@ -54,6 +55,16 @@ test('Windows short aliases cannot place controller or coordinator state inside 
   assert.equal(controllerStateDir(workspace,{ORCH_CONTROLLER_ROOT:external}),external);
   assert.equal(coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:external}),external);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('local UNC aliases share controller identity and conflict keys with the drive path',t=>{
+ if(process.platform!=='win32')return t.skip('Windows UNC aliases only');
+ const workspace=path.resolve(family,'..');
+ const unc='\\\\localhost\\c$'+workspace.slice(2);
+ try {
+  if(fs.realpathSync.native(unc).toLowerCase()===unc.toLowerCase())return t.skip('UNC alias unavailable');
+  assert.equal(controllerWindowsDir(workspace),controllerWindowsDir(unc));
+  assert.equal(coordinatorDir(workspace),coordinatorDir(unc));
+ } catch (error) { return t.skip('UNC administrative share unavailable: '+error.message); }
 });
 for(const [parents,capacity] of [[9,8],[12,4],[40,16]])test(`${parents} independent parent processes contend for ${capacity} shared slots without lost updates`,async()=>{
  fs.mkdirSync(family,{recursive:true});const dir=fs.mkdtempSync(path.join(family,'cross-process-'));

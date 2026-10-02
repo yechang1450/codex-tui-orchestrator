@@ -12,6 +12,7 @@ import {requestTasks} from '../scripts/core/contracts.mjs';
 import {coreInventory,verifyRelease} from '../scripts/release-integrity.mjs';
 import {resolveInitiatorSettings} from '../scripts/core/initiator-settings.mjs';
 import {budgetSettings} from '../scripts/core/memory-budget.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 
 const exec = promisify(execFile);
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -138,7 +139,7 @@ while (!engineEnded && Date.now() < deadline) {
     }
     if (!processes) { await new Promise(r => setTimeout(r, 3000)); continue; }
     const byPid = new Map(processes.map(p => [p.ProcessId, p]));
-    const registry = path.join(workspace, 'temp', 'orchestrator', 'orchestrator-windows.json');
+    const registry = path.join(controllerWindowsDir(workspace), 'orchestrator-windows.json');
     const windows = fs.existsSync(registry) ? JSON.parse(fs.readFileSync(registry, 'utf8')) : [];
     const own = windows.filter(w => w.runId===runId);
     const live = [];

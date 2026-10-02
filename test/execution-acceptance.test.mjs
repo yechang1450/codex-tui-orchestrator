@@ -1,6 +1,7 @@
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
@@ -11,7 +12,8 @@ import {createStatusPublisher,readEvents,readRunStatus} from '../scripts/core/st
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const family=path.join(repo,'temp','execution-acceptance');
 fs.mkdirSync(family,{recursive:true});
-const controllerRoot=fs.mkdtempSync(path.join(family,'controller-'));
+// Controller authority must remain outside the workspace a child can write.
+const controllerRoot=fs.mkdtempSync(path.join(os.tmpdir(),'codex-orch-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
 after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});

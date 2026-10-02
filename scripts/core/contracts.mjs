@@ -4,7 +4,7 @@ import {isDeepStrictEqual} from 'node:util';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {blockCostMB as budgetBlockCostMB, DEFAULT_WINDOW_COST_MB} from './memory-budget.mjs';
-import {assertNoReparsePoints} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicalPathIdentity} from './runtime-context.mjs';
 
 /**
  * 动态内存预算（dynamic capacity）：
@@ -102,14 +102,7 @@ export function canonicalKey(key, cwd = process.cwd()) {
   if (!match) return String(key);
   const windows = /^[a-z]:[\\/]|^\\\\/i.test(match[2]) || process.platform === 'win32';
   const api = windows ? path.win32 : path.posix;
-  let p = api.resolve(cwd, match[2]);
-  try { p = fs.realpathSync.native(p); } catch {
-    // Resolve existing ancestors too, so a not-yet-created file beneath a junction
-    // conflicts with the same target reached through its real directory.
-    let parent=p; const tail=[];
-    while (api.dirname(parent)!==parent && !fs.existsSync(parent)) {tail.unshift(api.basename(parent));parent=api.dirname(parent);}
-    try {p=api.join(fs.realpathSync.native(parent),...tail);} catch {}
-  }
+  let p = physicalPathIdentity(api.resolve(cwd, match[2]));
   p=p.replaceAll('\\','/').replace(/\/+$/,'');
   return match[1].toLowerCase()+':'+(windows?p.toLowerCase():p);
 }

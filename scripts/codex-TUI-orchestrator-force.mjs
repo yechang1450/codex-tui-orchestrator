@@ -14,9 +14,12 @@ import { fileURLToPath } from "node:url";
 import {launcherIdentity,processSnapshot,sameProcess} from './core/leases.mjs';
 
 import { resolveRuntimeContext } from './runtime-context.mjs';
+import { controllerWindowsDir } from './core/controller-state.mjs';
 const { workspace: WORKSPACE, temp: TMP, state: STATE_DIR } = resolveRuntimeContext();
-const FLAG = path.join(STATE_DIR, ".orchestrator-enabled");
-const WINDOWS_REG = path.join(STATE_DIR, "orchestrator-windows.json");
+const WINDOW_STATE_DIR = controllerWindowsDir(WORKSPACE);
+const FLAG = path.join(WINDOW_STATE_DIR, ".orchestrator-enabled");
+const WINDOWS_REG = path.join(WINDOW_STATE_DIR, "orchestrator-windows.json");
+const LEGACY_WINDOWS_REG = path.join(STATE_DIR, "orchestrator-windows.json");
 
 // 拒绝符号链接/非常规文件，防止伪造/篡改 registry 或 marker（安全网）。
 function isRegularFile(p) { try { return lstatSync(p).isFile(); } catch { return false; } }
@@ -33,6 +36,19 @@ function loadJson(f, d) {
     console.error("[force] registry read/parse failed: " + f + " :: " + e.message);
     return d;
   }
+}
+function legacyRegistryDrained() {
+  if (!existsSync(LEGACY_WINDOWS_REG)) return true;
+  const legacy = loadJson(LEGACY_WINDOWS_REG, null);
+  if (!Array.isArray(legacy)) {
+    console.error("[force] refusing: legacy workspace window registry is not an array (fail-closed): " + LEGACY_WINDOWS_REG);
+    return false;
+  }
+  if (legacy.length) {
+    console.error("[force] refusing: active legacy workspace window registry must be drained or reconciled before upgrade: " + LEGACY_WINDOWS_REG);
+    return false;
+  }
+  return true;
 }
 
 // Read the PID stored in a window's pid file. Returns 0 if the record has no pidFile, the pidFile
@@ -89,8 +105,9 @@ function liveWindows() {
 const mode = process.argv[2];
 
 function runCli() {
+  if (mode !== "--disable" && !legacyRegistryDrained()) { process.exitCode = 2; return; }
   if (mode === "--enable") {
-    mkdirSync(STATE_DIR, { recursive: true });
+    mkdirSync(WINDOW_STATE_DIR, { recursive: true });
     // 小标记直接用 writeFileSync 覆盖写，避免 tmp+rename→rm→rename 间隙内标记缺失的竞态。
     writeFileSync(FLAG, String(Date.now()), "utf8");
     console.log("enforcement ARMED: use --exec by default or --run-windows for visible execution.");

@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 
 // Resolve once at the caller's entry point. Never substitute the install directory
 // or CODEX_HOME for the directory that initiated this run.
@@ -54,29 +55,64 @@ export function assertNoReparsePoints(target, label = 'path') {
   return absolute;
 }
 
+// Return one stable identity for an existing path (and its not-yet-created
+// descendants). Windows may expose the same local directory through a long
+// name, an 8.3 alias, or the local administrative UNC share. These spellings
+// must not create separate controller directories, conflict keys, or mutexes.
+export function physicalPathIdentity(target) {
+  const absolute = assertNoReparsePoints(target, 'physical path');
+  let existing = absolute;
+  const tail = [];
+  while (true) {
+    try {
+      const resolved = path.resolve(fs.realpathSync.native(existing), ...tail);
+      return normalizePhysicalPath(resolved);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+      const next = path.dirname(existing);
+      // A synthetic drive/UNC root used by a plan or test may not exist on
+      // this machine. Once every existing ancestor has been checked, its
+      // lexical spelling is the only available identity; retain it rather
+      // than turning a harmless key comparison into an ENOENT.
+      if (next === existing) return normalizePhysicalPath(absolute);
+      tail.unshift(path.basename(existing));
+      existing = next;
+    }
+  }
+}
+
+function normalizePhysicalPath(value) {
+  if (process.platform !== 'win32') return path.resolve(value);
+  let normalized = path.resolve(String(value)).replaceAll('/', '\\');
+  // realpathSync.native can retain the extended-path prefix.
+  normalized = normalized.replace(/^\\\\\?\\/, '');
+  // A local administrative share is another spelling of the local drive. The
+  // machine name is read once from the OS; arbitrary remote UNC shares are not
+  // rewritten because they may refer to a different filesystem.
+  const host = String(process.env.COMPUTERNAME || os.hostname() || '').trim();
+  let local = /^\\\\(?:localhost|127\.0\.0\.1)\\([a-z])\$\\(.*)$/i.exec(normalized);
+  if (!local && host) {
+    const prefix = `\\\\${host}\\`;
+    if (normalized.toLowerCase().startsWith(prefix.toLowerCase())) {
+      const suffix = /^([a-z])\$\\(.*)$/i.exec(normalized.slice(prefix.length));
+      if (suffix) local = suffix;
+    }
+  }
+  if (local) normalized = `${local[1]}:\\${local[2]}`;
+  return normalized.toLowerCase();
+}
+
 // Security-sensitive containment must compare physical directories as well as
 // path spellings: on Windows an 8.3 name can refer to the same workspace.
 export function physicallySameOrChild(parent, child) {
   const root = assertNoReparsePoints(parent, 'workspace');
   const target = assertNoReparsePoints(child, 'candidate path');
-  const canonical = absolute => {
-    let existing = absolute;
-    const tail = [];
-    while (true) {
-      try { return path.resolve(fs.realpathSync.native(existing), ...tail); }
-      catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-        const next = path.dirname(existing);
-        if (next === existing) throw error;
-        tail.unshift(path.basename(existing));
-        existing = next;
-      }
-    }
-  };
-  const normalize = value => process.platform === 'win32' ? value.toLowerCase() : value;
-  const realRoot = normalize(canonical(root));
-  const realTarget = normalize(canonical(target));
+  const realRoot = physicalPathIdentity(root);
+  const realTarget = physicalPathIdentity(target);
   if (realTarget === realRoot || realTarget.startsWith(realRoot + path.sep)) return true;
+  const normalize = value => process.platform === 'win32'
+    ? String(value).replaceAll('/', '\\').toLowerCase()
+    : String(value);
   // Drive mappings and UNC spellings may retain different strings even after
   // realpath. The workspace itself may not exist yet, so compare the nearest
   // existing workspace ancestor with candidate ancestors and then compare the

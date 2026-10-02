@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {keysOverlap} from './contracts.mjs';
 import os from 'node:os';
-import {assertNoReparsePoints,physicallySameOrChild} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicallySameOrChild,physicalPathIdentity} from './runtime-context.mjs';
 import {controllerStateDir} from './controller-state.mjs';
 
 function shapeOf(value) {
@@ -136,7 +136,7 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
   // contender then hashes and passes the same physical coordinator path to
   // the named mutex helper instead of maintaining separate locks for lexical
   // spellings of one leases.json.
-  const physicalDir = (()=>{ try { return fs.realpathSync.native(dir); } catch { return path.resolve(dir); } })();
+  const physicalDir = physicalPathIdentity(dir);
   const lock=path.join(dir,'mutex.json'),file=path.join(dir,'leases.json');
   let processes=snapshot();let owner=processes.get(process.pid);
   if(!owner)throw new Error('Coordinator owner identity unavailable');

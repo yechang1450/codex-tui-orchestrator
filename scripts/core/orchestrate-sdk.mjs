@@ -810,9 +810,9 @@ async function runPrototypeGate(title, prompt) {
 // this marker: from a NON-window context it refuses real-execution kinds and tells the caller to
 // route through --run-windows. A sanctioned window sets $env:ORCH_WINDOW=1 (in its launcher)
 // so it passes the guard.
-const ORCH_ARMED = path.join(STATE_DIR, ".orchestrator-enabled");
+const ORCH_ARMED = path.join(windowTemp(), ".orchestrator-enabled");
 function armEnforcement() {
-  try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
+  try { mkdirSync(path.dirname(ORCH_ARMED), { recursive: true }); writeFileSync(ORCH_ARMED, String(Date.now()), "utf8"); } catch { /* ignore */ }
 }
 // ---- CLI 环境检测与安装（硬约束：先确保 codex CLI 可用，再谈后续）----
 // resolveAgent() 在本模块求值时调用 host-cli 的有界探测器；找不到已验证的
@@ -1913,9 +1913,18 @@ async function closeWindow(pidf) {
 // ---------------------------------------------------------------------------
 // Running-window registry + conflict locking (stability)
 // ---------------------------------------------------------------------------
-const WIN_REG = path.join(STATE_DIR, "orchestrator-windows.json");
-const LOCK_REG = path.join(STATE_DIR, "orchestrator-locks.json");
-const REG_LOCK = path.join(STATE_DIR, "orchestrator-registry.lock");
+const WINDOW_STATE_DIR = windowTemp();
+const WIN_REG = path.join(WINDOW_STATE_DIR, "orchestrator-windows.json");
+const LOCK_REG = path.join(WINDOW_STATE_DIR, "orchestrator-locks.json");
+const REG_LOCK = path.join(WINDOW_STATE_DIR, "orchestrator-registry.lock");
+const LEGACY_WIN_REG = path.join(STATE_DIR, "orchestrator-windows.json");
+function assertLegacyWindowRegistryDrained() {
+  if (!existsSync(LEGACY_WIN_REG) || path.resolve(WIN_REG).toLowerCase() === path.resolve(LEGACY_WIN_REG).toLowerCase()) return;
+  const legacy = loadJson(LEGACY_WIN_REG, []);
+  if (Array.isArray(legacy) && legacy.length) {
+    throw new Error('LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN: active workspace registry remains at ' + LEGACY_WIN_REG + '; stop or reconcile old windows before upgrading');
+  }
+}
 function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, ms); } catch { /* ignore */ } }
 const configuredLockTtl = Number(process.env.ORCH_REGISTRY_LOCK_TTL_MS || 120000);
 const REG_LOCK_TTL_MS = Number.isFinite(configuredLockTtl) && configuredLockTtl >= 5000 ? configuredLockTtl : 120000;
@@ -1976,7 +1985,7 @@ function loadJson(file, fallback) {
   throw new Error("Invalid orchestration state: " + file);
 }
 function saveJson(file, data) {
-  mkdirSync(STATE_DIR, { recursive: true });
+  mkdirSync(path.dirname(file), { recursive: true });
   const tmp = file + ".tmp-" + process.pid;
   try {
     writeFileSync(tmp, JSON.stringify(data, null, 2), "utf8");
@@ -1989,7 +1998,10 @@ function saveJson(file, data) {
     }
   } catch (e) { try { rmSync(tmp, { force: true }); } catch {} throw e; }
 }
-function loadWindows() { return loadJson(WIN_REG, []); }
+function loadWindows() {
+  assertLegacyWindowRegistryDrained();
+  return loadJson(WIN_REG, []);
+}
 function loadLocks() { return loadJson(LOCK_REG, []); }
 function saveLocks(l) { withRegistryLock(() => saveJson(LOCK_REG, l)); }
 // 全事务：load+mutate+save 在同一个锁内完成，杜绝跨进程 lost-update。
@@ -2005,7 +2017,7 @@ function freshPending(w) {
 // ---- 测试注入点（仅测试用，生产缺省走真实实现；避免单测触发真实 tasklist/文件锁）----
 // hooks: { db, alive, lock, now }。db=注册表 json 路径；alive=windowAlive 替代；lock=withRegistryLock 替代；now=Date.now 替代。
 let __orchHooks = null;
-function testDb() { return (__orchHooks && __orchHooks.db) ? String(__orchHooks.db) : WIN_REG; }
+function testDb() { if (!__orchHooks) assertLegacyWindowRegistryDrained(); return (__orchHooks && __orchHooks.db) ? String(__orchHooks.db) : WIN_REG; }
 function testAlive() { return (__orchHooks && __orchHooks.alive) ? __orchHooks.alive : (w) => windowAlive(w); }
 function testNow() { return (__orchHooks && __orchHooks.now) ? __orchHooks.now : Date.now; }
 function testFresh(w) {

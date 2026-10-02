@@ -18,10 +18,11 @@ const runNode = (file, args, opts = {}) => {
     const out = execFileSync(process.execPath, [file, ...args], { encoding: 'utf8', ...opts });
     return { code: 0, out };
   } catch (e) {
-    return { code: e.status ?? 1, out: String(e.stdout || '') };
+    return { code: e.status ?? 1, out: String(e.stdout || '') + String(e.stderr || '') };
   }
 };
 const { TERMINAL, SUCCESS, summaryComplete, summaryTerminal, failures } = await import(importUrl(path.join(scripts, 'poll-windows.mjs')));
+const { controllerWindowsDir } = await import(importUrl(path.join(scripts, 'core', 'controller-state.mjs')));
 const summaryFixture=(status='verified')=>({runId:'test-run',blocks:[{key:'B1'}],tasks:[{id:'T1'}],results:{B1:{status}},taskResults:{T1:{status}}});
 test('poll-windows requires verified status and complete run inventory',()=>{
  assert.equal(TERMINAL.has('failed'),true);assert.equal(TERMINAL.has('pending'),false);
@@ -65,13 +66,14 @@ test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
   assert.equal(pidAlive(99999999), false);
   // armed becomes true once the flag file exists with a numeric payload
   fs.mkdirSync(stDir, { recursive: true });
-  const flag = path.join(stDir, '.orchestrator-enabled');
+  const flag = FLAG;
+  fs.mkdirSync(path.dirname(flag), {recursive:true});
   fs.writeFileSync(flag, String(Date.now()), 'utf8');
   assert.equal(armed(), true);
   // WINDOWS_REG/TMP point under the temp workspace
   assert.equal(TMP, path.join(wsDir, 'temp'));
-  assert.ok(WINDOWS_REG.startsWith(STATE_DIR));
-  assert.equal(FLAG, path.join(STATE_DIR, '.orchestrator-enabled'));
+  assert.ok(WINDOWS_REG.startsWith(controllerWindowsDir(wsDir)));
+  assert.equal(FLAG, path.join(controllerWindowsDir(wsDir), '.orchestrator-enabled'));
 });
 
 test('force.mjs CLI --status/--assert read/--assert write', () => {
@@ -99,6 +101,25 @@ test('force.mjs CLI --status/--assert read/--assert write', () => {
   }
 });
 
+test('force.mjs refuses an active legacy workspace registry during migration', () => {
+  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-legacy-'));
+  try {
+    const state = path.join(cliDir, 'temp', 'state');
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: state };
+    const legacy = path.join(state, 'orchestrator-windows.json');
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(legacy, JSON.stringify([{ id: 'old-window' }]), 'utf8');
+    const blocked = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--status'], { env });
+    assert.equal(blocked.code, 2);
+    assert.match(blocked.out, /legacy workspace window registry/i);
+    fs.writeFileSync(legacy, '[]', 'utf8');
+    const drained = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--status'], { env });
+    assert.equal(drained.code, 0);
+  } finally {
+    fs.rmSync(cliDir, { recursive: true, force: true });
+  }
+});
+
 test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATION when armed', () => {
   const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-cli2-'));
   try {
@@ -106,9 +127,9 @@ test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATIO
     // 同上：模拟非窗语境，剥离宿主 ORCH_WINDOW，避免 --assert read 被误判为已授权窗。
     delete env.ORCH_WINDOW;
     const tmpDir = path.join(cliDir, 'temp', 'state');
-    fs.mkdirSync(tmpDir, { recursive: true });
+    const controllerDir = controllerWindowsDir(cliDir);fs.mkdirSync(controllerDir, { recursive: true });
     // arm enforcement
-    fs.writeFileSync(path.join(tmpDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
+    fs.writeFileSync(path.join(controllerDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
     // --assert read when armed + no window -> read-only ok (exit 0)
     const ar = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'read'], { env });
     assert.equal(ar.code, 0);
@@ -134,7 +155,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
     delete env.ORCH_WINDOW;
     const en = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--enable'], { env });
     assert.equal(en.code, 0);
-    const flag = path.join(cliDir, 'temp', 'state', '.orchestrator-enabled');
+    const flag = path.join(controllerWindowsDir(cliDir), '.orchestrator-enabled');
     assert.equal(fs.existsSync(flag), true);
   } finally {
     fs.rmSync(cliDir, { recursive: true, force: true });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {processSnapshot} from '../scripts/core/leases.mjs';
+import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
 const family=fileURLToPath(new URL('../temp/',import.meta.url));
 fs.mkdirSync(family,{recursive:true});
@@ -154,8 +155,9 @@ test('execution guard recognizes a registered hidden worker and rejects an unrel
   const env={...process.env,WORKSPACE_DIR:f.workspace,ORCH_STATE_DIR:state,ORCH_EXECUTION:'1'};delete env.ORCH_WINDOW;
   try{
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');
-    fs.writeFileSync(path.join(state,'.orchestrator-enabled'),String(Date.now()));
-    const registry=path.join(state,'orchestrator-windows.json');
+    const controllerDir=controllerWindowsDir(f.workspace);fs.mkdirSync(controllerDir,{recursive:true});
+    fs.writeFileSync(path.join(controllerDir,'.orchestrator-enabled'),String(Date.now()));
+    const registry=path.join(controllerDir,'orchestrator-windows.json');
     fs.writeFileSync(registry,JSON.stringify([{id:'worker',pidFile:f.files.pidf,mode:'headless'}]));
     const allowed=spawnSync(process.execPath,[force,'--assert','exec'],{env,encoding:'utf8',windowsHide:true});
     assert.equal(allowed.status,0,allowed.stdout+allowed.stderr);

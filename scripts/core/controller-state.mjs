@@ -1,7 +1,7 @@
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {assertNoReparsePoints,physicallySameOrChild} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicallySameOrChild,physicalPathIdentity} from './runtime-context.mjs';
 
 // Controller authority must be outside a workspace-write child's writable root.
 export function controllerStateDir(workspace,env=process.env){
@@ -19,13 +19,13 @@ export function assertControllerPath(workspace,candidate,label='controller path'
 }
 
 export function controllerWindowsDir(workspace){
-  const identity=path.resolve(workspace).toLowerCase();
+  const identity=physicalPathIdentity(workspace);
   return assertControllerPath(workspace,path.join(controllerStateDir(workspace),'windows',crypto.createHash('sha256').update(identity).digest('hex')),'controller windows');
 }
 
 export function controllerHeadlessBase(workspace,attemptFile,key){
   if(!physicallySameOrChild(workspace,attemptFile))throw new Error('Headless attempt must be inside the initiating workspace');
-  const workspaceId=crypto.createHash('sha256').update(path.resolve(workspace).toLowerCase()).digest('hex');
+  const workspaceId=crypto.createHash('sha256').update(physicalPathIdentity(workspace)).digest('hex');
   const attemptId=crypto.createHash('sha256').update(path.resolve(attemptFile).toLowerCase()).digest('hex');
   const stem='exec-'+String(key).replace(/[^A-Za-z0-9_-]/g,'_');
   return assertControllerPath(workspace,path.join(controllerStateDir(workspace),'headless',workspaceId,attemptId,stem),'headless controller files');
