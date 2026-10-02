@@ -28,7 +28,7 @@ jobs:
           $cliRoot = Join-Path $pluginData 'runtime\cli'
           $env:PLUGIN_DATA = $pluginData
           $env:npm_config_prefix = $cliRoot
-          $nodeExe = (Get-Command node.exe -CommandType Application).Source
+          $nodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
           $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
           if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) { throw "npm CLI entry was not found: $npmCli" }
           # Seed the private fixture with the exact pinned package before the
