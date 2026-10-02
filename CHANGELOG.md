@@ -6,8 +6,8 @@
 - Plugin/package version is now standard `0.9.29-rc.1`; the execution core remains sealed at `1.4.4-rc.1`.
 - Added `npm --prefix scripts run version:next` (`node scripts/bump-version.mjs --next-rc`) so later candidates advance `rc.1` to `rc.2`, `rc.3`, and so on while keeping all three release manifests synchronized.
 - Carried forward the 1000 MB dynamic admission floor and its current source/package verification scope.
-- Updated the pinned native Codex installer to official `@openai/codex@0.160.0` with freshly reviewed x64/arm64 executable and 47-file package digests.
-- Made the Windows validation workflow deterministic: it installs and version-checks the pinned `@openai/codex@0.160.0` native fixture, disables automatic CLI replacement, and passes that explicit fixture to the offline regression suite.
+- Updated the pinned native Codex installer to official `@openai/codex@0.160.0` with freshly reviewed x64/arm64 executable and 47-file package digests; the platform-tree pins now match the npm tarballs' canonical manifest.
+- Made the Windows validation workflow deterministic: it invokes the production `runtime-prepare.mjs` installer inside an isolated `PLUGIN_DATA` runtime, verifies the executable and complete platform tree, then exposes only that private runtime through `PATH` while leaving explicit-CLI test branches independent.
 - Hardened plugin installation by containing the host-reported cache path, checking its canonical manifest/scripts before `npm ci`, and rejecting `%`, `!`, or newline bytes in Windows shell fallbacks.
 - Hardened the optional pi adapter: PATH discovery now requires a verified Windows executable; an unverified binary requires an explicit local-development opt-in.
 - Hardened runner checkpoint commands: use the verified `process.execPath`, PowerShell literal quoting, and control-character rejection; special-character path and acceptance-binding regressions pass.

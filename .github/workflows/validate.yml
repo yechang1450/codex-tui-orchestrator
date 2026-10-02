@@ -20,18 +20,29 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - name: Install locked dependencies
-        run: npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
+        run: npm ci --prefix scripts --omit=optional --ignore-scripts --no-audit --no-fund
       - name: Install and pin the offline Codex CLI fixture
         shell: pwsh
         run: |
-          $cliRoot = Join-Path $env:RUNNER_TEMP 'codex-cli-0.160.0'
-          npm install --prefix $cliRoot --ignore-scripts --no-audit --no-fund --no-save '@openai/codex@0.160.0'
-          $cli = Join-Path $cliRoot 'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
-          if (-not (Test-Path -LiteralPath $cli)) { throw "Pinned Codex CLI binary was not installed: $cli" }
+          $pluginData = Join-Path $env:RUNNER_TEMP 'codex-plugin-data'
+          $cliRoot = Join-Path $pluginData 'runtime\cli'
+          $env:PLUGIN_DATA = $pluginData
+          $nodeExe = (Get-Command node.exe -CommandType Application).Source
+          $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
+          if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) { throw "npm CLI entry was not found: $npmCli" }
+          $env:npm_execpath = $npmCli
+          $env:ORCH_NPM_TRUSTED = '1'
+          $env:ORCH_AUTO_INSTALL_CLI = '1'
+          $env:ORCH_AUTO_INSTALL_DEPS = '0'
+          $reportText = (& node scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI verification failed: $reportText" }
+          $report = $reportText | ConvertFrom-Json
+          if (-not $report.ok -or $report.stage -ne 'ready') { throw "Pinned Codex CLI verification returned an invalid report: $reportText" }
+          $cli = [string]$report.cliPath
           $version = (& $cli --version 2>$null | Out-String).Trim()
           if ($version -ne 'codex-cli 0.160.0') { throw "Unexpected Codex CLI version: $version" }
-          "ORCH_CLI=$cli" >> $env:GITHUB_ENV
-          "ORCH_ALLOW_UNVERIFIED_CLI=1" >> $env:GITHUB_ENV
+          "PLUGIN_DATA=$pluginData" >> $env:GITHUB_ENV
+          "PATH=$cliRoot;$env:PATH" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_CLI=0" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_DEPS=0" >> $env:GITHUB_ENV
       - name: Configure offline test host

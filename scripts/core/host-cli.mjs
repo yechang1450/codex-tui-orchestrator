@@ -183,8 +183,8 @@ const PINNED_CLI_SHA256=Object.freeze({
 // platform tarball. Checking the complete tree rejects DLL side-loading and
 // secondary executable substitution beside an otherwise genuine codex.exe.
 const PINNED_PLATFORM_TREE_SHA256=Object.freeze({
-  x64:'08a9b34eee738cc65199262bc7dcafb82762186d63ce99b0a916514de25db79b',
-  arm64:'94b1eba76b291ae5c8a19c37d86b9ca9b08e6fdf6f002f5001138dd587df0b27',
+  x64:'000baafdcbbe81e36b99853fe435604cabdc3b49a5cbe69a414d6ff05d159d7d',
+  arm64:'447196ac3efabc005235388a571dc61d62429503c948c01b1d5a4bde1285620c',
 });
 
 function pinnedBinaryHash(file,expected) {

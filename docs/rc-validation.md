@@ -9,7 +9,8 @@
 - 公开性审查未发现真实 API key、私钥或凭据；当前工作树和最新主线 tip 不含个人绝对路径。主线、旧的 `feat/exec-headless-status`、Dependabot 分支和 PR 只读 refs 仍保留历史验证快照；候选 v4 已清理文件内容，但还需清理提交者元数据。已关闭 PR #1 的正文仍含个人路径，公开前必须脱敏；PR #2–#4 仍开放。普通分支推送不能清除 `refs/pull/*` 或 GitHub 缓存，必要时须按 GitHub 官方流程处理 Support 请求。
 - 本轮本地静态审查修复了未验证 Pi CLI、Windows shell 参数展开、插件安装路径越界、8.3/UNC 路径租约分叉、检查点命令注入候选、headless 身份快照失败导致的无界等待、旧 registry 损坏静默放行和 supervisor 中继模型漂移；新增 PowerShell 特殊路径、文件派生绑定和有限收尾回归通过。窗口注册表、registry lock 和启用标记已迁移到 controller-owned state，并统一物理工作区身份；升级时发现旧的损坏或非空 workspace registry 会 fail-closed。
 - 官方 Codex Security 深度扫描在本会话未能启动，原因是宿主没有提供该扫描要求的托管文件权限配置；本节的结论来自本地静态审查、针对性回归和发布完整性检查，不替代官方扫描。
-- 远端 Windows CI 的失败曾由 workflow 未提供可验证的 Codex CLI 引起，导致 `CLI_AUTO_INSTALL_FAILED (npm_untrusted)` 连锁失败；验证工作流现已改为安装并显式校验官方 `@openai/codex@0.160.0` 原生 fixture，关闭自动 CLI 替换后再运行离线回归。修改后必须以新的 CI run 结果为准，不能把旧 run 当作通过证据。
+- 远端 Windows CI 的失败曾由 workflow 未提供可验证的 Codex CLI 引起，导致 `CLI_AUTO_INSTALL_FAILED (npm_untrusted)` 连锁失败；验证工作流现已在隔离的 `PLUGIN_DATA` 运行时中调用生产 `runtime-prepare.mjs`，使用相同的可执行文件 SHA-256 与 47 文件平台树校验，再只通过私有运行时路径发现 CLI，不写入全局 `ORCH_CLI` 或未验证旁路。修改后必须以新的 CI run 结果为准，不能把旧 run 当作通过证据。
+- 本轮还修正了此前封存的 0.160.0 平台树摘要：实际 npm tarball 的 x64/arm64 canonical manifest 分别为 `000baafd…d159d7d` 与 `447196ac…85620c`；旧摘要会使真实生产安装器错误地报告 `integrity_mismatch`，现已重新封印并做了隔离安装回归。
 
 ## 2026-09-29 0.9.29-rc.1 内存准入下限调整候选（core 1.4.4-rc.1）
 
