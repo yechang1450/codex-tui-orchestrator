@@ -13,6 +13,7 @@ function findLocalCodexCli() {
   const roots = [
     path.join(process.env.LOCALAPPDATA || '', 'OpenAI', 'Codex', 'bin'),
     path.join(process.env.USERPROFILE || '', '.codex', 'packages'),
+    path.join(process.env.PLUGIN_DATA || '', 'runtime', 'cli'),
   ].filter(Boolean);
   const pending = [...roots];
   while (pending.length) {

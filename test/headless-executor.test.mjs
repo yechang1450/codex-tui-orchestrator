@@ -93,7 +93,7 @@ test('snapshot failure publishes a bounded refusal instead of waiting forever',a
     let removed=false;
     for(let i=0;i<50&&!removed;i++){
       try{f.close();removed=true;}
-      catch(error){if(error?.code!=='EPERM')throw error;await new Promise(r=>setTimeout(r,100));}
+      catch(error){if(!['EPERM','EBUSY'].includes(error?.code))throw error;await new Promise(r=>setTimeout(r,100));}
     }
     assert.equal(removed,true,'detached fixture child must release its workspace before cleanup');
   }
