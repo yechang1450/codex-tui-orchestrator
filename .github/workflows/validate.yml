@@ -20,7 +20,20 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - name: Install locked dependencies
-        run: npm ci --prefix scripts --omit=optional --ignore-scripts --no-audit --no-fund
+        run: npm ci --prefix scripts --ignore-scripts --no-audit --no-fund
+      - name: Install and pin the offline Codex CLI fixture
+        shell: pwsh
+        run: |
+          $cliRoot = Join-Path $env:RUNNER_TEMP 'codex-cli-0.160.0'
+          npm install --prefix $cliRoot --ignore-scripts --no-audit --no-fund --no-save '@openai/codex@0.160.0'
+          $cli = Join-Path $cliRoot 'node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\bin\codex.exe'
+          if (-not (Test-Path -LiteralPath $cli)) { throw "Pinned Codex CLI binary was not installed: $cli" }
+          $version = (& $cli --version 2>$null | Out-String).Trim()
+          if ($version -ne 'codex-cli 0.160.0') { throw "Unexpected Codex CLI version: $version" }
+          "ORCH_CLI=$cli" >> $env:GITHUB_ENV
+          "ORCH_ALLOW_UNVERIFIED_CLI=1" >> $env:GITHUB_ENV
+          "ORCH_AUTO_INSTALL_CLI=0" >> $env:GITHUB_ENV
+          "ORCH_AUTO_INSTALL_DEPS=0" >> $env:GITHUB_ENV
       - name: Configure offline test host
         shell: pwsh
         run: |
