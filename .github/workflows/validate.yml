@@ -55,6 +55,8 @@ jobs:
         shell: pwsh
         run: |
           "ORCH_AGENT=codex" >> $env:GITHUB_ENV
+          "ORCH_SANDBOX=danger-full-access" >> $env:GITHUB_ENV
+          "ORCH_APPROVAL=never" >> $env:GITHUB_ENV
           "PATH=$env:GITHUB_WORKSPACE\scripts;$env:PATH" >> $env:GITHUB_ENV
       - name: Run offline regression suite
         run: node --test --test-concurrency=1 test/*.test.mjs
