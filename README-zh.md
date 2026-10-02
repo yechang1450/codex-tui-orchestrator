@@ -2,11 +2,11 @@
 
 # codex-tui-orchestrator
 
-> 当前版本为 `0.5.0-rc.1` 候选版，优先支持 Windows + Node.js 22 + Codex CLI。跨机器、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。
+> 当前版本为 `0.9.29-rc.1` 候选版，优先支持 Windows + Node.js 22 + Codex CLI。跨机器、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。
 
 Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency-ready scheduling, resource reservations, default headless exec, optional visible TUI, durable checkpoints and independent result verification.
 
-版本：`0.5.0-rc.1`。验收记录按实际封存快照区分，见 [RC 验收记录](docs/rc-validation.md)；相同版本号不代表不同哈希之间的实测证据可通用。
+版本：`0.9.29-rc.1`。验收记录按实际封存快照区分，见 [RC 验收记录](docs/rc-validation.md)；相同版本号不代表不同哈希之间的实测证据可通用。
 
 ## Current support / 当前支持
 
@@ -28,7 +28,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话，副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份，结果不明则停在 `needs-reconciliation` |
 
-因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前工作树已实测四块 headless 与四块可见 TUI 并发、父级串行验收和 77 个文件的离线回归，证据见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
+因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前工作树的最终离线回归为 527 项（525 通过、0 失败、2 跳过），另有 44 项聚焦回归全部通过；证据见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 
@@ -67,11 +67,11 @@ if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
 }
 ```
 
-上面用 `~/plugins/<名字>` 作为克隆位置（与个人 marketplace 的惯例一致）；换到别的父目录同样可行——干净分发与 marketplace 条目路径都会跟随这个父目录计算。旧位置 `~/.codex/plugins/<名字>` 也仍然能用。
+上面用 `~/plugins/<名字>` 作为克隆位置（与个人 marketplace 的惯例一致）；换到别的父目录同样可行，marketplace 条目会直接指向这个 checkout。需要干净分发时再显式指定导出目录。旧位置 `~/.codex/plugins/<名字>` 也仍然能用。
 
 #### 一条命令安装/更新（推荐）
 
-上面那段只准备脚本副本；把它注册进插件管理器还要四步：重建干净分发、补齐个人 marketplace 条目、安装、对**新缓存路径**恢复依赖并校验。本机实测最常漏的是第 2、3 步——漏第 2 步 `codex plugin add` 直接失败，漏第 3 步得到"技能在、运行时缺依赖"的半成品。`install-plugin.mjs` 把这四步串成一条命令，并在每次安装后对**当次安装返回的缓存路径**做完整性检查和 doctor：
+上面那段只准备脚本副本；把它注册进插件管理器还需要补齐个人 marketplace 条目、安装、对**新缓存路径**恢复依赖并校验。`install-plugin.mjs` 把这些步骤串成一条命令，并在每次安装后对**当次安装返回的缓存路径**做完整性检查和 doctor。默认直接使用这个 checkout；需要干净包时再显式导出：
 
 ```powershell
 & {
@@ -84,22 +84,22 @@ if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
 
 - 工作树不存在时先 `git clone`（见上）；`install-plugin.mjs` 不负责克隆。
 - `--pull` 要求工作树干净，只做 `git pull --ff-only`。
-- 个人 marketplace 文件 `<home>/.agents/plugins/marketplace.json` 不存在时按规范创建（顶层 `name: "personal"`，本插件条目指向 `./plugins/dist/codex-tui-orchestrator`）；其它路径仍然要求文件已存在，既有条目与其它插件原样保留。
-- `node scripts/install-plugin.mjs --check` 是只读复核：注册、分发一致性、缓存依赖与启用状态；`--verify-skills` 再检查技能可见性。PowerShell 引导入口会先准备依赖，严格只读复核请使用上述 Node 入口。
+- 个人 marketplace 文件 `<home>/.agents/plugins/marketplace.json` 不存在时按规范创建（顶层 `name: "personal"`，本插件条目默认指向 `./plugins/codex-tui-orchestrator`）；其它路径仍然要求文件已存在，既有条目与其它插件原样保留。
+- `node scripts/install-plugin.mjs --check` 是只读复核：注册、可选分发一致性、缓存依赖与启用状态；`--verify-skills` 再检查技能可见性。PowerShell 引导入口会先准备依赖，严格只读复核请使用上述 Node 入口。
 - 缓存根跟随 `CODEX_HOME`：`CODEX_HOME` 放在默认位置之外（例如 D 盘或自定义目录）时，校验与安装都用同一个根，不会把别处的缓存当成已安装。
-- 换机器或换克隆目录后条目可能还指向旧路径：`--set-source` 会把唯一条目的安装源改写成本机分发（保留其它条目、策略与分类）；重复、远端或无匹配条目仍然停下报错。
+- 换机器或换克隆目录后条目可能还指向旧路径：`--set-source` 默认把唯一条目的安装源改写成本机 checkout，也可以显式指定分发（保留其它条目、策略与分类）；重复、远端或无匹配条目仍然停下报错。
 - `--verify-skills` 在宿主版本不支持该调试入口时只记为告警（`warnings`），不影响安装结论；需要把它当硬门槛时加 `--strict-skills`。
 - 宿主 CLI 不在 PATH 上时（例如只装了桌面版自带的 `codex.exe`），先设 `CODEX_CLI_PATH`（或 `CODEX_CLI`）指向它；脚本优先使用该路径，找不到 CLI 时给出可执行提示而不是 ENOENT 堆栈。
 - 技能在**新开对话**时加载，装完请开一个新对话。
 
-依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；推荐的 `bootstrap.ps1 -Action install` 会在管理器返回的新缓存路径恢复依赖、校验发行完整性并运行 doctor。doctor 不代表服务商可用或任务已完成；首次直接调用 `--doctor` 或 `--tasks` 可能补齐缺失的运行依赖。上面的手工克隆流程只准备副本；推荐的一条命令会注册并更新插件。直接调用脚本无需注册；自动加载技能需要注册、启用并新开对话。保留 Codex 登录配置与活动工作区状态。
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。默认安装直接使用这个单一 checkout，不再自动创建 `dist` 副本；需要干净发布包时才显式执行导出。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；推荐的 `bootstrap.ps1 -Action install` 会在管理器返回的新缓存路径恢复依赖、校验发行完整性并运行 doctor。doctor 不代表服务商可用或任务已完成；首次直接调用 `--doctor` 或 `--tasks` 可能补齐缺失的运行依赖。上面的手工克隆流程只准备副本；推荐的一条命令会注册并更新插件。直接调用脚本无需注册；自动加载技能需要注册、启用并新开对话。保留 Codex 登录配置与活动工作区状态。
 
-本机安装（个人 marketplace）应把条目指向**干净分发**，不要指向开发工作树：管理器会把插件目录整体复制进安装缓存，指向工作树会连 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制。`install-plugin.mjs` 已经按这个口径安装；只想手工执行时：
+本机安装（个人 marketplace）默认把条目指向**单一 checkout**。管理器会把插件目录整体复制进安装缓存，因此 `.git/` 和 `temp/`（本地运行状态与验收证据）也会随之复制；需要干净发布包时再使用下面的显式导出流程：
 
 ```powershell
-node scripts/publish-dist.mjs                 # 重建 <工作树父目录>/dist/codex-tui-orchestrator 并校验副本
+node scripts/publish-dist.mjs --target <导出根目录> # 在 checkout 外写入干净发布包并校验
 codex plugin add codex-tui-orchestrator@personal
-node scripts/repair-plugin-registration.mjs --check   # 只有分发核心与工作树一致时才认这个安装源
+node scripts/repair-plugin-registration.mjs --check   # 默认接受 checkout；显式分发源仍要求核心一致
 ```
 
 已有个人 marketplace（插件目录）条目必须使用规范小写名称 `codex-tui-orchestrator`，并实际指向本仓库。下面的命令先核对源码位置，只修正旧条目的名称大小写，再调用官方安装器；保留原顺序、源码路径、策略和其他插件。条目缺失、重复、属于远端或指向其他源码时会停止，不会新建 marketplace。从本仓库完成依赖安装和完整性验证后运行；重装后在新的 Codex 对话中加载更新的技能。
@@ -198,13 +198,13 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面。本插件提供持续终�
 ## Host contract / 宿主契约
 
 - 专用入口默认 Codex；`--agent` / `ORCH_AGENT` 可显式选择 Codex，非 Codex 值会被拒绝。`--workspace` 指定任务工作区，`--cli` 指定原生 CLI 覆盖路径。
-- `--cli` / `ORCH_CLI`（或 `CODEX_EXE`）选择原生 CLI；显式路径无效时直接报错。自动安装只接受版本、Windows 原生二进制 SHA-256 和完整 47 文件平台包清单均已固定校验的 `@openai/codex@0.157.0`，安装到插件私有运行目录；首次和后续执行前都核对摘要。`ORCH_CLI_INSTALL_SPEC` 只能指定这一已固定版本。
+- `--cli` / `ORCH_CLI`（或 `CODEX_EXE`）选择原生 CLI；显式路径无效时直接报错。自动安装只接受版本、Windows 原生二进制 SHA-256 和完整 47 文件平台包清单均已固定校验的 `@openai/codex@0.160.0`，安装到插件私有运行目录；首次和后续执行前都核对摘要。`ORCH_CLI_INSTALL_SPEC` 只能指定这一已固定版本。
 - 发起对话最近一轮结构化 `turn_context` 会提供发起窗口的 model、thinking level 和 service tier；缺失字段才从同一 `CODEX_HOME/config.toml` 补齐，两者都缺失时才使用 `ORCH_MODEL`、`ORCH_EFFORT`、`ORCH_SERVICE_TIER` 兜底，环境变量不能覆盖发起窗口设置。`ORCH_PROVIDER=openai-https`（或配置了中继地址，二者等价）会让规划器和执行窗改走 orchestrator-openai-https；`ORCH_PROVIDER=inherit` 保持继承，其它取值一律 fail-closed。
 - 传输断开、超时、流中断，或启动器在写入任务检查点前异常退出时，执行块会在 `maxAttempts`（默认 2 次）预算内自动重试；已经写入 started 但无法证明结果的任务会停在 `needs-reconciliation`，不会盲目重做副作用。
 - 子窗口继承发起 Codex 会话的结构化沙箱、审批策略和工作目录。受限会话不能改用其他工作区；会话策略缺失时拒绝开窗。脱离会话直接调用 CLI，须在原生配置或 `ORCH_SANDBOX` / `ORCH_APPROVAL` 中明确给出策略。需要交互审批时，默认 headless 改用可见窗；显式 headless 请求会被拒绝。只有实际策略为 `danger-full-access` 加 `never` 时才加免审批参数和本次调用专用的项目信任覆盖；不改全局 `config.toml`。
 - Headless uses hidden workers and codex exec --json with stdin prompts. Visible mode prefers Windows Terminal with conhost fallback and inherited interactive stdout. ORCH_TUI applies only to visible mode. Accepted values are `wt`, `conhost` and `inactive`; any other `ORCH_TUI` value fails closed at startup.
-- WORKSPACE_DIR 选择任务工作区，CODEX_HOME 选择 Codex 配置和会话存储。默认工作区是调用者当前目录，也可用 --workspace / WORKSPACE_DIR 覆盖。ORCH_STATE_DIR 默认位于 workspace/temp/orchestrator；Codex 的协调器独立使用 `temp/orchestrator/codex-coordinator` 和 HKCU `Software/CodexTuiOrchestrator`，不会与 open-tui-orchestrator 共用租约池。不同工作区的 Codex 运行共享该定位器，运行结果仍留在各自工作区。ORCH_COORDINATOR_DIR 是仅用于明确共享 Codex 容量池的高级覆盖项。
-- Task temporary artifacts remain under workspace/temp and are handled by the existing cleanup protocol. Do not delete active runtime state. ORCH_SESSION_DIR can override session discovery.
+- WORKSPACE_DIR 选择任务工作区，CODEX_HOME 选择 Codex 配置和会话存储。默认工作区是调用者当前目录，也可用 --workspace / WORKSPACE_DIR 覆盖。运行账本、检查点、窗口注册表和编排器启用标记都留在 `workspace/temp/orchestrator`（ORCH_STATE_DIR 默认位置）；拆块缓存和内存预算状态也在这里。窗口注册表和启用标记属于工作区内的调度元数据，拥有 workspace-write 的子任务可以删除或修改它们，因此不能把它们当作安全边界。Codex 协调器独立使用外部 controller state 和 `temp/orchestrator/codex-coordinator`，不会与 open-tui-orchestrator 共用租约池；可见启动器、headless 控制、验收绑定和不可变运行计划绑定也使用外部 controller state。不同工作区的 Codex 运行共享该定位器，运行结果仍留在各自工作区。ORCH_COORDINATOR_DIR 是仅用于明确共享 Codex 容量池的高级覆盖项，必须位于发起工作区之外。
+- Task temporary artifacts and the window registry remain under workspace/temp and are handled by the existing cleanup protocol; controller-owned launchers and acceptance controls remain under CODEX_HOME. Do not delete active runtime state. ORCH_SESSION_DIR can override session discovery.
 - provider 明确返回账户用量上限（本次账号额度已耗尽），例如 usage_limit_exceeded、quota_exceeded 或 "You've hit your usage limit" 时，立即 fail-closed；适配器只接受结构化 `error`/`turn.failed` 事件或 `task_complete.error` 中的 provider 错误，任务文本和工具输出不会被当作配额依据。它不会消耗块的普通失败预算，也不会再开替代窗口，需等 provider 配额恢复后再重试。
 
 ## Completion / 完成

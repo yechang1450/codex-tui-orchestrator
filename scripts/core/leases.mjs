@@ -45,13 +45,29 @@ function readState(file, shape, label, { broken = 'throw' } = {}) {
   }
 }
 
-export function processSnapshot(timeoutMs=15000) {
+const DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS=120000;
+const MAX_PROCESS_SNAPSHOT_TIMEOUT_MS=120000;
+const DEFAULT_COORDINATOR_TIMEOUT_MS=120000;
+const MAX_COORDINATOR_TIMEOUT_MS=120000;
+
+function coordinatorTimeoutMs() {
+  const configured=Number(process.env.ORCH_COORDINATOR_TIMEOUT_MS);
+  return Math.max(1000,Math.min(MAX_COORDINATOR_TIMEOUT_MS,
+    Math.ceil(Number.isFinite(configured)&&configured>0?configured:DEFAULT_COORDINATOR_TIMEOUT_MS)));
+}
+
+export function processSnapshot(timeoutMs=Number(process.env.ORCH_PROCESS_SNAPSHOT_TIMEOUT_MS)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS) {
   if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
-  const waitMs=Math.max(1000,Math.min(30000,Math.ceil(timeoutMs)));
+  // CIM enumeration is serialized by the named mutex. Under a large burst of
+  // independent coordinators, the query itself is healthy but later callers
+  // wait behind earlier snapshots; the old 15-second cap turned that queue
+  // into false identity failures. Keep the bound finite while allowing the
+  // admission path to absorb a real Windows scheduler burst.
+  const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(timeoutMs)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
   // WorkingSet64/PeakWorkingSet64 供动态内存预算采样（进程峰值 -> 边际成本）；不改身份校验字段。
   const script=`$m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false;try{try{$held=$m.WaitOne(${waitMs})}catch [Threading.AbandonedMutexException]{$held=$true};if(-not $held){throw 'Process snapshot mutex timeout'};[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$ErrorActionPreference="Stop";Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n="WorkingSet64";e={[long]$_.WorkingSetSize}},@{n="PeakWorkingSet64";e={[long]$_.PeakWorkingSetSize*1024}},@{n="Started";e={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
-  const result=spawnSync('powershell.exe',['-NoProfile','-Command',script],
-    {encoding:'utf8',windowsHide:true,timeout:Math.max(1,Math.min(15000,Math.ceil(timeoutMs)))});
+  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',script],
+    {encoding:'utf8',windowsHide:true,timeout:waitMs});
   if(result.status!==0){
     // 真因必须可读：机器繁忙时 WMI/CIM 会被拖到超时（而不是"编排器坏了"），
     // 所以把子进程退出码与 stderr 首行一起回给调用方。
@@ -90,16 +106,18 @@ export function coordinatorDir(workspace,env=process.env) {
   }
   return path.join(controllerStateDir(workspace,env),'codex-coordinator');
 }
-export function atomicJson(file,value){
+export function atomicJson(file,value,guard){
   fs.mkdirSync(path.dirname(file),{recursive:true});
+  guard?.();
   if(fs.existsSync(file)&&fs.statSync(file).isDirectory()){
     const error=new Error(`EISDIR: cannot replace directory with JSON file: ${file}`);error.code='EISDIR';throw error;
   }
   const tmp=file+'.'+process.pid+'.tmp',deadline=performance.now()+5000;
   try {
     fs.writeFileSync(tmp,JSON.stringify(value,null,2));
+    guard?.();
     while(true){
-      try{fs.renameSync(tmp,file);return;}
+      try{guard?.();fs.renameSync(tmp,file);return;}
       catch(error){
         const remaining=deadline-performance.now();
         if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(error.code)||remaining<=0)throw error;
@@ -114,8 +132,13 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
   assertNoReparsePoints(dir,'coordinator directory');
   fs.mkdirSync(dir,{recursive:true});
   assertNoReparsePoints(dir,'coordinator directory');
+  // Resolve 8.3, UNC and junction aliases after the directory exists. Every
+  // contender then hashes and passes the same physical coordinator path to
+  // the named mutex helper instead of maintaining separate locks for lexical
+  // spellings of one leases.json.
+  const physicalDir = (()=>{ try { return fs.realpathSync.native(dir); } catch { return path.resolve(dir); } })();
   const lock=path.join(dir,'mutex.json'),file=path.join(dir,'leases.json');
-  let processes=snapshot();const owner=processes.get(process.pid);
+  let processes=snapshot();let owner=processes.get(process.pid);
   if(!owner)throw new Error('Coordinator owner identity unavailable');
   // A kernel mutex is released by Windows on a crash. Unlike a stale lockfile,
   // it cannot be reclaimed by two contenders or strand an empty lock forever.
@@ -124,13 +147,17 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
     // 票据放在系统临时目录（短路径）而不是协调器目录：协调器目录可能超过 260 字符或带尾随点，
     // Windows PowerShell 在那种路径上写不了 .ready —— 实测会白等 21 秒再以 "Coordinator mutex
     // acquisition failed" 收场，调用方拿不到真因。票据是一次性握手文件，本身也不属于运行产物。
-    const ticketDir=path.join(os.tmpdir(),'codex-tui-orchestrator-locks',
-      crypto.createHash('sha256').update(path.resolve(dir).toLowerCase()).digest('hex').slice(0,16));
+     const ticketDir=path.join(os.tmpdir(),'codex-tui-orchestrator-locks',
+       crypto.createHash('sha256').update(physicalDir.toLowerCase()).digest('hex').slice(0,16));
     fs.mkdirSync(ticketDir,{recursive:true});
     const ticket=path.join(ticketDir,'lock-'+crypto.randomUUID());
-    const child=spawn('powershell.exe',['-NoProfile','-File',fileURLToPath(new URL('./lease-lock.ps1',import.meta.url)),'-Directory',dir,'-Ticket',ticket,'-Owner',String(owner.ProcessId),'-Started',owner.Started],{windowsHide:true,stdio:'ignore'});
+    // The distributed script is intentionally unsigned. Explicitly bypass the
+    // user's RemoteSigned policy for this bounded, plugin-owned helper; without
+    // it Windows rejects the file before it can publish the ready handshake.
+    const lockWaitMs=coordinatorTimeoutMs();
+     const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./lease-lock.ps1',import.meta.url)),'-Directory',physicalDir,'-Ticket',ticket,'-Owner',String(owner.ProcessId),'-Started',owner.Started,'-WaitMs',String(lockWaitMs)],{windowsHide:true,stdio:'ignore'});
     child.on('error',()=>{});child.unref();
-    const deadline=Date.now()+20000;
+    const deadline=Date.now()+lockWaitMs;
     while(!fs.existsSync(ticket+'.ready')&&Date.now()<deadline)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
     unlock=()=>fs.writeFileSync(ticket+'.release','release');
     if(!fs.existsSync(ticket+'.ready')){
@@ -140,7 +167,20 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
         '常见原因：协调器目录不可写、Windows PowerShell 不可用，或同名互斥锁被其它协调器长期持有');
     }
   }
-  try {processes=snapshot();let leases=readState(file,Array.isArray,'协调器租约表 '+file)||[];
+  // The first snapshot supplies the owner identity needed to start the lock
+  // helper. It is deliberately refreshed after admission: a contender may
+  // have created and bound a launcher (or claimed a run) while this process
+  // waited for the mutex. Filtering with the pre-lock snapshot would delete
+  // that live record and could over-admit the same capacity or run twice.
+  // The refresh remains bounded by processSnapshot's 120s cap; unlike the old
+  // implementation it is no longer performed speculatively before admission.
+  try {
+    if(snapshot===processSnapshot){
+      processes=snapshot();
+      owner=processes.get(process.pid);
+      if(!owner)throw new Error('Coordinator owner identity unavailable after mutex acquisition');
+    }
+    let leases=readState(file,Array.isArray,'协调器租约表 '+file)||[];
     leases=leases.filter(l=>{
       // 畸形/外来条目绝不能毒死协调器：非对象直接剪掉；没有 owner 的条目按"新鲜度"兜底
       // （90s 内当作可能正在写入而保留，过后自愈剪掉），绝不在这里解引用 undefined。

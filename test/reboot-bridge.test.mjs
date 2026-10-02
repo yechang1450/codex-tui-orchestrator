@@ -38,7 +38,7 @@ function fixture(t) {
   const prePath = path.join(state, 'pre-reboot.json');
   const postPath = path.join(state, 'post-reboot.json');
   const dispatchPath = path.join(state, 'dispatch.json');
-  const run = (mode, extra = [], cwd = repo) => spawnSync(ps, ['-NoProfile', '-File', path.join(root, 'test/reboot-validation.ps1'), '-Mode', mode, '-Workspace', root, '-Id', id, ...extra], {cwd, encoding: 'utf8', windowsHide: true, timeout: 30000});
+  const run = (mode, extra = [], cwd = repo) => spawnSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path.join(root, 'test/reboot-validation.ps1'), '-Mode', mode, '-Workspace', root, '-Id', id, ...extra], {cwd, encoding: 'utf8', windowsHide: true, timeout: 30000});
   const prepare = () => { const r = run('prepare', ['-ManualOnly']); assert.equal(r.status, 0, r.stdout + r.stderr); return JSON.parse(fs.readFileSync(prePath, 'utf8')); };
   const earlierBoot = () => { const pre = JSON.parse(fs.readFileSync(prePath, 'utf8')); pre.bootBefore = '2000-01-01T00:00:00.0000000Z'; fs.writeFileSync(prePath, JSON.stringify(pre)); };
   const post = () => JSON.parse(fs.readFileSync(postPath, 'utf8'));
@@ -137,7 +137,7 @@ test('registered command runs from a foreign directory or reports the Windows co
   assert.equal(pre.registration.status, 'registered-unverified');
   const command = f.registryValue();
   assert.ok(command.length > 0 && command.length <= 260);
-  const collect = spawnSync(ps, ['-NoProfile', '-Command', command], {cwd:repo, encoding:'utf8', windowsHide:true, timeout:30000});
+  const collect = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], {cwd:repo, encoding:'utf8', windowsHide:true, timeout:30000});
   assert.equal(collect.status, 1, collect.stdout + collect.stderr);
   assert.ok(fs.existsSync(f.postPath), collect.stdout + collect.stderr);
   const post = f.post();

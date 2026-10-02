@@ -5,9 +5,10 @@
  * `--ensure` additionally covers first-time installation：个人 marketplace 文件或本插件
  * 条目还不存在时补上（新建整份文件只允许发生在 <home>/.agents/plugins/marketplace.json）。
  *
- * 本地安装既可以指向开发工作树（既有习惯），也可以指向由 `repair.mjs --target`
- * 生成的干净分发（分发里没有 .git/temp/node_modules，安装缓存不会被本地证据和
- * git 历史撑大）。指向分发时要求分发的 core 清单与工作树一致，否则报 stale_dist。
+ * 本地安装默认指向开发工作树，保持单目录布局；也可以显式指向由
+ * `repair.mjs --target` 生成的干净分发。分发里没有 .git/temp/node_modules，
+ * 安装缓存不会被本地证据和 git 历史撑大。指向分发时要求分发的 core 清单与工作树一致，
+ * 否则报 stale_dist。
  */
 import fs from 'node:fs';
 import os from 'node:os';
@@ -18,8 +19,9 @@ import {coreInventory} from './release-integrity.mjs';
 
 const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const DEFAULT_PLUGIN_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// 干净分发的家：插件工作树旁边的 dist/<插件名>（可用 ORCH_PLUGIN_DIST_ROOT 覆盖），
-// 由 scripts/publish-dist.mjs 生成，安装缓存只带运行时文件。
+// 可选干净分发的默认根：插件工作树旁边的 dist/<插件名>（可用
+// ORCH_PLUGIN_DIST_ROOT 覆盖）。单目录安装不会触发它；只有显式 --source dist
+// 且提供 --dist-root 时才会生成或使用发布副本。
 export function defaultDistRoot(pluginPath = DEFAULT_PLUGIN_PATH) {
   return path.resolve(process.env.ORCH_PLUGIN_DIST_ROOT || path.join(path.dirname(path.resolve(pluginPath)), 'dist'));
 }
@@ -199,7 +201,7 @@ function canonicalEntry({pluginName, category, sourcePath, marketplaceRoot}) {
  * 要求文件已存在，避免凭空造出别的 marketplace。既有条目、其它插件与顶层元数据一律保留。
  * `setRegistrationSource` 用于换机器/换克隆目录：把唯一条目的安装源改写到当前分发或工作树。
  */
-export function ensureRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'dist', homeDir = os.homedir()} = {}) {
+export function ensureRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'checkout', homeDir = os.homedir()} = {}) {
   const pluginRoot = path.resolve(pluginPath);
   const marketplace = path.resolve(marketplacePath);
   const root = path.resolve(marketplaceRoot);
@@ -225,9 +227,15 @@ export function ensureRegistration({pluginPath = process.cwd(), marketplacePath 
     return fail('source_missing', `install source does not exist yet (${sourcePath}); build it first (node scripts/publish-dist.mjs)`, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, sourcePath});
   }
 
-  const options = {pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, distRoot};
+  const options = {pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, distRoot, source, homeDir};
   const inspected = inspectRegistration(options);
-  if (inspected.status === 'matched') return {...inspected, status: 'matched', created: false};
+  if (inspected.status === 'matched') {
+    const requestedKind = source === 'checkout' ? 'checkout' : 'dist';
+    if (inspected.sourceKind === requestedKind) return {...inspected, status: 'matched', created: false};
+    // A matching entry can still point at the other supported source kind.
+    // Honor the caller's explicit source instead of treating the old path as final.
+    return setRegistrationSource({...options, source});
+  }
   if (inspected.status === 'repairable') {
     const repaired = repairRegistration(options);
     return {...repaired, created: false};
@@ -274,11 +282,15 @@ export function ensureRegistration({pluginPath = process.cwd(), marketplacePath 
   return {ok: true, ...after, status: 'created', entry, created: true};
 }
 
-/** 把唯一条目的安装源改写到本插件当前的源（分发优先）；缺文件或条目时退化为 `--ensure`。 */
-export function setRegistrationSource({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'dist', homeDir = os.homedir()} = {}) {
-  const options = {pluginPath: path.resolve(pluginPath), marketplacePath: path.resolve(marketplacePath), marketplaceRoot: path.resolve(marketplaceRoot), distRoot};
+/** 把唯一条目的安装源改写到本插件当前的源（默认 checkout）；缺文件或条目时退化为 `--ensure`。 */
+export function setRegistrationSource({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'checkout', homeDir = os.homedir()} = {}) {
+  const options = {pluginPath: path.resolve(pluginPath), marketplacePath: path.resolve(marketplacePath), marketplaceRoot: path.resolve(marketplaceRoot), distRoot, source};
   const inspected = inspectRegistration(options);
-  if (inspected.status === 'matched') return {...inspected, status: 'matched', changed: false};
+  if (inspected.status === 'matched') {
+    const requestedKind = options.source === 'checkout' ? 'checkout' : 'dist';
+    if (inspected.sourceKind === requestedKind) return {...inspected, status: 'matched', changed: false};
+    // Continue below so --set-source can move a still-valid old dist/checkout entry.
+  }
   if (inspected.status === 'missing_entry' || !fs.existsSync(options.marketplacePath)) {
     const ensured = ensureRegistration({...options, source, homeDir});
     return {...ensured, changed: ensured.status !== 'matched'};
@@ -340,7 +352,7 @@ function inspectFailure(inspected, base, status = inspected.status) {
 }
 
 function parseArgs(argv) {
-  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), distRoot: null, source: 'dist', mode: 'check'};
+  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), distRoot: null, source: 'checkout', mode: 'check'};
   const positional = [];
   let mode;
   for (let i = 0; i < argv.length; i++) {

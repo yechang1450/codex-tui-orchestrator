@@ -151,7 +151,7 @@ test('automatic installer uses a bounded global npm install and verifies the ins
     return {status: 0, stdout: 'npm installed\n', stderr: 'diagnostic\n'};
   };
   const bin = installCodexCli({
-    env: {PATH: '', PLUGIN_DATA:home, ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.157.0', ORCH_ALLOW_UNVERIFIED_NPM:'1'},
+    env: {PATH: '', PLUGIN_DATA:home, ORCH_CLI_INSTALL_SPEC: '@openai/codex@0.160.0', ORCH_ALLOW_UNVERIFIED_NPM:'1'},
     platform: 'win32',
     spawn,
     verifyBinary:()=>{integrityChecked=true;return true;},
@@ -166,7 +166,7 @@ test('automatic installer uses a bounded global npm install and verifies the ins
   assert.ok(calls[0].args.includes('--ignore-scripts'));
   assert.ok(calls[0].args.includes('--no-audit'));
   assert.ok(calls[0].args.includes('--no-fund'));
-  assert.ok(calls[0].args.includes('@openai/codex@0.157.0'));
+  assert.ok(calls[0].args.includes('@openai/codex@0.160.0'));
   assert.equal(calls[0].options.timeout, 120000);
 });
 test('automatic installer rejects an altered platform package tree before probing the CLI',()=>{
@@ -186,7 +186,7 @@ test('automatic CLI installer rejects substituted native bytes before executing 
   fs.mkdirSync(path.dirname(bin),{recursive:true});fs.writeFileSync(bin,'substituted executable','utf8');
   let probed=false;
   try {
-    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,ORCH_CLI_INSTALL_SPEC:'@openai/codex@0.157.0',ORCH_ALLOW_UNVERIFIED_NPM:'1'},platform:'win32',localRoots:[],
+    assert.throws(()=>installCodexCli({env:{...process.env,PLUGIN_DATA:home,ORCH_CLI_INSTALL_SPEC:'@openai/codex@0.160.0',ORCH_ALLOW_UNVERIFIED_NPM:'1'},platform:'win32',localRoots:[],
       spawn:(_command,args)=>args.at(-2)==='root'?{status:0,stdout:root+'\n'}:{status:0},
       probe:()=>{probed=true;return true;}}),/CLI_AUTO_INSTALL_FAILED.*integrity/i);
     assert.equal(probed,false);

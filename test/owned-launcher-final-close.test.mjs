@@ -33,7 +33,7 @@ test('owned PowerShell launcher closes with exit zero without a model or termina
   const workspace=fs.mkdtempSync(path.join(family,'owned-exit-'));
   const file=path.join(workspace,'win-launch-owned-test.ps1');
   fs.writeFileSync(file,'Start-Sleep -Seconds 60\r\n','utf8');
-  const child=spawn('powershell.exe',['-NoProfile','-File',file],{windowsHide:true,stdio:'ignore'});
+  const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',file],{windowsHide:true,stdio:'ignore'});
   const finished=new Promise((resolve,reject)=>{child.once('error',reject);child.once('exit',(code,signal)=>resolve({code,signal}));});
   try{
     const expected=processSnapshot().get(child.pid);

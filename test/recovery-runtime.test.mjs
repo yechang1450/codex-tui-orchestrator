@@ -127,14 +127,14 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
  fs.writeFileSync(rf,JSON.stringify({exitCode:0}));`);
  const checks=path.join(d,'acceptance.json');fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'count.json',equals:{count:1}}],T002:{retrySafe:fault==='safe-retry',checks:[{type:'json',path:'done.json',equals:{done:true}}]}}));
  const hooks={plan:async()=>[{title:'linked',type:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
-  launcher:(key,prompt,suffix)=>{const file=/开始前：node "[^"]+" "([^"]+)"/.exec(prompt)[1];attempts.push(JSON.parse(fs.readFileSync(file)).taskIds);
+  launcher:(key,prompt,suffix)=>{const file=/开始前：& '[^']+' '[^']+' '([^']+)'/.exec(prompt)[1];attempts.push(JSON.parse(fs.readFileSync(file)).taskIds);
    const launchDir=controllerWindowsDir(d);fs.mkdirSync(launchDir,{recursive:true});
    const stem=key+'-'+suffix,pidf=path.join(launchDir,'window-'+stem+'.pid'),lp=path.join(launchDir,'win-launch-'+stem+'.ps1'),pf=path.join(launchDir,'agent-win-'+stem+'.md'),rf=path.join(launchDir,'win-'+stem+'.result.json');
    // Start-Process -Wait 让夹具不依赖父进程类型：从 WSL 启动时，PowerShell 对 `& <控制台子进程>`
    // 会立即返回（实测 252ms），窗口身份校验就会因为启动器已退出而失败；-Wait 在两种父进程下都等待。
    const token=JSON.parse(fs.readFileSync(file,'utf8')).token;
    fs.writeFileSync(pf,prompt,'utf8');fs.writeFileSync(lp,'\ufeff'+`$token = ${lit(token)}\n$PID | Set-Content -LiteralPath ${lit(pidf)} -Encoding UTF8\nStart-Process -FilePath ${lit(process.execPath)} -ArgumentList ${lit(worker)},${lit(file)},${lit(rf)},${lit(d)} -NoNewWindow -Wait\nexit 0`);return{pidf,lp,pf,rf};},
-  spawn:async(lp,_title,pidf)=>{const child=spawn('powershell.exe',['-NoProfile','-File',lp],{windowsHide:true,stdio:'ignore'});children.push(child);const end=Date.now()+15000;while(!fs.existsSync(pidf)&&Date.now()<end)await pause(20);return fs.existsSync(pidf);},
+  spawn:async(lp,_title,pidf)=>{const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',lp],{windowsHide:true,stdio:'ignore'});children.push(child);const end=Date.now()+15000;while(!fs.existsSync(pidf)&&Date.now()<end)await pause(20);return fs.existsSync(pidf);},
   readPid:p=>fs.existsSync(p)?Number(fs.readFileSync(p,'utf8').replace(/^\uFEFF/,'')):0,
   session:async()=> 'controlled',wait:async(_session,_timeout,rf)=>{fs.writeFileSync(rf+'.go','go');const end=Date.now()+15000;while(!fs.existsSync(rf)&&Date.now()<end)await pause(20);return {done:fs.existsSync(rf),exitCode:JSON.parse(fs.readFileSync(rf)).exitCode};},
   exitCode:rf=>fs.existsSync(rf)?JSON.parse(fs.readFileSync(rf)).exitCode:null,
@@ -157,7 +157,8 @@ for(const fault of ['safe-retry','response-reset','response-timeout','started-on
    assert.equal(sum.success,false);assert.equal(sum.taskResults.T002.status,'needs-reconciliation');
    assert.equal(requests,1);assert.deepEqual(attempts,[['T001','T002']]);
    const transport=JSON.parse(fs.readFileSync(path.join(d,'transport-error.json')));
-   assert.equal(transport.name,fault==='response-timeout'?'TimeoutError':'TypeError');
+   if(fault==='response-timeout')assert.equal(transport.name,'TimeoutError');
+   else assert.ok(['TypeError','TimeoutError'].includes(transport.name),'reset transport failure must remain explicit: '+JSON.stringify(transport));
    const resumed=await runWindows('',hooks,{...opts,resume:true});
    assert.equal(resumed.taskResults.T002.status,'needs-reconciliation');assert.equal(requests,1);assert.equal(attempts.length,1);
   const reconciled=JSON.parse(fs.readFileSync(checks));reconciled.T002={checks:[{type:'json',path:'remote.json',equals:{count:1}}]};

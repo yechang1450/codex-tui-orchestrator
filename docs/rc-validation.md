@@ -1,13 +1,23 @@
 # 0.9.29-rc.1 验收记录
 
+## 2026-10-02 公开仓库准备与最终离线回归（core 1.4.4-rc.1）
+
+- 工作树在 `codex/public-readiness` 分支完成公开发布审查：README 中英文版本、版本号、1000 MB 内存预留、自动 RC 递增说明和 Codex CLI 版本口径已同步。
+- 最终串行离线回归为 527 项：525 通过、0 失败、2 项按配置跳过；另有 44 项聚焦回归全部通过。跳过项只对应显式启用的真实 Codex 窗口验收和可选 pi CLI，不能据此宣称真实服务商或可见窗口已覆盖。
+- 发布封印 `release-integrity.mjs --json` 通过（schema 2、core `1.4.4-rc.1`、31 个核心文件、73 个运行时文件）；源码与个人缓存的关键文件摘要一致，安装检查无问题或警告。
+- 本轮把自动安装与文档中的固定原生 Codex CLI 从 `0.157.0` 更新到官方 `@openai/codex@0.160.0`，x64/arm64 可执行文件和完整 47 文件平台包摘要均已重新封存并通过安装器回归。
+- 公开性审查未发现真实 API key、私钥或凭据；历史验证材料中的本机绝对路径已在当前工作树文档中改为占位符。Git 历史和未引用对象仍可能保留旧验证快照，切换仓库可见性前需要单独决定是否做历史重写。
+- 本轮本地静态审查修复了未验证 Pi CLI、Windows shell 参数展开、插件安装路径越界、8.3 短路径租约别名和检查点命令注入候选；新增 PowerShell 特殊路径回归通过。仍需公开记录两项架构限制：窗口注册表/启用标记位于可写工作区的 `ORCH_STATE_DIR`，以及 C: 盘符与 UNC 映射目前可能生成不同的租约互斥锁。它们属于后续硬化项，不能把本地回归写成零漏洞证明。
+- 官方 Codex Security 深度扫描在本会话未能启动，原因是宿主没有提供该扫描要求的托管文件权限配置；本节的结论来自本地静态审查、针对性回归和发布完整性检查，不替代官方扫描。
+
 ## 2026-09-29 0.9.29-rc.1 内存准入下限调整候选（core 1.4.4-rc.1）
 
 本轮把动态内存准入的默认且不可降低的可用内存预留从 4000 MB 调整为 1000 MB。执行判据不变：每次开窗仍原子复检实时可用内存，预测峰值必须严格小于可用内存减去预留值；显式 `ORCH_MIN_AVAILABLE_MB` 只能把预留提高，不能低于 1000 MB。SessionStart、辅助窗口、headless 与可见窗口共用这一边界。由于预留降低会增加高峰期的系统压力，发布前必须重新跑离线边界回归、分发封印、安装缓存校验和本机真实双任务验收。
 
 - 源码串行回归为 496 项：495 通过、0 失败、1 项按配置跳过；新增的 1000 MB 边界、低值钳制和高值覆盖测试全部通过。`git diff --check`、依赖封印和发行封印均通过（schema 2，31 个核心文件、72 个运行时文件）。
-- 本轮分发已安装到 `<user-home>\.codex\plugins\cache\personal\codex-tui-orchestrator\0.9.29-rc.1`；缓存 `release-integrity`、依赖封印、`--doctor` 和 `install-plugin --check --json` 均通过，doctor 继承 `gpt-6-sol`、`max`、`priority` 与 `<user-home>\workspace`。
+- 本轮分发已安装到 `<CODEX_HOME>\plugins\cache\personal\codex-tui-orchestrator\0.9.29-rc.1`；缓存 `release-integrity`、依赖封印、`--doctor` 和 `install-plugin --check --json` 均通过，doctor 继承发起会话的模型、推理级别、service tier 与工作区。
 - 版本同步与自动递增聚焦测试通过：三个发行清单统一为 `0.9.29-rc.1`，`version:next` 夹具从 `rc.1` 正确生成 `rc.2`；Git 分发路径门禁 6/6 通过，畸形账本 fuzz 11/11 通过。
-- 新缓存真实 headless 双任务 `mode-headless-27e5fcde-807a-4938-8910-99be9bd39d65` 和 visible 双任务 `mode-visible-30ef110c-df67-46f8-88fa-35d19ac6b566` 均 `passed=true`、2/2 `verified`、两个独立块实际重叠运行、启动器全部退出、core 未漂移。证据分别在 `<user-home>\workspace\temp\mode-headless-27e5fcde-807a-4938-8910-99be9bd39d65\report.json` 与 `<user-home>\workspace\temp\mode-visible-30ef110c-df67-46f8-88fa-35d19ac6b566\report.json`。
+- 新缓存真实 headless 双任务 `mode-headless-27e5fcde-807a-4938-8910-99be9bd39d65` 和 visible 双任务 `mode-visible-30ef110c-df67-46f8-88fa-35d19ac6b566` 均 `passed=true`、2/2 `verified`、两个独立块实际重叠运行、启动器全部退出、core 未漂移。证据保留在本机临时运行目录，不把本机绝对路径写入仓库。
 - 这两次真实运行把滚动窗口成本更新到约 2.5–2.6 GB；这验证了 1000 MB 只改变最低可用内存底线，实际并发仍由预测峰值、已有租约和实时可用内存共同决定。它也保留了首轮样本不足时估算偏低的架构风险，见下方剩余问题。
 
 ## 2026-09-28 本机完整测试后的修复候选（core 1.4.3-rc.1）
@@ -20,7 +30,7 @@
 - 可见启动器在会话发现前结束时，尝试账本保留会话、完成标志、汇报捕获与退出码等结构化诊断；安全重试规则不变。
 - 真实双任务 smoke 验收默认给 Max 推理 10 分钟；先前本机 180 秒夹具时限在第二项写出结果、尚未写完检查点时触发，控制器正确停止并标为需核验。
 - 最终源码离线回归为 495 项：494 通过、0 失败、1 项按设定跳过；核心与依赖封印均通过，分发仍为 115 个文件。
-- 新缓存 `<user-home>\.codex\plugins\cache\personal\codex-tui-orchestrator\0.5.0-rc.1+codex.20260928200041` 的 `release-integrity`、`--doctor` 和 `install-plugin --check --json` 均通过；doctor 实测继承 `gpt-6-sol`、`max`、`priority` 与 `<user-home>\workspace`。
+- 新缓存 `<CODEX_HOME>\plugins\cache\personal\codex-tui-orchestrator\0.5.0-rc.1+codex.20260928200041` 的 `release-integrity`、`--doctor` 和 `install-plugin --check --json` 均通过；doctor 实测继承发起会话的模型、推理级别、service tier 与工作区。
 - 新缓存真实 headless 双任务通过：`passed=true`、2/2 verified、退出码 0、核心未变、父级收尾完成。证据为 `workspace/temp/mode-headless-2c0df496-53e8-4177-ab85-aa8dbbaf61a2/report.json` 与对应运行账本。
 - 新缓存真实 visible 双任务通过：`passed=true`、2/2 verified、退出码 0、核心未变、两个 Windows Terminal 窗口最终关闭；B1 首窗后按安全重试规则再次启动并通过。证据为 `workspace/temp/mode-visible-590cf271-f526-4f51-84c2-b2a0cb78f666/report.json` 与对应运行账本。
 
@@ -88,7 +98,7 @@
 - [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
 - [x] 私有源下的**升级/回滚**已在本机真实安装上演练（2026-09-19）：把注册源指向更高 cachebuster 的分发 → `codex plugin add` 升到 `0.5.0-rc.1+codex.20260919230000`；再指回当前分发 → `codex plugin add` 回滚到 `0.5.0-rc.1+codex.20260919211020`，每次安装后 `release-integrity` 与 `--doctor` 都通过，管理器每次只留一个版本缓存。仓库保持 private，"公网 GitHub 抓取"这条门槛按私有分发源重新定义；证据见 [私有源管理器生命周期证据](../test/manager-lifecycle-validation-private-source.json)。
 - [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
-- [x] 本地安装改用**干净分发**（2026-09-19）：个人 marketplace 条目指向 `<工作树父目录>/dist/codex-tui-orchestrator`，由 `scripts/publish-dist.mjs` 重建并校验；`codex plugin add` 后的安装缓存从 20 MB / 1473 文件（含 `.git/`、`temp/`）降到 2 MB / 194 文件，插件静态评估从 81/C（1 个 fail）变为 91/B（0 fail，缓存目录仍按版本号命名会带一条信息级提示）。`repair-plugin-registration.mjs --check` 现在同时接受 checkout 与 dist 源，并要求分发核心与工作树一致，否则报 `stale_dist`。本机实测：安装缓存内 `release-integrity` schema 2 / 25 核心 / 54 运行时、`--doctor` 通过、真实双任务 headless `success=true` 且改写验收契约后 `--verify-run` 退出码 1 拒绝。
+- [x] 本地安装默认回到**单一 checkout**（2026-10-01）：个人 marketplace 条目指向工作树本身，不再自动创建或依赖 `dist` 目录；`install-plugin.mjs` 只有显式 `--source dist --dist-root <目录>` 才导出干净包。`repair-plugin-registration.mjs --check` 同时接受 checkout 与显式 dist 源，并要求分发核心与工作树一致，否则报 `stale_dist`。干净发布包仍可用来做静态评估，但不再是本机默认安装源。
 - [x] 真实双模式验收在当前提交重跑通过（2026-09-19，两任务、默认动态内存预算路径、**从已安装缓存入口**运行）：可见 TUI `runId=mode-visible-bbf3d786-959e-4a8b-b1ce-5e7c6ca98a24`、headless `runId=mode-headless-afbf3afd-e221-477b-930f-762b1dfbdc8f`，两项都是 `passed=true`、`exitCode=0`、`closed=true`、`coreUnchanged=true`、T001/T002 全 `verified`、回执 `nonce/cwd/answer` 校验通过，见 [证据](../test/live-mode-validation-1.4.0-rc.1.json)。顺带修掉一个真实漂移：`test/live-execution-mode.mjs` 过去只发单任务，而单任务按设计直接 `out-of-scope`，已改为两个独立任务并各自独立验收。
 
 ### 2026-09-18 provider 继承修复与未完成的实机门槛

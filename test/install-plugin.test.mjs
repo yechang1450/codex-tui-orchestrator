@@ -20,8 +20,10 @@ import {
   pickNpmCli,
   pluginEnabledInConfig,
   quoteShellArg,
+  shouldPublishDistribution,
   skillNamesOf,
   verifySkillsVisible,
+  validateInstalledPath,
 } from '../scripts/install-plugin.mjs';
 
 const TEST_TEMP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'temp');
@@ -62,7 +64,7 @@ function coreFixture(pluginDir) {
   fs.writeFileSync(path.join(core, 'contracts.mjs'), 'export const CORE_VERSION = "test";\n');
 }
 
-/** 个人 marketplace 场景的夹具：home/<.agents/plugins>/marketplace.json + plugins/dist/<name>。 */
+/** 个人 marketplace 场景的夹具：home/<.agents/plugins>/marketplace.json + 单目录插件 checkout。 */
 function personalFixture({marketplace = null, withDist = true} = {}) {
   const home = fs.mkdtempSync(path.join(TEST_TEMP, 'install-plugin-'));
   const plugin = path.join(home, 'plugins', 'demo-plugin');
@@ -94,7 +96,7 @@ function completeFixture({codexHomeRelative = '.codex', cli = null} = {}) {
   return {...f, codexHome, cache, options: {...f.options, codexHome, ...(cli ? {codexCli: cli} : {})}};
 }
 
-test('ensureRegistration creates the personal marketplace and points at the clean distribution', () => {
+test('ensureRegistration creates the personal marketplace and points at the checkout root', () => {
   const f = personalFixture();
   try {
     const result = ensureRegistration(f.options);
@@ -107,7 +109,7 @@ test('ensureRegistration creates the personal marketplace and points at the clea
     assert.equal(data.plugins.length, 1);
     assert.equal(data.plugins[0].name, 'demo-plugin');
     assert.equal(data.plugins[0].source.source, 'local');
-    assert.equal(data.plugins[0].source.path, relativeSourcePath(f.home, f.dist));
+    assert.equal(data.plugins[0].source.path, relativeSourcePath(f.home, f.plugin));
     assert.deepEqual(data.plugins[0].policy, {installation: 'AVAILABLE', authentication: 'ON_INSTALL'});
     assert.equal(inspectRegistration(f.options).status, 'matched');
 
@@ -118,6 +120,24 @@ test('ensureRegistration creates the personal marketplace and points at the clea
   } finally {
     fs.rmSync(f.home, {recursive: true, force: true});
   }
+});
+
+test('host-reported install paths are contained canonical cache directories', () => {
+  const home = fs.mkdtempSync(path.join(TEST_TEMP, 'install-path-boundary-'));
+  try {
+    const cache = path.join(home, '.codex', 'plugins', 'cache', 'personal', 'demo-plugin', '1.0.0');
+    fs.mkdirSync(path.join(cache, 'scripts'), {recursive: true});
+    fs.mkdirSync(path.join(cache, '.codex-plugin'), {recursive: true});
+    fs.writeFileSync(path.join(cache, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}));
+    const valid = validateInstalledPath({installedPath: cache, codexHome: path.join(home, '.codex'), marketplaceName: 'personal', pluginName: 'demo-plugin', version: '1.0.0'});
+    assert.equal(valid.installedPath, fs.realpathSync(cache));
+    assert.equal(valid.scriptsPath, fs.realpathSync(path.join(cache, 'scripts')));
+    const outside = path.join(home, 'outside');
+    fs.mkdirSync(path.join(outside, 'scripts'), {recursive: true});
+    fs.mkdirSync(path.join(outside, '.codex-plugin'), {recursive: true});
+    fs.writeFileSync(path.join(outside, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}));
+    assert.throws(() => validateInstalledPath({installedPath: outside, codexHome: path.join(home, '.codex'), marketplaceName: 'personal', pluginName: 'demo-plugin', version: '1.0.0'}), /HOST_INSTALL_PATH_INVALID/);
+  } finally { fs.rmSync(home, {recursive: true, force: true}); }
 });
 
 test('ensureRegistration appends to an existing marketplace without touching other entries', () => {
@@ -150,12 +170,15 @@ test('ensureRegistration refuses to invent a marketplace outside the personal co
   }
 });
 
-test('ensureRegistration reports missing distribution and foreign entries instead of guessing', () => {
+test('ensureRegistration uses the checkout by default and still reports an explicitly missing distribution', () => {
   const noDist = personalFixture({withDist: false});
   try {
     const result = ensureRegistration(noDist.options);
-    assert.equal(result.status, 'source_missing');
-    assert.match(result.reason, /publish-dist/);
+    assert.equal(result.status, 'created');
+    assert.equal(result.sourceKind, 'checkout');
+    const missingDist = ensureRegistration({...noDist.options, source: 'dist'});
+    assert.equal(missingDist.status, 'source_missing');
+    assert.match(missingDist.reason, /publish-dist/);
   } finally {
     fs.rmSync(noDist.home, {recursive: true, force: true});
   }
@@ -204,6 +227,10 @@ test('checkInstall accepts a complete install and reports each broken step', () 
 
 test('CLI helpers parse host output, caches, enablement, and the Codex CLI path', () => {
   assert.deepEqual(parseArgs([]).mode, 'install');
+  assert.equal(parseArgs([]).source, 'checkout');
+  assert.equal(shouldPublishDistribution({source: 'checkout'}), false);
+  assert.equal(shouldPublishDistribution({source: 'dist'}), true);
+  assert.equal(shouldPublishDistribution({source: 'dist', skipDist: true}), false);
   assert.equal(parseArgs(['--check']).mode, 'check');
   assert.equal(parseArgs(['--source', 'checkout']).source, 'checkout');
   assert.throws(() => parseArgs(['--source']), /requires a value/);
@@ -264,13 +291,29 @@ test('setRegistrationSource re-points a single stale entry and preserves every o
     assert.equal(result.status, 'source-set');
     assert.equal(result.changed, true);
     const data = JSON.parse(fs.readFileSync(f.marketplacePath, 'utf8'));
-    assert.equal(data.plugins[1].source.path, relativeSourcePath(f.home, f.dist));
+    assert.equal(data.plugins[1].source.path, relativeSourcePath(f.home, f.plugin));
     assert.deepEqual(data.plugins[0], other, '其它条目必须原样保留');
     assert.equal(data.plugins[1].category, 'Test', '既有策略与分类不被改写');
     assert.equal(inspectRegistration(f.options).status, 'matched');
     const again = setRegistrationSource(f.options);
     assert.equal(again.status, 'matched');
     assert.equal(again.changed, false);
+  } finally {
+    fs.rmSync(f.home, {recursive: true, force: true});
+  }
+});
+
+test('setRegistrationSource honors an explicit checkout target even when the old distribution still matches', () => {
+  const f = personalFixture();
+  try {
+    fs.mkdirSync(path.dirname(f.marketplacePath), {recursive: true});
+    fs.writeFileSync(f.marketplacePath, JSON.stringify({name: 'personal', plugins: [{name: 'demo-plugin', source: {source: 'local', path: relativeSourcePath(f.home, f.dist)}}]}, null, 2) + '\n');
+    const result = setRegistrationSource({...f.options, source: 'checkout'});
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.changed, true);
+    const after = JSON.parse(fs.readFileSync(f.marketplacePath, 'utf8'));
+    assert.equal(after.plugins[0].source.path, relativeSourcePath(f.home, f.plugin));
+    assert.equal(result.sourceKind, 'checkout');
   } finally {
     fs.rmSync(f.home, {recursive: true, force: true});
   }
@@ -345,4 +388,7 @@ test('npm resolution prefers a JS entry so spaced paths survive the command line
   assert.equal(quoteShellArg('plain'), 'plain');
   assert.equal(quoteShellArg('C:\\has space\\x'), '"C:\\has space\\x"');
   assert.equal(quoteShellArg('has"quote'), '"has""quote"');
+  assert.throws(() => quoteShellArg('C:\\temp\\%ORCH_QUOTE_TEST%\\x'), /UNSAFE_SHELL_ARGUMENT/);
+  assert.throws(() => quoteShellArg('C:\\temp\\!ORCH_QUOTE_TEST!\\x'), /UNSAFE_SHELL_ARGUMENT/);
+  assert.throws(() => quoteShellArg('line\nnext'), /UNSAFE_SHELL_ARGUMENT/);
 });

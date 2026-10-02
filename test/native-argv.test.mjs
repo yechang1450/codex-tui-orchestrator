@@ -16,7 +16,7 @@ test('real PowerShell preserves JSON, Chinese, embedded quotes and trailing path
   fs.writeFileSync(ps,'\ufeff'+`[Console]::OutputEncoding=[Text.Encoding]::UTF8\n$agentArgs=@(${[js,...values].map(lit).join(',')})\n`+nativeArgumentLines().join('\n')+`\n& ${lit(process.execPath)} @agentArgs`);
   // 通过 cmd.exe 包裹调用：从 WSL 启动时，PowerShell 对 `& <控制台子进程>` 会立即返回且不接管
   // 子进程 stdout，导致这里读不到 JSON；cmd /c 在两种父进程下都等待并保留输出。
-  const result=spawnSync('cmd.exe',['/c','powershell.exe','-NoProfile','-File',ps],{encoding:'utf8',windowsHide:true,timeout:10000});
+  const result=spawnSync('cmd.exe',['/c','powershell.exe','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',ps],{encoding:'utf8',windowsHide:true,timeout:10000});
   assert.equal(result.status,0,result.stderr);assert.deepEqual(JSON.parse(result.stdout),values);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });

@@ -1,11 +1,18 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-export function resolvePiHost(env=process.env) {
+export function resolvePiHost(env=process.env,{verifyPublisher=()=>false}={}) {
   const explicit=env.ORCH_CLI||env.PI_EXE;
   const candidates=explicit?[path.resolve(explicit)]:String(env.PATH||env.Path||'').split(path.delimiter).flatMap(dir=>['pi.exe','pi.cmd','pi'].map(n=>path.join(dir,n)));
   for(const file of [...new Set(candidates)]) {
     if(!fs.existsSync(file)||!fs.statSync(file).isFile())continue;
+    // Pi is an optional adapter. Never execute a PATH/shim candidate on
+    // Windows unless the host has verified its publisher. Operators may opt
+    // into a deliberately unverified, explicitly selected binary for local
+    // development; the opt-in is never inferred from PATH discovery.
+    const explicitlySelected=Boolean(explicit&&path.resolve(file).toLowerCase()===path.resolve(explicit).toLowerCase());
+    const allowUnverified=env.ORCH_ALLOW_UNVERIFIED_PI==='1'&&explicitlySelected;
+    if(!allowUnverified&&!(process.platform==='win32'&&/\.exe$/i.test(file)&&verifyPublisher(file,env)))continue;
     let bin=file,prefixArgs=[];
     if(!/\.exe$/i.test(file)) {
       let entry=/\.[cm]?js$/i.test(file)?file:null;

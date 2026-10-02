@@ -24,9 +24,9 @@ function workerSource(evidence){
   return `import fs from 'node:fs';
 import {recordCheckpoint} from ${JSON.stringify(new URL('../scripts/core/checkpoint.mjs',import.meta.url).href)};
 let prompt='';for await(const chunk of process.stdin)prompt+=chunk;
-const started=/node "([^"]+)" "([^"]+)" (\\S+) started/.exec(prompt);if(!started)throw new Error('attempt command missing');
+const started=/& '[^']+' '[^']+' '([^']+)' '(\\S+)' 'started'/.exec(prompt);if(!started)throw new Error('attempt command missing');
 fs.writeFileSync(${JSON.stringify(evidence)},JSON.stringify({count:1}));
-recordCheckpoint(started[2],started[3],'started');recordCheckpoint(started[2],started[3],'completed');
+recordCheckpoint(started[1],started[2],'started');recordCheckpoint(started[1],started[2],'completed');
 console.log(JSON.stringify({type:'thread.started',thread_id:'binding-worker'}));
 console.log(JSON.stringify({type:'turn.completed'}));`;
 }

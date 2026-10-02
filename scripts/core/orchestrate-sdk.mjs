@@ -584,6 +584,10 @@ function genericProjectSplit(request) {
   // 保守、确定性拆分（权威修复）：仅当请求能被可靠切成"每个编号各有一个专属句子"时才拆，
   // 且每个块 prompt 只针对该项目（绝不整段重复）。混合/歧义请求返回 null 交给 LLM 语义拆块。
   const dirs = new Set();
+  // Waiting for this task's own command/file is not a cross-task dependency.
+  // Cross-project references are rejected by the ownership check below;
+  // explicit task dependency cues use the deterministic dependency path.
+  const dependencyLanguage = /(?:depends?\s+on|依赖|前一步|前置|等待\s*(?:任务|项目|T\d))/iu.test(String(request));
   const re = /(?:^|[\s,/\\：:；;])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\s/\\：:]*(\d{1,3})(?=\D|$)/gi;
   let m;
   while ((m = re.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
@@ -595,6 +599,28 @@ function genericProjectSplit(request) {
   while ((m = bareRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   if (dirs.size < 2) return null;
   const sentences = requestTasks(request).map(t=>t.prompt);
+  // Explicit task ids plus an explicit dependency can be classified without a
+  // provider call. Preserve the dependency as a block edge so only the
+  // prerequisite runs first; unrelated project blocks remain parallel.
+  if (dependencyLanguage) {
+    const dependencyItems = [];
+    const seenIds = new Set();
+    for (const sentence of sentences) {
+      const idMatch = /\b(T\d{3,})\b/iu.exec(sentence);
+      const projectHits = [...dirs].filter(d => projectRef(sentence, d.slice("proj-".length)));
+      if (!idMatch || projectHits.length !== 1) return null;
+      const id = idMatch[1].toUpperCase();
+      if (seenIds.has(id)) return null;
+      seenIds.add(id);
+      const dependsOn = [...sentence.matchAll(/(?:depends?\s+on|依赖(?:于|任务)?|等待|前一步|前置)\s*([A-Za-z][A-Za-z0-9_-]*)/giu)]
+        .map(match => match[1].toUpperCase());
+      dependencyItems.push({id, summary: sentence, project: projectHits[0].slice("proj-".length), depends_on: [...new Set(dependsOn)], conflict_hints: []});
+    }
+    if (dependencyItems.some(item => item.depends_on.length)) return {blocks: buildBlocksFromTasks(dependencyItems)};
+    // Dependency wording without a machine-readable task id remains ambiguous;
+    // do not let the project-only fast path launch it as parallel work.
+    return null;
+  }
   const ownByProj = {};
   const misc = [];
   let ambiguous = false;
@@ -612,7 +638,7 @@ function genericProjectSplit(request) {
   if (!allOwn || ambiguous || misc.length > 0) return null;
   const blocks = [...dirs].map((title, i) => ({
     type: "independent", title, dependsOn: [],
-    conflictKeys: ["dir:" + title],
+    conflictKeys: ["dir:" + title, ...ownByProj[title].flatMap(inferTargetKeys)],
     tasks: [{ id: "t" + (i + 1), title, prompt: "仅处理项目 " + title + "。任务：" + ownByProj[title].join("；") + "。不要处理其它项目编号。" }],
   }));
   return blocks.length ? { blocks } : null;
@@ -2096,18 +2122,40 @@ async function waitClear(keys, timeoutMs) {
 // 只提取"像具体文件"的绝对路径（含扩展名），避免把裸目录(D:\temp)当目标造成过度串行、伤并发。
 function inferTargetKeys(text) {
   const keys = new Set();
+  const absoluteRanges = [];
   const s = String(text || "");
-  const isFileLike = (p) => /[A-Za-z0-9_\-.]+\.[A-Za-z0-9]{1,5}$/.test(p);
-  // Windows 绝对盘符路径
-  for (const m of s.matchAll(/[A-Za-z]:[\\/][^\s"'`,;)]+/g)) {
-    const p = m[0].replace(/[\\/]+$/, "");
+  const isFileLike = (p) => /(?:^|[\\/])[^\\/:*?"<>|\r\n]+\.[A-Za-z0-9]{1,8}$/u.test(p);
+  const cleanPath = value => String(value || '')
+    .trim()
+    .replace(/^[\s\("'`]+/u, '')
+    .replace(/[\s\)\]\}`"'，。；！？、,.;:!?]+$/u, '');
+  const add = value => {
+    const p = cleanPath(value);
     if (isFileLike(p)) keys.add("file:" + p);
+  };
+  // Quoted paths may contain spaces and Unicode. Restrict the result to
+  // file-looking paths so ordinary quoted prose and JSON values stay data.
+  for (const m of s.matchAll(/["'`]([^"'`\r\n]+)["'`]/g)) {
+    const p = cleanPath(m[1]);
+    if ((/[\\/]/.test(p) || /^[A-Za-z]:/u.test(p)) && isFileLike(p)) add(p);
+  }
+  // Windows 绝对盘符路径
+  for (const m of s.matchAll(/[A-Za-z]:[\\/][^"'`\r\n，。；！？、]*?\.[A-Za-z0-9]{1,8}(?=$|[\s,.;:!?，。；！？、"'`])/gu)) {
+    absoluteRanges.push([m.index, m.index + m[0].length]);
+    add(m[0]);
+  }
+  // Relative file paths are safe only when they contain a directory
+  // component. A bare filename is deliberately left to the parent classifier
+  // because it may be a same-named file in different project roots.
+  for (const m of s.matchAll(/(?<![A-Za-z0-9_:/\\-])(?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9_])/gu)) {
+    if (absoluteRanges.some(([start, end]) => m.index >= start && m.index < end)) continue;
+    add(m[0]);
   }
   // Unix 风格绝对路径：仅接受带目录成分的多段路径（≥2 个斜杠），且排除前导字符为字母/数字/冒号的情况——
   // 否则 “project-91/probe.mjs” 这类数字结尾目录会把 “/probe.mjs” 抽成碎片 key：多个任务写同名文件即互相撞 key，
   // normalizePlan 会把彼此独立的块静默合并成单块（并行计划坍缩为 inline）。
   for (const m of s.matchAll(/(?<![A-Za-z0-9:])\/[^\s"'`,;)]+/g)) {
-    const p = m[0].replace(/[\\/]+$/, "");
+    const p = cleanPath(m[0].replace(/[\\/]+$/, ""));
     if (!isFileLike(p)) continue;
     if ((p.match(/\//g) || []).length < 2) continue; // 单段 “/file.ext” 视为碎片，不生成冲突 key
     keys.add("file:" + p);
@@ -2126,7 +2174,7 @@ function normalizePlan(plan) {
     .map(key=>canonicalKey(key,WORKSPACE)))];
   const groups=[];
   for(const r of ordered) {
-    const hits=groups.filter(g=>g.some(x=>keysOverlap(x.keys,r.keys)));
+    const hits=groups.filter(g=>g.some(x=>keysOverlap(x.keys,r.keys,{canonical:true})));
     if(hits.length){
       // 合并诊断：块因共享冲突 key 被并组。若 key 是“/单段文件名”碎片形式，提示可能为误合并来源。
       const shared=[...new Set(hits.flat().flatMap(x=>x.keys).filter(k=>r.keys.includes(k)))];
@@ -2345,6 +2393,7 @@ export async function main() {
   }
   if (mode === "--plan") {
     const request = process.argv.slice(3).join(" ");
+    if (!request.trim()) throw new Error("PLAN_REQUEST_EMPTY: --plan requires a non-empty request");
     checkDiskSpace({ warnOnly: true });
     const plan = await decomposeSafely(request);
     console.log(JSON.stringify({ blocks: plan }, null, 2));
@@ -2665,7 +2714,7 @@ export async function main() {
   }
 
   if (mode === "--status") {
-    if(process.env.ORCH_RUN_ID||process.argv.includes('--watch')){
+    if(process.env.ORCH_RUN_ID||process.argv.includes('--watch')||process.argv.includes('--json')){
       const {main:statusMain}=await import('../status.mjs');
       await statusMain([...process.argv.slice(3),'--workspace',WORKSPACE]);return;
     }

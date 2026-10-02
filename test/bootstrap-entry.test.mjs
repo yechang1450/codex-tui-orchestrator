@@ -29,7 +29,7 @@ function run(dir,args=[],env={}){
 }
 function nativeCliFixture(file){
   fs.mkdirSync(path.dirname(file),{recursive:true});
-  const code=`public class CodexVersionFixture { public static int Main(string[] args) { if(args.Length != 1 || args[0] != "--version") return 42; System.Console.WriteLine("codex-cli 0.157.0"); return 0; } }`;
+  const code=`public class CodexVersionFixture { public static int Main(string[] args) { if(args.Length != 1 || args[0] != "--version") return 42; System.Console.WriteLine("codex-cli 0.160.0"); return 0; } }`;
   const script=`$ErrorActionPreference='Stop'; Add-Type -TypeDefinition ${q(code)} -OutputAssembly ${q(file)} -OutputType ConsoleApplication`;
   const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:30000});
   assert.equal(r.status,0,r.stderr);

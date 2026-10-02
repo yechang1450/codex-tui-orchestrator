@@ -9,8 +9,39 @@ import {inspectRegistration} from '../scripts/repair-plugin-registration.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+function copyCheckout(root) {
+  const checkout = path.join(root, 'codex-tui-orchestrator');
+  fs.cpSync(repo, checkout, {recursive: true, filter: source => !['.git', 'temp', 'node_modules', 'dist', '.plugin-eval'].includes(path.basename(source))});
+  return checkout;
+}
+
+test('publication requires an explicit export target and does not create a dist folder by default', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-default-'));
+  try {
+    const checkout = copyCheckout(root);
+    const result = spawnSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs')], {cwd: checkout, encoding: 'utf8', windowsHide: true});
+    assert.notEqual(result.status, 0);
+    assert.match(String(result.stderr), /--target is required/);
+    assert.equal(fs.existsSync(path.join(root, 'dist')), false, 'default publishing must not create a sibling dist');
+    assert.equal(fs.existsSync(path.join(checkout, 'dist')), false, 'default publishing must not create a nested dist');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
+test('publication refuses a target that would delete its source checkout', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-source-'));
+  try {
+    const checkout = copyCheckout(root);
+    const manifest = path.join(checkout, 'release.json');
+    const before = fs.readFileSync(manifest);
+    const result = spawnSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', root], {cwd: checkout, encoding: 'utf8', windowsHide: true});
+    assert.notEqual(result.status, 0);
+    assert.ok(fs.existsSync(manifest), 'a rejected target must never delete source files');
+    assert.deepEqual(fs.readFileSync(manifest), before);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
 test('publish-dist builds a clean distribution that registration accepts as install source', () => {
-  // repair.mjs 拒绝把分发目标建在源码树内部，所以这里用系统临时目录，测试结束即清理。
+  // Explicit external targets remain supported; fixtures are removed after the test.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-dist-'));
   try {
     const checkout=path.basename(repo)==='codex-tui-orchestrator'?repo:path.join(root,'codex-tui-orchestrator');

@@ -20,7 +20,7 @@ function fixture(){
   const checkpoint=new URL('../scripts/core/checkpoint.mjs',import.meta.url).href;
   fs.writeFileSync(cli,`import fs from 'node:fs';import path from 'node:path';import {recordCheckpoint} from ${JSON.stringify(checkpoint)};
 let prompt='';for await(const part of process.stdin)prompt+=part;
-const file=/开始前：node "[^"]+" "([^"]+)"/.exec(prompt)[1],a=JSON.parse(fs.readFileSync(file));
+const file=/开始前：& '[^']+' '[^']+' '([^']+)'/.exec(prompt)[1],a=JSON.parse(fs.readFileSync(file));
 console.log(JSON.stringify({type:'thread.started',thread_id:'controlled-exec'}));
 for(const id of a.taskIds){recordCheckpoint(file,id,'started');
 if(id==='T001'){const count=fs.existsSync('count.json')?JSON.parse(fs.readFileSync('count.json')).count:0;fs.writeFileSync('count.json',JSON.stringify({count:count+1}));}

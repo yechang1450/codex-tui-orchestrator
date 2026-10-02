@@ -3,16 +3,22 @@ import path from 'node:path';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {buildTodoList,jsonProblem,describeShape} from './contracts.mjs';
 import {atomicJson} from './leases.mjs';
+import {assertNoReparsePoints} from './runtime-context.mjs';
 
+function runsDirectory(workspace){
+  const root=path.join(path.resolve(workspace),'temp','orchestrator','runs');
+  return assertNoReparsePoints(root,'status runs directory');
+}
 function directory(workspace,runId){
   if(!/^[A-Za-z0-9_-]{1,100}$/.test(runId||''))throw new Error('Invalid run ID');
-  return path.join(path.resolve(workspace),'temp','orchestrator','runs',runId);
+  return assertNoReparsePoints(path.join(runsDirectory(workspace),runId),'status run directory');
 }
 export function latestRunId(workspace){
-  const root=path.join(path.resolve(workspace),'temp','orchestrator','runs');
+  const root=runsDirectory(workspace);
   let entries;
   try{entries=fs.readdirSync(root,{withFileTypes:true});}
   catch(error){if(error.code==='ENOENT')return null;throw error;}
+  assertNoReparsePoints(root,'status runs directory');
   const candidates=[];
   for(const entry of entries){
     if(!entry.isDirectory()||!/^[A-Za-z0-9_-]{1,100}$/.test(entry.name))continue;
@@ -35,11 +41,33 @@ export function buildExecutionStatus(sum){
       retryAt:entry.retryAt??null};
   });
 }
-function eventText(dir){
-  try{return fs.readFileSync(path.join(dir,'events.jsonl'),'utf8');}catch(error){if(error.code==='ENOENT')return '';throw error;}
+function readTextWithIdentity(file,label){
+  let fd;
+  try{fd=fs.openSync(file,'r');}
+  catch(error){
+    if(error.code==='ENOENT'){
+      assertNoReparsePoints(file,label);
+      return null;
+    }
+    throw error;
+  }
+  try{
+    assertNoReparsePoints(file,label);
+    const opened=fs.fstatSync(fd,{bigint:true});
+    const text=fs.readFileSync(fd,'utf8');
+    const current=fs.statSync(file,{bigint:true});
+    if(opened.dev!==current.dev||opened.ino!==current.ino)throw new Error(`${label} changed during read: ${file}`);
+    assertNoReparsePoints(file,label);
+    return text;
+  }finally{fs.closeSync(fd);}
 }
-export function readEvents(dir,{after=0}={}){
-  const file=path.join(dir,'events.jsonl'),text=eventText(dir),lines=text.slice(0,text.lastIndexOf('\n')+1).split('\n'),events=[];
+function eventText(dir){
+  const file=assertNoReparsePoints(path.join(dir,'events.jsonl'),'status events file');
+  return readTextWithIdentity(file,'status events file')??'';
+}
+export function readEvents(dir,{after=0,runId:expectedRunId=null}={}){
+  const safeDir=assertNoReparsePoints(dir,'status directory');
+  const file=assertNoReparsePoints(path.join(safeDir,'events.jsonl'),'status events file'),text=eventText(safeDir),lines=text.slice(0,text.lastIndexOf('\n')+1).split('\n'),events=[];
   let previous=0,runId,lineNumber=0;
   for(const line of lines){
     lineNumber++;
@@ -49,32 +77,52 @@ export function readEvents(dir,{after=0}={}){
     // 否则调用方只知道"有问题"，不知道是哪一条。
     try{event=JSON.parse(line);}
     catch(error){throw new Error('Invalid status event JSON at '+file+':'+lineNumber+'：'+jsonProblem(line,error));}
-    if(event.schema!==1||!Number.isSafeInteger(event.seq)||event.seq<=previous||!event.runId||typeof event.type!=='string'||(runId&&runId!==event.runId))
+    if(event.schema!==1||!Number.isSafeInteger(event.seq)||event.seq<=previous||!event.runId||typeof event.type!=='string'||(runId&&runId!==event.runId)||(expectedRunId&&expectedRunId!==event.runId))
       throw new Error('Invalid status event sequence or identity at '+file+':'+lineNumber+'（要求 schema=1、seq 严格递增、整份文件同一个 runId）');
     previous=event.seq;runId=event.runId;if(event.seq>after)events.push(event);
   }
   return events;
 }
 export function createStatusPublisher(dir,{onEvent}={}){
-  const events=readEvents(dir),text=eventText(dir),file=path.join(dir,'events.jsonl');
+  const safeDir=assertNoReparsePoints(dir,'status directory');
+  const events=readEvents(safeDir),text=eventText(safeDir),file=assertNoReparsePoints(path.join(safeDir,'events.jsonl'),'status events file');
   let seq=events.at(-1)?.seq||0;
+  let boundRunId=events[0]?.runId||null;
   // Only the controller holding the run claim creates a publisher. A partial
   // final append belongs to its dead predecessor; readers never repair files.
-  if(text&&!text.endsWith('\n'))fs.truncateSync(file,Buffer.byteLength(text.slice(0,text.lastIndexOf('\n')+1)));
+  if(text&&!text.endsWith('\n')){
+    const truncateFd=fs.openSync(file,'r+');
+    try{
+      assertNoReparsePoints(safeDir,'status directory');
+      assertNoReparsePoints(file,'status events file');
+      fs.ftruncateSync(truncateFd,Buffer.byteLength(text.slice(0,text.lastIndexOf('\n')+1)));
+    }finally{fs.closeSync(truncateFd);}
+  }
   return {publish(sum,type='run.updated'){
-    if(events[0]&&events[0].runId!==sum.runId)throw new Error('Status publisher run identity mismatch');
+    if(boundRunId&&boundRunId!==sum.runId)throw new Error('Status publisher run identity mismatch');
+    boundRunId=boundRunId||sum.runId;
     seq=Math.max(seq,sum.eventSeq||0)+1;
     sum.todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
     sum.executionStatus=buildExecutionStatus(sum);sum.eventSeq=seq;sum.updatedAt=Date.now();
     const event={schema:1,seq,runId:sum.runId,generation:sum.generation,type,at:sum.updatedAt,
       todoList:sum.todoList,executionStatus:sum.executionStatus,finishedAt:sum.finishedAt??null,success:sum.success===true};
-    atomicJson(path.join(dir,'summary.json'),sum);
-    const fd=fs.openSync(file,'a');try{fs.writeFileSync(fd,JSON.stringify(event)+'\n');fs.fsyncSync(fd);}finally{fs.closeSync(fd);}
+    const summaryFile=assertNoReparsePoints(path.join(safeDir,'summary.json'),'status summary file');
+    atomicJson(summaryFile,sum,()=>assertNoReparsePoints(safeDir,'status directory'));
+    // Recheck after the atomic snapshot and after opening the append handle.
+    // If a same-user race swaps the run directory to a junction in either
+    // window, fail before appending the event through the redirected handle.
+    assertNoReparsePoints(safeDir,'status directory');
+    const fd=fs.openSync(file,'a');
+    try{
+      assertNoReparsePoints(safeDir,'status directory');
+      assertNoReparsePoints(file,'status events file');
+      fs.writeFileSync(fd,JSON.stringify(event)+'\n');fs.fsyncSync(fd);
+    }finally{fs.closeSync(fd);}
     onEvent?.(event);return event;
   }};
 }
 export function readRunStatus(workspace,runId){
-  const dir=directory(workspace,runId),summaryFile=path.join(dir,'summary.json'),manifestFile=path.join(dir,'manifest.json');
+  const dir=directory(workspace,runId),summaryFile=assertNoReparsePoints(path.join(dir,'summary.json'),'status summary file'),manifestFile=assertNoReparsePoints(path.join(dir,'manifest.json'),'status manifest file');
   let source=summaryFile,sum=readLedger(summaryFile);
   if(!sum){source=manifestFile;sum=readLedger(manifestFile);}
   if(!sum)throw new Error('Run ledger not found: '+summaryFile+'（同目录也没有 manifest.json：'+dir+'）');
@@ -85,9 +133,8 @@ export function readRunStatus(workspace,runId){
 // 坏账本既不能静默当成正常状态读出去（调用方会拿到半份状态），也不能只回裸 SyntaxError。
 // ENOENT 返回 null 交给调用方决定回落（summary 缺失时看 manifest）。
 function readLedger(file){
-  let text;
-  try{text=fs.readFileSync(file,'utf8');}
-  catch(error){if(error.code==='ENOENT')return null;throw new Error('Run ledger unreadable ('+error.code+'): '+file);}
+  const text=readTextWithIdentity(file,'status ledger file');
+  if(text===null)return null;
   let value;
   try{value=JSON.parse(text.replace(/^\uFEFF/,''));}
   catch(error){throw new Error('Invalid run ledger '+file+'：'+jsonProblem(text,error));}
@@ -108,8 +155,8 @@ export async function watchRunStatus({workspace,runId,after=0,intervalMs=250,tim
   while(!signal?.aborted){
     const sum=readRunStatus(workspace,runId);
     if(initial){onEvent({schema:1,seq:sum.eventSeq||0,type:'snapshot',...sum});seq=Math.max(seq,sum.eventSeq||0);initial=false;if(sum.finishedAt)return;}
-    let size=0;try{size=fs.statSync(path.join(dir,'events.jsonl')).size;}catch(error){if(error.code!=='ENOENT')throw error;}
-    if(size!==lastSize){for(const event of readEvents(dir,{after:seq})){onEvent(event);seq=event.seq;if(event.finishedAt)return;}lastSize=size;}
+    let size=0;try{size=fs.statSync(assertNoReparsePoints(path.join(dir,'events.jsonl'),'status events file')).size;}catch(error){if(error.code!=='ENOENT')throw error;}
+    if(size!==lastSize){for(const event of readEvents(dir,{after:seq,runId})){onEvent(event);seq=event.seq;if(event.finishedAt)return;}lastSize=size;}
     // A controller may die between its atomic snapshot and event append.
     if((sum.eventSeq||0)>seq){onEvent({schema:1,seq:sum.eventSeq,type:'snapshot',...sum});seq=sum.eventSeq;if(sum.finishedAt)return;}
     if(Date.now()>=deadline)throw new Error('Status watch timed out');

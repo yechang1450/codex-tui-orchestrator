@@ -42,6 +42,22 @@ function treeWorkingSetMB(snapshot, rootPid) {
 import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+
+// Checkpoint commands are pasted into a Windows PowerShell worker prompt.
+// Use the already-verified Node executable and single-quoted PowerShell
+// literals so paths containing spaces, $, %, !, backticks, or apostrophes stay
+// data instead of being expanded by the shell. Control characters cannot be
+// valid Windows paths or task fields and would make the prompt ambiguous.
+function powershellLiteral(value) {
+  const text = String(value);
+  if (/[\u0000-\u001f\u007f]/u.test(text)) throw new Error('Checkpoint command argument contains a control character');
+  return "'" + text.replaceAll("'", "''") + "'";
+}
+
+export function checkpointCommand(helper, attemptFile, id, state, nodePath = process.execPath) {
+  return '& ' + [nodePath, helper, attemptFile, id, state].map(powershellLiteral).join(' ');
+}
+
 /**
  * 进程身份枚举是瞬时故障源（Windows CIM 查询/互斥锁在机器繁忙时会超时）。
  * 身份不一致仍然立即判失败，但"枚举本身取不到"要有限重试：
@@ -566,7 +582,7 @@ export async function runWindows(request,hooks,options={}) {
           active={file:attemptFile,runId,token,number,taskIds:recovery.pending,createdAt:Date.now()};
           atomicJson(attemptFile,active);e.attempts.push(active);
           const helper=fileURLToPath(new URL('./checkpoint.mjs',import.meta.url));
-          const command=(id,state)=>`node "${helper}" "${attemptFile}" ${id} ${state}`;
+          const command=(id,state)=>checkpointCommand(helper,attemptFile,id,state);
           const todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
           const body=options.auth+'\n本执行块目录为 '+workspace+'；所有工具 workdir 保持此目录，除非原始任务明确另指定。\n'+
             'Global TodoList (controller-owned; do not rewrite):\n'+todoListText(todoList)+'\n\nCurrent block TodoList ('+r.key+'):\n'+todoListText(todoList,r.key)+'\n'+

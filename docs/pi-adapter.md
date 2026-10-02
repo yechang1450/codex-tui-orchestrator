@@ -17,6 +17,7 @@ open-tui-orchestrator --agent pi --resume-run my-run
 ## CLI 与运行协议
 
 - 支持本地 pi 0.84.4 及以上所需接口。解析 npm 启动入口后，直接用 Node 和实际 cli.js 调用，避免批处理字符串拼接；也检查原生可执行候选。显式路径错误时不回退、不安装。
+- Windows 上只接受通过宿主 Authenticode 校验的 `pi.exe`；PATH 中的 shim、脚本和未签名显式路径会在执行前拒绝。仅用于本机开发的显式未签名路径必须同时设置 `ORCH_ALLOW_UNVERIFIED_PI=1` 与 `ORCH_CLI`/`PI_EXE`，不会放宽 PATH 自动发现。
 - 保留 pi 自己的模型和登录设置。只有调用方显式传入 ORCH_MODEL / ORCH_EFFORT 才转为 pi 对应参数；不读取或输出密钥。
 - `--approve` 处理本次项目文件信任，`--offline` 关闭启动时非必要联网，不禁止正常模型请求。没有向 pi 塞入 Codex 的 `--sandbox`、`--cd` 或 `never` 参数；不支持的沙箱要求明确拒绝。
 - 窗口工作目录继承发起目录。pi 会话写入该工作区 `temp/orchestrator/pi/sessions`，启动器和检查点沿用工作区 temp；不修改用户全局配置。

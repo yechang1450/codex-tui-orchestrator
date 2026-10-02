@@ -5,6 +5,11 @@
 - Plugin/package version is now standard `0.9.29-rc.1`; the execution core remains sealed at `1.4.4-rc.1`.
 - Added `npm --prefix scripts run version:next` (`node scripts/bump-version.mjs --next-rc`) so later candidates advance `rc.1` to `rc.2`, `rc.3`, and so on while keeping all three release manifests synchronized.
 - Carried forward the 1000 MB dynamic admission floor and its current source/package verification scope.
+- Updated the pinned native Codex installer to official `@openai/codex@0.160.0` with freshly reviewed x64/arm64 executable and 47-file package digests.
+- Hardened plugin installation by containing the host-reported cache path, checking its canonical manifest/scripts before `npm ci`, and rejecting `%`, `!`, or newline bytes in Windows shell fallbacks.
+- Hardened the optional pi adapter: PATH discovery now requires a verified Windows executable; an unverified binary requires an explicit local-development opt-in.
+- Hardened runner checkpoint commands: use the verified `process.execPath`, PowerShell literal quoting, and control-character rejection; special-character path and acceptance-binding regressions pass.
+- Baseline local regression before the final runner hardening: 527 tests (525 passed, 0 failed, 2 configured skips) plus a 44-test focused regression. Post-hardening focused coverage adds 13/13 passing runner and acceptance tests; rerun the full matrix before promoting this RC to a public release.
 
 ## Unreleased (1000 MB admission floor)
 

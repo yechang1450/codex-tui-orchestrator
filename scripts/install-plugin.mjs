@@ -1,19 +1,19 @@
 #!/usr/bin/env node
 /**
- * install-plugin — 一条命令完成"干净分发 → 个人 marketplace 注册 → 插件管理器安装 → 缓存依赖恢复 → 校验"。
+ * install-plugin — 一条命令完成"个人 marketplace 注册 → 插件管理器安装 → 缓存依赖恢复 → 校验"。
  *
- * 为什么需要它：本机实测安装链路有四段容易漏掉的手工步骤——
- *   1) 重建干净分发（指向工作树会把 .git/ 和 temp/ 复制进安装缓存）；
+ * 为什么需要它：本机实测安装链路有三段容易漏掉的手工步骤；下面第 1 行是可选的发布导出——
+ *   1) 默认直接使用工作树（单目录布局）；需要干净发布包时显式选择 `--source dist --dist-root <dir>`；
  *   2) 个人 marketplace 文件/条目还不存在时要先补（缺了 `codex plugin add` 直接失败）；
  *   3) 插件管理器每次安装都会建不带 node_modules 的新缓存，必须对**新缓存路径**恢复依赖；
  *   4) 恢复后要在同一个缓存路径跑完整性检查和 doctor，确认技能与运行时都到位。
  * 漏掉第 3 步得到的是"技能在、运行时缺依赖"的半成品；漏掉第 2 步连安装都进不去。
  * 面向"第二台机器"的两件事也一并处理：缓存根跟随 CODEX_HOME（不假设 `~/.codex`），
- * 以及条目还指向旧克隆或别的机器时用 `--set-source` 重新指向本机分发。
+ * 以及条目还指向旧克隆或别的机器时用 `--set-source` 重新指向本机 checkout。
  *
  * 用法：
  *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install # 安装/更新（幂等）
- *   node scripts/install-plugin.mjs --check         # 只读校验：注册、分发新鲜度、缓存依赖、宿主启用状态（跟随 CODEX_HOME）
+ *   node scripts/install-plugin.mjs --check         # 只读校验：注册、可选分发新鲜度、缓存依赖、宿主启用状态（跟随 CODEX_HOME）
  *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install -Arguments @('--pull')
  *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install -Arguments @('--set-source','--verify-skills')
  *   # --pull、--set-source、--verify-skills、--strict-skills 均由可信引导入口转交。
@@ -39,7 +39,7 @@ export function parseArgs(argv) {
     marketplacePath: DEFAULT_MARKETPLACE,
     marketplaceRoot: os.homedir(),
     distRoot: null,
-    source: 'dist',
+    source: 'checkout',
     mode: 'install',
     pull: false,
     skipDist: false,
@@ -155,8 +155,17 @@ export function pluginEnabledInConfig(configText, pluginId) {
 /** 走 shell 时必须自己加引号：Node 只把参数用空格拼起来，含空格/中文的路径会被拆开。 */
 export function quoteShellArg(value) {
   const text = String(value);
+  // cmd.exe expands percent variables (and delayed-expansion bangs) before it
+  // honors quoting. Reject these bytes instead of allowing a path or argument
+  // supplied by a caller to change the shell command structure.
+  if (/[%!\r\n]/.test(text)) throw new Error('UNSAFE_SHELL_ARGUMENT: percent, exclamation, or newline is not allowed');
   if (!/[\s"^&|<>()]/.test(text)) return text;
   return '"' + text.replace(/"/g, '""') + '"';
+}
+
+/** 默认单目录安装不生成发布副本；只有显式选择 --source dist 才会导出干净包。 */
+export function shouldPublishDistribution({source = 'checkout', skipDist = false} = {}) {
+  return !skipDist && source === 'dist';
 }
 
 function run(command, args, {cwd = root, allowFailure = false, timeoutMs = 15 * 60 * 1000, shell = null} = {}) {
@@ -219,7 +228,8 @@ export function checkInstall(options = {}) {
   const pluginName = manifest.name;
   const marketplacePath = path.resolve(options.marketplacePath || DEFAULT_MARKETPLACE);
   const marketplaceRoot = path.resolve(options.marketplaceRoot || os.homedir());
-  const distRoot = options.distRoot || defaultDistRoot(pluginPath);
+  const configuredDistRoot = options.distRoot ? path.resolve(options.distRoot) : null;
+  const distRoot = configuredDistRoot || defaultDistRoot(pluginPath);
   const homeDir = options.homeDir || os.homedir();
   const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(homeDir, '.codex');
   const problems = [];
@@ -272,7 +282,9 @@ export function checkInstall(options = {}) {
     marketplaceName,
     marketplacePath,
     codexHome,
-    distRoot: path.resolve(distRoot),
+    // null means the single-checkout layout is active; a path is shown only
+    // when the caller explicitly selected a clean distribution root.
+    distRoot: configuredDistRoot,
     environment: {platform: process.platform, node: process.version, hostCli: options.codexCli || pickCodexCli()},
     registration: {status: registration.status, sourceKind: registration.sourceKind || null},
     cache: cache ? cache.dir : null,
@@ -312,6 +324,42 @@ export function skillNamesOf(pluginPath) {
     .map((entry) => entry.name);
 }
 
+/**
+ * Validate the host-reported cache path before any dependency install or
+ * script execution. The native host is trusted for the install operation, but
+ * its JSON result is still treated as untrusted input at this boundary.
+ */
+export function validateInstalledPath({installedPath, codexHome, marketplaceName, pluginName, version}) {
+  const reported = path.resolve(String(installedPath || ''));
+  const cacheRoot = path.resolve(codexHome, 'plugins', 'cache', marketplaceName, pluginName);
+  const expected = path.join(cacheRoot, version);
+  let realReported, realExpected, realRoot;
+  try {
+    realReported = fs.realpathSync(reported);
+    realExpected = fs.realpathSync(expected);
+    realRoot = fs.realpathSync(cacheRoot);
+  } catch {
+    throw new Error('HOST_INSTALL_PATH_INVALID: installed cache path is missing or not canonical');
+  }
+  const same = process.platform === 'win32' ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
+  if (!same(realReported, realExpected) || !same(path.dirname(realExpected), realRoot)) {
+    throw new Error('HOST_INSTALL_PATH_INVALID: installed cache path is outside the expected plugin cache');
+  }
+  const manifestPath = path.join(realReported, '.codex-plugin', 'plugin.json');
+  const scriptsPath = path.join(realReported, 'scripts');
+  let manifest;
+  try {
+    if (!fs.statSync(scriptsPath).isDirectory() || fs.lstatSync(scriptsPath).isSymbolicLink()) throw new Error('scripts');
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  } catch {
+    throw new Error('HOST_INSTALL_PATH_INVALID: installed cache is missing a regular scripts directory or manifest');
+  }
+  if (manifest?.name !== pluginName || manifest?.version !== version) {
+    throw new Error('HOST_INSTALL_PATH_INVALID: installed manifest does not match the requested plugin');
+  }
+  return {installedPath: realReported, scriptsPath: path.resolve(scriptsPath)};
+}
+
 export function installPlugin(options = {}) {
   requireTrustedInstallRuntime();
   const pluginPath = path.resolve(options.pluginPath || root);
@@ -336,11 +384,12 @@ export function installPlugin(options = {}) {
     run(git, ['-C', pluginPath, 'pull', '--ff-only']);
     steps.push({step: 'pull', status: 'ok'});
   }
-  if (!options.skipDist) {
-    const published = publishDist({...(distRoot ? {target: distRoot} : {}), quiet: true});
+  if (shouldPublishDistribution({source: options.source, skipDist: options.skipDist})) {
+    if (!distRoot) throw new Error('--source dist requires --dist-root <directory>; the default install layout has no dist folder');
+    const published = publishDist({target: distRoot, quiet: true});
     steps.push({step: 'publish-dist', status: 'ok', dist: published.dist, files: published.files});
   }
-  const registrationOptions = {pluginPath, marketplacePath, marketplaceRoot, distRoot, source: options.source || 'dist', homeDir};
+  const registrationOptions = {pluginPath, marketplacePath, marketplaceRoot, distRoot, source: options.source || 'checkout', homeDir};
   const registration = options.setSource ? setRegistrationSource(registrationOptions) : ensureRegistration(registrationOptions);
   if (!registration.ok) throw new Error(`registration failed (${registration.status}): ${registration.reason}`);
   steps.push({step: 'registration', status: registration.status, sourceKind: registration.sourceKind || null, entryCount: registration.entryCount, changed: registration.changed === true});
@@ -349,9 +398,17 @@ export function installPlugin(options = {}) {
   const parsed = parseCliJson(added.stdout || added.stderr);
   const installedPath = parsed.installedPath;
   if (!installedPath || !fs.existsSync(installedPath)) throw new Error('host CLI did not report an installed path: ' + JSON.stringify(parsed).slice(0, 300));
-  steps.push({step: 'plugin-add', status: 'ok', version: parsed.version || manifest.version, installedPath});
+  const installedVersion = parsed.version || manifest.version;
+  const validatedInstall = validateInstalledPath({
+    installedPath,
+    codexHome: process.env.CODEX_HOME || path.join(homeDir, '.codex'),
+    marketplaceName: registration.marketplaceName,
+    pluginName,
+    version: installedVersion,
+  });
+  steps.push({step: 'plugin-add', status: 'ok', version: installedVersion, installedPath: validatedInstall.installedPath});
 
-  const cacheScripts = path.join(installedPath, 'scripts');
+  const cacheScripts = validatedInstall.scriptsPath;
   runNpm(['ci', '--prefix', cacheScripts, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], {timeoutMs: options.timeoutMs});
   steps.push({step: 'cache-deps', status: 'ok'});
   run(process.execPath, [path.join(cacheScripts, 'release-integrity.mjs')], {cwd: installedPath, timeoutMs: options.timeoutMs});
@@ -363,9 +420,9 @@ export function installPlugin(options = {}) {
     ok: true,
     status: 'installed',
     pluginName,
-    version: parsed.version || manifest.version,
+    version: installedVersion,
     marketplaceName: registration.marketplaceName,
-    installedPath,
+    installedPath: validatedInstall.installedPath,
     codexHome: process.env.CODEX_HOME || path.join(homeDir, '.codex'),
     environment: {platform: process.platform, node: process.version, hostCli: codexCli},
     steps,
@@ -407,7 +464,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
       console.log('Usage: install-plugin.mjs [--check] [--install] [--pull] [--set-source] [--verify-skills] [--strict-skills] [--json] [--quiet]');
-      console.log('       [--source dist|checkout] [--timeout-ms ms] [--plugin path] [--marketplace path] [--marketplace-root path] [--dist-root path] [--home path]');
+      console.log('       [--source checkout|dist] [--timeout-ms ms] [--plugin path] [--marketplace path] [--marketplace-root path] [--dist-root path] [--home path]');
       console.log('On Windows use scripts/bootstrap.ps1 -Action install -Arguments @(...) for installs; direct --check is read-only.');
       process.exit(0);
     }

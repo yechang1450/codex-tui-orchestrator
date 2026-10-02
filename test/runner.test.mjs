@@ -2,8 +2,9 @@ import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {runWindows,runDirectory,verifyRun,identifyWithRetry} from '../scripts/core/runner.mjs';
+import {runWindows,runDirectory,verifyRun,identifyWithRetry,checkpointCommand} from '../scripts/core/runner.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 fs.mkdirSync(family,{recursive:true});
@@ -11,6 +12,25 @@ const controllerRoot=fs.mkdtempSync(path.join(family,'runner-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
 after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
+
+test('checkpoint command preserves PowerShell-special paths and uses the current Node executable', t => {
+  if (process.platform !== 'win32') return t.skip('PowerShell command contract is Windows-only');
+  const root = fs.mkdtempSync(path.join(family, 'runner-checkpoint-command-'));
+  const special = path.join(root, "literal $('value')-%ORCH_CHECKPOINT_TEST%! '");
+  fs.mkdirSync(special, {recursive: true});
+  const helper = path.join(special, 'capture.mjs');
+  const capture = path.join(root, 'capture.json');
+  const attemptFile = path.join(special, "attempt $('arg')-%ORCH_CHECKPOINT_TEST%! '.json");
+  fs.writeFileSync(helper, "import fs from 'node:fs'; fs.writeFileSync(process.env.CAPTURE_FILE, JSON.stringify(process.argv.slice(2)));\n", 'utf8');
+  const command = checkpointCommand(helper, attemptFile, 'T001', 'started');
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-Command', command,
+  ], {encoding: 'utf8', windowsHide: true, env: {...process.env, CAPTURE_FILE: capture}});
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}\n${command}`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(capture, 'utf8')), [attemptFile, 'T001', 'started']);
+  assert.ok(command.startsWith(`& '${String(process.execPath).replaceAll("'", "''")}'`));
+});
 test('transient process-enumeration failures retry instead of failing the whole block',async()=>{
   let calls=0;
   const sleep=[];

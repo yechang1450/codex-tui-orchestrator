@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createStatusPublisher,readRunStatus,readEvents,watchRunStatus,renderRunStatus} from '../scripts/core/status-events.mjs';
+import {createStatusPublisher,readRunStatus,readEvents,watchRunStatus,renderRunStatus,latestRunId} from '../scripts/core/status-events.mjs';
 const family=fileURLToPath(new URL('../temp/',import.meta.url));
 function fixture(){
   fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'status-'));
@@ -54,5 +54,165 @@ test('watch starts from the planning inventory and delivers live task changes be
     assert.deepEqual(received[1].todoList.map(t=>t.status),['running','pending']);
     assert.equal(fs.readFileSync(file,'utf8'),original);
     assert.equal(fs.readdirSync(f.dir).length,3);
+  }finally{f.close();}
+});
+
+test('status readers refuse a runs junction before following it outside the workspace',t=>{
+  const root=fs.mkdtempSync(path.join(family,'status-boundary-'));
+  const outside=fs.mkdtempSync(path.join(family,'status-outside-'));
+  t.after(()=>{fs.rmSync(root,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  const runs=path.join(root,'temp','orchestrator','runs');
+  fs.mkdirSync(path.dirname(runs),{recursive:true});
+  try{fs.symlinkSync(outside,runs,'junction');}
+  catch{try{fs.symlinkSync(outside,runs,'dir');}catch(error){if(error?.code==='EPERM')return;throw error;}}
+  fs.mkdirSync(path.join(outside,'leak'),{recursive:true});
+  fs.writeFileSync(path.join(outside,'leak','summary.json'),JSON.stringify({runId:'leak',workspace:root}));
+  assert.throws(()=>latestRunId(root),/symbolic link|junction|reparse/i);
+  assert.throws(()=>readRunStatus(root,'leak'),/symbolic link|junction|reparse/i);
+  assert.throws(()=>readEvents(path.join(runs,'leak')),/symbolic link|junction|reparse/i);
+  assert.throws(()=>createStatusPublisher(path.join(runs,'leak')),/symbolic link|junction|reparse/i);
+});
+
+test('status readers revalidate a ledger after a concurrent path replacement',t=>{
+  const root=fs.mkdtempSync(path.join(family,'status-race-'));
+  const outside=fs.mkdtempSync(path.join(family,'status-race-outside-'));
+  t.after(()=>{fs.rmSync(root,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  const runDir=path.join(root,'temp','orchestrator','runs','race');
+  fs.mkdirSync(runDir,{recursive:true});
+  fs.writeFileSync(path.join(runDir,'summary.json'),JSON.stringify({runId:'race',workspace:root}));
+  const externalDir=path.join(outside,'race');fs.mkdirSync(externalDir,{recursive:true});
+  fs.writeFileSync(path.join(externalDir,'summary.json'),JSON.stringify({runId:'race',workspace:root,secret:'EXTERNAL-SECRET-READ'}));
+  const originalOpen=fs.openSync;
+  let swapped=false;
+  fs.openSync=function(file,...args){
+    if(!swapped&&path.basename(String(file))==='summary.json'){
+      swapped=true;
+      fs.rmSync(runDir,{recursive:true,force:true});
+      try{fs.symlinkSync(externalDir,runDir,'junction');}
+      catch{fs.symlinkSync(externalDir,runDir,'dir');}
+    }
+    return originalOpen.call(this,file,...args);
+  };
+  try{assert.throws(()=>readRunStatus(root,'race'),/symbolic link|junction|reparse/i);}
+  finally{fs.openSync=originalOpen;}
+});
+
+test('status readers reject an ABA replacement by comparing the open ledger identity',t=>{
+  const root=fs.mkdtempSync(path.join(family,'status-aba-'));
+  const outside=fs.mkdtempSync(path.join(family,'status-aba-outside-'));
+  t.after(()=>{fs.rmSync(root,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  const runDir=path.join(root,'temp','orchestrator','runs','race');
+  fs.mkdirSync(runDir,{recursive:true});
+  fs.writeFileSync(path.join(runDir,'summary.json'),JSON.stringify({runId:'race',workspace:root}));
+  const externalDir=path.join(outside,'race');fs.mkdirSync(externalDir,{recursive:true});
+  fs.writeFileSync(path.join(externalDir,'summary.json'),JSON.stringify({runId:'race',workspace:root,secret:'EXTERNAL-SECRET-READ'}));
+  const originalOpen=fs.openSync;
+  let swapped=false;
+  fs.openSync=function(file,...args){
+    if(!swapped&&path.basename(String(file))==='summary.json'){
+      swapped=true;
+      const parked=runDir+'.parked';fs.renameSync(runDir,parked);
+      try{fs.symlinkSync(externalDir,runDir,'junction');}
+      catch{fs.symlinkSync(externalDir,runDir,'dir');}
+      const fd=originalOpen.call(this,file,...args);
+      fs.unlinkSync(runDir);fs.renameSync(parked,runDir);
+      return fd;
+    }
+    return originalOpen.call(this,file,...args);
+  };
+  try{assert.throws(()=>readRunStatus(root,'race'),/changed during read|reparse/i);}
+  finally{fs.openSync=originalOpen;}
+});
+
+test('status publisher revalidates before appending after a concurrent path replacement',t=>{
+  const root=fs.mkdtempSync(path.join(family,'status-publish-race-'));
+  const outside=fs.mkdtempSync(path.join(family,'status-publish-race-outside-'));
+  t.after(()=>{fs.rmSync(root,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  const runDir=path.join(root,'temp','orchestrator','runs','race');
+  fs.mkdirSync(runDir,{recursive:true});
+  const externalDir=path.join(outside,'race');fs.mkdirSync(externalDir,{recursive:true});
+  const eventsFile=path.join(externalDir,'events.jsonl');fs.writeFileSync(eventsFile,'OUTSIDE-BEFORE\n');
+  const sum={runId:'race',workspace:root,generation:1,tasks:[{id:'T001',prompt:'safe'}],blocks:[{key:'B1',title:'safe',taskIds:['T001']}],results:{B1:{status:'running',attempts:[{number:1}]}},taskResults:{T001:{status:'running'}}};
+  const publisher=createStatusPublisher(runDir);
+  const originalOpen=fs.openSync;
+  let swapped=false;
+  fs.openSync=function(file,...args){
+    if(!swapped&&path.basename(String(file))==='events.jsonl'){
+      swapped=true;
+      fs.rmSync(runDir,{recursive:true,force:true});
+      try{fs.symlinkSync(externalDir,runDir,'junction');}
+      catch{fs.symlinkSync(externalDir,runDir,'dir');}
+    }
+    return originalOpen.call(this,file,...args);
+  };
+  try{assert.throws(()=>publisher.publish(sum),/symbolic link|junction|reparse/i);}
+  finally{fs.openSync=originalOpen;}
+  assert.equal(fs.readFileSync(eventsFile,'utf8'),'OUTSIDE-BEFORE\n');
+});
+
+test('status publisher guards the atomic snapshot before a concurrent directory replacement',t=>{
+  const root=fs.mkdtempSync(path.join(family,'status-summary-race-'));
+  const outside=fs.mkdtempSync(path.join(family,'status-summary-race-outside-'));
+  t.after(()=>{fs.rmSync(root,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  const runDir=path.join(root,'temp','orchestrator','runs','race');
+  fs.mkdirSync(runDir,{recursive:true});
+  const externalDir=path.join(outside,'race');fs.mkdirSync(externalDir,{recursive:true});
+  const sum={runId:'race',workspace:root,generation:1,tasks:[{id:'T001',prompt:'SECRET-SNAPSHOT'}],blocks:[{key:'B1',title:'safe',taskIds:['T001']}],results:{B1:{status:'running',attempts:[{number:1}]}},taskResults:{T001:{status:'running'}}};
+  const publisher=createStatusPublisher(runDir);
+  const originalMkdir=fs.mkdirSync;
+  let swapped=false;
+  fs.mkdirSync=function(dir,...args){
+    if(!swapped&&path.resolve(String(dir))===path.resolve(runDir)){
+      swapped=true;
+      fs.rmSync(runDir,{recursive:true,force:true});
+      try{fs.symlinkSync(externalDir,runDir,'junction');}
+      catch{fs.symlinkSync(externalDir,runDir,'dir');}
+    }
+    return originalMkdir.call(this,dir,...args);
+  };
+  try{assert.throws(()=>publisher.publish(sum),/symbolic link|junction|reparse/i);}
+  finally{fs.mkdirSync=originalMkdir;}
+  assert.equal(fs.existsSync(path.join(externalDir,'summary.json')),false);
+});
+
+test('latest run selection revalidates after the runs directory is replaced',t=>{
+  const root=fs.mkdtempSync(path.join(family,'status-latest-race-'));
+  const outside=fs.mkdtempSync(path.join(family,'status-latest-race-outside-'));
+  t.after(()=>{fs.rmSync(root,{recursive:true,force:true});fs.rmSync(outside,{recursive:true,force:true});});
+  const runs=path.join(root,'temp','orchestrator','runs');
+  const externalRuns=path.join(outside,'runs');
+  fs.mkdirSync(runs,{recursive:true});fs.mkdirSync(path.join(externalRuns,'leak'),{recursive:true});
+  fs.writeFileSync(path.join(externalRuns,'leak','summary.json'),JSON.stringify({runId:'leak',workspace:root}));
+  const originalReadDir=fs.readdirSync;
+  let swapped=false;
+  fs.readdirSync=function(dir,...args){
+    const entries=originalReadDir.call(this,dir,...args);
+    if(!swapped&&path.resolve(String(dir))===path.resolve(runs)){
+      swapped=true;
+      fs.rmSync(runs,{recursive:true,force:true});
+      try{fs.symlinkSync(externalRuns,runs,'junction');}
+      catch{fs.symlinkSync(externalRuns,runs,'dir');}
+    }
+    return entries;
+  };
+  try{assert.throws(()=>latestRunId(root),/symbolic link|junction|reparse/i);}
+  finally{fs.readdirSync=originalReadDir;}
+});
+
+test('watch refuses events belonging to another run',async()=>{
+  const f=fixture();try{
+    createStatusPublisher(f.dir).publish(f.sum,'task.started');
+    fs.writeFileSync(path.join(f.dir,'events.jsonl'),JSON.stringify({schema:1,seq:2,runId:'foreign',type:'run.finished',finishedAt:1})+'\n');
+    const received=[];
+    await assert.rejects(()=>watchRunStatus({workspace:f.workspace,runId:'live',intervalMs:10,timeoutMs:100,onEvent:e=>received.push(e)}),/identity/i);
+    assert.ok(received.every(e=>e.runId==='live'));
+  }finally{f.close();}
+});
+
+test('a fresh status publisher binds every later publication to its first run',()=>{
+  const f=fixture();try{
+    const publisher=createStatusPublisher(f.dir);
+    publisher.publish(f.sum);
+    assert.throws(()=>publisher.publish({...f.sum,runId:'foreign'}),/identity/i);
   }finally{f.close();}
 });

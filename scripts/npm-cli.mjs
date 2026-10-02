@@ -16,6 +16,10 @@ export function assertTrustedNpm(env = process.env) {
 /** 走 shell 时必须自己加引号：Node 只把参数用空格拼起来，含空格/中文的路径会被拆开。 */
 export function quoteShellArg(value) {
   const text = String(value);
+  // cmd.exe expands percent variables (and delayed-expansion bangs) before it
+  // honors quoting. Reject these bytes instead of allowing a path or argument
+  // supplied by a caller to change the shell command structure.
+  if (/[%!\r\n]/.test(text)) throw new Error('UNSAFE_SHELL_ARGUMENT: percent, exclamation, or newline is not allowed');
   if (!/[\s"^&|<>()]/.test(text)) return text;
   return '"' + text.replace(/"/g, '""') + '"';
 }

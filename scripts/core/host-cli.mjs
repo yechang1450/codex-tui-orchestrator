@@ -72,7 +72,7 @@ function fileIdentity(file) {
   } catch { return null; }
 }
 
-// Desktop Codex and the pinned @openai/codex@0.157.0 Windows package use
+// Desktop Codex and the pinned @openai/codex@0.160.0 Windows package use
 // different valid OpenAI signing certificates. The latter can be external to
 // an installed cache even when bootstrap authenticated its package tree.
 const TRUSTED_CLI_CERTIFICATES = Object.freeze([
@@ -171,20 +171,20 @@ function npmRoot({npm, env, platform, spawn}) {
   return '';
 }
 
-export const DEFAULT_CLI_INSTALL_SPEC = '@openai/codex@0.157.0';
-// SHA-256 of the native executables in the official 0.157.0 platform tarballs.
+export const DEFAULT_CLI_INSTALL_SPEC = '@openai/codex@0.160.0';
+// SHA-256 of the native executables in the official 0.160.0 platform tarballs.
 // Their archive SHA-512 values were cross-checked against npmjs and npmmirror
 // before sealing this release. Never execute npm-fetched bytes without this pin.
 const PINNED_CLI_SHA256=Object.freeze({
-  x64:'ed1c7b36e44536809c868864c833af8a857f56599a7a7fe23b908a1ba1093b1f',
-  arm64:'0f5d8893ed559dbf3ff082d84df71e3bf90bdd19261fc3c257acfdc8847ce342',
+  x64:'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d',
+  arm64:'1f090167e94ed25969c47381868c6ffb78be2a195e13891fcdc969531ca16eaf',
 });
 // SHA-256 of a canonical manifest of every regular file in the official
 // platform tarball. Checking the complete tree rejects DLL side-loading and
 // secondary executable substitution beside an otherwise genuine codex.exe.
 const PINNED_PLATFORM_TREE_SHA256=Object.freeze({
-  x64:'56e35e9609446f03fd6c610db467b0bca4861d588880a62454fcde401406333f',
-  arm64:'a6b1d34a8c89b3f771d999e22580b8ee4962ebb00302e9dce663b5b4214a7d25',
+  x64:'08a9b34eee738cc65199262bc7dcafb82762186d63ce99b0a916514de25db79b',
+  arm64:'94b1eba76b291ae5c8a19c37d86b9ca9b08e6fdf6f002f5001138dd587df0b27',
 });
 
 function pinnedBinaryHash(file,expected) {
@@ -292,7 +292,7 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
   probe = (file) => nativeProbe(file, env), verifyPrivate=file=>verifiedPrivateCodexCandidate(file,env),
   verifyExternal=file=>verifyAuthenticodePublisher(file,env), install, autoInstall } = {}) {
   const id = agent || detectHostAgent(env);
-  if(id==='pi')return resolvePiHost(env);
+  if(id==='pi')return resolvePiHost(env,{verifyPublisher: verifyAuthenticodePublisher});
   const adapter = adapters[id];
   if (!adapter) throw new Error(`ADAPTER_UNSUPPORTED: ${id}; no CLI adapter implemented; no fallback or automatic install.`);
   // An explicit executable is an operator decision. If it is stale or invalid,

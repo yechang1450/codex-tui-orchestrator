@@ -25,6 +25,7 @@ test('inactive launch preserves arguments and hides only its short-lived helper'
  let called=0;
  spawnInactiveWindow('C:\\Windows\\powershell.exe',['中文 空格','a"b'],'D:\\',{invoke:(file,args,options)=>{
   called++;assert.equal(file,'powershell.exe');assert.equal(options.windowsHide,true);assert.equal(options.shell,false);
+  assert.deepEqual(args.slice(0,5),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File']);
   const payload=JSON.parse(Buffer.from(args.at(-1),'base64').toString('utf8'));
   assert.equal(payload.cwd,'D:\\');assert.equal(payload.parameters,'"中文 空格" "a\\"b"');
   return {status:0};

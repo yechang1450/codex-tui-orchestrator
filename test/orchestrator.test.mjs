@@ -175,7 +175,7 @@ test('rollout ownership rejects parent tools, copied messages and token prefixes
     const helper = body.slice(body.indexOf('function Get-EventTurnId('),body.indexOf('function Get-LastReport {'));
     fs.writeFileSync(fixture,JSON.stringify(fixtures.map(f=>({raw:f.events.map(JSON.stringify).join('\n'),token}))), 'utf8');
     fs.writeFileSync(harness,'\uFEFF[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n'+helper+`\n$data=Get-Content -LiteralPath '${fixture.replace(/'/g,"''")}' -Raw -Encoding UTF8 | ConvertFrom-Json\n@($data | ForEach-Object { Read-OwnedRollout $_.raw $_.token }) | ConvertTo-Json -Depth 5 -Compress`, 'utf8');
-    const out=spawnSync('powershell.exe',['-NoProfile','-File',harness],{windowsHide:true,encoding:'utf8'});
+    const out=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',harness],{windowsHide:true,encoding:'utf8'});
     assert.equal(out.status,0,out.stderr);
     const results=JSON.parse(out.stdout.replace(/^\uFEFF/,''));
     fixtures.forEach((f,i)=>{
@@ -1190,6 +1190,13 @@ test('levelWaves: 循环依赖/无依赖/空输入', () => {
   assert.equal(levelWaves([]).length, 0, '空输入');
   const ind = [{ key: 'B1', title: 'B1', b: {}, dependsOn: [] }, { key: 'B2', title: 'B2', b: {}, dependsOn: [] }];
   assert.equal(levelWaves(ind).length, 1, '无依赖全并行一波');
+});
+
+test('levelWaves: 重复 block key 必须 fail-closed，不能被调度 Map 折叠', () => {
+  assert.throws(() => levelWaves([
+    {key: 'B1', title: 'first', dependsOn: []},
+    {key: 'B1', title: 'second', dependsOn: []},
+  ]), /Duplicate block identity/);
 });
 
 test('decomposeHash: 相同请求+相同 hints 稳定, 不同 hints 不同', () => {

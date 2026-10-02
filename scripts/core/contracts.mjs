@@ -113,9 +113,13 @@ export function canonicalKey(key, cwd = process.cwd()) {
   p=p.replaceAll('\\','/').replace(/\/+$/,'');
   return match[1].toLowerCase()+':'+(windows?p.toLowerCase():p);
 }
-export function keysOverlap(a,b) {
+export function keysOverlap(a,b,options={}) {
+  // A bounded plan comparison can reuse already canonical keys. Live lease
+  // admission uses the default path to re-resolve current filesystem aliases.
+  const canonical=options?.canonical===true;
+  const normalize=canonical?value=>String(value):value=>canonicalKey(value);
   return (a||[]).some(x=>(b||[]).some(y=>{
-    x=canonicalKey(x); y=canonicalKey(y);
+    x=normalize(x); y=normalize(y);
     if(x===y)return true;
     const xm=/^(file|dir):(.*)$/.exec(x),ym=/^(file|dir):(.*)$/.exec(y);
     if(!xm||!ym)return false;
@@ -124,6 +128,12 @@ export function keysOverlap(a,b) {
 }
 
 export function levelWaves(recs) {
+  const seenKeys=new Set();
+  for(const r of recs){
+    if(!r||typeof r.key!=='string'||!r.key)throw new Error('Invalid block identity');
+    if(seenKeys.has(r.key))throw new Error('Duplicate block identity: '+r.key);
+    seenKeys.add(r.key);
+  }
   const aliases=new Map();
   for(const r of recs) for(const alias of [r.key,r.title,r.b?.title].filter(Boolean)) {
     if(aliases.has(alias)&&aliases.get(alias)!==r.key)throw new Error('Ambiguous block identity: '+alias);
@@ -144,11 +154,12 @@ export function levelWaves(recs) {
 
 export function requestTasks(request) {
   const text=String(request),parts=[];let start=0,quote='',depth=0;
+  const quoteEnds={'"':'"',"'":"'",'`':'`','“':'”','‘':'’','「':'」','『':'』'};
   for(let i=0;i<text.length;i++) {
     const c=text[i];
     if(quote){if(c===quote&&text[i-1]!=='\\'&&text[i-1]!=='`')quote='';continue;}
     if(c==="'"&&/[\p{L}\p{N}]/u.test(text[i-1]||'')&&/[\p{L}\p{N}]/u.test(text[i+1]||''))continue;
-    if(['"',"'",'`'].includes(c)){quote=c;continue;}
+    if(Object.hasOwn(quoteEnds,c)){quote=quoteEnds[c];continue;}
     if('([{'.includes(c)){depth++;continue;}if(')]}'.includes(c)){depth=Math.max(0,depth-1);continue;}
     const explicitNext=/^\s*(?:(?:项目|工程|project|proj)\s*[-/]?\s*\d+|(?:修复|优化|修改|更新|检查|创建)\s*\d{2,3}(?!\d))/i.test(text.slice(i+1));
     if(!depth&&(/[；;\n]/.test(c)||(/[，,。]/.test(c)&&explicitNext))){parts.push(text.slice(start,i));start=i+1;}

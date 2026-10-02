@@ -1,11 +1,11 @@
-param([string]$Directory,[string]$Ticket,[int]$Owner,[string]$Started)
+param([string]$Directory,[string]$Ticket,[int]$Owner,[string]$Started,[int]$WaitMs=120000)
 $ErrorActionPreference='Stop'
 $hash=[Security.Cryptography.SHA256]::Create()
 $name='Local\TuiOrchestrator.Leases.'+[BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($Directory.ToLowerInvariant()))).Replace('-','')
 $mutex=[Threading.Mutex]::new($false,$name)
 $held=$false
 try {
-  try {$held=$mutex.WaitOne(15000)} catch [Threading.AbandonedMutexException] {$held=$true}
+  try {$held=$mutex.WaitOne([Math]::Max(1000,$WaitMs))} catch [Threading.AbandonedMutexException] {$held=$true}
   if(-not $held){exit 2}
   [IO.File]::WriteAllText($Ticket+'.ready','ready')
   while(-not [IO.File]::Exists($Ticket+'.release')) {

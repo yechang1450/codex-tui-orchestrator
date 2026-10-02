@@ -7,7 +7,7 @@
  * 只带运行时文件（约 190 个文件 / 2 MB）。
  *
  * 用法：
- *   node scripts/publish-dist.mjs [--target <分发根>] [--quiet]
+ *   node scripts/publish-dist.mjs --target <分发根> [--quiet]
  *
  * 行为：
  *   1) 删除旧分发目录（避免新旧混合），再调用 repair.mjs --target 复制当前工作树；
@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
+import {manifestNameProblem} from './repair-plugin-registration.mjs';
 import {assertNoReparsePoints} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -39,14 +39,24 @@ function parseArgs(argv) {
 }
 
 export function publishDist({target = null, quiet = false} = {}) {
+  if (!target) throw new Error('--target is required; the default checkout layout has no dist folder');
   const pluginName = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8')).name;
-  const resolvedTarget = path.resolve(target || defaultDistRoot(root));
+  const resolvedTarget = path.resolve(target);
   const dist = resolveDistDir(resolvedTarget, pluginName);
   // The next operation is recursive deletion. Validate the target and every
   // existing ancestor before mkdir/rm so a junction or symlink cannot redirect
   // publication into an unrelated directory.
   assertNoReparsePoints(resolvedTarget, 'distribution target root');
   assertNoReparsePoints(dist, 'distribution target');
+  // Never let an explicit export target point inside the source checkout. The
+  // next operation is rm -r and must not be able to delete source or evidence.
+  const sourceReal = fs.realpathSync.native(root);
+  const relativeToSource = path.relative(sourceReal, dist);
+  const insideSource = relativeToSource === ''
+    || (!path.isAbsolute(relativeToSource)
+      && relativeToSource !== '..'
+      && !relativeToSource.startsWith('..' + path.sep));
+  if (insideSource) throw new Error(`distribution target must be outside the source checkout: ${dist}`);
   fs.mkdirSync(resolvedTarget, {recursive: true});
   // repair.mjs 拒绝已存在的目标，正是为了避免新旧混合；这里先删旧分发再重建。
   fs.rmSync(dist, {recursive: true, force: true});
@@ -92,7 +102,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log('Usage: publish-dist.mjs [--target <distribution root>] [--quiet]');
+      console.log('Usage: publish-dist.mjs --target <distribution root> [--quiet]');
       process.exit(0);
     }
     publishDist({...options, ...(options.quiet ? {} : {})});

@@ -50,9 +50,9 @@ test('new launcher preserves a failed CLI exit and never blindly repeats the pro
  const lit=s=>"'"+s.replaceAll("'","''")+"'";
  try{
   fs.writeFileSync(fake,`Add-Content -LiteralPath ${lit(counter)} -Value called\nexit 23`);
-  const text=fs.readFileSync(la.lp,'utf8').replace(/^    & '[^\r\n]+' @agentArgs$/m,`    & powershell.exe -NoProfile -File ${lit(fake)}`);
+  const text=fs.readFileSync(la.lp,'utf8').replace(/^    & '[^\r\n]+' @agentArgs$/m,`    & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File ${lit(fake)}`);
   fs.writeFileSync(la.lp,text);
-  const result=spawnSync('powershell.exe',['-NoProfile','-File',la.lp],{windowsHide:true,encoding:'utf8',timeout:30000,env:{...process.env,ORCH_SESSION_DIR:dir,ORCH_SDIR:dir}});
+  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',la.lp],{windowsHide:true,encoding:'utf8',timeout:30000,env:{...process.env,ORCH_SESSION_DIR:dir,ORCH_SDIR:dir}});
   assert.equal(result.status,0,result.stderr);assert.equal(fs.readFileSync(counter,'utf8').trim(),'called');
   assert.equal(JSON.parse(fs.readFileSync(la.rf,'utf8').replace(/^\uFEFF/,'').split(/\r?\n/)[0]).__EXIT__,23);
  }finally{for(const p of [...Object.values(la),la.rf+'.self-closed',la.pidf+'.self-closed'])if(typeof p==='string'&&fs.existsSync(p))fs.rmSync(p,{force:true});fs.rmSync(dir,{recursive:true,force:true});}
