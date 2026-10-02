@@ -39,7 +39,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI fixture install failed: $installOutput" }
           $env:ORCH_AUTO_INSTALL_CLI = '0'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
-          $reportText = (& node scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
+          $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI verification failed: $reportText" }
           $report = $reportText | ConvertFrom-Json
           if (-not $report.ok -or $report.stage -ne 'ready') { throw "Pinned Codex CLI verification returned an invalid report: $reportText" }
@@ -50,6 +50,34 @@ jobs:
           "PATH=$cliRoot;$env:PATH" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_CLI=0" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_DEPS=0" >> $env:GITHUB_ENV
+          "ORCH_NODE_EXE=$nodeExe" >> $env:GITHUB_ENV
+      - name: Exercise trusted automatic CLI installation
+        shell: pwsh
+        run: |
+          $nodeExe = $env:ORCH_NODE_EXE
+          $autoData = Join-Path $env:RUNNER_TEMP 'codex-plugin-data-auto'
+          $autoRoot = Join-Path $autoData 'runtime\cli'
+          $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
+          foreach ($name in @('npm_execpath','NPM_EXEC_PATH','ORCH_NPM_TRUSTED','ORCH_ALLOW_UNVERIFIED_NPM','npm_config_prefix','NPM_CONFIG_PREFIX')) {
+            Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
+          }
+          $env:PLUGIN_DATA = $autoData
+          $env:npm_config_prefix = $autoRoot
+          $env:npm_execpath = $npmCli
+          $env:ORCH_NPM_TRUSTED = '1'
+          $env:ORCH_AUTO_INSTALL_CLI = '1'
+          $env:ORCH_AUTO_INSTALL_DEPS = '0'
+          $env:ORCH_AGENT = 'codex'
+          $env:LOCALAPPDATA = Join-Path $env:RUNNER_TEMP 'codex-no-desktop'
+          $env:PATH = (Split-Path -Parent $nodeExe) + ';' + (Join-Path $env:SystemRoot 'System32')
+          $envProbe = (& $nodeExe -e "const fs=require('fs'),path=require('path');const e=process.env.npm_execpath;process.stdout.write(JSON.stringify({absolute:path.isAbsolute(e||''),regular:!!e&&fs.lstatSync(e).isFile(),trusted:process.env.ORCH_NPM_TRUSTED}))" | ConvertFrom-Json)
+          if (-not $envProbe.absolute -or -not $envProbe.regular -or $envProbe.trusted -ne '1') { throw 'Trusted npm environment was not visible to Node.' }
+          $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Trusted automatic CLI installation failed: $reportText" }
+          $report = $reportText | ConvertFrom-Json
+          if (-not $report.ok -or $report.stage -ne 'ready') { throw "Trusted automatic CLI installation returned an invalid report: $reportText" }
+          $version = (& $report.cliPath --version 2>$null | Out-String).Trim()
+          if ($version -ne 'codex-cli 0.160.0') { throw "Unexpected automatically installed CLI version: $version" }
       - name: Configure offline test host
         shell: pwsh
         run: |
@@ -58,6 +86,8 @@ jobs:
           "ORCH_APPROVAL=never" >> $env:GITHUB_ENV
           "PATH=$env:GITHUB_WORKSPACE\scripts;$env:PATH" >> $env:GITHUB_ENV
       - name: Run offline regression suite
-        run: node --test --test-concurrency=1 test/*.test.mjs
+        shell: pwsh
+        run: '& $env:ORCH_NODE_EXE --test --test-concurrency=1 test/*.test.mjs'
       - name: Verify release integrity
-        run: node scripts/release-integrity.mjs
+        shell: pwsh
+        run: '& $env:ORCH_NODE_EXE scripts/release-integrity.mjs'
