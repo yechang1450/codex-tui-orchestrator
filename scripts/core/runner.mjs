@@ -9,7 +9,7 @@ import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
 import {availableMB, admissionOk, unconsumedReservationMB, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost} from './memory-budget.mjs';
 import {createVerificationQueue} from './verification-queue.mjs';
-import {assertNoReparsePoints,physicallySameOrChild} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicallySameOrChild,physicalPathIdentity} from './runtime-context.mjs';
 import {controllerStateDir} from './controller-state.mjs';
 
 function blockCostFor(sum, key, budget) {
@@ -197,12 +197,16 @@ function recordedAcceptanceDigest(sum,dir,{allowConflict=false}={}){
   return {digest:null,conflict:true,records};
 }
 function trustedAcceptanceFile(workspace,runId){
-  const identity=crypto.createHash('sha256').update(path.resolve(workspace).toLowerCase()).digest('hex');
+  const identity=crypto.createHash('sha256').update(physicalPathIdentity(workspace)).digest('hex');
   return assertNoReparsePoints(path.join(controllerStateDir(workspace),'acceptance',identity,runId+'.json'),'trusted acceptance');
 }
 function trustedPlanFile(workspace,runId){
-  const identity=crypto.createHash('sha256').update(path.resolve(workspace).toLowerCase()).digest('hex');
+  const identity=crypto.createHash('sha256').update(physicalPathIdentity(workspace)).digest('hex');
   return assertNoReparsePoints(path.join(controllerStateDir(workspace),'plans',identity,runId+'.json'),'trusted run plan');
+}
+function sameWorkspace(left,right){
+  if(typeof left!=='string'||typeof right!=='string'||!left.trim()||!right.trim())return false;
+  try{return physicalPathIdentity(left)===physicalPathIdentity(right);}catch{return false;}
 }
 function immutableRunPlan(sum){
   return {workspace:sum.workspace,runId:sum.runId,request:sum.request,agent:sum.agent||'codex',
@@ -217,7 +221,7 @@ function bindRunPlan(sum){
 function validateBoundRunPlan(sum,{required=false}={}){
   const binding=readJsonIfPresent(trustedPlanFile(sum.workspace,sum.runId));
   if(!binding){if(required)throw new Error('Trusted run plan binding is missing; cannot resume this run');return false;}
-  if(binding.version!==1||binding.runId!==sum.runId||path.resolve(binding.workspace||'')!==path.resolve(sum.workspace)||
+  if(binding.version!==1||binding.runId!==sum.runId||!sameWorkspace(binding.workspace||'',sum.workspace)||
     typeof binding.sha256!=='string'||!/^[a-f0-9]{64}$/.test(binding.sha256))throw new Error('Trusted run plan binding is invalid');
   if(binding.sha256!==canonicalDigest(immutableRunPlan(sum)))throw new Error('Trusted run plan binding differs from the workspace ledger');
   return true;
@@ -226,7 +230,7 @@ function loadBoundChecks(file,dir,sum,override){
   const checks=loadChecks(file),digest=canonicalDigest(checks),recorded=recordedAcceptanceDigest(sum,dir,{allowConflict:override===true});
   const authority=readJsonIfPresent(trustedAcceptanceFile(sum.workspace,sum.runId));
   if(authority&&(
-    authority.version!==1||authority.runId!==sum.runId||path.resolve(authority.workspace||'')!==path.resolve(sum.workspace)||
+    authority.version!==1||authority.runId!==sum.runId||!sameWorkspace(authority.workspace||'',sum.workspace)||
     typeof authority.sha256!=='string'||!/^[a-f0-9]{64}$/.test(authority.sha256)
   ))throw new Error('Trusted acceptance binding is invalid');
   if(!authority&&!override)throw new Error('Trusted acceptance binding is missing; use an explicit acceptance override to adopt a historical run');
@@ -392,10 +396,10 @@ export function collectVerification(sum,checks,workspace,{allowStarted=false,all
 export function verifyRun(workspace,runId,acceptanceFile,options={}) {
   const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=readLedgerJson(file);
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
-  if(path.resolve(sum.workspace||'')!==path.resolve(workspace))throw new Error('Run workspace/identity mismatch');
+  if(!sameWorkspace(sum.workspace||'',workspace))throw new Error('Run workspace/identity mismatch');
   if(sum.protocol===2){validateRecoverySummary(sum);validateBoundRunPlan(sum);}
   const coordinator=trustedSavedCoordinator(workspace,sum.coordinator,options.coordinator,{required:sum.protocol===2});
-  const claim=claimRun(coordinator,'run:'+path.resolve(dir).toLowerCase());
+  const claim=claimRun(coordinator,'run:'+physicalPathIdentity(dir));
   try{
     const contractFile=acceptanceFile||path.join(dir,'acceptance.json');
     const acceptance=loadBoundChecks(contractFile,dir,sum,options.override===true);
@@ -415,7 +419,7 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
     createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed');
     writeGoalMirror(dir,sum,sum.success?'verify.completed':'verify.failed',sum.success?'completed':'failed');return sum.success;
   }
-  finally{releaseRun(coordinator,'run:'+path.resolve(dir).toLowerCase(),claim);}
+  finally{releaseRun(coordinator,'run:'+physicalPathIdentity(dir),claim);}
 }
 
 export async function runWindows(request,hooks,options={}) {
@@ -436,14 +440,14 @@ export async function runWindows(request,hooks,options={}) {
     if(savedResume.protocol!==2||!Array.isArray(savedResume.plan))throw new Error('This run has no recoverable task checkpoints');
     if((savedResume.agent||'codex')!==(options.agent||'codex'))throw new Error('Resume agent must match the saved run');
     if(options.executionMode&&(savedResume.executionMode||'visible')!==options.executionMode)throw new Error('Resume execution mode must match the saved run');
-    if(path.resolve(savedResume.workspace)!==workspace||savedResume.runId!==runId)throw new Error('Run workspace/identity mismatch');
+    if(!sameWorkspace(savedResume.workspace,workspace)||savedResume.runId!==runId)throw new Error('Run workspace/identity mismatch');
     validateRecoverySummary(savedResume);
     if(JSON.stringify(savedResume.authorization??null)!==JSON.stringify(authorization??null))throw new Error('Run authorization policy mismatch; refusing to widen or change a resumed run');
     trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true});
     const savedGoalFile=path.join(dir,'goal.json');
     if(fs.existsSync(savedGoalFile)){
       const savedGoal=JSON.parse(fs.readFileSync(savedGoalFile,'utf8'));
-      if(savedGoal.runId!==runId||path.resolve(savedGoal.workspace||'')!==workspace)throw new Error('Run goal mirror identity mismatch');
+      if(savedGoal.runId!==runId||!sameWorkspace(savedGoal.workspace||'',workspace))throw new Error('Run goal mirror identity mismatch');
       // The goal is only a mirror; a crash may interrupt its last replacement.
       if(savedGoal.version===2&&savedGoal.summaryDigest!==goalDigest(savedResume))console.warn('[resume] rebuilding stale goal mirror from the validated ledger');
     }
@@ -453,7 +457,7 @@ export async function runWindows(request,hooks,options={}) {
   const coordinator=options.resume
     ?trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true})
     :(options.coordinator===undefined?coordinatorDir(workspace):canonicalCoordinator(workspace,options.coordinator,'explicit'));
-  const runKey='run:'+dir.toLowerCase(),claim=await coordinate(()=>claimRun(coordinator,runKey),deadline);
+  const runKey='run:'+physicalPathIdentity(dir),claim=await coordinate(()=>claimRun(coordinator,runKey),deadline);
   let sum,progressTimer,progressError;
   try {
     let checks,acceptance={checks:null,rebound:false};

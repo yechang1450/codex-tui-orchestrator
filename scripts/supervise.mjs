@@ -9,7 +9,7 @@ import {resolveHost} from './core/host-cli.mjs';
 import {networkConfig,resolveOpenAIBaseUrl,resolveProviderMode} from './core/network-policy.mjs';
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
 import {controllerStateDir} from './core/controller-state.mjs';
-import {assertNoReparsePoints} from './core/runtime-context.mjs';
+import {assertNoReparsePoints,physicalPathIdentity} from './core/runtime-context.mjs';
 import {ensureRuntimeDependencies} from './entry-bootstrap.mjs';
 import {
   canSupervisorRetry,
@@ -29,8 +29,11 @@ const supervisorCodexOptions = Object.freeze(providerMode === 'openai-https'
     codexPathOverride: resolveHost({agent:'codex'}).config.bin,
     baseUrl: resolveOpenAIBaseUrl(),
     config: networkConfig,
-    model: process.env.ORCH_MODEL || 'gpt-5.3-codex-spark',
-    modelReasoningEffort: process.env.ORCH_EFFORT || 'xhigh',
+    // Inherit the initiating Codex turn/native Codex configuration. A fixed
+    // relay fallback here would diverge from the orchestrator's model/effort
+    // contract and silently ignore the user's current Codex settings.
+    ...(process.env.ORCH_MODEL ? {model:process.env.ORCH_MODEL} : {}),
+    ...(process.env.ORCH_EFFORT ? {modelReasoningEffort:process.env.ORCH_EFFORT} : {}),
   }
   : {
     codexPathOverride: resolveHost({agent:'codex'}).config.bin,
@@ -65,7 +68,7 @@ function statePath(options) {
 }
 
 function authorityPath(options){
-  const workspaceId=crypto.createHash('sha256').update(path.resolve(options.workspace).toLowerCase()).digest('hex');
+  const workspaceId=crypto.createHash('sha256').update(physicalPathIdentity(options.workspace)).digest('hex');
   return assertNoReparsePoints(path.join(controllerStateDir(options.workspace),'supervisor',workspaceId,options.runId+'.json'),'supervisor authority');
 }
 
@@ -74,9 +77,8 @@ function authorityDigest(state){
 }
 
 function sameWorkspace(left, right) {
-  const a = path.resolve(left);
-  const b = path.resolve(right);
-  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  if(typeof left!=='string'||typeof right!=='string'||!left.trim()||!right.trim())return false;
+  try{return physicalPathIdentity(left)===physicalPathIdentity(right);}catch{return false;}
 }
 
 function readState(file, options) {
@@ -131,7 +133,7 @@ export async function supervise(options, {codexFactory = config => new Codex({..
     throw new Error(`Saved supervisor state not found: ${options.runId}`);
   }
   const lockDir = path.join(controllerStateDir(options.workspace), 'supervisor', 'locks');
-  const runKey = `supervisor:${path.resolve(file).toLowerCase()}`;
+  const runKey = `supervisor:${physicalPathIdentity(file)}`;
   let claim;
   try {
     claim = claimRun(lockDir, runKey);

@@ -120,6 +120,26 @@ test('force.mjs refuses an active legacy workspace registry during migration', (
   }
 });
 
+test('orchestrator entry refuses malformed legacy workspace registry', () => {
+  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-sdk-legacy-malformed-'));
+  try {
+    const state = path.join(cliDir, 'temp', 'state');
+    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: state, ORCH_AGENT: 'codex', ORCH_ALLOW_UNVERIFIED_CLI: '1' };
+    const legacy = path.join(state, 'orchestrator-windows.json');
+    fs.mkdirSync(state, { recursive: true });
+    fs.writeFileSync(legacy, '{not-json', 'utf8');
+    const blocked = runNode(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), ['--status'], { env });
+    assert.notEqual(blocked.code, 0);
+    assert.match(blocked.out, /LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN|malformed|unreadable/i);
+    fs.writeFileSync(legacy, JSON.stringify({ active: true }), 'utf8');
+    const blockedShape = runNode(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), ['--status'], { env });
+    assert.notEqual(blockedShape.code, 0);
+    assert.match(blockedShape.out, /LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN|not an array/i);
+  } finally {
+    fs.rmSync(cliDir, { recursive: true, force: true });
+  }
+});
+
 test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATION when armed', () => {
   const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-cli2-'));
   try {

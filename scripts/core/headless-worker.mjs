@@ -1,23 +1,65 @@
 #!/usr/bin/env node
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
 import {atomicJson,processSnapshot,sameProcess} from './leases.mjs';
 import {isCapacityError,isProviderQuotaError} from './retry-policy.mjs';
+import {assertControllerPath,controllerStateDir} from './controller-state.mjs';
+import {assertNoReparsePoints,physicallySameOrChild,physicalPathIdentity} from './runtime-context.mjs';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const MAX_STREAM_BYTES=64*1024*1024;
 const MAX_EVENT_LINE_BYTES=4*1024*1024;
+const UNVERIFIED_CHILD_GRACE_MS=2000;
 function tail(file){
   const fd=fs.openSync(file,'r');
   try{const length=fs.fstatSync(fd).size,buffer=Buffer.alloc(Math.min(length,16384));fs.readSync(fd,buffer,0,buffer.length,Math.max(0,length-buffer.length));return buffer.toString('utf8');}
   finally{fs.closeSync(fd);}
 }
 
-export async function runHeadlessWorker(configFile){
+function detachUnverifiedChild(child){
+  // Once ownership cannot be revalidated, closing the worker's pipe handles
+  // prevents a detached child from keeping this worker alive indefinitely.
+  // We deliberately do not call taskkill/child.kill without an identity proof.
+  try{child?.stdout?.destroy();}catch{}
+  try{child?.stderr?.destroy();}catch{}
+  try{child?.unref?.();}catch{}
+}
+export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unverifiedChildGraceMs=UNVERIFIED_CHILD_GRACE_MS}={}){
   const config=JSON.parse(fs.readFileSync(configFile,'utf8'));
   if(config.version!==1||!Array.isArray(config.args)||!config.runId||!config.token||!config.files||!Number.isFinite(config.timeoutMs)||config.timeoutMs<=0)throw new Error('Invalid headless attempt configuration');
-  const {files}=config,deadline=Date.now()+config.timeoutMs;
+  const lp=path.resolve(configFile),files=config.files;
+  // The worker is launched from a controller-owned config. Re-derive every
+  // sibling path from that config path before creating any file, so a
+  // workspace process cannot redirect the worker's durable result outside the
+  // controller headless directory by editing one JSON field.
+  assertControllerPath(config.workspace,lp,'headless config');
+  const workspaceId=crypto.createHash('sha256').update(physicalPathIdentity(config.workspace)).digest('hex');
+  const expectedHeadlessRoot=path.join(controllerStateDir(config.workspace),'headless',workspaceId);
+  if(!physicallySameOrChild(expectedHeadlessRoot,lp))throw new Error('Invalid headless controller workspace binding');
+  const base=lp.slice(0,-'.json'.length),expected={
+    lp, pf:base+'.prompt.txt', pidf:base+'.pid', rf:base+'.result.json',
+    stdout:base+'.stdout.jsonl', stderr:base+'.stderr.log',
+  };
+  for(const [key,value] of Object.entries(expected)){
+    if(typeof files[key]!=='string'||path.resolve(files[key])!==value)throw new Error('Invalid headless attempt file binding: '+key);
+    assertNoReparsePoints(value,'headless attempt file');
+  }
+  for(const key of ['ready','cancel','runtime']){
+    const value=files[key]===undefined?config[key]:files[key];
+    if(typeof value!=='string'||path.resolve(value)!==base+({ready:'.go',cancel:'.cancel',runtime:'.runtime.json'}[key]))throw new Error('Invalid headless control binding: '+key);
+    assertNoReparsePoints(value,'headless control');
+  }
+  if(config.attemptFile!==undefined){
+    if(typeof config.attemptFile!=='string'||!physicallySameOrChild(config.workspace,config.attemptFile))throw new Error('Invalid headless attempt ledger binding');
+    assertNoReparsePoints(config.attemptFile,'headless attempt ledger');
+    let attempt;
+    try{attempt=JSON.parse(fs.readFileSync(config.attemptFile,'utf8').replace(/^\uFEFF/,''));}
+    catch(error){throw new Error('Invalid headless attempt ledger: '+(error?.message||error));}
+    if(attempt?.runId!==config.runId||attempt?.token!==config.token)throw new Error('Headless attempt ledger identity mismatch');
+  }
+  const deadline=Date.now()+config.timeoutMs;
   const runtime={runId:config.runId,token:config.token,pid:process.pid,threadId:null,startedAt:Date.now()};
   const result={...runtime,done:false,exitCode:null,text:''};
   fs.writeFileSync(files.pidf,String(process.pid),{flag:'wx'});
@@ -48,7 +90,7 @@ export async function runHeadlessWorker(configFile){
   };
   const stop=()=>{
     if(stopping||!child||child.exitCode!==null)return;
-    stopping=true;cancelled=true;
+    cancelled=true;
     if(process.platform==='win32'){
       // The worker owns this exec tree, never a Windows Terminal host. Recheck
       // the captured identity before invoking tree termination.
@@ -57,12 +99,14 @@ export async function runHeadlessWorker(configFile){
         // revalidated, refuse termination instead of racing PID reuse and
         // killing an unrelated same-user process. The durable result records
         // the refusal and the controller can reconcile the attempt.
-        const current=processSnapshot().get(child.pid);
+        const current=snapshot().get(child.pid);
         if(!identity||!sameProcess(identity,current)){
           result.text=result.text||'Refused to terminate headless child because its process identity could not be revalidated';
           result.terminationRefused=true;
+          stopping=true;
           return;
         }
+        stopping=true;
         const killed=spawnSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore',shell:false});
         if(killed.status!==0){
           result.text=result.text||'Refused to terminate headless child because taskkill did not confirm ownership';
@@ -71,8 +115,9 @@ export async function runHeadlessWorker(configFile){
       }catch{
         result.text=result.text||'Refused to terminate headless child because process identity inspection failed';
         result.terminationRefused=true;
+        stopping=true;
       }
-    }else child.kill('SIGTERM');
+    }else{stopping=true;child.kill('SIGTERM');}
   };
   const fault=error=>{failed=true;result.text=error.message;stop();};
   try{
@@ -100,7 +145,7 @@ export async function runHeadlessWorker(configFile){
     child.stdout.on('error',fault);child.stderr.on('error',fault);
     child.stdin.on('error',error=>{if(error.code!=='EPIPE')fault(error);});
     child.stdin.end(fs.readFileSync(files.pf,'utf8'));
-    if(process.platform==='win32'&&child.pid)identity=processSnapshot().get(child.pid);
+    if(process.platform==='win32'&&child.pid)identity=snapshot().get(child.pid);
     runtime.childPid=child.pid;runtime.childIdentity=identity;atomicJson(config.runtime,runtime);
     timer=setInterval(()=>{try{if(fs.existsSync(config.cancel)||Date.now()>=deadline)stop();}catch(error){fault(error);}},100);
     const {code,signal}=await closed;if(!failed&&buffer.trim())eventLine(buffer);
@@ -113,7 +158,14 @@ export async function runHeadlessWorker(configFile){
     clearInterval(timer);
     // A failed journal write must not leave the owned CLI alive or let its
     // remaining output write into descriptors already closed by this worker.
-    if(closed){const end=await closed;result.exitCode=end.code;result.signal=end.signal;}
+    if(closed){
+      let end;
+      if(result.terminationRefused&&child?.exitCode===null){
+        end=await Promise.race([closed,pause(Math.max(0,Number(unverifiedChildGraceMs)||0)).then(()=>null)]);
+      }else end=await closed;
+      if(end){result.exitCode=end.code;result.signal=end.signal;}
+      else{result.childStillRunning=true;detachUnverifiedChild(child);}
+    }
     for(const fd of [out,err])if(fd!==undefined)fs.closeSync(fd);
     if(!result.done&&fs.existsSync(files.stderr)){const diagnostic=tail(files.stderr).trim();if(diagnostic)result.text+='\n'+diagnostic;}
     result.endedAt=Date.now();atomicJson(files.rf,result);

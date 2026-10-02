@@ -87,7 +87,7 @@ winTest('unavailable or invalid memory readings conservatively keep work inline'
   assert.equal(fs.existsSync(f.called),false);
 });
 winTest('failed preparation is nonblocking and sanitized, and does not retry during cooldown',t=>{
-  const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.txt'),'x',[Text.Encoding]::UTF8)\n[Console]::Error.WriteLine('secret=fixture-token-DO-NOT-PRINT')\nWrite-Output '{\"ok\":false,\"message\":\"password=fixture_DO_NOT_PRINT\"}'\nexit 7\n");
+  const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.txt'),'x',[Text.Encoding]::UTF8)\n[Console]::Error.WriteLine('secret=fixture_token_DO_NOT_PRINT')\nWrite-Output '{\"ok\":false,\"message\":\"password=fixture_DO_NOT_PRINT\"}'\nexit 7\n");
   const first=run(f);assert.match(first.text,/PREPARE_FAILED/);assert.doesNotMatch(first.stdout+first.stderr,/DO_NOT_PRINT|password|secret/);
   const second=run(f);assert.match(second.text,/COOLDOWN/);
   assert.equal(fs.readFileSync(path.join(f.dir,'scripts','calls.txt'),'utf8').replace(/^\uFEFF/,''),'x');

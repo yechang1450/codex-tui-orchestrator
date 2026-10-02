@@ -28,7 +28,7 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
       const base=controllerHeadlessBase(workspace,attemptFile,key);
       const files={mode:'headless',lp:base+'.json',pf:base+'.prompt.txt',pidf:base+'.pid',rf:base+'.result.json',stdout:base+'.stdout.jsonl',stderr:base+'.stderr.log'};
       fs.mkdirSync(path.dirname(base),{recursive:true});fs.writeFileSync(files.pf,prompt,'utf8');
-      atomicJson(files.lp,{version:1,cli,args,workspace,runId,token,timeoutMs,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'});
+      atomicJson(files.lp,{version:1,cli,args,workspace,runId,token,attemptFile,timeoutMs,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'});
       return files;
     },
     async spawn(lp,_title,pidf){

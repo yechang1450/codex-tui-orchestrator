@@ -1920,10 +1920,15 @@ const REG_LOCK = path.join(WINDOW_STATE_DIR, "orchestrator-registry.lock");
 const LEGACY_WIN_REG = path.join(STATE_DIR, "orchestrator-windows.json");
 function assertLegacyWindowRegistryDrained() {
   if (!existsSync(LEGACY_WIN_REG) || path.resolve(WIN_REG).toLowerCase() === path.resolve(LEGACY_WIN_REG).toLowerCase()) return;
-  const legacy = loadJson(LEGACY_WIN_REG, []);
-  if (Array.isArray(legacy) && legacy.length) {
-    throw new Error('LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN: active workspace registry remains at ' + LEGACY_WIN_REG + '; stop or reconcile old windows before upgrading');
+  let legacy;
+  try { legacy = JSON.parse(readFileSync(LEGACY_WIN_REG, 'utf8')); }
+  catch (error) {
+    throw new Error('LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN: workspace registry is unreadable or malformed at ' + LEGACY_WIN_REG + '; stop or reconcile old windows before upgrading (' + (error?.message || error) + ')');
   }
+  if (!Array.isArray(legacy)) {
+    throw new Error('LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN: workspace registry is not an array at ' + LEGACY_WIN_REG + '; stop or reconcile old windows before upgrading');
+  }
+  if (legacy.length) throw new Error('LEGACY_WINDOW_REGISTRY_REQUIRES_DRAIN: active workspace registry remains at ' + LEGACY_WIN_REG + '; stop or reconcile old windows before upgrading');
 }
 function sleepSync(ms) { try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, ms); } catch { /* ignore */ } }
 const configuredLockTtl = Number(process.env.ORCH_REGISTRY_LOCK_TTL_MS || 120000);

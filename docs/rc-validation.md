@@ -3,11 +3,11 @@
 ## 2026-10-02 公开仓库准备与最终离线回归（core 1.4.4-rc.1）
 
 - 工作树在 `codex/public-readiness` 分支完成公开发布审查：README 中英文版本、版本号、1000 MB 内存预留、自动 RC 递增说明和 Codex CLI 版本口径已同步。
-- 最终串行离线回归为 532 项：529 通过、0 失败、3 项按配置跳过；跳过项只对应显式启用的真实 Codex 窗口验收、本机不可用的 UNC 管理共享和可选 pi CLI，不能据此宣称真实服务商或可见窗口已覆盖。
+- 最终串行离线回归为 535 项：532 通过、0 失败、3 项按配置跳过；跳过项只对应显式启用的真实 Codex 窗口验收、本机不可用的 UNC 管理共享和可选 pi CLI，不能据此宣称真实服务商或可见窗口已覆盖。
 - 发布封印 `release-integrity.mjs --json` 通过（schema 2、core `1.4.4-rc.1`、31 个核心文件、73 个运行时文件）；源码与个人缓存的关键文件摘要一致，安装检查无问题或警告。
 - 本轮把自动安装与文档中的固定原生 Codex CLI 从 `0.157.0` 更新到官方 `@openai/codex@0.160.0`，x64/arm64 可执行文件和完整 47 文件平台包摘要均已重新封存并通过安装器回归。
-- 公开性审查未发现真实 API key、私钥或凭据；当前工作树和最新主线 tip 不含个人绝对路径。主线历史以及旧的 `feat/exec-headless-status` 仍保留历史验证快照，因此已经从全部远端 refs 生成脱敏的公开候选分支；切换仓库可见性前仍需由维护者决定是否用该候选替换历史并清理旧 refs。
-- 本轮本地静态审查修复了未验证 Pi CLI、Windows shell 参数展开、插件安装路径越界、8.3/UNC 路径别名租约分叉和检查点命令注入候选；新增 PowerShell 特殊路径回归通过。窗口注册表、registry lock 和启用标记已迁移到 controller-owned state，并统一物理工作区身份；升级时发现旧的非空 workspace registry 会 fail-closed，等待旧窗口排空或人工核验，不会静默丢弃。
+- 公开性审查未发现真实 API key、私钥或凭据；当前工作树和最新主线 tip 不含个人绝对路径。主线、旧的 `feat/exec-headless-status`、Dependabot 分支和 PR 只读 refs 仍保留历史验证快照；候选 v4 已清理文件内容，但还需清理提交者元数据。已关闭 PR #1 的正文仍含个人路径，公开前必须脱敏；PR #2–#4 仍开放。普通分支推送不能清除 `refs/pull/*` 或 GitHub 缓存，必要时须按 GitHub 官方流程处理 Support 请求。
+- 本轮本地静态审查修复了未验证 Pi CLI、Windows shell 参数展开、插件安装路径越界、8.3/UNC 路径租约分叉、检查点命令注入候选、headless 身份快照失败导致的无界等待、旧 registry 损坏静默放行和 supervisor 中继模型漂移；新增 PowerShell 特殊路径、文件派生绑定和有限收尾回归通过。窗口注册表、registry lock 和启用标记已迁移到 controller-owned state，并统一物理工作区身份；升级时发现旧的损坏或非空 workspace registry 会 fail-closed。
 - 官方 Codex Security 深度扫描在本会话未能启动，原因是宿主没有提供该扫描要求的托管文件权限配置；本节的结论来自本地静态审查、针对性回归和发布完整性检查，不替代官方扫描。
 
 ## 2026-09-29 0.9.29-rc.1 内存准入下限调整候选（core 1.4.4-rc.1）

@@ -7,6 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {processSnapshot} from '../scripts/core/leases.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
+import {runHeadlessWorker} from '../scripts/core/headless-worker.mjs';
 const family=fileURLToPath(new URL('../temp/',import.meta.url));
 fs.mkdirSync(family,{recursive:true});
 const controllerRoot=fs.mkdtempSync(path.join(family,'headless-controller-'));
@@ -75,6 +76,37 @@ test('headless worker marks a typed provider capacity failure as retryable',asyn
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
     assert.equal(result.done,false);assert.equal(result.retryable,'capacity');assert.match(result.capacityError,/model is at capacity/);
   }finally{await f.hooks.close(f.hooks.readPid(f.files.pidf));await new Promise(r=>setTimeout(r,100));f.close();}
+});
+
+test('snapshot failure publishes a bounded refusal instead of waiting forever',async()=>{
+  if(process.platform!=='win32')return;
+  const f=fixture('setTimeout(()=>process.exit(0),500);');
+  try{
+    f.hooks.ready(f.files);
+    const started=Date.now();
+    const result=await runHeadlessWorker(f.files.lp,{snapshot:()=>{throw new Error('injected snapshot failure');},unverifiedChildGraceMs:50});
+    assert.ok(Date.now()-started<5000,'worker must publish a bounded result');
+    assert.equal(result.done,false);
+    assert.equal(result.terminationRefused,true);
+    assert.ok(fs.existsSync(f.files.rf));
+  }finally{
+    let removed=false;
+    for(let i=0;i<50&&!removed;i++){
+      try{f.close();removed=true;}
+      catch(error){if(error?.code!=='EPERM')throw error;await new Promise(r=>setTimeout(r,100));}
+    }
+    assert.equal(removed,true,'detached fixture child must release its workspace before cleanup');
+  }
+});
+
+test('worker rejects controller file bindings redirected outside its derived stem',async()=>{
+  const f=fixture('console.log(JSON.stringify({type:"turn.completed"}));');
+  try{
+    const config=JSON.parse(fs.readFileSync(f.files.lp,'utf8'));
+    config.files.rf=path.join(f.workspace,'outside-result.json');
+    fs.writeFileSync(f.files.lp,JSON.stringify(config),'utf8');
+    await assert.rejects(()=>runHeadlessWorker(f.files.lp),/Invalid headless attempt file binding: rf/);
+  }finally{f.close();}
 });
 
 test('headless worker marks an account usage limit as terminal quota',async()=>{

@@ -2,6 +2,7 @@
 
 ## 0.9.29-rc.1
 
+- Public-readiness hardening: headless identity-snapshot failures now publish a bounded refusal instead of hanging a worker and lease; controller file stems and attempt ledgers are revalidated before execution; malformed legacy workspace registries fail closed; runner and supervisor authority records use physical workspace identity; local UNC normalization no longer trusts the caller's `COMPUTERNAME`; and supervisor relay mode inherits the initiating Codex model and effort.
 - Plugin/package version is now standard `0.9.29-rc.1`; the execution core remains sealed at `1.4.4-rc.1`.
 - Added `npm --prefix scripts run version:next` (`node scripts/bump-version.mjs --next-rc`) so later candidates advance `rc.1` to `rc.2`, `rc.3`, and so on while keeping all three release manifests synchronized.
 - Carried forward the 1000 MB dynamic admission floor and its current source/package verification scope.
@@ -9,7 +10,7 @@
 - Hardened plugin installation by containing the host-reported cache path, checking its canonical manifest/scripts before `npm ci`, and rejecting `%`, `!`, or newline bytes in Windows shell fallbacks.
 - Hardened the optional pi adapter: PATH discovery now requires a verified Windows executable; an unverified binary requires an explicit local-development opt-in.
 - Hardened runner checkpoint commands: use the verified `process.execPath`, PowerShell literal quoting, and control-character rejection; special-character path and acceptance-binding regressions pass.
-- Final Windows offline matrix after the controller-state hardening: 532 tests, 529 passed, 0 failed, and 3 configured skips. The matrix covers headless/visible execution, recovery, malformed-state fuzzing, 8.3/UNC path aliases, 40-process lease contention, publishing, installation, and public CLI surfaces.
+- Final Windows offline matrix after the public-readiness hardening: 535 tests, 532 passed, 0 failed, and 3 configured skips. The matrix covers headless/visible execution, recovery, malformed-state fuzzing, 8.3/UNC path aliases, 40-process lease contention, publishing, installation, and public CLI surfaces.
 - Window registries, registry locks, and the arming marker now live in controller-owned state keyed by the physical workspace identity. A non-empty registry from the pre-migration workspace location fails closed until its windows are drained or reconciled.
 
 ## Unreleased (1000 MB admission floor)

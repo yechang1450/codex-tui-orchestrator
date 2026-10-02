@@ -89,7 +89,10 @@ function normalizePhysicalPath(value) {
   // A local administrative share is another spelling of the local drive. The
   // machine name is read once from the OS; arbitrary remote UNC shares are not
   // rewritten because they may refer to a different filesystem.
-  const host = String(process.env.COMPUTERNAME || os.hostname() || '').trim();
+  // COMPUTERNAME is caller-controlled process environment. Use the OS-reported
+  // hostname for local admin-share normalization so an injected variable cannot
+  // make an arbitrary remote UNC path look like a local drive.
+  const host = String(os.hostname() || '').trim();
   let local = /^\\\\(?:localhost|127\.0\.0\.1)\\([a-z])\$\\(.*)$/i.exec(normalized);
   if (!local && host) {
     const prefix = `\\\\${host}\\`;
