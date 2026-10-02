@@ -9,7 +9,8 @@
 - Hardened plugin installation by containing the host-reported cache path, checking its canonical manifest/scripts before `npm ci`, and rejecting `%`, `!`, or newline bytes in Windows shell fallbacks.
 - Hardened the optional pi adapter: PATH discovery now requires a verified Windows executable; an unverified binary requires an explicit local-development opt-in.
 - Hardened runner checkpoint commands: use the verified `process.execPath`, PowerShell literal quoting, and control-character rejection; special-character path and acceptance-binding regressions pass.
-- Baseline local regression before the final runner hardening: 527 tests (525 passed, 0 failed, 2 configured skips) plus a 44-test focused regression. Post-hardening focused coverage adds 13/13 passing runner and acceptance tests; rerun the full matrix before promoting this RC to a public release.
+- Final Windows offline matrix after the controller-state hardening: 532 tests, 529 passed, 0 failed, and 3 configured skips. The matrix covers headless/visible execution, recovery, malformed-state fuzzing, 8.3/UNC path aliases, 40-process lease contention, publishing, installation, and public CLI surfaces.
+- Window registries, registry locks, and the arming marker now live in controller-owned state keyed by the physical workspace identity. A non-empty registry from the pre-migration workspace location fails closed until its windows are drained or reconciled.
 
 ## Unreleased (1000 MB admission floor)
 
