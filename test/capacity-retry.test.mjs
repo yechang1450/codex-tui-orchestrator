@@ -14,6 +14,11 @@ test('capacity errors recognize the visible UI and structured overload signals',
   assert.equal(isCapacityError('request rejected: malformed input'), false);
 });
 
+test('transient HTTP 429 provider responses are retryable, but typed quota stays terminal', () => {
+  assert.equal(isCapacityError({ status: 429, message: '429 Too Many Requests' }), true);
+  assert.equal(isCapacityError({ status: 429, codex_error_info: 'usage_limit_exceeded', message: "You've hit your usage limit" }), false);
+});
+
 test('capacity retry policy honors retry-after countdown and bounded attempts', () => {
   const env = {
     ORCH_CAPACITY_RETRIES: '3',

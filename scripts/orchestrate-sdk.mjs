@@ -18,12 +18,12 @@ await import('./sdk-dependency-check.mjs');
 // Load the engine only after dependency validation completes. Static re-exports
 // could start engine evaluation concurrently with the asynchronous SDK check.
 export const {main,buildPsArrayLit,capPlanBlocks,buildWindowWaves,memoryPreflight,applyAuthPromptPolicy,readTail,
- classifyBlockComplexity,classifyExecutionMode,appendModelEffortArgs,genericProjectSplit,trySingleBlock,
+ classifyBlockComplexity,classifyExecutionMode,appendModelEffortArgs,genericProjectSplit,normalizePlan,inferTargetKeys,inferReadOnlyCommandInputs,trySingleBlock,
  conflictByKeys,loadCachedDecompose,buildBlocksFromTasks,resolveHints,extractTasks,classifyPrompt,
  buildBlockPrompt,levelWaves,decomposeHash,checkDiskSpace,readPidFile,pidAliveCheck,closeWindowByPid,
  windowGenuinelyPopped,extractResult,extractUsage,readReportFromResult,sessionDir,writeInteractiveLauncher,
  staleTransientFiles,pidFileOfTransient,tryReserveWindow,commitReservation,cancelReservation,computeMaxWindows,isPluginOwnedTerminalCommand,closeOrphanTerminals,
- blockKeys,keysOverlap,findOwnedTurn,waitForSessionFile,scanTaskComplete,waitTaskComplete,isCapacityError,capacityRetryPolicy,isProviderQuotaError,rolloutQuotaError,withRegistryLock,__setOrchHooks,isOrchestratorSelfMod,resolveCodexHome,trustConfigPath,workspaceTrustState}=await import('./core/orchestrate-sdk.mjs');
+ blockKeys,keysOverlap,findOwnedTurn,waitForSessionFile,scanTaskComplete,waitTaskComplete,isCapacityError,capacityRetryPolicy,isProviderQuotaError,rolloutQuotaError,withRegistryLock,__setOrchHooks,isOrchestratorSelfMod,resolveCodexHome,trustConfigPath,workspaceTrustState,buildWindowsTerminalArguments,resolveWindowsTerminalExecutable}=await import('./core/orchestrate-sdk.mjs');
 export const {prepareExecutionPlan,terminateOwnedLauncher}=await import('./core/orchestrate-sdk.mjs');
 // 公开入口必须与内核入口回同一行 FATAL；此前这里打 e.stack，导致 `--nope` 之类的拒绝
 // 把 Node 栈帧和载入器前言直接甩给用户（回归：test/public-fatal-contract.test.mjs）。

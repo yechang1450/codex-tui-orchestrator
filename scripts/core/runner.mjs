@@ -16,6 +16,16 @@ function blockCostFor(sum, key, budget) {
   const block = (sum.blocks || []).find(item => item.key === key);
   return budgetBlockCostMB(block, budget.windowCostMB, budget.taskCosts || {});
 }
+
+// Always union explicit planner hints with deterministic inference. Empty or
+// partial conflictKeys from raw, custom, or fallback plans must not bypass the
+// safety check; command-input inference itself excludes only proven read-only
+// interpreter operands.
+export function admissionKeys(block, workspace, infer) {
+  const explicit = Array.isArray(block?.conflictKeys) ? block.conflictKeys : [];
+  const inferred = (block?.tasks || []).flatMap(task => infer(task.prompt || ''));
+  return [...new Set([...explicit, ...inferred].map(key => canonicalKey(key, workspace)))];
+}
 /** 启动器进程树的当前工作集合计（MB），用于滚动修正每窗成本。 */
 function treeWorkingSetMB(snapshot, rootPid) {
   const root = Number(rootPid);
@@ -510,7 +520,7 @@ export async function runWindows(request,hooks,options={}) {
       // Memory affects launch admission only. The dependency/conflict plan is
       // immutable so waiting never changes which work is serial or parallel.
       const {plan,tasks}=ledgerPlan(request,candidate,capacity,hooks.compact);
-      const recs=plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[],keys:[...new Set([...(b.conflictKeys||[]),...b.tasks.flatMap(t=>hooks.infer(t.prompt||''))].map(k=>canonicalKey(k,workspace)))]}));
+      const recs=plan.map((b,i)=>({key:`B${i+1}`,title:b.title,b,dependsOn:b.dependsOn||[],keys:admissionKeys(b,workspace,hooks.infer)}));
       levelWaves(recs);
       sum={protocol:2,version:CORE_VERSION,agent:options.agent||'codex',executionMode:options.executionMode||'visible',authorization,runId,workspace,request,capacity,coordinator,generation:1,history:[],startedAt:Date.now(),tasks,plan:recs,
         memoryBudget:memoryBudget?{mode:memoryBudget.mode,reserveMB:memoryBudget.floorMB,windowCostMB:memoryBudget.windowCostMB,headroom:memoryBudget.headroom||1}:undefined,

@@ -19,7 +19,7 @@ import {createHeadlessHooks} from './headless-executor.mjs';
 import {resolveInitiatorSettings,resolveInitiatorPolicy,assertInitiatorWorkspace} from './initiator-settings.mjs';
 import {controllerWindowsDir} from './controller-state.mjs';
 import {renderRunStatus} from './status-events.mjs';
-import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,bind,release,prepare} from "./leases.mjs";
+import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,bind,release,prepare,trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from "./leases.mjs";
 import {admitAuxiliaryWindow} from './auxiliary-admission.mjs';
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
@@ -171,23 +171,47 @@ const POLL_TIMEOUT_MS = Number(process.env.ORCH_TIMEOUT_MS || process.env.ORCH_M
 process.env.ORCH_WATCHDOG_MAX_MIN = process.env.ORCH_WATCHDOG_MAX_MIN || String(Math.max(45, Math.ceil(POLL_TIMEOUT_MS / 60000) + 10));
 // Terminal hosting the visible agent TUI window.
 //   wt      -> Windows Terminal (best IME/TSF support for CJK input; the fix for
-//              "微软拼音输入偶发失效"). Requires wt.exe (WindowsApps).
+//              "微软拼音输入偶发失效"). Requires the packaged wt.exe.
 //   conhost -> classic console (reliable window, but IME is limited for TUI apps).
 // Default = Windows Terminal, per user preference. Explicit ORCH_TUI=inactive
 // uses direct console startup, but is not a universal no-focus guarantee.
-const WT_EXE =
-  process.platform === "win32"
-    ? path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps", "wt.exe")
-    : "";
-// Node's fs.existsSync returns false for the WindowsApps App Execution Alias reparse point (statSync
-// throws EACCES), but the alias IS usable — `where.exe wt.exe` resolves it. Without this check the TUI
-// fell back to conhost, which is the worst host for CJK IME per the skill's ORCH_TUI guidance.
+// The per-user WindowsApps entry is an App Execution Alias (a reparse point).
+// Passing it through spawnInactiveWindow would correctly fail the launch-boundary
+// reparse check. Resolve the signed package executable instead, while retaining
+// the same strict boundary checks for the returned path.
+export function resolveWindowsTerminalExecutable({
+  programFiles = process.env.ProgramFiles || process.env.ProgramW6432 || "C:\\Program Files"
+} = {}) {
+  if (process.platform !== "win32") return "";
+  const packageRoot = path.join(programFiles, "WindowsApps");
+  let locations = [];
+  try {
+    assertNoReparsePoints(packageRoot, "Windows Terminal package root");
+    const script = "$ErrorActionPreference='Stop'; Get-AppxPackage -Name Microsoft.WindowsTerminal | Sort-Object Version -Descending | Select-Object -First 1 -ExpandProperty InstallLocation";
+    const result = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script], {
+      cwd: trustedWindowsRoot(), env: controllerEnvironment(), windowsHide: true, shell: false, encoding: "utf8", timeout: 5000
+    });
+    if (result.status === 0) locations = String(result.stdout || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return "";
+  }
+  for (const location of locations) {
+    const candidate = path.join(location, "wt.exe");
+    const relative = path.relative(packageRoot, candidate);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    try {
+      assertNoReparsePoints(candidate, "Windows Terminal executable");
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // An incomplete/unreadable package is ignored; try the next installed version.
+    }
+  }
+  return "";
+}
+const WT_EXE = resolveWindowsTerminalExecutable();
 function wtAvailable() {
   if (!WT_EXE) return false;
-  try {
-    const r = spawnSync("where.exe", ["wt.exe"], { encoding: "utf8", windowsHide: true });
-    return r.status === 0 && !/ERROR:/.test(String(r.stdout || ""));
-  } catch { return false; }
+  try { return statSync(WT_EXE).isFile(); } catch { return false; }
 }
 // Explicitly confirm ORCH_TUI=wt (Windows Terminal) so it is a real env value that also
 // propagates to the spawned window processes, instead of only an implicit code default.
@@ -592,8 +616,10 @@ function saveDecompose(request, plan, hints) {
   });
 }
 // Generic deterministic aid (NOT hardcoded to build/80|81|82|83): if the request
-// names several distinct existing project-like dirs, split them into independent
-// windows. Returns null when ambiguous, so the LLM handles the rest.
+// names several distinct project-like dirs, split them into independent
+// windows. Numeric projects and explicit named project labels (for example
+// `项目game` or `项目ai-drama`) are both accepted. Returns null when ambiguous,
+// so the LLM handles the rest.
 function genericProjectSplit(request) {
   // 保守、确定性拆分（权威修复）：仅当请求能被可靠切成"每个编号各有一个专属句子"时才拆，
   // 且每个块 prompt 只针对该项目（绝不整段重复）。混合/歧义请求返回 null 交给 LLM 语义拆块。
@@ -602,9 +628,13 @@ function genericProjectSplit(request) {
   // Cross-project references are rejected by the ownership check below;
   // explicit task dependency cues use the deterministic dependency path.
   const dependencyLanguage = /(?:depends?\s+on|依赖|前一步|前置|等待\s*(?:任务|项目|T\d))/iu.test(String(request));
-  const re = /(?:^|[\s,/\\：:；;])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\s/\\：:]*(\d{1,3})(?=\D|$)/gi;
+  const numericRe = /(?:^|[\s,/\\：:；;])(?:项目|project|proj|build|app|src|workspace|web|site|game)[-\s/\\：:]*(\d{1,3})(?=\D|$)/gi;
+  const namedCnRe = /(?:^|[\s,/\\：:；;])项目[-\s/\\：:]*([A-Za-z][A-Za-z0-9_-]*)(?=\D|$)/gi;
+  const namedLatinRe = /(?:^|[\s,/\\：:；;])(?:project|proj|build)(?=[-\s/\\：:])[-\s/\\：:]*([A-Za-z][A-Za-z0-9_-]*)(?=\D|$)/gi;
   let m;
-  while ((m = re.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
+  while ((m = numericRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
+  while ((m = namedCnRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
+  while ((m = namedLatinRe.exec(request))) { const n = m[1]; if (n) dirs.add("proj-" + n); }
   // fallback: bare 2-3 digit project numbers only in a task/action context
   // (e.g. "给80的前端", "修复81的空白").  Do not scan every standalone number:
   // UUID nonces, ids embedded in filenames, and numeric acceptance values are
@@ -652,9 +682,21 @@ function genericProjectSplit(request) {
   if (!allOwn || ambiguous || misc.length > 0) return null;
   const blocks = [...dirs].map((title, i) => ({
     type: "independent", title, dependsOn: [],
-    conflictKeys: ["dir:" + title, ...ownByProj[title].flatMap(inferTargetKeys)],
+    // normalizePlan re-infers concrete file targets. Keep the deterministic
+    // project hint scoped to its directory so a shared read-only command
+    // script does not become an explicit write conflict for every block.
+    conflictKeys: ["dir:" + title],
     tasks: [{ id: "t" + (i + 1), title, prompt: "仅处理项目 " + title + "。任务：" + ownByProj[title].join("；") + "。不要处理其它项目编号。" }],
   }));
+  // Keep the deterministic splitter useful on its own as well as through
+  // normalizePlan: callers that inspect the raw proposal must already see
+  // concrete shared-file conflicts, including Windows drive paths.
+  for (const block of blocks) {
+    block.conflictKeys = [...new Set([
+      ...block.conflictKeys,
+      ...block.tasks.flatMap(task => inferTargetKeys(task.prompt || '')),
+    ])];
+  }
   return blocks.length ? { blocks } : null;
 }
 function projectRef(s, n) {
@@ -930,6 +972,15 @@ export function workspaceTrustState(workspace, { configPath = trustConfigPath() 
   }
   return "untrusted";
 }
+export function buildWindowsTerminalArguments(workspace, windowName, launcherPath) {
+  return [
+    "-w", windowName,
+    "-d", workspace,
+    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", launcherPath
+  ];
+}
+
 function spawnVisibleWindow(lp, title) {
   // Workspace trust remains under the host/user configuration.
   const trustState = workspaceTrustState(WORKSPACE);
@@ -949,7 +1000,7 @@ function spawnVisibleWindow(lp, title) {
     const bn = path.basename(String(lp || ""));
     const winS = bn.replace(/^win-launch-/, "").replace(/\.ps1$/, "");
     const windowName = "win-" + (winS || "x");
-    spawnInactiveWindow(WT_EXE, ["-w", windowName, "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", lp], WORKSPACE);
+    spawnInactiveWindow(WT_EXE, buildWindowsTerminalArguments(WORKSPACE, windowName, lp), WORKSPACE);
     console.log("spawned visible " + AGENT.agent + " TUI (Windows Terminal): " + title + " (window=" + windowName + ")");
     return;
   }
@@ -2211,7 +2262,31 @@ function inferTargetKeys(text) {
     if ((p.match(/\//g) || []).length < 2) continue; // 单段 “/file.ext” 视为碎片，不生成冲突 key
     keys.add("file:" + p);
   }
+  // A command interpreter's script operand is a read-only input only when the
+  // surrounding task explicitly describes execution/inspection and contains
+  // no write intent. Keep all other script-like paths, including `--out`
+  // targets and tasks that edit a script, as conflict keys.
+  const readOnlyInputs = inferReadOnlyCommandInputs(s);
+  if (readOnlyInputs.length) {
+    const readOnlyKeys = new Set(readOnlyInputs.map(p => canonicalKey('file:' + p, WORKSPACE)));
+    return [...keys].filter(key => !readOnlyKeys.has(canonicalKey(key, WORKSPACE)));
+  }
   return [...keys];
+}
+function inferReadOnlyCommandInputs(text) {
+  const s = String(text || '');
+  if (!/(?:执行|运行|调用|检查|读取|验证|清理|run|execute|invoke|inspect|read|verify|clean)/iu.test(s)) return [];
+  if (/(?:修改|写入|写|编辑|覆盖|生成|删除|移除|更新|创建|write|modify|edit|overwrite|generate|delete|remove|update|create)/iu.test(s)) return [];
+  const out = new Set();
+  const add = value => {
+    const p = String(value || '').trim().replace(/^[\s\("'`]+/u, '').replace(/[\s\)\]\}`"'，。；！？、,.;:!?]+$/u, '');
+    if (/(?:^|[\\/])[^\\/:*?"<>|\r\n]+\.[A-Za-z0-9]{1,8}$/u.test(p)) out.add(p);
+  };
+  const command = /(?:^|[\s"'`])(?:node(?:\.exe)?|python(?:3)?(?:\.exe)?|py(?:\.exe)?|pwsh(?:\.exe)?|powershell(?:\.exe)?|bash|sh|cmd(?:\.exe)?)[\t ]+(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/giu;
+  for (const m of s.matchAll(command)) add(m[1] || m[2] || m[3] || m[4]);
+  const fileSwitch = /(?:^|[\s"'`])(?:-File|\/File)[\t ]+(?:"([^"]+)"|'([^']+)'|`([^`]+)`|([^\s"'`]+))/giu;
+  for (const m of s.matchAll(fileSwitch)) add(m[1] || m[2] || m[3] || m[4]);
+  return [...out];
 }
 // Over-merge guard (code-level, not relying on the model):
 //   - any `independent` block carrying multiple tasks -> split into one block per task.
@@ -2221,8 +2296,11 @@ function normalizePlan(plan) {
   const originals=structuredClone(plan);
   const recs=originals.map((b,i)=>({key:'B'+(i+1),title:b.title,b,dependsOn:b.dependsOn||[]}));
   const ordered=levelWaves(recs).flat();
-  for(const r of recs) r.keys=[...new Set([...(r.b.conflictKeys||[]),...r.b.tasks.flatMap(t=>inferTargetKeys(t.prompt||t.title||''))]
-    .map(key=>canonicalKey(key,WORKSPACE)))];
+  for(const r of recs) {
+    const explicit=[...(r.b.conflictKeys||[])].map(key=>canonicalKey(key,WORKSPACE));
+    const inferred=r.b.tasks.flatMap(t=>inferTargetKeys(t.prompt||t.title||'')).map(key=>canonicalKey(key,WORKSPACE));
+    r.keys=[...new Set([...explicit,...inferred])];
+  }
   const groups=[];
   for(const r of ordered) {
     const hits=groups.filter(g=>g.some(x=>keysOverlap(x.keys,r.keys,{canonical:true})));
@@ -2798,4 +2876,4 @@ export async function main() {
 }
 const isMain = process.argv[1] && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
 if (isMain) main().catch(reportFatal);
-export { findOwnedTurn, waitForSessionFile, classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy, isProviderQuotaError, rolloutQuotaError };
+export { findOwnedTurn, waitForSessionFile, classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, genericProjectSplit, normalizePlan, inferTargetKeys, inferReadOnlyCommandInputs, trySingleBlock, conflictByKeys, loadCachedDecompose, buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, staleTransientFiles, pidFileOfTransient, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, computeMaxWindows, blockKeys, keysOverlap, scanTaskComplete, waitTaskComplete, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome, isCapacityError, capacityRetryPolicy, isProviderQuotaError, rolloutQuotaError };

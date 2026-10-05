@@ -183,7 +183,7 @@ test('force.mjs CLI --enable arms enforcement', () => {
 });
 
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, normalizePlan, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
@@ -333,6 +333,46 @@ test('orchestrate-sdk genericProjectSplit recognizes project-100..103 and Chines
   const r = genericProjectSplit(request);
   assert.ok(r && r.blocks && r.blocks.length === 4, 'three-digit project labels must remain independently schedulable');
   assert.deepEqual(new Set(r.blocks.map(b => b.title)), new Set(['proj-100','proj-101','proj-102','proj-103']));
+});
+
+test('orchestrate-sdk genericProjectSplit preserves named sibling projects when model planning is unavailable', () => {
+  const request = [
+    '项目80 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
+    '项目game 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
+    '项目ai-drama 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"'
+  ].join('\n');
+  const result = genericProjectSplit(request);
+  assert.equal(result?.blocks.length, 3);
+  assert.deepEqual(result.blocks.map(block => block.title), ['proj-80', 'proj-game', 'proj-ai-drama']);
+});
+test('normalizePlan does not serialize independent tasks that only share a read-only command script', () => {
+  const request = [
+    '项目80 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
+    '项目game 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
+    '项目ai-drama 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"'
+  ].join('\n');
+  const result = normalizePlan(genericProjectSplit(request).blocks);
+  assert.equal(result.length, 3);
+  assert.ok(result.every(block => block.type === 'independent'));
+});
+test('normalizePlan preserves a shared script target when the task writes it', () => {
+  const plan = [
+    { type: 'independent', title: 'proj-80', dependsOn: [], conflictKeys: ['dir:proj-80'], tasks: [{ id: 't1', title: 'proj-80', prompt: '项目80 修改 "C:\\exam\\shared.js" 的内容' }] },
+    { type: 'independent', title: 'proj-81', dependsOn: [], conflictKeys: ['dir:proj-81'], tasks: [{ id: 't2', title: 'proj-81', prompt: '项目81 修改 "C:\\exam\\shared.js" 的内容' }] }
+  ];
+  const result = normalizePlan(plan);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].type, 'linked');
+  assert.ok(result[0].conflictKeys.some(key => key.endsWith('/exam/shared.js')));
+});
+test('normalizePlan preserves shared generated script outputs', () => {
+  const plan = [
+    { type: 'independent', title: 'proj-80', dependsOn: [], conflictKeys: ['dir:proj-80'], tasks: [{ id: 't1', title: 'proj-80', prompt: '项目80 执行 node "C:\\tools\\worker.mjs" --out "C:\\exam\\shared.js"' }] },
+    { type: 'independent', title: 'proj-81', dependsOn: [], conflictKeys: ['dir:proj-81'], tasks: [{ id: 't2', title: 'proj-81', prompt: '项目81 执行 node "C:\\tools\\worker.mjs" --out "C:\\exam\\shared.js"' }] }
+  ];
+  const result = normalizePlan(plan);
+  assert.equal(result.length, 1);
+  assert.ok(result[0].conflictKeys.some(key => key.endsWith('/exam/shared.js')));
 });
 test('orchestrate-sdk loadCachedDecompose returns null for empty cache', () => {
   assert.equal(loadCachedDecompose('修复 81 登录页'), null);

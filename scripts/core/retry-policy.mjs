@@ -10,7 +10,8 @@ function errorText(value) {
 /** Return true only for provider capacity/overload responses. */
 export function isCapacityError(value) {
   const text = errorText(value).toLowerCase();
-  return /selected\s+model\s+is\s+at\s+capacity|model\s+is\s+at\s+capacity|try\s+a\s+different\s+model|server[_ -]?overloaded|service\s+(?:is\s+)?overloaded|temporarily\s+overloaded|capacity[_ -]?exceeded/.test(text);
+  if (isProviderQuotaError(value)) return false;
+  return /selected\s+model\s+is\s+at\s+capacity|model\s+is\s+at\s+capacity|try\s+a\s+different\s+model|server[_ -]?overloaded|service\s+(?:is\s+)?overloaded|temporarily\s+overloaded|capacity[_ -]?exceeded|\b429\b[^\n]{0,80}(?:too\s+many\s+requests|rate\s+limit)|too\s+many\s+requests/.test(text);
 }
 
 /** Return true only for typed account quota/usage-limit responses. */
