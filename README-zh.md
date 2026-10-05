@@ -28,7 +28,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话，副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份，结果不明则停在 `needs-reconciliation` |
 
-因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前候选的本地串行离线回归为 **535 项（532 通过、0 失败、3 跳过）**；同一提交的 GitHub Windows CI 运行 [37050856591](https://github.com/yechang1450/codex-tui-orchestrator/actions/runs/37050856591) 为 **535 项（530 通过、0 失败、5 跳过）**。两组统计分别代表本地与 CI 环境，不能互相替代；证据和跳过原因见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
+因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前提交已经在本机完成可见 Windows Terminal 六窗口实跑：80、81、82、83、game、ai-drama 六个清理任务峰值并发为 6，最终六个任务均有独立收据、主控验收通过，且每个窗口的 `cwd/workspace` 都是发起工作区；81 首次未产出收据后按账本规则自动重试并完成。当前本地串行全量回归为 **556 项（553 通过、0 失败、3 跳过）**；证据边界和跳过原因见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 

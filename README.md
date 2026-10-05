@@ -32,7 +32,7 @@ Once the plugin is registered and enabled, its trusted SessionStart hook prepare
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话；外部副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份；结果不明的任务停在 `needs-reconciliation` |
 
-这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。此前的 RC 快照完成了 headless 与可见 TUI 的四块实机验收、父级串行独立检查和离线回归；证据和当时的代码版本见 [RC 验收记录](docs/rc-validation.md)。当前的控制端状态迁移经过本机离线回归与安全差异审查，仍需在模型供应商可用时重新完成真实窗口验收，并在干净的 Windows 系统上检查首次安装。运行时需要 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
+这让 Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。当前提交已经在本机完成可见 Windows Terminal 六窗口实跑：80、81、82、83、game、ai-drama 六个清理任务峰值并发为 6，最终六个任务均有独立收据、主控验收通过，且每个窗口的 `cwd/workspace` 都是发起工作区；81 首次未产出收据后按账本规则自动重试并完成。当前串行全量回归为 **556 项（553 通过、0 失败、3 跳过）**；证据边界和跳过原因见 [RC 验收记录](docs/rc-validation.md)。运行时需要 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。插件也不会把宿主原生 TodoList/spawn 卡片伪装成已接入；宿主必须消费本插件的状态契约。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 
