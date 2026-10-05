@@ -1,14 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {spawn} from 'node:child_process';
-import {atomicJson,launcherIdentity,sameProcess,processSnapshot} from './leases.mjs';
+import {atomicJson,launcherIdentity,sameProcess,processSnapshot,controllerEnvironment,readUtf8Bounded} from './leases.mjs';
 import {assertNoReparsePoints} from './runtime-context.mjs';
 import {controllerHeadlessBase} from './controller-state.mjs';
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const worker=fileURLToPath(new URL('./headless-worker.mjs',import.meta.url));
-const readJson=file=>JSON.parse(fs.readFileSync(file,'utf8'));
-const readPid=file=>{try{return Number(fs.readFileSync(file,'utf8').trim())||0;}catch{return 0;}};
+const readJson=file=>JSON.parse(readUtf8Bounded(file,'headless control')||'');
+const readPid=file=>{try{return Number((readUtf8Bounded(file,'headless pid',128)||'').trim())||0;}catch{return 0;}};
+// Prompt/output artifacts may survive a failed run for recovery. Keep normal
+// task text intact while removing common credential-bearing forms before they
+// reach durable controller files.
+export function redactSensitiveText(value) {
+  return String(value??'').slice(0,8*1024*1024)
+    .replace(/(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\s*([:=])\s*[^\s,;]+/gi,'$1$2[REDACTED]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi,'Bearer [REDACTED]');
+}
 const controlPath=(lp,suffix)=>{
   if(typeof lp!=='string'||!lp.endsWith('.json')||!path.basename(lp).startsWith('exec-'))throw new Error('Invalid headless control path');
   return assertNoReparsePoints(lp.slice(0,-'.json'.length)+suffix,'headless control');
@@ -27,8 +36,12 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
       if(!attemptFile||!runId||!token)throw new Error('Headless execution requires a durable attempt');
       const base=controllerHeadlessBase(workspace,attemptFile,key);
       const files={mode:'headless',lp:base+'.json',pf:base+'.prompt.txt',pidf:base+'.pid',rf:base+'.result.json',stdout:base+'.stdout.jsonl',stderr:base+'.stderr.log'};
-      fs.mkdirSync(path.dirname(base),{recursive:true});fs.writeFileSync(files.pf,prompt,'utf8');
-      atomicJson(files.lp,{version:1,cli,args,workspace,runId,token,attemptFile,timeoutMs,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'});
+      fs.mkdirSync(path.dirname(base),{recursive:true});assertNoReparsePoints(path.dirname(base),'headless controller directory');
+      // The prompt carries the controller-issued checkpoint path and must keep
+      // that path intact. Redact credential forms before persisting the prompt.
+      fs.writeFileSync(files.pf,redactSensitiveText(prompt),'utf8');
+      const commandDigest=crypto.createHash('sha256').update(JSON.stringify({cli,args,workspace,runId,token,attemptFile,timeoutMs})).digest('hex');
+      atomicJson(files.lp,{version:1,cli,args,workspace,runId,token,attemptFile,timeoutMs,commandDigest,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'});
       return files;
     },
     async spawn(lp,_title,pidf){
@@ -37,7 +50,7 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
         if(identity){configs.set(pid,lp);return true;}
         throw new Error('Headless attempt already has a PID; reconcile before launching again');
       }
-      const child=spawn(process.execPath,[worker,lp],{cwd:workspace,windowsHide:true,detached:true,stdio:'ignore',shell:false});
+      const child=spawn(process.execPath,[worker,lp],{cwd:workspace,windowsHide:true,detached:true,stdio:'ignore',shell:false,env:controllerEnvironment()});
       let error;child.on('error',e=>{error=e;});child.unref();
       const deadline=Date.now()+Math.max(10,readinessTimeoutMs);
       while(true){
@@ -77,13 +90,20 @@ export function createHeadlessHooks({cli,args,workspace,timeoutMs=21600000,readi
       }
     },
     async close(pid,expected){
-      const lp=configs.get(Number(pid));if(!lp)return;
+      const workerPid=Number(pid),lp=configs.get(workerPid);if(!lp)return;
       const result=controlPath(lp,'.result.json');
-      if(fs.existsSync(result))return;
-      if(expected&&!sameProcess(expected,processSnapshot().get(Number(pid))))return;
-      fs.writeFileSync(controlPath(lp,'.cancel'),'cancel');
-      const deadline=Date.now()+10000;
-      while(!fs.existsSync(result)&&Date.now()<deadline)await pause(50);
+      if(!fs.existsSync(result)){
+        if(expected&&!sameProcess(expected,processSnapshot().get(workerPid)))return;
+        fs.writeFileSync(controlPath(lp,'.cancel'),'cancel');
+        const deadline=Date.now()+10000;
+        while(!fs.existsSync(result)&&Date.now()<deadline)await pause(50);
+      }
+      // A failed result can be durable a few milliseconds before the worker
+      // has released its stdout/runtime handles.  Do not let callers remove
+      // the attempt workspace while that owned process is still unwinding.
+      // The wait is bounded and uses a PID existence probe, so it cannot turn
+      // cleanup into an unbounded identity/CIM scan.
+      if(workerPid>0)await this.waitForExit({ProcessId:workerPid});
     },
     // Attempts are recovery evidence. Only a completed run's owner may remove them.
     cleanup() {},

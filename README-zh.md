@@ -28,7 +28,7 @@ Windows / Node 22+. Keeps conflict-based linked/independent grouping, dependency
 | 单项任务遇到断网、超时或 CLI 崩溃 | `supervise.mjs` | 有限重试并尽可能续接同一会话，副作用仍需核对 |
 | 多任务运行中断 | `--resume-run <ID>` | 沿用原计划、模式和任务身份，结果不明则停在 `needs-reconciliation` |
 
-因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前工作树的最终离线回归为 527 项（525 通过、0 失败、2 跳过），另有 44 项聚焦回归全部通过；证据见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
+因此，Codex 在多任务执行时少做窗口管理和人工对账，适合有明确验收条件的代码、测试和维护工作。两种执行模式都从发起窗口的结构化设置继承模型、推理级别和 service tier（服务档位）；环境变量只能在没有发起窗口设置时作为回退。当前候选的本地串行离线回归为 **535 项（532 通过、0 失败、3 跳过）**；同一提交的 GitHub Windows CI 运行 [37050856591](https://github.com/yechang1450/codex-tui-orchestrator/actions/runs/37050856591) 为 **535 项（530 通过、0 失败、5 跳过）**。两组统计分别代表本地与 CI 环境，不能互相替代；证据和跳过原因见 [RC 验收记录](docs/rc-validation.md)。运行边界是 Windows、Node.js 22+ 和已登录的原生 Codex CLI；引导入口可自动补齐缺失的 Node/npm 与 CLI。模型供应商可用性、跨机器安装、插件管理器升级/回滚和长时间断网等未验证场景不作稳定版保证。离线回归不会替它们背书，宿主原生 TodoList/spawn 卡片也不会被插件伪装成已接入。
 
 Plugin entry: `node scripts/orchestrate-sdk.mjs`. Dependencies: `npm ci --prefix scripts`. Tests: `node --test --test-concurrency=1 test/*.test.mjs`. Coverage: `node scripts/coverage.mjs` runs the same serial suite and writes lcov to `.plugin-eval/coverage/lcov.info` (git-ignored, not published).
 
@@ -71,13 +71,13 @@ if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
 
 #### 一条命令安装/更新（推荐）
 
-上面那段只准备脚本副本；把它注册进插件管理器还需要补齐个人 marketplace 条目、安装、对**新缓存路径**恢复依赖并校验。`install-plugin.mjs` 把这些步骤串成一条命令，并在每次安装后对**当次安装返回的缓存路径**做完整性检查和 doctor。默认直接使用这个 checkout；需要干净包时再显式导出：
+上面那段只准备脚本副本；把它注册进插件管理器还需要补齐个人 marketplace 条目、安装、对**新缓存路径**恢复依赖并校验。`install-plugin.mjs` 把这些步骤串成一条命令，并在每次安装后对**当次安装返回的缓存路径**做完整性检查和 doctor。工作树安装必须显式传 `--local-development`；公开或发布安装应使用干净导出包：
 
 ```powershell
 & {
   $ErrorActionPreference = 'Stop'
   $InstallRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'   # 换成你的克隆位置
-  & (Join-Path $InstallRoot 'scripts/bootstrap.ps1') -Action install -Arguments @('--pull', '--verify-skills')
+  & (Join-Path $InstallRoot 'scripts/bootstrap.ps1') -Action install -Arguments @('--pull', '--verify-skills', '--local-development')
   if ($LASTEXITCODE -ne 0) { throw '安装失败。' }
 }
 ```
@@ -87,12 +87,12 @@ if ($LASTEXITCODE -ne 0) { throw '插件安装失败。' }
 - 个人 marketplace 文件 `<home>/.agents/plugins/marketplace.json` 不存在时按规范创建（顶层 `name: "personal"`，本插件条目默认指向 `./plugins/codex-tui-orchestrator`）；其它路径仍然要求文件已存在，既有条目与其它插件原样保留。
 - `node scripts/install-plugin.mjs --check` 是只读复核：注册、可选分发一致性、缓存依赖与启用状态；`--verify-skills` 再检查技能可见性。PowerShell 引导入口会先准备依赖，严格只读复核请使用上述 Node 入口。
 - 缓存根跟随 `CODEX_HOME`：`CODEX_HOME` 放在默认位置之外（例如 D 盘或自定义目录）时，校验与安装都用同一个根，不会把别处的缓存当成已安装。
-- 换机器或换克隆目录后条目可能还指向旧路径：`--set-source` 默认把唯一条目的安装源改写成本机 checkout，也可以显式指定分发（保留其它条目、策略与分类）；重复、远端或无匹配条目仍然停下报错。
+- 换机器或换克隆目录后条目可能还指向旧路径：`--set-source` 默认把唯一条目的安装源改写成本机 checkout，也可以显式指定分发（保留其它条目、策略与分类）；工作树源仍需 `--local-development`，发布源应指向干净分发；重复、远端或无匹配条目仍然停下报错。
 - `--verify-skills` 在宿主版本不支持该调试入口时只记为告警（`warnings`），不影响安装结论；需要把它当硬门槛时加 `--strict-skills`。
 - 宿主 CLI 不在 PATH 上时（例如只装了桌面版自带的 `codex.exe`），先设 `CODEX_CLI_PATH`（或 `CODEX_CLI`）指向它；脚本优先使用该路径，找不到 CLI 时给出可执行提示而不是 ENOENT 堆栈。
 - 技能在**新开对话**时加载，装完请开一个新对话。
 
-依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。默认安装直接使用这个单一 checkout，不再自动创建 `dist` 副本；需要干净发布包时才显式执行导出。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；推荐的 `bootstrap.ps1 -Action install` 会在管理器返回的新缓存路径恢复依赖、校验发行完整性并运行 doctor。doctor 不代表服务商可用或任务已完成；首次直接调用 `--doctor` 或 `--tasks` 可能补齐缺失的运行依赖。上面的手工克隆流程只准备副本；推荐的一条命令会注册并更新插件。直接调用脚本无需注册；自动加载技能需要注册、启用并新开对话。保留 Codex 登录配置与活动工作区状态。
+依赖从锁文件恢复，不需要旧的 `node_modules` 或运行产物。保留 `skills/codex-tui-orchestrator` 的准确目录大小写。工作树安装必须显式 `--local-development`；公开或发布安装使用干净导出包，不会隐式创建 `dist` 副本。插件管理器安装会建立全新的缓存，其中不带 `scripts/node_modules`；推荐的 `bootstrap.ps1 -Action install` 会在管理器返回的新缓存路径恢复依赖、校验发行完整性并运行 doctor。doctor 不代表服务商可用或任务已完成；首次直接调用 `--doctor` 或 `--tasks` 可能补齐缺失的运行依赖。上面的手工克隆流程只准备副本；推荐的一条命令会注册并更新插件。直接调用脚本无需注册；自动加载技能需要注册、启用并新开对话。保留 Codex 登录配置与活动工作区状态。
 
 本机安装（个人 marketplace）默认把条目指向**单一 checkout**。管理器会把插件目录整体复制进安装缓存，因此 `.git/` 和 `temp/`（本地运行状态与验收证据）也会随之复制；需要干净发布包时再使用下面的显式导出流程：
 
@@ -239,7 +239,7 @@ Identical full script/output paths still merge conservatively. Bare leaf-name fr
 
 Window cleanup targets only the selected launcher's descendants. Startup also removes stale launcher artifacts after verifying PID and command identity. It never terminates the shared Windows Terminal host: doing so can kill unfinished tasks in another window, especially a merged block with more work remaining.
 
-2026-09-06 早期实测（历史记录）：91 项离线测试通过；Windows Terminal 共启动 8 窗完成 9 项任务，重叠 16.621 秒；所有会话 cwd 为 D:\，审批为 never；严格轮询返回 0，窗口全部关闭。验证证据见 test/live-concurrency-result.json。测试目录的删除被宿主自动审批拒绝，已保留并记录。
+2026-09-06 早期实测（历史记录）：91 项离线测试通过；Windows Terminal 共启动 8 窗完成 9 项任务，重叠 16.621 秒；所有会话均使用隔离工作区，窗口全部关闭。原始运行回执属于本机审计资料，不随公开仓库发布。
 
 ## 弱网连接与免确认执行
 规划 SDK 和 TUI 窗默认继承发起方的 Codex 配置，包括模型、model provider 与凭据，因此第三方 provider（例如在 CODEX_HOME 中配置的 deepseek）会被原样沿用，运行期间不修改全局 Codex 配置。只有显式选择 orchestrator-openai-https 时才改走 OpenAI 登录的 Responses over HTTPS：supports_websockets=false，避免每窗先等 WebSocket 超时再回退，并保留网页搜索能力声明，不设置第三方地址或额外密钥。HTTP 请求和流式重连沿用 CLI 自身的重试机制，断网本身仍可能造成连接失败。

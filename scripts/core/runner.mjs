@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {CORE_VERSION,ledgerPlan,levelWaves,verifyChecks,summaryComplete,TERMINAL,canonicalKey,requestTasks,acceptanceKeyDiff,buildTodoList,todoListText,canonicalDigest,jsonProblem,describeShape} from './contracts.mjs';
-import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun} from './leases.mjs';
+import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,processSnapshot,sameProcess,claimRun,releaseRun,readUtf8Bounded} from './leases.mjs';
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint,hasParentInspection,resolveAttemptFile,validateSavedLauncherFiles} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
@@ -42,6 +42,16 @@ function treeWorkingSetMB(snapshot, rootPid) {
 import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+
+// Human-facing run diagnostics must not disclose the initiating workspace or
+// controller layout.  Keep the basename useful for locating the artifact while
+// binding it to this run with a short, non-reversible digest.  The full path is
+// already persisted in the controller-owned ledger for trusted readers.
+function displaySummaryPath(file) {
+  const resolved=path.resolve(String(file));
+  const digest=crypto.createHash('sha256').update(resolved).digest('hex').slice(0,12);
+  return path.basename(resolved)+'#'+digest;
+}
 
 // Checkpoint commands are pasted into a Windows PowerShell worker prompt.
 // Use the already-verified Node executable and single-quoted PowerShell
@@ -105,7 +115,7 @@ export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExi
       validateSavedLauncherFiles(sum,block,entry,attempt);
       let expected=entry.launcher,confirmedExitedByPidFile=false;
       if(fs.existsSync(entry.launcherFiles.pidf)){
-        const pid=Number(fs.readFileSync(entry.launcherFiles.pidf,'utf8').replace(/^\uFEFF/,''));
+        const pid=Number((readUtf8Bounded(entry.launcherFiles.pidf,'launcher PID',128)||'').replace(/^\uFEFF/,''));
         if(!Number.isSafeInteger(pid)||pid<=0||pid>4194304)throw new Error('Final cleanup controller PID file is invalid');
         validateSavedLauncherFiles(sum,block,entry,attempt,{requireLiveFiles:true});
         const current=await identifyWithRetry(identify,pid,entry.launcherFiles.pidf);
@@ -151,7 +161,7 @@ export function runDirectory(workspace,runId) {
 function loadChecks(file){
   if(!file)return {};
   let text;
-  try{text=fs.readFileSync(file,'utf8');}
+  try{text=readUtf8Bounded(file,'acceptance contract');}
   catch(error){throw new Error('Acceptance contract unreadable ('+error.code+'): '+file+'：'+(error.message||error));}
   let value;
   try{value=JSON.parse(text.replace(/^\uFEFF/,''));}
@@ -172,15 +182,20 @@ function parseLedger(file,text){
   if(!value||typeof value!=='object'||Array.isArray(value))throw new Error('Invalid run ledger '+file+'：顶层必须是 JSON 对象（实测 '+describeShape(value)+'）');
   return value;
 }
-export function readLedgerJson(file){return parseLedger(file,fs.readFileSync(file,'utf8'));}
+export function readLedgerJson(file){
+  const text=readUtf8Bounded(file,'run ledger');
+  if(text===null)throw Object.assign(new Error('Run ledger not found: '+file),{code:'ENOENT'});
+  return parseLedger(file,text);
+}
 // 验收契约绑定：运行开始时把契约摘要写进账本（summary.json + manifest.json），
 // verify/resume 必须重读到同一份契约。执行窗对工作区有写权限，能把
 // <runDir>/acceptance.json 换成对自己有利的版本；没有绑定就无法判断它是否被改过。
 function acceptanceBinding(checks,source){return {algorithm:'sha256',sha256:canonicalDigest(checks),source,boundAt:Date.now()};}
 function readJsonIfPresent(file){
   let text;
-  try{text=fs.readFileSync(file,'utf8');}
-  catch(error){if(error.code==='ENOENT')return undefined;throw error;}
+  try{text=readUtf8Bounded(file,'controller ledger');}
+  catch(error){throw error;}
+  if(text===null)return undefined;
   try{return JSON.parse(text.replace(/^\uFEFF/,''));}
   catch(error){throw new Error('Invalid ledger '+file+'：'+jsonProblem(text,error));}
 }
@@ -335,7 +350,7 @@ function blockCheckpoints(entry,block,sum) {
   }
   // Preserve read-only verification of historical protocol-1 runs.
   if(!entry?.attempts&&entry?.receiptFile) {
-    try{for(const r of JSON.parse(fs.readFileSync(entry.receiptFile,'utf8')).tasks||[]){if(block.taskIds.includes(r.id))out[r.id]=r.runId===sum.runId&&r.token===entry.token&&r.status==='completed'?{state:'completed'}:{state:'invalid'};}}catch{}
+    try{for(const r of JSON.parse(readUtf8Bounded(entry.receiptFile,'task receipt')||'').tasks||[]){if(block.taskIds.includes(r.id))out[r.id]=r.runId===sum.runId&&r.token===entry.token&&r.status==='completed'?{state:'completed'}:{state:'invalid'};}}catch{}
   }
   for(const id of block.taskIds) {
     if(!out[id]&&sum.taskResults[id]?.checkpoint){
@@ -436,7 +451,7 @@ export async function runWindows(request,hooks,options={}) {
   // validated ledger. New runs use the Codex-specific default locator.
   let savedResume=null,savedResumeRaw;
   if(options.resume){
-    savedResumeRaw=fs.readFileSync(summaryFile,'utf8');savedResume=parseLedger(summaryFile,savedResumeRaw);
+      savedResumeRaw=readUtf8Bounded(summaryFile,'run summary');savedResume=parseLedger(summaryFile,savedResumeRaw);
     if(savedResume.protocol!==2||!Array.isArray(savedResume.plan))throw new Error('This run has no recoverable task checkpoints');
     if((savedResume.agent||'codex')!==(options.agent||'codex'))throw new Error('Resume agent must match the saved run');
     if(options.executionMode&&(savedResume.executionMode||'visible')!==options.executionMode)throw new Error('Resume execution mode must match the saved run');
@@ -446,7 +461,7 @@ export async function runWindows(request,hooks,options={}) {
     trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true});
     const savedGoalFile=path.join(dir,'goal.json');
     if(fs.existsSync(savedGoalFile)){
-      const savedGoal=JSON.parse(fs.readFileSync(savedGoalFile,'utf8'));
+      const savedGoal=JSON.parse(readUtf8Bounded(savedGoalFile,'run goal')||'');
       if(savedGoal.runId!==runId||!sameWorkspace(savedGoal.workspace||'',workspace))throw new Error('Run goal mirror identity mismatch');
       // The goal is only a mirror; a crash may interrupt its last replacement.
       if(savedGoal.version===2&&savedGoal.summaryDigest!==goalDigest(savedResume))console.warn('[resume] rebuilding stale goal mirror from the validated ledger');
@@ -462,7 +477,7 @@ export async function runWindows(request,hooks,options={}) {
   try {
     let checks,acceptance={checks:null,rebound:false};
     if(options.resume) {
-      if(fs.readFileSync(summaryFile,'utf8')!==savedResumeRaw)throw new Error('Run changed while acquiring recovery ownership; retry resume');
+      if(readUtf8Bounded(summaryFile,'run summary')!==savedResumeRaw)throw new Error('Run changed while acquiring recovery ownership; retry resume');
       sum=savedResume;
       // 恢复同样要复用被绑定的契约：执行窗改掉 acceptance.json 就能让未完成的任务被当成已验收。
       acceptance=loadBoundChecks(options.acceptanceFile||path.join(dir,'acceptance.json'),dir,savedResume,options.acceptanceOverride===true);
@@ -536,7 +551,7 @@ export async function runWindows(request,hooks,options={}) {
     });
     persist(options.resume?'run.resumed':'plan.created');
     progressTimer=setInterval(()=>{try{if(refreshTaskProgress(sum))persist('task.progress');}catch(error){progressError=error;clearInterval(progressTimer);}},250);
-    console.log(`[run] runId=${runId} mode=${sum.executionMode||'visible'} blocks=${sum.blocks.length} capacity=${capacity} generation=${sum.generation} summary=${summaryFile}`);
+    console.log(`[run] runId=${runId} mode=${sum.executionMode||'visible'} blocks=${sum.blocks.length} capacity=${capacity} generation=${sum.generation} summary=${displaySummaryPath(summaryFile)}`);
     async function execute(r) {
       const b=sum.blocks.find(b=>b.key===r.key),tasks=b.taskIds.map(id=>sum.tasks.find(t=>t.id===id));
       const identify=(pid,pidFile)=>hooks.identity?hooks.identity(pid,pidFile):launcherIdentity(pid,pidFile);
@@ -621,7 +636,15 @@ export async function runWindows(request,hooks,options={}) {
         let capacityRetry = null;
         try {
           if(identity&&!e.launchFailed) {
-            e.status='running';refreshTaskProgress(sum);persist(`block.${r.key}.running`);
+            e.status='running';
+            // Publish the controller-owned execution state immediately after
+            // the launcher is authenticated. A fast worker may write its
+            // first checkpoint before the periodic progress sampler runs;
+            // the host still needs one durable running view for every pending
+            // task. Verification continues to require the durable checkpoint.
+            const firstPending=b.taskIds.find(id=>sum.taskResults[id]?.status==='pending');
+            if(firstPending)sum.taskResults[firstPending]={status:'running'};
+            refreshTaskProgress(sum);persist(`block.${r.key}.running`);
             // 采样本窗进程树的工作集峰值与可用内存最低点，供滚动修正每窗成本。
             memStats={startAvailable:availableMB(),peakProcessMB:0,minAvailable:Infinity};
             memTimer=setInterval(()=>{
@@ -701,7 +724,13 @@ export async function runWindows(request,hooks,options={}) {
           e.exitConfirmed=!!identity;
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;
-          await inspectBlock(b,e);
+          // A provider-capacity failure is retryable only before any task has a
+          // durable side-effect checkpoint. Do not publish the reconciliation
+          // status before the safe retry branch below; status events are
+          // monotonic and would make the retry transition invalid.
+          const finalCheckpoints=blockCheckpoints(e,b,sum);
+          const finalRetryUnsafe=Object.values(finalCheckpoints).some(cp=>cp?.state==='started'||cp?.state==='completed');
+          if(!(capacityRetry?.retry&&!finalRetryUnsafe))await inspectBlock(b,e);
         }
         // A capacity failure happens before any task checkpoint. Reclaim the window and
         // retry after the provider's suggested/backoff delay without consuming the normal
@@ -752,6 +781,6 @@ export async function runWindows(request,hooks,options={}) {
       const warnings=await hooks.cleanupCompleted(sum);
       if(warnings?.length){sum.cleanupWarnings=warnings;persist('run.cleanup-warning');}
     }
-    console.log(`[run] finalized runId=${runId} success=${sum.success} summary=${summaryFile}`);return sum;
+    console.log(`[run] finalized runId=${runId} success=${sum.success} summary=${displaySummaryPath(summaryFile)}`);return sum;
   }finally{clearInterval(progressTimer);await coordinate(()=>releaseRun(coordinator,runKey,claim),Date.now()+30000);}
 }

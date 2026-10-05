@@ -31,14 +31,18 @@ targets=()
 if [ "$#" -gt 0 ]; then
   for t in "$@"; do
     if [[ "$t" == /* ]]; then t="$(wslpath -w "$t")"; else t="${t//\//\\}"; fi
+    # These values are copied into a cmd.exe batch file.  Reject command
+    # syntax instead of interpolating it into a line that can execute a
+    # second command or expand an environment variable.
+    if [[ "$t" == *$'\r'* || "$t" == *$'\n'* || "$t" == *['&|<>^%"']* ]]; then
+      echo "非法测试目标：$t" >&2
+      exit 2
+    fi
     targets+=("$t")
   done
 else
   targets=("test\\*.test.mjs")
 fi
-
-glob=""
-for t in "${targets[@]}"; do glob="${glob:+$glob }$t"; done
 
 # Quoting a path through cmd.exe from WSL mangles embedded quotes, so write the
 # batch file to a temporary location, run it, and remove it again.
@@ -51,7 +55,9 @@ trap cleanup EXIT
   printf 'set "PATH=C:\\Program Files\\Git\\cmd;%s\\scripts;%%PATH%%"\r\n' "$win_root"
   printf 'set "ORCH_AGENT=codex"\r\n'
   printf 'cd /d "%s"\r\n' "$win_root"
-  printf '"%s" --test --test-concurrency=1 %s\r\n' "$win_node" "$glob"
+  printf '"%s" --test --test-concurrency=1' "$win_node"
+  for t in "${targets[@]}"; do printf ' "%s"' "$t"; done
+  printf '\r\n'
 } > "$tmp_cmd"
 if [ -n "${ORCH_WSL_DEBUG:-}" ]; then echo "cmd file: $tmp_cmd" >&2; fi
 cmd.exe /c "$(wslpath -w "$tmp_cmd")"

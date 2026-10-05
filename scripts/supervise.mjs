@@ -10,6 +10,7 @@ import {networkConfig,resolveOpenAIBaseUrl,resolveProviderMode} from './core/net
 import {atomicJson, claimRun, releaseRun} from './core/leases.mjs';
 import {controllerStateDir} from './core/controller-state.mjs';
 import {assertNoReparsePoints,physicalPathIdentity} from './core/runtime-context.mjs';
+import {resolveInitiatorPolicy,assertInitiatorWorkspace} from './core/initiator-settings.mjs';
 import {ensureRuntimeDependencies} from './entry-bootstrap.mjs';
 import {
   canSupervisorRetry,
@@ -123,6 +124,15 @@ function emit(event, state) {
 export async function supervise(options, {codexFactory = config => new Codex({...supervisorCodexOptions,...config}), sleep = ms => new Promise(resolve => setTimeout(resolve, ms))} = {}) {
   if (!options || typeof options !== 'object' || typeof options.runId !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(options.runId) || typeof options.workspace !== 'string') throw new Error('Invalid supervisor options');
   options = {...options, workspace: path.resolve(options.workspace), resume: Boolean(options.resume)};
+  // The initiating Codex turn is the sole authority for child permissions.
+  // An options.policy object is accepted only as a consistency assertion for
+  // internal callers; it can never replace or weaken the host-bound policy.
+  const policy=resolveInitiatorPolicy();
+  if(options.policy!==undefined&&(
+    !options.policy||options.policy.sandbox!==policy.sandbox||options.policy.approval!==policy.approval
+  ))throw new Error('INITIATOR_POLICY_UNAVAILABLE: supervisor policy must match the initiating Codex policy');
+  assertInitiatorWorkspace(options.workspace,policy);
+  if(!['read-only','workspace-write','danger-full-access'].includes(policy.sandbox)||!['never','on-request'].includes(policy.approval))throw new Error('INITIATOR_POLICY_UNAVAILABLE: invalid supervisor child policy');
   const file = statePath(options);
   let state;
   let preexisting = fs.existsSync(file);
@@ -153,13 +163,15 @@ export async function supervise(options, {codexFactory = config => new Codex({..
       state = createSupervisorState({runId: options.runId, workspace: options.workspace, prompt: options.prompt});
     }
     const codex = codexFactory({});
-    let thread = state.threadId ? codex.resumeThread(state.threadId, {workingDirectory: state.workspace}) : codex.startThread({workingDirectory: state.workspace});
+    const childOptions={workingDirectory: state.workspace,sandboxMode:policy.sandbox,approvalPolicy:policy.approval};
+    let thread = state.threadId ? codex.resumeThread(state.threadId, childOptions) : codex.startThread(childOptions);
     while (canSupervisorRetry(state, options.maxAttempts)) {
     state.attempts++;
     state.status = 'running';
     state.history.push({attempt: state.attempts, startedAt: Date.now(), resumed: Boolean(state.threadId)});
     writeState(file, state);
     emit('attempt.started', state);
+    let sideEffectObserved=false;
     try {
       const streamed = await thread.runStreamed(state.threadId ? continuationPrompt() : state.prompt);
       let completed = false;
@@ -170,6 +182,8 @@ export async function supervise(options, {codexFactory = config => new Codex({..
         // stream and recovery starts a new attempt with no durable identity.
         const payload = event?.payload && typeof event.payload === 'object' ? event.payload : event;
         const type = String(payload?.type || event?.type || '');
+        const itemType=String(payload?.item?.type||event?.item?.type||'');
+        if(/tool|function|command|computer|mcp|file[_ .-]?change|file[_ .-]?write|patch|edit/i.test(type)||/tool|function|command|computer|mcp|file[_ .-]?change|file[_ .-]?write|patch|edit/i.test(itemType))sideEffectObserved=true;
         const threadId = payload?.thread_id || payload?.threadId || event?.thread_id || event?.threadId;
         if (type === 'thread.started' && threadId) state.threadId = threadId;
         if (['turn.failed', 'turn_failed', 'task.failed', 'task_failed', 'error'].includes(type)) {
@@ -196,6 +210,11 @@ export async function supervise(options, {codexFactory = config => new Codex({..
     } catch (error) {
       if (thread.id) state.threadId = thread.id;
       const classified = classifySupervisorError(error);
+      if(sideEffectObserved){
+        classified.retryable=false;
+        classified.replayBlocked=true;
+        classified.text=(classified.text||'stream failed')+'; automatic retry disabled after a tool or command event; reconcile the effect before resuming';
+      }
       const entry = state.history.at(-1);
       Object.assign(entry, {endedAt: Date.now(), error: classified.text, retryable: classified.retryable});
       if (!classified.retryable || !canSupervisorRetry(state, options.maxAttempts)) {
@@ -210,7 +229,7 @@ export async function supervise(options, {codexFactory = config => new Codex({..
       writeState(file, state);
       emit('attempt.retrying', state);
       await sleep(delayMs);
-      thread = state.threadId ? codex.resumeThread(state.threadId, {workingDirectory: state.workspace}) : codex.startThread({workingDirectory: state.workspace});
+      thread = state.threadId ? codex.resumeThread(state.threadId, childOptions) : codex.startThread(childOptions);
     }
     }
     state.status = 'failed';

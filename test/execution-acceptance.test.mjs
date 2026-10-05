@@ -92,14 +92,18 @@ test('headless runner sends the initiating model and effort to the worker and pu
   const workspace=fs.mkdtempSync(path.join(family,'headless-'));
   const cli=path.join(workspace,'fake-codex.mjs'),capture=path.join(workspace,'capture.json'),checks=path.join(workspace,'checks.json');
   const checkpoint=new URL('../scripts/core/checkpoint.mjs',import.meta.url).href;
-  fs.writeFileSync(cli,`import fs from 'node:fs';import {recordCheckpoint} from ${JSON.stringify(checkpoint)};let prompt='';for await(const c of process.stdin)prompt+=c;const m=/& '[^']+' '[^']+' '([^']+)' 'T001' 'started'/.exec(prompt);if(!m)throw new Error('attempt command missing');fs.writeFileSync(process.env.CAPTURE_FILE,JSON.stringify({args:process.argv.slice(2),model:process.env.ORCH_MODEL||null,effort:process.env.ORCH_EFFORT||null}));console.log(JSON.stringify({type:'thread.started',thread_id:'acceptance-worker'}));recordCheckpoint(m[1],'T001','started');await new Promise(r=>setTimeout(r,400));recordCheckpoint(m[1],'T001','completed');console.log(JSON.stringify({type:'turn.completed'}));`);
+  fs.writeFileSync(cli,`import fs from 'node:fs';import {recordCheckpoint} from ${JSON.stringify(checkpoint)};let prompt='';for await(const c of process.stdin)prompt+=c;const m=/& '[^']+' '[^']+' '([^']+)' 'T001' 'started'/.exec(prompt);if(!m)throw new Error('attempt command missing');fs.writeFileSync(process.env.CODEX_HOME+'/capture.json',JSON.stringify({args:process.argv.slice(2),model:process.env.ORCH_MODEL||null,effort:process.env.ORCH_EFFORT||null}));console.log(JSON.stringify({type:'thread.started',thread_id:'acceptance-worker'}));recordCheckpoint(m[1],'T001','started');await new Promise(r=>setTimeout(r,400));recordCheckpoint(m[1],'T001','completed');console.log(JSON.stringify({type:'turn.completed'}));`);
   fs.writeFileSync(checks,JSON.stringify({T001:[{type:'json',path:'capture.json',equals:{args:['-m','initiator-worker-model','-c','model_reasoning_effort=high','-'],model:null,effort:null}}]}));
-  const oldCapture=process.env.CAPTURE_FILE;process.env.CAPTURE_FILE=capture;
-  const executor=createHeadlessHooks({workspace,cli:process.execPath,args:[cli,'-m','initiator-worker-model','-c','model_reasoning_effort=high'],timeoutMs:30000});
+  const oldCodexHome=process.env.CODEX_HOME;process.env.CODEX_HOME=workspace;
+  // Windows process identity snapshots are bounded but can queue behind other
+  // Codex workers on a busy host. Keep the acceptance window above that
+  // admission overhead so the test observes the normal awaiting-verification
+  // event instead of turning host contention into a false timeout.
+  const executor=createHeadlessHooks({workspace,cli:process.execPath,args:[cli,'-m','initiator-worker-model','-c','model_reasoning_effort=high'],timeoutMs:120000});
   const hooks={...executor,plan:async()=>[{title:'acceptance',tasks:[{prompt:'执行验收'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,register:()=>{},commit:()=>{},unregister:()=>{}};
   const events=[];
   try{
-    const sum=await runWindows('执行验收',hooks,{workspace,capacity:1,executionMode:'headless',runId:'acceptance',coordinator:path.join(controllerRoot,'coordinator'),acceptanceFile:checks,auth:'acceptance',timeoutMs:30000,onEvent:e=>events.push(e)});
+    const sum=await runWindows('执行验收',hooks,{workspace,capacity:1,executionMode:'headless',runId:'acceptance',coordinator:path.join(controllerRoot,'coordinator'),acceptanceFile:checks,auth:'acceptance',timeoutMs:120000,onEvent:e=>events.push(e)});
     assert.equal(sum.success,true,JSON.stringify(sum.results));
     const captured=JSON.parse(fs.readFileSync(capture,'utf8'));
     assert.deepEqual(captured.args,['-m','initiator-worker-model','-c','model_reasoning_effort=high','-']);
@@ -108,7 +112,7 @@ test('headless runner sends the initiating model and effort to the worker and pu
     assert.ok(events.some(e=>e.todoList?.[0]?.status==='running'));
     assert.ok(events.some(e=>e.executionStatus?.[0]?.status==='running'));
     assert.ok(events.some(e=>e.todoList?.[0]?.status==='awaiting-verification'));
-  }finally{if(oldCapture===undefined)delete process.env.CAPTURE_FILE;else process.env.CAPTURE_FILE=oldCapture;fs.rmSync(workspace,{recursive:true,force:true});}
+  }finally{if(oldCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=oldCodexHome;fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
 test('spawn-group status is a monotonic host-consumable projection of every execution block',()=>{

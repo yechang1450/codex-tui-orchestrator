@@ -37,6 +37,15 @@ test('missing initiating turn policy fails closed before a child can inherit bro
   });
 });
 
+test('broad initiating turn requires the host permission binding',()=>{
+  withHome({cwd:path.resolve('trusted-workspace'),sandbox_policy:{type:'danger-full-access'},approval_policy:'never'},'',home=>{
+    assert.throws(()=>resolveInitiatorPolicy({CODEX_HOME:home,CODEX_THREAD_ID:id}),/broad policy host binding/);
+    assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home,CODEX_THREAD_ID:id,
+      CODEX_PERMISSION_PROFILE:':danger-full-access',CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY:'host-binding-opaque',WORKSPACE_DIR:path.resolve('trusted-workspace')}),
+      {sandbox:'danger-full-access',approval:'never'});
+  });
+});
+
 test('direct CLI use can inherit explicit native policy without a GUI turn',()=>{
   withHome(null,'sandbox_mode = "workspace-write"\napproval_policy = "never"\n',home=>{
     assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home}),{sandbox:'workspace-write',approval:'never'});

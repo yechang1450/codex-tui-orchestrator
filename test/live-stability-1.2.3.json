@@ -2,7 +2,7 @@
   "coreVersion": "1.2.3",
   "coreHash": "54600c0d5d8704ea1e94d003e27763df425e86a35ab36346c91085ada75a3aab",
   "recordedAt": "2026-09-06T15:55:50.710Z",
-  "workspace": "D:\\",
+  "workspace": "[WORKSPACE]",
   "capacity": {
     "runId": "acceptance-1850391b-a73c-41f2-b152-34bb14ef4e69",
     "root": "<temp-root>\\open-live-cbaddcbaedfda",

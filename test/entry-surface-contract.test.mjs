@@ -14,11 +14,12 @@ import {spawnSync} from 'node:child_process';
 // ④ `--workspace` 指向"存在但不是目录"的文件时 exit 0，把文件当工作区用。
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
+const explicitCli = process.env.ORCH_CLI || (process.platform === 'win32' ? String(spawnSync(`${process.env.SystemRoot || 'C:\\Windows'}\\System32\\where.exe`, ['codex.exe'], {encoding:'utf8',windowsHide:true}).stdout || '').split(/\r?\n/).map(s=>s.trim()).find(Boolean) || '' : '');
 const testWorkspaceRoot = process.env.ORCH_TEST_WORKSPACE_ROOT || (process.platform === 'win32' ? path.join(os.homedir(), 'workspace', 'temp') : os.tmpdir());
 fs.mkdirSync(testWorkspaceRoot, {recursive: true});
 
 function invoke(script, args, {cwd = repo, extra = {}, timeout = 120000} = {}) {
-  const env = {...process.env, ...extra};
+  const env = {...process.env, ORCH_ALLOW_UNVERIFIED_NPM:'1', ORCH_ALLOW_UNVERIFIED_CLI:'1', ...(explicitCli ? {ORCH_CLI:explicitCli} : {}), ...extra};
   delete env.CODEX_THREAD_ID;
   delete env.CODEX_SESSION_ID;
   delete env.ORCH_STATE_DIR;

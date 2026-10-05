@@ -4,7 +4,7 @@
   "coreHash": "893fcc6764901dc8836a14083e39a4fb18a6b69ee20bf61a6162b4a27afa207e",
   "cliVersion": "0.153.4",
   "nodeVersion": "v22.23.2",
-  "workspace": "D:\\",
+  "workspace": "[WORKSPACE]",
   "capacity": {
     "passed": true,
     "runId": "acceptance-dbdc89ad-d836-440c-bc04-62d7a137eba4",
@@ -21,7 +21,7 @@
     "results": [
       {
         "id": "91",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 31840,
         "started": 1788706891509,
@@ -30,7 +30,7 @@
       },
       {
         "id": "92",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 36856,
         "started": 1788706901692,
@@ -39,7 +39,7 @@
       },
       {
         "id": "93",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 11632,
         "started": 1788706891381,
@@ -48,7 +48,7 @@
       },
       {
         "id": "94",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 2092,
         "started": 1788706899638,
@@ -57,7 +57,7 @@
       },
       {
         "id": "95",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 37648,
         "started": 1788706904171,
@@ -66,7 +66,7 @@
       },
       {
         "id": "96",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 40720,
         "started": 1788706898303,
@@ -75,7 +75,7 @@
       },
       {
         "id": "97",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 25888,
         "started": 1788706893332,
@@ -84,7 +84,7 @@
       },
       {
         "id": "98",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 31844,
         "started": 1788706893234,
@@ -93,7 +93,7 @@
       },
       {
         "id": "99",
-        "cwd": "D:\\",
+        "cwd": "[WORKSPACE]",
         "nonce": "dbdc89ad-d836-440c-bc04-62d7a137eba4",
         "pid": 12160,
         "started": 1788706946575,

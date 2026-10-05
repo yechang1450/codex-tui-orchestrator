@@ -19,11 +19,19 @@ export async function runPiPlanner(config,prompt,cwd) {
   const args=[...piArgs(config,{model:process.env.ORCH_MODEL,effort:process.env.ORCH_EFFORT}),'--print','--mode','json','--no-session','--no-tools','--no-extensions','--no-skills','--no-context-files','--',prompt];
   return new Promise((resolve,reject)=>{
     const child=spawn(config.bin,args,{cwd,env:process.env,windowsHide:true,shell:false,stdio:['ignore','pipe','pipe']});
-    let raw='',errorText='',timedOut=false;
+    const MAX_STDOUT_BYTES=8*1024*1024, MAX_STDERR_BYTES=4*1024*1024;
+    let raw='',errorText='',errorBytes=0,timedOut=false,outputLimit=false;
     const timer=setTimeout(()=>{timedOut=true;child.kill();},Number(process.env.ORCH_DECOMPOSE_TIMEOUT_MS||60000));
-    child.stdout.on('data',b=>{raw+=b;if(raw.length>8000000)child.kill();});child.stderr.on('data',b=>{errorText+=b;});
+    child.stdout.on('data',b=>{raw+=b;if(Buffer.byteLength(raw,'utf8')>MAX_STDOUT_BYTES){outputLimit=true;child.kill();}});
+    child.stderr.on('data',b=>{
+      errorBytes+=Buffer.byteLength(b);
+      // Retain only a bounded diagnostic tail. The tail is deliberately not
+      // sent to the planner or provider and cannot grow with child lifetime.
+      errorText=(errorText+b.toString('utf8')).slice(-65536);
+      if(errorBytes>MAX_STDERR_BYTES){outputLimit=true;child.kill();}
+    });
     child.on('error',e=>{clearTimeout(timer);reject(e);});
-    child.on('exit',code=>{clearTimeout(timer);try{if(timedOut||code!==0)throw new Error(timedOut?'PI_PLANNER_TIMEOUT':'PI_PLANNER_FAILED: exit '+code);const final=piAssistantText(raw);if(!final)throw new Error('PI_PLANNER_EMPTY_RESPONSE');resolve({final});}catch(e){reject(e);}});
+    child.on('exit',code=>{clearTimeout(timer);try{if(timedOut||outputLimit||code!==0)throw new Error(timedOut?'PI_PLANNER_TIMEOUT':outputLimit?'PI_PLANNER_OUTPUT_LIMIT':'PI_PLANNER_FAILED: exit '+code);const final=piAssistantText(raw);if(!final)throw new Error('PI_PLANNER_EMPTY_RESPONSE');resolve({final});}catch(e){reject(e);}});
   });
 }
 const quote=s=>"'"+String(s).replaceAll("'","''")+"'";

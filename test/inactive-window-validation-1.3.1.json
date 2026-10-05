@@ -4,7 +4,7 @@
   "coreVersion": "1.3.1",
   "coreHash": "b3a07da7c37455d5c1cdc52c008972deb4b4630dd09a68e3622ed6ea70d48d1f",
   "mode": "Windows Terminal through detached no-activate helper",
-  "workspace": "D:\\",
+  "workspace": "[WORKSPACE]",
   "visible": true,
   "headless": false,
   "minimized": false,

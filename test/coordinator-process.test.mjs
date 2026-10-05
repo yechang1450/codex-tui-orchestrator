@@ -84,8 +84,17 @@ for(const [parents,capacity] of [[9,8],[12,4],[40,16]])test(`${parents} independ
   // acceptance window must cover that bound instead of failing while valid
   // contenders are still waiting in the bounded queue.
   const deadline=Date.now()+180000;
-  while(children.some((_,i)=>!fs.existsSync(path.join(dir,'run'+i+'.json')))&&Date.now()<deadline)await pause(100);
-  const results=children.map((_,i)=>JSON.parse(fs.readFileSync(path.join(dir,'run'+i+'.json'),'utf8')));
+  let results;
+  while(Date.now()<deadline){
+   try{
+    results=children.map((_,i)=>JSON.parse(fs.readFileSync(path.join(dir,'run'+i+'.json'),'utf8')));
+    break;
+   }catch(error){
+    if(!['ENOENT','EACCES','EPERM'].includes(error?.code) && !(error instanceof SyntaxError))throw error;
+    await pause(100);
+   }
+  }
+  assert.ok(results,'bounded wait for every child result expired');
   assert.equal(results.filter(r=>r.ok).length,capacity,JSON.stringify(results));
   assert.equal(results.filter(r=>r.reason==='capacity').length,parents-capacity,JSON.stringify(results));
   const leases=JSON.parse(fs.readFileSync(path.join(dir,'leases.json'),'utf8'));

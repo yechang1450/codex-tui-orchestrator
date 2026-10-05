@@ -1,9 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {buildTodoList,jsonProblem,describeShape} from './contracts.mjs';
-import {atomicJson} from './leases.mjs';
+import {atomicJson,readUtf8Bounded,MAX_CONTROLLER_ARTIFACT_BYTES} from './leases.mjs';
 import {assertNoReparsePoints} from './runtime-context.mjs';
+import {controllerStateDir} from './controller-state.mjs';
+
+const MAX_STATUS_TEXT_BYTES=Math.min(MAX_CONTROLLER_ARTIFACT_BYTES,4*1024*1024);
+const MAX_STATUS_LINE_BYTES=256*1024;
+const MAX_RENDERED_FIELD=512;
+function statusDigest(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
+function statusAuthorityFile(workspace,runId){
+  const identity=crypto.createHash('sha256').update(String(path.resolve(workspace)).toLowerCase()).digest('hex');
+  return assertNoReparsePoints(path.join(controllerStateDir(workspace),'status',identity,runId+'.json'),'status authority');
+}
+function safeText(value,max=MAX_RENDERED_FIELD){
+  return String(value??'').slice(0,max).replace(/[\u0000-\u001f\u007f-\u009f]/g,ch=>'\\u'+ch.charCodeAt(0).toString(16).padStart(4,'0'));
+}
 
 function runsDirectory(workspace){
   const root=path.join(path.resolve(workspace),'temp','orchestrator','runs');
@@ -54,12 +68,24 @@ function readTextWithIdentity(file,label){
   try{
     assertNoReparsePoints(file,label);
     const opened=fs.fstatSync(fd,{bigint:true});
+    if(opened.size>BigInt(MAX_STATUS_TEXT_BYTES))throw new Error(`${label} exceeds the ${MAX_STATUS_TEXT_BYTES} byte safety limit: ${file}`);
     const text=fs.readFileSync(fd,'utf8');
     const current=fs.statSync(file,{bigint:true});
     if(opened.dev!==current.dev||opened.ino!==current.ino)throw new Error(`${label} changed during read: ${file}`);
     assertNoReparsePoints(file,label);
     return text;
   }finally{fs.closeSync(fd);}
+}
+// A manifest is written before planning starts and is intentionally readable
+// before the controller has produced an authenticated summary.  Keep this
+// fallback strictly planning-only: a workspace-controlled manifest must never
+// be able to smuggle a completed/successful state past the controller
+// authority check below.
+function isPlanningManifest(sum){
+  return !!sum && typeof sum==='object' && !Array.isArray(sum) &&
+    Array.isArray(sum.tasks) && sum.success!==true && sum.finishedAt==null &&
+    sum.eventSeq==null && sum.results==null && sum.taskResults==null &&
+    sum.executionStatus==null;
 }
 function eventText(dir){
   const file=assertNoReparsePoints(path.join(dir,'events.jsonl'),'status events file');
@@ -75,6 +101,7 @@ export function readEvents(dir,{after=0,runId:expectedRunId=null}={}){
     let event;
     // 事件账本是审计线索：坏行仍然 fail-closed，但真因必须点名文件 + 行号，
     // 否则调用方只知道"有问题"，不知道是哪一条。
+    if(Buffer.byteLength(line,'utf8')>MAX_STATUS_LINE_BYTES)throw new Error('Status event line exceeds the '+MAX_STATUS_LINE_BYTES+' byte safety limit: '+file+':'+lineNumber);
     try{event=JSON.parse(line);}
     catch(error){throw new Error('Invalid status event JSON at '+file+':'+lineNumber+'：'+jsonProblem(line,error));}
     if(event.schema!==1||!Number.isSafeInteger(event.seq)||event.seq<=previous||!event.runId||typeof event.type!=='string'||(runId&&runId!==event.runId)||(expectedRunId&&expectedRunId!==event.runId))
@@ -108,6 +135,9 @@ export function createStatusPublisher(dir,{onEvent}={}){
       todoList:sum.todoList,executionStatus:sum.executionStatus,finishedAt:sum.finishedAt??null,success:sum.success===true};
     const summaryFile=assertNoReparsePoints(path.join(safeDir,'summary.json'),'status summary file');
     atomicJson(summaryFile,sum,()=>assertNoReparsePoints(safeDir,'status directory'));
+    // The workspace summary is a derived mirror. Keep its digest in the
+    // controller-owned root so readers can reject a worker-written success.
+    atomicJson(statusAuthorityFile(sum.workspace,sum.runId),{version:1,runId:sum.runId,workspace:sum.workspace,sha256:statusDigest(sum)});
     // Recheck after the atomic snapshot and after opening the append handle.
     // If a same-user race swaps the run directory to a junction in either
     // window, fail before appending the event through the redirected handle.
@@ -128,6 +158,25 @@ export function readRunStatus(workspace,runId){
   if(!sum)throw new Error('Run ledger not found: '+summaryFile+'（同目录也没有 manifest.json：'+dir+'）');
   if(typeof sum.runId!=='string'||typeof sum.workspace!=='string')throw new Error('Invalid run ledger '+source+'：缺少 runId/workspace 字段（实测 runId='+describeShape(sum.runId)+'，workspace='+describeShape(sum.workspace)+'）');
   if(sum.runId!==runId||path.resolve(sum.workspace)!==path.resolve(workspace))throw new Error('Status run identity mismatch');
+  // Before the first controller publication only the planning manifest exists.
+  // It may be displayed as pending inventory, but it is never accepted as an
+  // authenticated result.  A manifest that looks like a result is rejected.
+  if(source===manifestFile){
+    if(!isPlanningManifest(sum))throw new Error('Status manifest is not a planning ledger; refusing unauthenticated execution state');
+    return {...sum,todoList:buildTodoList(sum.tasks,sum.blocks,sum.taskResults),executionStatus:buildExecutionStatus(sum)};
+  }
+  let authority;
+  let authorityText;
+  try{authorityText=readUtf8Bounded(statusAuthorityFile(workspace,runId),'status authority');}
+  catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
+  if(authorityText===null){
+    const error=new Error('Status authority is pending for '+runId+'; refusing unauthenticated summary');
+    error.code='STATUS_AUTHORITY_PENDING';
+    throw error;
+  }
+  try{authority=JSON.parse(authorityText);}
+  catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
+  if(authority?.version!==1||authority.runId!==runId||path.resolve(authority.workspace||'')!==path.resolve(workspace)||authority.sha256!==statusDigest(sum))throw new Error('Status ledger authority mismatch');
   return {...sum,todoList:buildTodoList(sum.tasks,sum.blocks,sum.taskResults),executionStatus:buildExecutionStatus(sum)};
 }
 // 坏账本既不能静默当成正常状态读出去（调用方会拿到半份状态），也不能只回裸 SyntaxError。
@@ -142,10 +191,10 @@ function readLedger(file){
   return value;
 }
 export function renderRunStatus(state){
-  if(!state.runId)return ['No orchestrator runs found in '+state.workspace,'TodoList','Execution'].join('\n');
-  const rows=['Run '+state.runId+' | '+(state.finishedAt?(state.success?'verified':'finished with unresolved tasks'):'active'),
-    'TodoList',...(state.todoList||[]).map(t=>`${t.status==='verified'?'[x]':'[ ]'} ${t.id} ${t.status} (${t.block||'planning'}) ${t.prompt}`),
-    'Execution',...(state.executionStatus||[]).map(e=>`${e.block} ${e.mode} ${e.status} | attempt ${e.attempt} | PID ${e.pid??'-'} | tasks ${e.taskIds.join(', ')}${e.reason?' | '+e.reason:''}`)];
+  if(!state.runId)return ['No orchestrator runs found in '+safeText(state.workspace),'TodoList','Execution'].join('\n');
+  const rows=['Run '+safeText(state.runId)+' | '+(state.finishedAt?(state.success?'verified':'finished with unresolved tasks'):'active'),
+    'TodoList',...(state.todoList||[]).map(t=>`${t.status==='verified'?'[x]':'[ ]'} ${safeText(t.id)} ${safeText(t.status)} (${safeText(t.block||'planning')}) ${safeText(t.prompt)}`),
+    'Execution',...(state.executionStatus||[]).map(e=>`${safeText(e.block)} ${safeText(e.mode)} ${safeText(e.status)} | attempt ${safeText(e.attempt)} | PID ${safeText(e.pid??'-')} | tasks ${safeText((e.taskIds||[]).join(','))}${e.reason?' | '+safeText(e.reason):''}`)];
   return rows.join('\n');
 }
 export async function watchRunStatus({workspace,runId,after=0,intervalMs=250,timeoutMs=21600000,signal,onEvent=console.log}){
@@ -153,7 +202,18 @@ export async function watchRunStatus({workspace,runId,after=0,intervalMs=250,tim
   const dir=directory(workspace,runId),deadline=Date.now()+timeoutMs;
   let seq=after,initial=true,lastSize=-1;
   while(!signal?.aborted){
-    const sum=readRunStatus(workspace,runId);
+    let sum;
+    try{sum=readRunStatus(workspace,runId);}
+    catch(error){
+      // createStatusPublisher atomically replaces summary.json, then records
+      // its controller-owned digest, then appends the event.  If a watcher
+      // lands in that tiny interval, wait for the authority instead of
+      // surfacing an unauthenticated snapshot.  Any malformed/mismatched
+      // authority still fails closed and is not retried.
+      if(error?.code!=='STATUS_AUTHORITY_PENDING'||Date.now()>=deadline)throw error;
+      try{await sleep(Math.min(intervalMs,deadline-Date.now()),undefined,{signal});}catch(waitError){if(signal?.aborted)return;throw waitError;}
+      continue;
+    }
     if(initial){onEvent({schema:1,seq:sum.eventSeq||0,type:'snapshot',...sum});seq=Math.max(seq,sum.eventSeq||0);initial=false;if(sum.finishedAt)return;}
     let size=0;try{size=fs.statSync(assertNoReparsePoints(path.join(dir,'events.jsonl'),'status events file')).size;}catch(error){if(error.code!=='ENOENT')throw error;}
     if(size!==lastSize){for(const event of readEvents(dir,{after:seq,runId})){onEvent(event);seq=event.seq;if(event.finishedAt)return;}lastSize=size;}

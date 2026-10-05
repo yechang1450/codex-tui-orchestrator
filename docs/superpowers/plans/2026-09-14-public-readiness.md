@@ -19,7 +19,7 @@
 
 ### Task 1: Official manager version lifecycle
 
-**Files:** test/manager-lifecycle-validation.json; test/private-readiness-validation.json; docs/release-policy.md.
+**Files:** test/manager-lifecycle-validation.json; 本机历史账本（已移除）; docs/release-policy.md.
 
 **Interfaces:** consume sealed source via scripts/release-integrity.mjs; produce version, source-commit, install-state and integrity receipts for each manager operation.
 
@@ -41,7 +41,7 @@
 
 ### Task 3: Recovery and release closure
 
-**Files:** existing recovery probes; docs/execution-contract.md; docs/release-policy.md; test/private-readiness-validation.json.
+**Files:** existing recovery probes; docs/execution-contract.md; docs/release-policy.md; 本机历史账本（已移除）.
 
 **Interfaces:** authoritative summary/checkpoint ledger and independently verified side effects.
 

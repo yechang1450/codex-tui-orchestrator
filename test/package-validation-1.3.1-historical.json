@@ -25,7 +25,7 @@
     "exitCode": 0,
     "agent": "codex",
     "cli": "codex.exe",
-    "workspace": "D:\\",
+    "workspace": "[WORKSPACE]",
     "stateDir": "<temp-root>\\orchestrator",
     "terminal": "wt",
     "interactiveOutput": "inherited"

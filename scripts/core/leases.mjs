@@ -49,6 +49,56 @@ const DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS=120000;
 const MAX_PROCESS_SNAPSHOT_TIMEOUT_MS=120000;
 const DEFAULT_COORDINATOR_TIMEOUT_MS=120000;
 const MAX_COORDINATOR_TIMEOUT_MS=120000;
+export const MAX_CONTROLLER_ARTIFACT_BYTES=8*1024*1024;
+
+// Windows resolves a bare executable through the caller's current directory
+// and PATH.  Controller helpers must be resolved once from the system root,
+// with a reparse-point check, and launched with a scrubbed environment.
+export function trustedWindowsRoot() {
+  if(process.platform!=='win32')throw new Error('Trusted Windows helpers require Windows');
+  const configured=String(process.env.SystemRoot||'').trim();
+  if(!configured||!path.win32.isAbsolute(configured))throw new Error('Trusted Windows system root is unavailable');
+  const root=assertNoReparsePoints(path.win32.normalize(configured),'Windows system root');
+  try{if(!fs.statSync(root).isDirectory())throw new Error('Windows system root is not a directory');}
+  catch(error){throw new Error('Trusted Windows system root is unavailable: '+(error?.message||error));}
+  return root;
+}
+const WINDOWS_HELPERS=Object.freeze({
+  powershell:path.win32.join('System32','WindowsPowerShell','v1.0','powershell.exe'),
+  taskkill:path.win32.join('System32','taskkill.exe'),
+  tasklist:path.win32.join('System32','tasklist.exe'),
+  where:path.win32.join('System32','where.exe'),
+  reg:path.win32.join('System32','reg.exe'),
+  chcp:path.win32.join('System32','chcp.com'),
+});
+export function trustedWindowsHelper(name) {
+  const relative=WINDOWS_HELPERS[name];
+  if(!relative)throw new Error('Unknown Windows helper: '+name);
+  const root=trustedWindowsRoot(),file=path.win32.join(root,relative);
+  assertNoReparsePoints(file,'Windows helper');
+  let stat;try{stat=fs.statSync(file);}catch(error){throw new Error('Trusted Windows helper unavailable: '+file+' ('+(error?.message||error)+')');}
+  if(!stat.isFile())throw new Error('Trusted Windows helper is not a regular file: '+file);
+  return file;
+}
+export function controllerEnvironment(extra={}) {
+  const out={};
+  const allow=new Set(['ComSpec','COMSPEC','SystemRoot','WINDIR','TEMP','TMP','Path','PATH','PATHEXT','USERPROFILE','HOMEDRIVE','HOMEPATH','LOCALAPPDATA','APPDATA','PROGRAMDATA','PROGRAMFILES','PROGRAMFILES(X86)','OS','PROCESSOR_ARCHITECTURE','PROCESSOR_IDENTIFIER','NUMBER_OF_PROCESSORS','CODEX_HOME','ORCH_CONTROLLER_ROOT','LANG','LC_ALL','NO_PROXY','no_proxy']);
+  for(const [key,value] of Object.entries(process.env)) {
+    if(!allow.has(key)||/(KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL)/i.test(key))continue;
+    if(typeof value==='string'&&value.length<=4096)out[key]=value;
+  }
+  return Object.assign(out,extra);
+}
+export function readUtf8Bounded(file,label='controller artifact',maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES) {
+  let fd;
+  try { fd=fs.openSync(file,'r'); }
+  catch(error) { if(error.code==='ENOENT')return null; throw error; }
+  try {
+    const stat=fs.fstatSync(fd);
+    if(!Number.isSafeInteger(Number(stat.size))||Number(stat.size)>maxBytes)throw new Error(`${label} exceeds the ${maxBytes} byte safety limit: ${file}`);
+    return fs.readFileSync(fd,'utf8');
+  } finally { fs.closeSync(fd); }
+}
 
 function coordinatorTimeoutMs() {
   const configured=Number(process.env.ORCH_COORDINATOR_TIMEOUT_MS);
@@ -66,8 +116,8 @@ export function processSnapshot(timeoutMs=Number(process.env.ORCH_PROCESS_SNAPSH
   const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(timeoutMs)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
   // WorkingSet64/PeakWorkingSet64 供动态内存预算采样（进程峰值 -> 边际成本）；不改身份校验字段。
   const script=`$m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false;try{try{$held=$m.WaitOne(${waitMs})}catch [Threading.AbandonedMutexException]{$held=$true};if(-not $held){throw 'Process snapshot mutex timeout'};[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);$ErrorActionPreference="Stop";Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n="WorkingSet64";e={[long]$_.WorkingSetSize}},@{n="PeakWorkingSet64";e={[long]$_.PeakWorkingSetSize*1024}},@{n="Started";e={$_.CreationDate.ToUniversalTime().ToString("o")}} | ConvertTo-Json -Compress}finally{if($held){$m.ReleaseMutex()};$m.Dispose()}`;
-  const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',script],
-    {encoding:'utf8',windowsHide:true,timeout:waitMs});
+  const result=spawnSync(trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',script],
+    {encoding:'utf8',windowsHide:true,timeout:waitMs,cwd:trustedWindowsRoot(),env:controllerEnvironment()});
   if(result.status!==0){
     // 真因必须可读：机器繁忙时 WMI/CIM 会被拖到超时（而不是"编排器坏了"），
     // 所以把子进程退出码与 stderr 首行一起回给调用方。
@@ -107,17 +157,23 @@ export function coordinatorDir(workspace,env=process.env) {
   return path.join(controllerStateDir(workspace,env),'codex-coordinator');
 }
 export function atomicJson(file,value,guard){
-  fs.mkdirSync(path.dirname(file),{recursive:true});
+  const parent=assertNoReparsePoints(path.dirname(file),'atomic JSON parent');
+  fs.mkdirSync(parent,{recursive:true});
+  assertNoReparsePoints(parent,'atomic JSON parent');
+  assertNoReparsePoints(file,'atomic JSON target');
   guard?.();
   if(fs.existsSync(file)&&fs.statSync(file).isDirectory()){
     const error=new Error(`EISDIR: cannot replace directory with JSON file: ${file}`);error.code='EISDIR';throw error;
   }
-  const tmp=file+'.'+process.pid+'.tmp',deadline=performance.now()+5000;
+  const tmp=file+'.'+crypto.randomUUID()+'.tmp',deadline=performance.now()+5000;
   try {
-    fs.writeFileSync(tmp,JSON.stringify(value,null,2));
+    assertNoReparsePoints(tmp,'atomic JSON temporary');
+    const fd=fs.openSync(tmp,'wx');
+    try { fs.writeFileSync(fd,JSON.stringify(value,null,2));fs.fsyncSync(fd); }
+    finally { fs.closeSync(fd); }
     guard?.();
     while(true){
-      try{guard?.();fs.renameSync(tmp,file);return;}
+      try{guard?.();assertNoReparsePoints(parent,'atomic JSON parent');assertNoReparsePoints(file,'atomic JSON target');fs.renameSync(tmp,file);return;}
       catch(error){
         const remaining=deadline-performance.now();
         if(process.platform!=='win32'||!['EPERM','EACCES','EBUSY'].includes(error.code)||remaining<=0)throw error;
@@ -150,17 +206,42 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
      const ticketDir=path.join(os.tmpdir(),'codex-tui-orchestrator-locks',
        crypto.createHash('sha256').update(physicalDir.toLowerCase()).digest('hex').slice(0,16));
     fs.mkdirSync(ticketDir,{recursive:true});
+    assertNoReparsePoints(ticketDir,'coordinator ticket directory');
     const ticket=path.join(ticketDir,'lock-'+crypto.randomUUID());
+    for(const suffix of ['.ready','.release']){try{fs.rmSync(ticket+suffix,{force:true});}catch(error){throw new Error('Coordinator ticket preparation failed: '+error.message);}}
     // The distributed script is intentionally unsigned. Explicitly bypass the
     // user's RemoteSigned policy for this bounded, plugin-owned helper; without
     // it Windows rejects the file before it can publish the ready handshake.
     const lockWaitMs=coordinatorTimeoutMs();
-     const child=spawn('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./lease-lock.ps1',import.meta.url)),'-Directory',physicalDir,'-Ticket',ticket,'-Owner',String(owner.ProcessId),'-Started',owner.Started,'-WaitMs',String(lockWaitMs)],{windowsHide:true,stdio:'ignore'});
+    const nonce=crypto.randomBytes(32).toString('base64url');
+     const child=spawn(trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./lease-lock.ps1',import.meta.url)),'-Directory',physicalDir,'-Ticket',ticket,'-Nonce',nonce,'-Owner',String(owner.ProcessId),'-Started',owner.Started,'-WaitMs',String(lockWaitMs)],{windowsHide:true,stdio:'ignore',cwd:trustedWindowsRoot(),env:controllerEnvironment()});
     child.on('error',()=>{});child.unref();
     const deadline=Date.now()+lockWaitMs;
-    while(!fs.existsSync(ticket+'.ready')&&Date.now()<deadline)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
-    unlock=()=>fs.writeFileSync(ticket+'.release','release');
-    if(!fs.existsSync(ticket+'.ready')){
+    let ready=false;
+    while(Date.now()<deadline){
+      try{
+        assertNoReparsePoints(ticket+'.ready','coordinator ready marker');
+        const stat=fs.statSync(ticket+'.ready');
+        const text=(readUtf8Bounded(ticket+'.ready','coordinator ready marker',64)||'').trim();
+        // The per-attempt nonce proves freshness; filesystem mtimes have
+        // coarse resolution on some Windows volumes and must not turn a valid
+        // handshake into a timeout.
+        ready=stat.isFile()&&text===`ready:${nonce}`;
+      }catch{}
+      if(ready)break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
+    }
+    unlock=()=>{
+      try{fs.writeFileSync(ticket+'.release',crypto.randomBytes(16).toString('hex'),{flag:'wx'});}
+      catch(error){if(error.code!=='EEXIST')throw error;}
+      // The mutex lives in the helper process.  Do not start the next
+      // transaction while that process is still unwinding its finally block;
+      // otherwise a fast reserve/release pair can observe the previous named
+      // mutex as held and wait for the full coordinator timeout.
+      const releaseDeadline=Date.now()+5000;
+      while(child.exitCode===null&&Date.now()<releaseDeadline)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,25);
+    };
+    if(!ready){
       unlock();
       const code=child.exitCode;
       throw new Error('Coordinator mutex acquisition failed (dir='+dir+'，ticket='+ticket+(code===null?'，子进程仍在等待':('，子进程退出码 '+code))+')；'+

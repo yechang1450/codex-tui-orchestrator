@@ -10,13 +10,13 @@
 
 - open 与 Codex 专用入口：各 106/106 项回归通过。
 - 两套真实验收：各 8 窗、9 任务；确认 8 个活跃 Codex 子进程与探针同时重叠；第 9 项在合并块中串行；结果全部通过主控检查；窗口全部关闭。
-- 16 个真实会话元数据均为 cwd=D:\、approval=never、provider=orchestrator-openai-https。
+- 16 个真实会话元数据均为 cwd=[WORKSPACE]\、approval=never、provider=orchestrator-openai-https。
 - 9 个独立父进程竞争 8 个共享名额：恰好 8 个获得名额，第 9 个被容量条件拦住；无覆盖丢失。
 - 发布检查：12 个核心源文件可物化成独立包，内容逐字节一致。
 - 实测后仅恢复 --status 命令分派，已额外跑完整回归；真实执行路径未改。
 
 第一轮探针因一个窗口自行改变命令工作目录而重跑，时间重叠断言未通过，已保留失败记录。明确继承目录并把目录断言前移后，两套完整实测均通过。
 
-完整证据见 [reliability-live-result.json](../test/reliability-live-result.json)，包含运行编号、逐项验收结果、会话元数据和核心文件哈希。[执行协议](execution-contract.md) 说明主控如何自动准备验收条件，无需用户批准 TUI 操作。
+完整运行回执属于本机审计资料，未纳入公开仓库；[执行协议](execution-contract.md)说明主控如何自动准备验收条件。
 
 清理限制：宿主自动审批检查拒绝删除本轮三个一次性探针目录，仅返回 host automatic approval review denied cleanup，未提供具体规则。未绕过；具体目录保存在证据报告 cleanup 中。该拦截发生在主控清理环节，不是 TUI 内的手动执行审批。

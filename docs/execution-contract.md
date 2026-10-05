@@ -63,7 +63,7 @@ A `started` checkpoint without `completed` is not automatic success, even if the
 
 Deliberately replacing a contract — the parent narrowing or extending checks after inspecting an uncertain result — requires the explicit `--allow-acceptance-change` flag (place it after the run ID) or `ORCH_ACCEPTANCE_OVERRIDE=1`. The override prints a warning, rebinds the new digest in the controller state and both ledgers, and appends an `acceptanceRebound` entry (`from`, `to`, timestamp, generation, and the conflict when present) to the run history. Historical ledgers without a controller binding require this explicit adoption before verification.
 
-The controller-side binding assumes the worker has workspace-write access and cannot write CODEX_HOME. With danger-full-access, both controller and child run as the same Windows user, so the directory is not an OS-enforced security boundary. Command checks can run workspace scripts; the parent must review and trust the exact executable and arguments, and avoid mutable scripts for adversarial work.
+The controller-side binding assumes the worker has workspace-write access and cannot write CODEX_HOME. With danger-full-access, both controller and child run as the same Windows user, so the directory is not an OS-enforced security boundary. Command checks are disabled by default; an acceptance-only command requires explicit `ORCH_ALLOW_ACCEPTANCE_COMMANDS=1`, and the parent must review and trust the exact executable and arguments, avoiding mutable scripts for adversarial work.
 
 ## Global coordination and process identity
 
@@ -80,8 +80,8 @@ TodoList（原始任务清单）保留 T001 等任务身份。Execution（执行
 - manifest.json 从规划开始保存清单；summary.json 是权威快照，events.jsonl 是带序号事件，goal.json 是派生镜像。文件都归当前工作区 temp/orchestrator/runs/<ID>。
 
 ~~~powershell
-node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch
-node scripts/status.mjs --workspace D:\your-project --run-id <ID> --watch --json
+node scripts/status.mjs --workspace [WORKSPACE]\your-project --run-id <ID> --watch
+node scripts/status.mjs --workspace [WORKSPACE]\your-project --run-id <ID> --watch --json
 ~~~
 
 status.mjs 只读且不依赖 SDK，退出观察不会终止执行。JSONL（逐行 JSON 事件）用于接入宿主界面；重连先读最新快照再跟随事件，--after 指定已观察序号。默认每 250ms 观察检查点，系统和同步协调可能延迟显示，不承诺硬实时。

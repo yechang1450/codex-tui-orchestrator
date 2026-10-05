@@ -1,15 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 /** Bootstrap marks its verified npm tree and passes the exact JS entry. */
 export function assertTrustedNpm(env = process.env) {
   if (process.platform !== 'win32' || env.ORCH_ALLOW_UNVERIFIED_NPM === '1') return;
   const entry = String(env.npm_execpath || '');
-  let regular = false;
-  try { regular = path.isAbsolute(entry) && /\.(?:c?js|mjs)$/i.test(entry) && fs.lstatSync(entry).isFile(); }
+  let regular = false, realEntry = '', digest = '';
+  try {
+    regular = path.isAbsolute(entry) && /\.(?:c?js|mjs)$/i.test(entry) && fs.lstatSync(entry).isFile() && !fs.lstatSync(entry).isSymbolicLink();
+    if (regular) {
+      realEntry = fs.realpathSync.native(entry);
+      digest = crypto.createHash('sha256').update(fs.readFileSync(realEntry)).digest('hex');
+    }
+  }
   catch { /* missing or linked npm entry is not a verified runtime */ }
-  if (env.ORCH_NPM_TRUSTED !== '1' || !regular) {
-    throw new Error('NPM_UNTRUSTED: run scripts/bootstrap.ps1 so Node/npm are checked before installation, or explicitly set ORCH_ALLOW_UNVERIFIED_NPM=1 for repair.');
+  const attestedPath = String(env.ORCH_NPM_TRUSTED_PATH || '');
+  const attestedDigest = String(env.ORCH_NPM_TRUSTED_SHA256 || '').toLowerCase();
+  if (env.ORCH_NPM_TRUSTED !== '1' || !regular || !attestedPath || !attestedDigest ||
+      path.resolve(attestedPath).toLowerCase() !== path.resolve(realEntry).toLowerCase() ||
+      !/^[a-f0-9]{64}$/.test(attestedDigest) || attestedDigest !== digest) {
+    throw new Error('NPM_UNTRUSTED: bootstrap must attest the exact npm entry path and SHA-256 before installation, or explicitly set ORCH_ALLOW_UNVERIFIED_NPM=1 for repair.');
   }
 }
 

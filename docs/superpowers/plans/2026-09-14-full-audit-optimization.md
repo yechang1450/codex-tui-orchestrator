@@ -44,7 +44,7 @@
 
 ### Task 4: Release decision
 
-**Files:** `test/private-readiness-validation.json`, `docs/rc-validation.md`, `docs/release-policy.md`.
+**Files:** `本机历史账本（已移除）`, `docs/rc-validation.md`, `docs/release-policy.md`.
 
 - [x] Update evidence only from current hashes and real output.
 - [x] List remaining provider, foreground, network, reboot and automatic-dispatch gates explicitly.

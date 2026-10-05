@@ -23,11 +23,11 @@ test('inactive launch preserves arguments and hides only its short-lived helper'
  assert.equal(quoteWindowsArgument('C:\\space dir\\'),'"C:\\space dir\\\\"');
  assert.throws(()=>quoteWindowsArgument('\0'),/NUL/);
  let called=0;
- spawnInactiveWindow('C:\\Windows\\powershell.exe',['中文 空格','a"b'],'D:\\',{invoke:(file,args,options)=>{
-  called++;assert.equal(file,'powershell.exe');assert.equal(options.windowsHide,true);assert.equal(options.shell,false);
+ spawnInactiveWindow(process.execPath,['中文 空格','a"b'],process.cwd(),{invoke:(file,args,options)=>{
+  called++;assert.match(file,/powershell\.exe$/i);assert.equal(options.windowsHide,true);assert.equal(options.shell,false);
   assert.deepEqual(args.slice(0,5),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File']);
   const payload=JSON.parse(Buffer.from(args.at(-1),'base64').toString('utf8'));
-  assert.equal(payload.cwd,'D:\\');assert.equal(payload.parameters,'"中文 空格" "a\\"b"');
+  assert.equal(payload.cwd,process.cwd());assert.equal(payload.file,process.execPath);assert.equal(payload.parameters,'"中文 空格" "a\\"b"');
   return {status:0};
  }});assert.equal(called,1);
 });
@@ -74,10 +74,10 @@ test('historical input receipt retains its original core version',()=>{
 test('asynchronous inactive launch preserves a hidden console for PowerShell',async()=>{
  let called=0,unref=0;
  const child=Object.assign(new EventEmitter(),{unref(){unref++;}});
- const result=spawnInactiveWindowDetached('C:\\Windows\\wt.exe',['-w','win-x'],'D:\\',{invoke:(file,args,options)=>{
-  called++;assert.equal(file,'powershell.exe');assert.notEqual(options.detached,true);assert.equal(options.windowsHide,true);assert.equal(options.stdio,'ignore');
+ const result=spawnInactiveWindowDetached(process.execPath,['-w','win-x'],process.cwd(),{invoke:(file,args,options)=>{
+  called++;assert.match(file,/powershell\.exe$/i);assert.notEqual(options.detached,true);assert.equal(options.windowsHide,true);assert.equal(options.stdio,'ignore');
   const payload=JSON.parse(Buffer.from(args.at(-1),'base64').toString('utf8'));
-  assert.equal(payload.file,'C:\\Windows\\wt.exe');assert.equal(payload.cwd,'D:\\');assert.equal(payload.parameters,'"-w" "win-x"');
+  assert.equal(payload.file,process.execPath);assert.equal(payload.cwd,process.cwd());assert.equal(payload.parameters,'"-w" "win-x"');
   return child;
  }});
  assert.equal(result,child);assert.equal(called,1);assert.equal(unref,0);
@@ -106,9 +106,9 @@ test('real asynchronous helper executes its payload before reporting success',{s
 });
 
 test('asynchronous helper reports spawn and native launch errors',async()=>{
- const missing=spawnInactiveWindowDetached('unused',[],process.cwd(),{invoke:(_f,_a,options)=>spawn('orchestrator-intentionally-missing-executable',[],options)});
+ const missing=spawnInactiveWindowDetached(process.execPath,[],process.cwd(),{invoke:(_f,_a,options)=>spawn('orchestrator-intentionally-missing-executable',[],options)});
  missing.ref();assert.match((await missing.launchResult).error,/ENOENT/);
  const failed=Object.assign(new EventEmitter(),{unref(){}});
- const result=spawnInactiveWindowDetached('unused',[],process.cwd(),{invoke:()=>failed});
+ const result=spawnInactiveWindowDetached(process.execPath,[],process.cwd(),{invoke:()=>failed});
  failed.emit('exit',1);assert.deepEqual(await result.launchResult,{ok:false,error:'helper exited with code 1'});
 });

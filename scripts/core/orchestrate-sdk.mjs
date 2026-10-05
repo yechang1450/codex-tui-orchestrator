@@ -30,6 +30,7 @@ import {partitionIndependentBlocks} from './plan-policy.mjs';
 import {reportFatal} from "./fatal.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { resolveAgent, launchArgs } from "./agent.mjs";
+import { revalidateHostExecutable } from "./host-cli.mjs";
 import { writeFileSync, mkdirSync, readFileSync, existsSync, rmSync, readdirSync, statSync, statfsSync, openSync, readSync, writeSync, closeSync, renameSync } from "node:fs";
 import os from "node:os";
 import crypto from "node:crypto";
@@ -47,7 +48,16 @@ function resolveCodexHome() {
   return path.join(os.homedir(), ".codex");
 }
 const CODEX_HOME = resolveCodexHome();
-import { resolveRuntimeContext } from './runtime-context.mjs';
+function diagnosticPath(value) {
+  const text = String(value ?? '');
+  if (process.env.ORCH_DIAGNOSTIC_FULL_PATHS === '1') return text;
+  return '<redacted:' + crypto.createHash('sha256').update(text).digest('hex').slice(0, 12) + '>';
+}
+function diagnosticArg(value) {
+  const text = String(value ?? '');
+  return path.isAbsolute(text) || /[\\/]/.test(text) ? diagnosticPath(text) : text;
+}
+import { resolveRuntimeContext, assertNoReparsePoints, physicallySameOrChild } from './runtime-context.mjs';
 // 子代理/窗内公共授权模板加载：把超长 auth 从 SDK 源码下沉到独立模板文件（UTF-8 无 BOM），
 // 运行时读回作为每个窗 prompt 的【公共前缀】，保持字节级一致以命中缓存；读失败回退一段防御文本。
 // 用 import.meta.url 自动推导脚本同目录，绝不硬编码绝对路径；读出的内容必须以 UTF-8 无 BOM 落盘。
@@ -70,6 +80,10 @@ const windowTemp = () => controllerWindowsDir(WORKSPACE);
 process.env.WORKSPACE_DIR = WORKSPACE;
 process.env.ORCH_STATE_DIR = STATE_DIR;
 const AGENT = resolveAgent();
+// Bind the verified host executable again immediately before constructing any
+// worker launcher.  A path selected during discovery must not be trusted after
+// an intervening replacement or package-tree mutation.
+revalidateHostExecutable(AGENT.config);
 const CODEX = AGENT.config.bin;
 // PowerShell 单引号字符串内嵌路径：把 ' 转义成 ''，避免路径含引号时破坏脚本/注入。
 const CODEX_Q = CODEX.replace(/'/g, "''");
@@ -861,17 +875,17 @@ function checkDiskSpace(opts = {}) {
     if (!Number.isFinite(freeMB) || freeMB < 0) throw new Error("unexpected statfs result");
     if (freeMB < hardMB) {
       if (warnOnly) {
-        console.warn("[orchestrator] WARN: workspace disk critically low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; --plan is read-only so still runs, but --run-windows would refuse.");
+      console.warn("[orchestrator] WARN: workspace disk critically low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + diagnosticPath(wsPath) + "; --plan is read-only so still runs, but --run-windows would refuse.");
         return true;
       }
-      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + wsPath + "; refusing to run (fail-closed).");
+      console.error("[orchestrator] FATAL: workspace disk too low (" + freeMB + "MB free < " + hardMB + "MB hard floor) at " + diagnosticPath(wsPath) + "; refusing to run (fail-closed).");
       return false;
     }
     if (freeMB < minMB) {
-      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + wsPath + "; TUI window/temp may fail.");
+      console.warn("[orchestrator] WARN: low disk space (" + freeMB + "MB free < " + minMB + "MB) at " + diagnosticPath(wsPath) + "; TUI window/temp may fail.");
       return true;
     }
-    console.error("[orchestrator] disk: workspace " + wsPath + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
+    console.error("[orchestrator] disk: workspace " + diagnosticPath(wsPath) + " free=" + freeMB + "MB (min " + minMB + "MB / hard " + hardMB + "MB)");
     return true;
   } catch (e) {
     console.warn("[orchestrator] WARN: could not stat workspace disk (" + (e && e.message ? e.message : String(e)) + "); skipping space check.");
@@ -1466,18 +1480,35 @@ function sessionDir() {
   // 通用化：优先 CODEX_HOME（可被环境变量覆盖），而非硬编码 USERPROFILE\.codex。
   return process.env.ORCH_SESSION_DIR || path.join(CODEX_HOME, "sessions");
 }
-function listRollouts(dir, notBeforeMs = 0) {
-  const res = [];
+function listRollouts(dir, notBeforeMs = 0, depth = 0, out = []) {
+  const MAX_ROLLOUT_FILES = 256, MAX_ROLLOUT_DEPTH = 8;
+  if (depth > MAX_ROLLOUT_DEPTH || out.length >= MAX_ROLLOUT_FILES) return out;
   try {
     for (const e of readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) res.push(...listRollouts(p, notBeforeMs));
+      if (e.isDirectory()) listRollouts(p, notBeforeMs, depth + 1, out);
       else if (e.isFile() && /^rollout-.*\.jsonl$/.test(e.name)) {
-        if (!notBeforeMs || statSync(p).birthtimeMs >= notBeforeMs) res.push(p);
+        if ((!notBeforeMs || statSync(p).birthtimeMs >= notBeforeMs) && out.length < MAX_ROLLOUT_FILES) out.push(p);
       }
     }
   } catch { /* ignore */ }
-  return res;
+  return out;
+}
+function readRolloutProbe(file, maxBytes = 8 * 1024 * 1024) {
+  try {
+    const st = statSync(file);
+    // Never load an unbounded provider transcript. For large files the tail
+    // contains the completion event; include a bounded head as well because
+    // the owned user prompt may precede a very large tool transcript.
+    if (st.size <= maxBytes) return readFileSync(file, 'utf8');
+    const half = Math.floor(maxBytes / 2), fd = openSync(file, 'r');
+    try {
+      const head = Buffer.alloc(half), tail = Buffer.alloc(maxBytes - half);
+      readSync(fd, head, 0, head.length, 0);
+      readSync(fd, tail, 0, tail.length, Math.max(0, st.size - tail.length));
+      return head.toString('utf8') + '\n' + tail.toString('utf8');
+    } finally { closeSync(fd); }
+  } catch { return null; }
 }
 // Find the session rollout belonging to a block by matching a distinctive slice of its prompt text.
 // The match token is globally unique per block (it contains a batch id + random suffix), so we do NOT
@@ -1547,18 +1578,20 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
       // event. Do one last ownership scan before taking the reclaim path so
       // typed quota/capacity diagnostics survive a fast self-close.
       for (const f of listRollouts(sessionDir(), notBeforeMs)) {
-        try { if (findOwnedTurn(readFileSync(f, "utf8"), matchKey).matched) return f; } catch { /* ignore */ }
+        const probe = readRolloutProbe(f);
+        if (probe !== null && findOwnedTurn(probe, matchKey).matched) return f;
       }
       return null;
     }
     for (const f of listRollouts(sessionDir(), notBeforeMs)) {
       if (seen.has(f)) continue;
       seen.add(f);
-      try {
-        if (findOwnedTurn(readFileSync(f, "utf8"), matchKey).matched) return f;
-      } catch { /* ignore */ }
+      const probe = readRolloutProbe(f);
+      if (probe !== null && findOwnedTurn(probe, matchKey).matched) return f;
     }
-    if (Date.now() - lastReset > 15000) { seen.clear(); lastReset = Date.now(); } // 周期重扫：防 rollout 先建后写 token 被永久错过
+    // Keep a bounded seen set and rescan only after a long TTL. Clearing every
+    // 15 seconds allowed the same multi-hundred-MB rollout to be reloaded.
+    if (seen.size > 512 || Date.now() - lastReset > 120000) { seen.clear(); lastReset = Date.now(); }
     await new Promise((r) => setTimeout(r, 1000));
   }
   return null;
@@ -1570,7 +1603,7 @@ async function waitForSessionFile(matchKey, timeoutMs, exitMarkerFile) {
 async function waitTaskComplete(file, timeoutMs, exitMarkerFile, matchToken, pidf) {
   const start = Date.now();
   let ownerTurnId = "";
-  try { ownerTurnId = findOwnedTurn(readFileSync(file, "utf8"), matchToken).turnId; } catch { /* unreadable rollout remains unverified */ }
+  try { const probe = readRolloutProbe(file); ownerTurnId = probe === null ? "" : findOwnedTurn(probe, matchToken).turnId; } catch { /* unreadable rollout remains unverified */ }
   while (Date.now() - start < timeoutMs) {
     // 根治 run 卡死：窗（launcher 进程）已死 = 该块执行结束。用户方案=完成与否由主控关窗后按任务 prompt
     // 核对真实落盘（零报告原则），父进程绝不因"窗未写 result 汇报 / rollout 无 task_complete"而无限等待。
@@ -1791,7 +1824,8 @@ async function waitForReportText(matchKey, exitMarkerFile, timeoutMs) {
       if (seen.get(f) === size) continue;
       seen.set(f, size);
       try {
-        if (findOwnedTurn(readFileSync(f, "utf8"), matchKey).matched) {
+        const probe = readRolloutProbe(f);
+        if (probe !== null && findOwnedTurn(probe, matchKey).matched) {
           const t = extractOwnResult(f, matchKey);
           if (t) return t;
         }
@@ -2399,10 +2433,10 @@ export async function main() {
     const requestedMode=resolveExecutionMode('',process.env);
     const executionMode=requestedMode==='headless'&&APPROVAL!=='never'?'visible':requestedMode;
     const visible=executionMode==='visible';
-    console.log(JSON.stringify({ agent: AGENT.agent, cli: CODEX, workspace: WORKSPACE,
-      stateDir: STATE_DIR, executionMode, terminal: visible?(TUI_MODE==='wt'&&wtAvailable() ? "wt" : "conhost"):null,
+    console.log(JSON.stringify({ agent: AGENT.agent, cli: diagnosticPath(CODEX), workspace: diagnosticPath(WORKSPACE),
+      stateDir: diagnosticPath(STATE_DIR), executionMode, terminal: visible?(TUI_MODE==='wt'&&wtAvailable() ? "wt" : "conhost"):null,
       windowActivation: visible?(TUI_MODE==='wt'&&wtAvailable() ? 'terminal-managed' : 'no-activate'):'none',
-      args: POLICY_ERROR?null:(visible?AGENT_ARGS_LIST:buildExecArgs(AGENT_ARGS_LIST)),
+       args: POLICY_ERROR?null:(visible?AGENT_ARGS_LIST:buildExecArgs(AGENT_ARGS_LIST)).map(diagnosticArg),
        ...(POLICY_ERROR?{policyError:POLICY_ERROR.message}:{}),
        ...(executionMode!==requestedMode?{modeReason:'headless cannot prompt for approval; using visible interactive mode'}:{}),
        interactiveOutput: visible?'inherited':'jsonl' }, null, 2));
@@ -2432,7 +2466,15 @@ export async function main() {
     const title = process.argv[3] || "codex-task";
     let promptContent = process.argv.slice(4).join(" ");
     const probablyFile = process.argv[4];
-    if (probablyFile && existsSync(probablyFile) && statSync(probablyFile).isFile()) promptContent = readFileSync(probablyFile, "utf8");
+    if (probablyFile && existsSync(probablyFile) && statSync(probablyFile).isFile()) {
+      // A prompt file is an explicit data boundary. Never read an arbitrary
+      // local file into a provider request; require physical containment under
+      // the initiating workspace and reject reparse aliases.
+      const promptFile = path.resolve(WORKSPACE, probablyFile);
+      assertNoReparsePoints(promptFile, 'spawn prompt file');
+      if (!physicallySameOrChild(WORKSPACE, promptFile)) throw new Error('SPAWN_PROMPT_FILE_OUTSIDE_WORKSPACE: ' + promptFile);
+      promptContent = readFileSync(promptFile, "utf8");
+    }
     const rid = Date.now().toString(36);
     const trackedPrompt = promptContent + "\n\n【本块唯一标识】spawn-" + rid + (AGENT.agent==='pi'?"\n完成后最后只输出 __ORCH_DONE__ spawn-"+rid:"\n（最终汇报请以「【本块唯一标识】spawn-" + rid + " 完成」开头，并说明本块完成情况）");
     const stok = "spawn-" + rid;
@@ -2466,7 +2508,7 @@ export async function main() {
       return;
     }
     commitReservation(claim.id, readPidFile(pidf) || 0);
-    console.log("write launcher -> " + lp);
+    console.log("write launcher -> " + diagnosticPath(lp));
     console.log("spawned tracked TUI window, polling for completion...");
     const matchToken = "【本块唯一标识】spawn-" + rid;
     const sessionFile = AGENT.agent==='pi'?rf:await waitForSessionFile(matchToken, 120000, rf);

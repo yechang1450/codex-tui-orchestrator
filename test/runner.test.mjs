@@ -76,6 +76,6 @@ test('failed prerequisite retains both original tasks and never starts its depen
   assert.equal(goal.status,'failed');
   assert.deepEqual(goal.tasks.map(t=>t.id),['T001','T002']);
   await assert.rejects(()=>runWindows('执行甲',hooks,{workspace,capacity:8,runId:'failure'}),/already exists/);
-  assert.throws(()=>verifyRun(workspace,'other-run'),/ENOENT/);
+  assert.throws(()=>verifyRun(workspace,'other-run'),/Run ledger not found/);
  }finally{await new Promise(r=>setTimeout(r,500));fs.rmSync(workspace,{recursive:true,force:true});}
 });

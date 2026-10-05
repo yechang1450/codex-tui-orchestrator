@@ -13,12 +13,25 @@ import {supervise} from '../scripts/supervise.mjs';
 
 const TEST_TEMP_ROOT = path.join(process.cwd(), 'temp', 'supervisor-tests');
 const ORIGINAL_CODEX_HOME=process.env.CODEX_HOME;
+const ORIGINAL_THREAD_ID=process.env.CODEX_THREAD_ID, ORIGINAL_SESSION_ID=process.env.CODEX_SESSION_ID;
+const ORIGINAL_SANDBOX=process.env.ORCH_SANDBOX, ORIGINAL_APPROVAL=process.env.ORCH_APPROVAL;
 process.env.CODEX_HOME=path.join(TEST_TEMP_ROOT,'controller-home');
+// These unit tests intentionally model a standalone restricted initiator. Do
+// not inherit the surrounding desktop turn's thread identity or broad policy.
+delete process.env.CODEX_THREAD_ID;delete process.env.CODEX_SESSION_ID;
+process.env.ORCH_SANDBOX='workspace-write';process.env.ORCH_APPROVAL='never';
 const makeWorkspace = prefix => {
   fs.mkdirSync(TEST_TEMP_ROOT, {recursive: true});
   return fs.mkdtempSync(path.join(TEST_TEMP_ROOT, prefix));
 };
-after(() => {if(ORIGINAL_CODEX_HOME===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=ORIGINAL_CODEX_HOME;fs.rmSync(TEST_TEMP_ROOT, {recursive: true, force: true});});
+after(() => {
+ if(ORIGINAL_CODEX_HOME===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=ORIGINAL_CODEX_HOME;
+ if(ORIGINAL_THREAD_ID===undefined)delete process.env.CODEX_THREAD_ID;else process.env.CODEX_THREAD_ID=ORIGINAL_THREAD_ID;
+ if(ORIGINAL_SESSION_ID===undefined)delete process.env.CODEX_SESSION_ID;else process.env.CODEX_SESSION_ID=ORIGINAL_SESSION_ID;
+ if(ORIGINAL_SANDBOX===undefined)delete process.env.ORCH_SANDBOX;else process.env.ORCH_SANDBOX=ORIGINAL_SANDBOX;
+ if(ORIGINAL_APPROVAL===undefined)delete process.env.ORCH_APPROVAL;else process.env.ORCH_APPROVAL=ORIGINAL_APPROVAL;
+ fs.rmSync(TEST_TEMP_ROOT, {recursive: true, force: true});
+});
 
 test('resume rejects a valid-shaped but altered prompt and thread identity',async()=>{
   const workspace=makeWorkspace('tampered-resume-'),runId='tampered';
@@ -113,6 +126,27 @@ test('resumes the same thread after a transient stream failure and persists comp
   } finally {
     fs.rmSync(workspace, {recursive: true, force: true});
   }
+});
+
+test('does not retry after an SDK file-change event even when the stream then fails transiently', async () => {
+  const workspace=makeWorkspace('file-change-');let resumeCalls=0;
+  const codex={
+    startThread(){return {id:'thread-file-change',async runStreamed(){return {events:(async function*(){yield {type:'item.started',item:{type:'file_change'}};throw new Error('ECONNRESET');})()};}};},
+    resumeThread(){resumeCalls++;throw new Error('must not replay a file change');},
+  };
+  try {
+    await assert.rejects(()=>supervise({runId:'file-change',workspace,prompt:'edit file',maxAttempts:3,backoffMs:0,backoffMaxMs:0},{codexFactory:()=>codex,sleep:async()=>{}}),/ECONNRESET/);
+    assert.equal(resumeCalls,0);
+    const saved=JSON.parse(fs.readFileSync(path.join(workspace,'temp','orchestrator','supervisor','runs','file-change','state.json'),'utf8'));
+    assert.equal(saved.status,'failed');assert.equal(saved.attempts,1);assert.equal(saved.history[0].retryable,false);
+  } finally {fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
+test('rejects a caller-supplied supervisor policy that differs from the initiating turn', async () => {
+  const workspace=makeWorkspace('policy-override-');
+  try {
+    await assert.rejects(()=>supervise({runId:'policy-override',workspace,prompt:'do work',policy:{sandbox:'danger-full-access',approval:'never'},maxAttempts:1,backoffMs:0,backoffMaxMs:0},{codexFactory:()=>{throw new Error('must not construct SDK');}}),/policy must match/);
+  } finally {fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
 test('does not treat a stream that ends without turn.completed as success', async () => {

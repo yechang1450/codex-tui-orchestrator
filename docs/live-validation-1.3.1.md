@@ -1,6 +1,6 @@
 # Core 1.3.1 live validation
 
-The retained live probe was run from `D:\` on 2026-09-07 with Node 22.23.2, Codex CLI 0.153.4 and the default Windows Terminal launcher. It used core hash `a48a...`, before the later focus guard; [machine-readable evidence](../test/live-current-1.3.1.json) records that mismatch explicitly. The separate current-hash focus observation is in [1.3.1 focus evidence](../test/inactive-window-validation-1.3.1.json).
+The retained live probe was run from `[WORKSPACE]\` on 2026-09-07 with Node 22.23.2, Codex CLI 0.153.4 and the default Windows Terminal launcher. It used core hash `a48a...`, before the later focus guard; [machine-readable evidence](../test/live-current-1.3.1.json) records that mismatch explicitly. The separate current-hash focus observation is in [1.3.1 focus evidence](../test/inactive-window-validation-1.3.1.json).
 
 The scheduler calculated a capacity of eight and admitted eight visible Windows Terminal launchers. Process sampling observed eight live Codex descendants at the peak, so the admission limit was respected. The plan contained nine tasks and compacted them into eight blocks, with the ninth task retained in the eighth serial block.
 

@@ -78,6 +78,10 @@ function fileIdentity(file) {
 const TRUSTED_CLI_CERTIFICATES = Object.freeze([
   'DB9831002B26D78F14E07806F595C6A429E9B6E9',
   '41977145C93B7A096405E230DDCC8FED1AB82AC3',
+  // OpenAI's current Windows desktop CLI signing certificate. The Authenticode
+  // API validates its timestamp and trust chain; pinning prevents accepting an
+  // unrelated publisher with a locally trusted certificate.
+  'AAB04F57830B69182775AB3CEB6CE37981FE71C5',
 ]);
 const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine($s.SignerCertificate.Thumbprint)';
 
@@ -85,7 +89,13 @@ export function verifyAuthenticodePublisher(file, env = process.env, spawn = spa
   if (process.platform !== 'win32') return true;
   try {
     if (!fs.statSync(file).isFile()) return false;
-    const systemRoot = env.SystemRoot || env.WINDIR || 'C:\\Windows';
+    // The verifier itself is security-sensitive.  Never let a caller-supplied
+    // child environment select a different PowerShell or module tree: the
+    // parent process' host environment is the only trusted system-root source.
+    const trustedRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    const suppliedRoot = env.SystemRoot || env.WINDIR;
+    if (suppliedRoot && path.win32.normalize(suppliedRoot).toLowerCase() !== path.win32.normalize(trustedRoot).toLowerCase()) return false;
+    const systemRoot = trustedRoot;
     const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     const systemModules = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
     const result = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', AUTHENTICODE_SCRIPT], {
@@ -254,6 +264,27 @@ function verifiedPrivateCodexCandidate(file,env,{verifyBinary=pinnedBinaryHash,v
     }
   }catch{return false;}
   return false;
+}
+
+// Revalidate the exact selected executable at the controller-to-child launch
+// boundary.  Resolution returns a path string, so this check closes the
+// verification-to-use gap as tightly as the platform API permits and fails
+// closed if the file or its authenticated package changed meanwhile.
+export function revalidateHostExecutable(config, env = process.env) {
+  const file = config?.bin;
+  if (!file || !fileIdentity(file)) throw new Error('CLI_UNTRUSTED: selected executable is missing or changed');
+  const explicit=String(env.ORCH_CLI || env.CODEX_EXE || '').trim();
+  if(explicit && env.ORCH_ALLOW_UNVERIFIED_CLI==='1' && path.resolve(file).toLowerCase()===path.resolve(explicit).toLowerCase()){
+    assertNoReparsePoints(file,'explicit Codex CLI');
+    if(!fs.statSync(file).isFile())throw new Error('CLI_UNTRUSTED: explicit executable is not a regular file');
+    return file;
+  }
+  if (isPrivateCliCandidate(file, env)) {
+    if (!verifiedPrivateCodexCandidate(file, env)) throw new Error('CLI_UNTRUSTED: private executable failed final integrity verification');
+    return file;
+  }
+  if (!verifyAuthenticodePublisher(file, env)) throw new Error('CLI_UNTRUSTED: executable failed final publisher verification');
+  return file;
 }
 
 /** Install a native Codex package without logging npm output or credentials. */

@@ -59,6 +59,17 @@ function nativeConfigPolicy(home) {
 const SANDBOX_MODES=new Set(['read-only','workspace-write','danger-full-access']);
 const APPROVAL_MODES=new Set(['never','on-request']);
 
+// A rollout record is workspace-controlled input.  A broad policy is only
+// trusted when the Codex host also supplied its immutable permission profile
+// and workspace-verifying identity for this process.
+function assertBroadPolicyHostBinding(sandbox,approval,env) {
+  if(sandbox!=='danger-full-access'&&approval!=='never')return;
+  const profile=String(env.CODEX_PERMISSION_PROFILE||'').replace(/^:/,'').trim();
+  const identity=String(env.CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY||'').trim();
+  if(profile!=='danger-full-access'||!identity||/\s/.test(identity)||identity.length>512)
+    throw new Error('INITIATOR_POLICY_UNAVAILABLE: broad policy host binding missing');
+}
+
 export function resolveInitiatorPolicy(env=process.env) {
   const id=env.CODEX_THREAD_ID||env.CODEX_SESSION_ID||'';
   const home=env.CODEX_HOME||path.join(os.homedir(),'.codex');
@@ -74,12 +85,22 @@ export function resolveInitiatorPolicy(env=process.env) {
     approval=env.ORCH_APPROVAL||native.approval_policy;
   }
   if(!SANDBOX_MODES.has(sandbox)||!APPROVAL_MODES.has(approval))throw new Error('INITIATOR_POLICY_UNAVAILABLE: explicit sandbox and approval policy required');
+  if(id)assertBroadPolicyHostBinding(sandbox,approval,env);
   return {sandbox,approval};
 }
 
 export function assertInitiatorWorkspace(workspace,policy,env=process.env) {
   const id=env.CODEX_THREAD_ID||env.CODEX_SESSION_ID||'';
-  if(!id||policy.sandbox==='danger-full-access')return;
+  if(!id)return;
+  if(policy.sandbox==='danger-full-access') {
+    const identity=String(env.CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY||'').trim();
+    const boundWorkspace=String(env.WORKSPACE_DIR||'').trim();
+    if(!identity||/\s/.test(identity)||identity.length>512||!boundWorkspace)
+      throw new Error('INITIATOR_POLICY_UNAVAILABLE: broad policy workspace binding missing');
+    const canonical=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
+    if(canonical(workspace)!==canonical(boundWorkspace))throw new Error('INITIATOR_POLICY_UNAVAILABLE: workspace differs from host-bound initiating workspace');
+    return;
+  }
   if(!/^[a-f0-9-]{36}$/i.test(id))throw new Error('INITIATOR_POLICY_UNAVAILABLE: invalid Codex thread identity');
   const home=env.CODEX_HOME||path.join(os.homedir(),'.codex');
   const context=latestContext(sessionFile(path.join(home,'sessions'),id));

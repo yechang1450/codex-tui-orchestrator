@@ -28,6 +28,7 @@ import {fileURLToPath} from 'node:url';
 import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {publishDist} from './publish-dist.mjs';
 import {cliCandidates, resolveHost, verifyAuthenticodePublisher} from './core/host-cli.mjs';
+import {assertTrustedNpm} from './npm-cli.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
@@ -45,6 +46,7 @@ export function parseArgs(argv) {
     skipDist: false,
     verifySkills: false,
     strictSkills: false,
+    localDevelopment: false,
     setSource: false,
     timeoutMs: 15 * 60 * 1000,
     json: false,
@@ -59,6 +61,7 @@ export function parseArgs(argv) {
     else if (arg === '--skip-dist') out.skipDist = true;
     else if (arg === '--verify-skills') out.verifySkills = true;
     else if (arg === '--strict-skills') { out.verifySkills = true; out.strictSkills = true; }
+    else if (arg === '--local-development') out.localDevelopment = true;
     else if (arg === '--set-source') out.setSource = true;
     else if (arg === '--timeout-ms') { out.timeoutMs = Number(requireValue(argv, ++i, '--timeout-ms')); if (!Number.isFinite(out.timeoutMs) || out.timeoutMs <= 0) throw new Error('--timeout-ms must be a positive number'); }
     else if (arg === '--json') out.json = true;
@@ -96,12 +99,8 @@ export function pickCodexCli({env = process.env} = {}) {
 }
 
 function requireTrustedInstallRuntime(env = process.env) {
-  if (process.platform !== 'win32') return;
-  const npmEntry = String(env.npm_execpath || '');
-  if ((env.ORCH_NPM_TRUSTED !== '1' && env.ORCH_ALLOW_UNVERIFIED_NPM !== '1')
-      || !path.isAbsolute(npmEntry) || !fs.existsSync(npmEntry) || !fs.statSync(npmEntry).isFile()) {
-    throw new Error('INSTALL_RUNTIME_UNTRUSTED: run installation through scripts/bootstrap.ps1 so Node/npm are checked before use.');
-  }
+  try { assertTrustedNpm(env); }
+  catch (error) { throw new Error('INSTALL_RUNTIME_UNTRUSTED: ' + (error?.message || error)); }
 }
 
 export function resolveInstallCli({candidate = null, env = process.env, hostOptions = {}} = {}) {
@@ -236,6 +235,27 @@ export function checkInstall(options = {}) {
   const warnings = [];
   const nameProblem = manifestNameProblem(pluginName);
   if (nameProblem) problems.push({step: 'manifest_name', status: 'invalid', reason: nameProblem});
+  // Do not continue into cache discovery when the manifest name is malformed.
+  // A path traversal-shaped name can otherwise influence path.join before the
+  // later registration check notices the invalid component.
+  if (nameProblem) {
+    return {
+      ok: false,
+      status: 'incomplete',
+      pluginName,
+      version: manifest.version,
+      marketplaceName: null,
+      marketplacePath,
+      codexHome,
+      distRoot: configuredDistRoot,
+      environment: {platform: process.platform, node: process.version, hostCli: options.codexCli || null},
+      registration: {status: 'invalid', sourceKind: null},
+      cache: null,
+      skills: null,
+      problems,
+      warnings,
+    };
+  }
 
   const registration = inspectRegistration({pluginPath, marketplacePath, marketplaceRoot, distRoot});
   if (registration.status !== 'matched') {
@@ -373,6 +393,13 @@ export function installPlugin(options = {}) {
   const marketplaceRoot = path.resolve(options.marketplaceRoot || os.homedir());
   const homeDir = options.homeDir || os.homedir();
   const distRoot = options.distRoot ? path.resolve(options.distRoot) : null;
+  // A live checkout can contain .git/temp/test receipts and is not a public
+  // publication source. Keep checkout installs available for an explicitly
+  // local development invocation only; release installs must use clean dist.
+  const checkoutDev = options.localDevelopment === true || process.env.ORCH_LOCAL_DEVELOPMENT === '1';
+  if ((options.source || 'checkout') === 'checkout' && !checkoutDev) {
+    throw new Error('CHECKOUT_INSTALL_REQUIRES_LOCAL_DEVELOPMENT: use --source dist for a clean package, or pass --local-development for an explicit local-only install');
+  }
   const codexCli = resolveInstallCli({candidate: options.codexCli});
   const steps = [];
 
@@ -463,7 +490,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
   try {
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
-      console.log('Usage: install-plugin.mjs [--check] [--install] [--pull] [--set-source] [--verify-skills] [--strict-skills] [--json] [--quiet]');
+      console.log('Usage: install-plugin.mjs [--check] [--install] [--pull] [--set-source] [--verify-skills] [--strict-skills] [--local-development] [--json] [--quiet]');
       console.log('       [--source checkout|dist] [--timeout-ms ms] [--plugin path] [--marketplace path] [--marketplace-root path] [--dist-root path] [--home path]');
       console.log('On Windows use scripts/bootstrap.ps1 -Action install -Arguments @(...) for installs; direct --check is read-only.');
       process.exit(0);

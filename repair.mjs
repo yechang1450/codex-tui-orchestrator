@@ -64,6 +64,14 @@ const DEBRIS_DIRS = new Set([
 
 const DEBRIS_EXACT = new Set(['.enforce-state.json', '.agent-cache.json', '.DS_Store', 'Thumbs.db']);
 const DEBRIS_RE = /\.(part|tmp|pyc|pyo|crdownload|partial|swp)$/i;
+// Publication is a sealed, reviewed inventory.  Ignore rules alone are not a
+// publication boundary: an untracked .env or receipt can still be copied.
+const SENSITIVE_PUBLIC_NAME = /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|id_[a-z0-9_-]+|credentials?(?:\..*)?|secrets?(?:\..*)?|.*\.(?:pem|key|p12|pfx|log))$/i;
+// Historical validation and policy pages are public documentation.  Only
+// machine-readable receipts and explicitly private artifacts are barred here;
+// a broad filename rule would make legitimate docs such as rc-validation.md
+// impossible to publish.
+const PRIVATE_EVIDENCE_NAME = /^(?:.*(?:receipt|report|evidence|full-audit|readiness)[^/]*\.(?:json|jsonl|log|txt)|(?:private[-_].*)\.(?:json|jsonl|log|txt))$/i;
 
 // Development-only suites and CI metadata stay in the source checkout. They
 // are not runtime plugin content and must not be copied into an installed
@@ -114,6 +122,36 @@ function isDebrisRel(rel) {
   if (DEBRIS_EXACT.has(base)) return true;
   if (DEBRIS_RE.test(base)) return true;
   return false;
+}
+
+function publicationManifest(root = __dirname) {
+  try {
+    const value = JSON.parse(fs.readFileSync(path.join(root, 'release.json'), 'utf8'));
+    if (value?.schema !== 2 || !value.runtimeFiles || typeof value.runtimeFiles !== 'object') {
+      throw new Error('RELEASE_SCHEMA_UNSUPPORTED: publication requires a schema 2 runtime inventory');
+    }
+    return new Set(['release.json', ...Object.keys(value.runtimeFiles).map(String)]);
+  } catch (error) {
+    throw new Error(`PUBLICATION_MANIFEST_INVALID: ${error?.message || error}`);
+  }
+}
+
+function assertPublicPath(rel) {
+  const base = path.basename(rel);
+  if (SENSITIVE_PUBLIC_NAME.test(base) || PRIVATE_EVIDENCE_NAME.test(base)) {
+    throw new Error(`PUBLICATION_SENSITIVE_FILE: refusing to publish ${rel}`);
+  }
+}
+
+function publicationFiles(root = __dirname) {
+  const expected = publicationManifest(root);
+  const files = listFiles(root).filter(rel => !isDebrisRel(rel));
+  const unexpected = files.filter(rel => !expected.has(rel.replaceAll(path.sep, '/')) && !expected.has(rel));
+  if (unexpected.length) {
+    throw new Error(`PUBLICATION_UNLISTED_FILE: release manifest does not authorize ${unexpected.slice(0, 12).join(', ')}${unexpected.length > 12 ? ` (+${unexpected.length - 12} more)` : ''}`);
+  }
+  for (const rel of files) assertPublicPath(rel);
+  return files;
 }
 
 function hasAny(relRoot) {
@@ -246,8 +284,8 @@ function publish(targetRoot) {
     staging=fs.mkdtempSync(path.join(path.dirname(dest),'.'+SKILL+'-staging-'));
     console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
     let copied = 0;
-    for (const rel of listFiles(__dirname)) {
-      if (isDebrisRel(rel)) continue;
+    const inventory = publicationFiles(__dirname);
+    for (const rel of inventory) {
       const srcAbs = path.join(__dirname, rel);
       const dstAbs = path.join(staging, rel);
       fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
@@ -255,9 +293,9 @@ function publish(targetRoot) {
       fs.copyFileSync(srcAbs, dstAbs);
       copied++;
     }
-    verifyRelease(staging);
     const missingStaged = requiredPublishedFiles(staging).filter(name => !isRegularFile(path.join(staging, name)));
     if(missingStaged.length || !findSkillFile(staging))throw new Error('Staged package missing required: '+(missingStaged.length?missingStaged.join(', '):'skill SKILL.md'));
+    verifyRelease(staging);
     if(fs.existsSync(dest))throw new Error('Publish target appeared during publication');
     renamePublishedStaging(staging,dest);staging=undefined;
     console.log(`[${SKILL}] published ${copied} file(s) to ${dest}.`);

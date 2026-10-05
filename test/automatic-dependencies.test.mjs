@@ -1,9 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {ensureRuntimeDependencies,installLockedDependencies} from '../scripts/entry-bootstrap.mjs';
 const missing={ok:false,code:'RELEASE_DEPENDENCY_MISSING',message:'missing locked SDK'};
-const trustedNpm={ORCH_NPM_TRUSTED:'1',npm_execpath:fileURLToPath(import.meta.url)};
+const npmEntry=fileURLToPath(import.meta.url);
+const npmDigest=crypto.createHash('sha256').update(fs.readFileSync(npmEntry)).digest('hex');
+const trustedNpm={ORCH_NPM_TRUSTED:'1',npm_execpath:npmEntry,ORCH_NPM_TRUSTED_PATH:npmEntry,ORCH_NPM_TRUSTED_SHA256:npmDigest};
 test('first use installs missing SDK once and verifies before continuing',async()=>{
   let calls=0,installed=0;
   const result=await ensureRuntimeDependencies({env:trustedNpm,verify:async()=>++calls===1?missing:{ok:true},install:async()=>installed++});

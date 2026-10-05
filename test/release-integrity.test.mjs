@@ -27,7 +27,7 @@ test('release verification rejects changed and injected core files',()=>{
  const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-test-'));
  try{const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});
  fs.writeFileSync(path.join(core,'contracts.mjs'),'original');fs.writeFileSync(path.join(core,'orchestrate-sdk.mjs'),'entry');
- fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:1,coreVersion:'test',files:coreInventory(root)}));
+ fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion:'test',files:coreInventory(root),runtimeFiles:runtimeInventory(root)}));
  assert.equal(verifyRelease(root).files,2);fs.writeFileSync(path.join(core,'contracts.mjs'),'changed');assert.throws(()=>verifyRelease(root),/INTEGRITY_FAILED/);
  fs.writeFileSync(path.join(core,'contracts.mjs'),'original');fs.writeFileSync(path.join(core,'injected.mjs'),'extra');assert.throws(()=>verifyRelease(root),/INTEGRITY_FAILED/);
  }finally{fs.rmSync(root,{recursive:true,force:true});}

@@ -32,6 +32,21 @@ function Assert-OrchSafePath {
     return $full
 }
 
+function Assert-OrchRuntimeIdentity {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$RuntimeHome)
+    $full = Assert-OrchSafePath $Path
+    $homeFull = (Assert-OrchSafePath $RuntimeHome).TrimEnd('\') + '\'
+    if (-not $full.StartsWith($homeFull, [StringComparison]::OrdinalIgnoreCase) -and
+        $full.TrimEnd('\') -ne $RuntimeHome.TrimEnd('\')) { throw 'RUNTIME_PATH: path escaped the private runtime home.' }
+    # Missing staging descendants are expected before extraction.  Test-Path
+    # avoids PowerShell's ItemNotFoundErrorRecord, which is not reliably caught
+    # as an IO exception on Windows PowerShell 5.1.
+    if (-not (Test-Path -LiteralPath $full)) { return $full }
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'RUNTIME_REPARSE_PATH: runtime identity changed to a reparse point.' }
+    return $item.FullName
+}
+
 function Remove-OrchOwnedDirectory {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$RuntimeHome)
     $homeFull = (Assert-OrchSafePath $RuntimeHome).TrimEnd('\') + '\'
@@ -266,6 +281,7 @@ function Install-OrchNodeArchive {
             throw 'NODE_RUNTIME_INVALID: existing private runtime failed its probe; repair the named runtime directory before retrying.'
         }
         [void][IO.Directory]::CreateDirectory($stage)
+        [void](Assert-OrchRuntimeIdentity -Path $stage -RuntimeHome $RuntimeHome)
         Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $zip = [IO.Compression.ZipFile]::OpenRead($Archive)
@@ -281,14 +297,20 @@ function Install-OrchNodeArchive {
                 $destination = [IO.Path]::GetFullPath((Join-Path $stage $name))
                 if (-not $destination.StartsWith($stage.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'NODE_ARCHIVE_PATH: member escapes staging directory.' }
                 [void](Assert-OrchSafePath $destination)
+                [void](Assert-OrchRuntimeIdentity -Path $stage -RuntimeHome $RuntimeHome)
                 if ($name.EndsWith('/')) { [void][IO.Directory]::CreateDirectory($destination); continue }
                 [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+                [void](Assert-OrchRuntimeIdentity -Path ([IO.Path]::GetDirectoryName($destination)) -RuntimeHome $RuntimeHome)
                 [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+                [void](Assert-OrchRuntimeIdentity -Path $destination -RuntimeHome $RuntimeHome)
             }
         } finally { $zip.Dispose() }
         $extracted = Join-Path $stage $DirectoryName
+        [void](Assert-OrchRuntimeIdentity -Path $stage -RuntimeHome $RuntimeHome)
+        [void](Assert-OrchRuntimeIdentity -Path $extracted -RuntimeHome $RuntimeHome)
         if (-not (Test-Path -LiteralPath (Join-Path $extracted 'node.exe') -PathType Leaf)) { throw 'NODE_ARCHIVE_INVALID: expected node.exe is absent.' }
         [void](Assert-OrchSafePath $target)
+        [void](Assert-OrchRuntimeIdentity -Path $target -RuntimeHome $RuntimeHome)
         Move-Item -LiteralPath $extracted -Destination $target -ErrorAction Stop
         return $target
     } finally {

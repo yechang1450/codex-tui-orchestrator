@@ -16,10 +16,10 @@ export function coreInventory(pluginRoot){
 }
 export function verifyRelease(pluginRoot=root){
  const manifest=JSON.parse(fs.readFileSync(path.join(pluginRoot,'release.json'),'utf8'));
- if(![1,2].includes(manifest.schema))throw new Error('RELEASE_SCHEMA_UNSUPPORTED');
+ if(manifest.schema!==2)throw new Error('RELEASE_SCHEMA_UNSUPPORTED: current releases require schema 2');
  const current=coreInventory(pluginRoot);
  if(JSON.stringify(current)!==JSON.stringify(manifest.files))throw new Error('RELEASE_INTEGRITY_FAILED: core differs from the verified release; reinstall the release');
- if(manifest.schema===2&&JSON.stringify(runtimeInventory(pluginRoot))!==JSON.stringify(manifest.runtimeFiles))throw new Error('RELEASE_INTEGRITY_FAILED: runtime differs from the verified release');
+ if(JSON.stringify(runtimeInventory(pluginRoot))!==JSON.stringify(manifest.runtimeFiles))throw new Error('RELEASE_INTEGRITY_FAILED: runtime differs from the verified release');
  return {schema:manifest.schema,coreVersion:manifest.coreVersion,files:Object.keys(current).length,runtimeFiles:Object.keys(manifest.runtimeFiles||{}).length};
 }
 export function runtimeInventory(pluginRoot){
@@ -33,10 +33,15 @@ export function runtimeInventory(pluginRoot){
   }
   else if(stat.isFile())files[rel.replaceAll('\\','/')]=crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
  }
- for(const rel of ['.codex-plugin','repair.mjs','scripts','skills'])walk(rel);
- // Hooks execute before the model's first tool call and are part of the same
- // release boundary. Older packages without hooks remain readable.
- if(fs.existsSync(path.join(pluginRoot,'hooks')))walk('hooks');
+ // The manifest itself is intentionally excluded to avoid a self-referential
+ // hash. Every other shipped instruction and metadata file is covered.
+  for(const rel of ['.codex-plugin','repair.mjs','scripts','skills','hooks','docs','agents','assets','.gitattributes','.gitignore']){
+  if(fs.existsSync(path.join(pluginRoot,rel)))walk(rel);
+ }
+ for(const name of ['SKILL.md','README.md','README-zh.md','CHANGELOG.md','LICENSE','LICENSE-zh.md','SECURITY.md','CONTRIBUTING.md','CODE_OF_CONDUCT.md']){
+  const file=path.join(pluginRoot,name);
+  if(fs.existsSync(file))walk(name);
+ }
  return files;
 }
 function assertCanonicalTextLineEndings(pluginRoot){

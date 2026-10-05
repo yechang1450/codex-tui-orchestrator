@@ -161,4 +161,3 @@
 - [x] The historical plugin ID remains installable while Plugin Eval routing improves.
 - [x] All retained artifacts live under the project/workspace family and no active run is removed.
 - [x] The final report states verified facts and unverified boundaries separately.
-

@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {pathToFileURL} from 'node:url';
-import {atomicJson,processSnapshot,sameProcess} from './leases.mjs';
+import {atomicJson,processSnapshot,sameProcess,trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment,readUtf8Bounded} from './leases.mjs';
 import {isCapacityError,isProviderQuotaError} from './retry-policy.mjs';
 import {assertControllerPath,controllerStateDir} from './controller-state.mjs';
 import {assertNoReparsePoints,physicallySameOrChild,physicalPathIdentity} from './runtime-context.mjs';
@@ -12,6 +12,12 @@ const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const MAX_STREAM_BYTES=64*1024*1024;
 const MAX_EVENT_LINE_BYTES=4*1024*1024;
 const UNVERIFIED_CHILD_GRACE_MS=2000;
+const IDENTITY_CHECK_TIMEOUT_MS=5000;
+function redactSensitiveText(value) {
+  return String(value??'').slice(0,MAX_STREAM_BYTES)
+    .replace(/(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|authorization)\s*([:=])\s*[^\s,;]+/gi,'$1$2[REDACTED]')
+    .replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+=*/gi,'Bearer [REDACTED]');
+}
 function tail(file){
   const fd=fs.openSync(file,'r');
   try{const length=fs.fstatSync(fd).size,buffer=Buffer.alloc(Math.min(length,16384));fs.readSync(fd,buffer,0,buffer.length,Math.max(0,length-buffer.length));return buffer.toString('utf8');}
@@ -27,8 +33,12 @@ function detachUnverifiedChild(child){
   try{child?.unref?.();}catch{}
 }
 export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unverifiedChildGraceMs=UNVERIFIED_CHILD_GRACE_MS}={}){
-  const config=JSON.parse(fs.readFileSync(configFile,'utf8'));
-  if(config.version!==1||!Array.isArray(config.args)||!config.runId||!config.token||!config.files||!Number.isFinite(config.timeoutMs)||config.timeoutMs<=0)throw new Error('Invalid headless attempt configuration');
+  const configText=readUtf8Bounded(configFile,'headless config');
+  const config=JSON.parse(configText||'');
+  if(config.version!==1||typeof config.cli!=='string'||!path.isAbsolute(config.cli)||!Array.isArray(config.args)||!config.runId||!config.token||!config.files||!Number.isFinite(config.timeoutMs)||config.timeoutMs<=0)throw new Error('Invalid headless attempt configuration');
+  assertNoReparsePoints(config.cli,'headless CLI');
+  const expectedCommandDigest=crypto.createHash('sha256').update(JSON.stringify({cli:config.cli,args:config.args,workspace:config.workspace,runId:config.runId,token:config.token,attemptFile:config.attemptFile,timeoutMs:config.timeoutMs})).digest('hex');
+  if(typeof config.commandDigest!=='string'||config.commandDigest!==expectedCommandDigest)throw new Error('Headless command binding mismatch');
   const lp=path.resolve(configFile),files=config.files;
   // The worker is launched from a controller-owned config. Re-derive every
   // sibling path from that config path before creating any file, so a
@@ -55,15 +65,21 @@ export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unv
     if(typeof config.attemptFile!=='string'||!physicallySameOrChild(config.workspace,config.attemptFile))throw new Error('Invalid headless attempt ledger binding');
     assertNoReparsePoints(config.attemptFile,'headless attempt ledger');
     let attempt;
-    try{attempt=JSON.parse(fs.readFileSync(config.attemptFile,'utf8').replace(/^\uFEFF/,''));}
+    try{attempt=JSON.parse((readUtf8Bounded(config.attemptFile,'headless attempt ledger')||'').replace(/^\uFEFF/,''));}
     catch(error){throw new Error('Invalid headless attempt ledger: '+(error?.message||error));}
     if(attempt?.runId!==config.runId||attempt?.token!==config.token)throw new Error('Headless attempt ledger identity mismatch');
   }
   const deadline=Date.now()+config.timeoutMs;
   const runtime={runId:config.runId,token:config.token,pid:process.pid,threadId:null,startedAt:Date.now()};
   const result={...runtime,done:false,exitCode:null,text:''};
-  fs.writeFileSync(files.pidf,String(process.pid),{flag:'wx'});
-  atomicJson(config.runtime,runtime);
+  try {
+    fs.writeFileSync(files.pidf,String(process.pid),{flag:'wx'});
+    atomicJson(config.runtime,runtime);
+  } catch(error) {
+    result.text=error?.message||String(error);result.endedAt=Date.now();
+    atomicJson(files.rf,result);
+    return result;
+  }
   while(!fs.existsSync(config.ready)){
     if(fs.existsSync(config.cancel)||Date.now()>=deadline){result.text='Cancelled before execution';result.endedAt=Date.now();atomicJson(files.rf,result);return result;}
     await pause(25);
@@ -99,7 +115,7 @@ export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unv
         // revalidated, refuse termination instead of racing PID reuse and
         // killing an unrelated same-user process. The durable result records
         // the refusal and the controller can reconcile the attempt.
-        const current=snapshot().get(child.pid);
+        const current=snapshot(IDENTITY_CHECK_TIMEOUT_MS).get(child.pid);
         if(!identity||!sameProcess(identity,current)){
           result.text=result.text||'Refused to terminate headless child because its process identity could not be revalidated';
           result.terminationRefused=true;
@@ -107,10 +123,18 @@ export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unv
           return;
         }
         stopping=true;
-        const killed=spawnSync('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore',shell:false});
+        const killed=spawnSync(trustedWindowsHelper('taskkill'),['/PID',String(child.pid),'/T','/F'],{windowsHide:true,stdio:'ignore',shell:false,cwd:trustedWindowsRoot(),env:controllerEnvironment()});
         if(killed.status!==0){
           result.text=result.text||'Refused to terminate headless child because taskkill did not confirm ownership';
           result.terminationRefused=true;
+        } else {
+          const after=snapshot(IDENTITY_CHECK_TIMEOUT_MS).get(child.pid);
+          result.terminationTarget=identity;
+          result.terminationVerified=!after||!sameProcess(identity,after);
+          if(!result.terminationVerified){
+            result.text=result.text||'Refused to confirm headless child termination after ownership check';
+            result.terminationRefused=true;
+          }
         }
       }catch{
         result.text=result.text||'Refused to terminate headless child because process identity inspection failed';
@@ -123,11 +147,11 @@ export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unv
   try{
     out=fs.openSync(files.stdout,'a');err=fs.openSync(files.stderr,'a');
     child=spawn(config.cli,[...config.args,'-'],{cwd:config.workspace,windowsHide:true,shell:false,stdio:['pipe','pipe','pipe'],
-      env:{...process.env,ORCH_EXECUTION:'1',ORCH_EXECUTION_MODE:'headless',ORCH_WINDOW:'1'}});
+      env:controllerEnvironment({ORCH_EXECUTION:'1',ORCH_EXECUTION_MODE:'headless',ORCH_WINDOW:'1'})});
     closed=new Promise(resolve=>{child.once('error',fault);child.once('close',(code,signal)=>resolve({code,signal}));});
     child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
     child.stdout.on('data',chunk=>{try{
-      const text=String(chunk),bytes=Buffer.byteLength(text,'utf8');
+      const text=redactSensitiveText(String(chunk)),bytes=Buffer.byteLength(text,'utf8');
       if(stdoutBytes+bytes>MAX_STREAM_BYTES)throw new Error('Headless stdout exceeded the 64 MiB safety limit');
       stdoutBytes+=bytes;fs.writeSync(out,text);buffer+=text;
       let n;while((n=buffer.indexOf('\n'))>=0){
@@ -138,14 +162,14 @@ export async function runHeadlessWorker(configFile,{snapshot=processSnapshot,unv
       if(Buffer.byteLength(buffer,'utf8')>MAX_EVENT_LINE_BYTES)throw new Error('Headless JSONL event exceeded the 4 MiB safety limit');
     }catch(error){fault(error);}});
     child.stderr.on('data',chunk=>{try{
-      const text=String(chunk),bytes=Buffer.byteLength(text,'utf8');
+      const text=redactSensitiveText(String(chunk)),bytes=Buffer.byteLength(text,'utf8');
       if(stderrBytes+bytes>MAX_STREAM_BYTES)throw new Error('Headless stderr exceeded the 64 MiB safety limit');
       stderrBytes+=bytes;fs.writeSync(err,text);
     }catch(error){fault(error);}});
     child.stdout.on('error',fault);child.stderr.on('error',fault);
     child.stdin.on('error',error=>{if(error.code!=='EPIPE')fault(error);});
-    child.stdin.end(fs.readFileSync(files.pf,'utf8'));
-    if(process.platform==='win32'&&child.pid)identity=snapshot().get(child.pid);
+    child.stdin.end(readUtf8Bounded(files.pf,'headless prompt')||'');
+    if(process.platform==='win32'&&child.pid)identity=snapshot(IDENTITY_CHECK_TIMEOUT_MS).get(child.pid);
     runtime.childPid=child.pid;runtime.childIdentity=identity;atomicJson(config.runtime,runtime);
     timer=setInterval(()=>{try{if(fs.existsSync(config.cancel)||Date.now()>=deadline)stop();}catch(error){fault(error);}},100);
     const {code,signal}=await closed;if(!failed&&buffer.trim())eventLine(buffer);

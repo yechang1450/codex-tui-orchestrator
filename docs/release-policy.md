@@ -4,7 +4,7 @@ The dedicated Codex plugin ships a physical, versioned core snapshot. Its instal
 
 Plugin package versions use standard `MAJOR.MINOR.PATCH-rc.N` form. Run `npm --prefix scripts run version:next` for each subsequent release candidate; it increments only `N` and updates `.codex-plugin/plugin.json`, `scripts/package.json` and `scripts/package-lock.json` together. The first candidate in a new line can be set explicitly with `node scripts/bump-version.mjs --set <version>`. Then record the version in CHANGELOG, reseal dependency and release manifests, and validate a fresh distribution. The execution core version remains a separate sealed contract version in `scripts/core/contracts.mjs` and `release.json`.
 
-`scripts/codex-entry.mjs` verifies `release.json` at public execution and polling entry points. Schema 2 records core hashes plus all scripts, the publisher, plugin metadata and skills. Changes, additions, removals and symlinks fail with an explicit integrity error. Legacy schema 1 remains readable for earlier releases. This detects accidental release drift, not malicious modification of both code and manifest.
+`scripts/codex-entry.mjs` verifies `release.json` at public execution and polling entry points. Schema 2 records core hashes plus all scripts, the publisher, plugin metadata and skills. Changes, additions, removals and symlinks fail with an explicit integrity error. Legacy schema 1 is rejected; a release must be resealed with schema 2 before it can run. This detects accidental release drift, not malicious modification of both code and manifest.
 
 Maintainer procedure:
 
@@ -67,7 +67,7 @@ Stable-release gaps still requiring evidence: a clean Windows user account witho
 
 The clean-package regression creates a fresh distribution, checks missing-SDK diagnostics, supplies the existing validated SDK as a fixture, runs the packaged doctor and rejects a modified polling runtime. It does not claim a fresh network npm install or clean-machine acceptance.
 
-Final validation of this hardening: source 127/127 and installed cache 127/127 regressions passed. Both verify schema 2, core 1.2.0 (17 core files, 37 shipped runtime/configuration files). Installed doctor from D:\ reports the initiating workspace, Windows Terminal, never approvals and direct HTTPS transport. The execution core was not changed, so prior real-window acceptance is historical evidence for that same core, not a newly repeated load test.
+Final validation of this hardening: source 127/127 and installed cache 127/127 regressions passed. Both verify schema 2, core 1.2.0 (17 core files, 37 shipped runtime/configuration files). Installed doctor from [WORKSPACE]\ reports the initiating workspace, Windows Terminal, never approvals and direct HTTPS transport. The execution core was not changed, so prior real-window acceptance is historical evidence for that same core, not a newly repeated load test.
 
 ## Dependency and publication resilience (2026-09-06)
 
@@ -77,7 +77,7 @@ Publication assembles a uniquely named sibling staging directory, verifies its i
 
 Regression coverage includes missing-SDK polling, wrong-version SDK rejection, injected copy failure, junction aliases and two-dot directory names. The unchanged 17-file core remains 1.2.0; the shipped runtime/configuration inventory now contains 38 files.
 
-Validation after these changes: source and installed cache each passed 127/127 tests; added scenarios extend the existing package tests. Release manifests match byte-for-byte. Installed doctor confirms D:\ as the workspace and D:\temp\orchestrator as state storage. The execution core and its previous live-load evidence were not changed or rerun in this maintenance pass.
+Validation after these changes: source and installed cache each passed 127/127 tests; added scenarios extend the existing package tests. Release manifests match byte-for-byte. Installed doctor confirms [WORKSPACE]\ as the workspace and [WORKSPACE]\temp\orchestrator as state storage. The execution core and its previous live-load evidence were not changed or rerun in this maintenance pass.
 
 ## Core 1.2.1: bounded polling (2026-09-06)
 

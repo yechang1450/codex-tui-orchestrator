@@ -99,6 +99,12 @@ test('pinned npm-distributed native CLI signer remains trusted when a cache sees
   const sign = (_command, _args, _options) => ({status:0, stdout:'41977145C93B7A096405E230DDCC8FED1AB82AC3\n'});
   assert.equal(verifyAuthenticodePublisher(bin, process.env, sign), true);
 });
+test('current OpenAI desktop CLI signer is trusted after Authenticode validation', t => {
+  if (process.platform !== 'win32') return t.skip('Windows Authenticode contract');
+  const bin = fakeCli(t);
+  const sign = (_command, _args, _options) => ({status:0, stdout:'AAB04F57830B69182775AB3CEB6CE37981FE71C5\n'});
+  assert.equal(verifyAuthenticodePublisher(bin, process.env, sign), true);
+});
 test('a tampered plugin-private CLI is rejected before its version probe',()=>{
   const home=path.join(os.tmpdir(),'orch-cli-private-candidate');
   const bin=path.join(home,'runtime','cli','node_modules','@openai','codex-win32-x64','vendor','x86_64-pc-windows-msvc','bin','codex.exe');

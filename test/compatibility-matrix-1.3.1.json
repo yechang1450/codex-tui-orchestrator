@@ -12,7 +12,7 @@
       "codeHome": "user-default",
       "pathMode": "desktop-default",
       "result": "pass",
-      "checks": ["doctor", "status-readonly", "danger-envelope", "workspace-D:\\"]
+      "checks": ["doctor", "status-readonly", "danger-envelope", "workspace-[WORKSPACE]"]
     },
     {
       "id": "native-isolated-config",
@@ -22,7 +22,7 @@
       "codeHome": "isolated-empty",
       "pathMode": "absolute-node-plus-native-codex-and-windowsapps",
       "result": "pass",
-      "checks": ["doctor", "status-readonly", "workspace-D:\\", "terminal-discovery"]
+      "checks": ["doctor", "status-readonly", "workspace-[WORKSPACE]", "terminal-discovery"]
     },
     {
       "id": "native-isolated-no-developer-path",
@@ -32,7 +32,7 @@
       "codeHome": "isolated-empty",
       "pathMode": "system-plus-native-codex-plus-windowsapps; no Node/npm developer directory",
       "result": "pass",
-      "checks": ["doctor", "native-cli-resolution", "terminal-discovery", "workspace-D:\\"]
+      "checks": ["doctor", "native-cli-resolution", "terminal-discovery", "workspace-[WORKSPACE]"]
     },
     {
       "id": "pinned-sdk-version",

@@ -312,21 +312,27 @@ test('U1-U9 单元命令/验收检查的畸形输入：命令类必须 fail-clos
   const spacedTool = tool(spaced, 'tool.mjs');
   const chineseTool = tool(chinese, '工具.mjs');
   const plainTool = tool(workspace, 'plain.mjs');
+  const exitTool = path.join(workspace, 'exit-3.mjs');
+  const timeoutTool = path.join(workspace, 'timeout.mjs');
+  fs.writeFileSync(exitTool, 'process.exit(3);\n', 'utf8');
+  fs.writeFileSync(timeoutTool, 'setTimeout(()=>{},60000);\n', 'utf8');
   const uncWorkspace = '\\\\localhost\\' + workspace[0].toLowerCase() + '$' + workspace.slice(2);
   fs.writeFileSync(path.join(workspace, 'shim.cmd'), '@echo off\r\nexit /b 0\r\n', 'utf8');
   const cases = [
-    ['missing-exe', [{type: 'command', command: path.join(workspace, 'nope.exe'), args: []}], /nope\.exe/],
-    ['exit-code-mismatch', [{type: 'command', command: process.execPath, args: ['-e', 'process.exit(3)']}], /Acceptance command failed/],
-    ['relative-exe', [{type: 'command', command: './shim.cmd', args: []}], /shim\.cmd/],
+    ['missing-exe', [{type: 'command', command: path.join(workspace, 'nope.exe'), args: []}], /only the verified Node executable is allowed/],
+    ['exit-code-mismatch', [{type: 'command', command: process.execPath, args: [exitTool]}], /Acceptance command failed/],
+    ['relative-exe', [{type: 'command', command: './shim.cmd', args: []}], /only the verified Node executable is allowed/],
     ['non-string-command', [{type: 'command', command: 123, args: []}], /command/i],
     ['non-string-args', [{type: 'command', command: process.execPath, args: [123]}], /args/i],
-    ['timeout', [{type: 'command', command: process.execPath, args: ['-e', 'setTimeout(function(){},60000)'], timeoutMs: 300}], /Acceptance command failed/],
-    ['negative-timeout', [{type: 'command', command: process.execPath, args: ['-e', 'console.log(1)'], timeoutMs: -1}], null],
+    ['timeout', [{type: 'command', command: process.execPath, args: [timeoutTool], timeoutMs: 300}], /Acceptance command failed/],
+    ['negative-timeout', [{type: 'command', command: process.execPath, args: [plainTool], timeoutMs: -1}], null],
     ['non-object-check', [null], /Acceptance check/],
     ['json-equals-not-object', [{type: 'json', path: 'shape.json', equals: 'nope'}], /equals/],
   ];
   fs.writeFileSync(path.join(workspace, 'shape.json'), JSON.stringify({a: 1}), 'utf8');
-  for (const [label, checks, expected] of cases) {
+  const previousCommandPolicy=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
+  process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
+  try { for (const [label, checks, expected] of cases) {
     let result = null;
     let error = null;
     try {
@@ -341,24 +347,39 @@ test('U1-U9 单元命令/验收检查的畸形输入：命令类必须 fail-clos
     assert.ok(result.reason, '失败必须给出 reason');
     assert.doesNotMatch(String(result.reason), BARE_NODE, `真因不得是裸 Node 措辞：${result.reason}`);
     if (expected) assert.match(String(result.reason), expected, '真因必须能定位到具体命令/字段');
-  }
+  }} finally { if(previousCommandPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=previousCommandPolicy; }
+  const defaultCommand = verifyChecks([{type:'command',command:process.execPath,args:[plainTool]}],workspace);
+  assert.equal(defaultCommand.status,'failed');
+  assert.match(String(defaultCommand.reason),/disabled by default/i);
+  const evalRejected = verifyChecks([{type:'command',command:process.execPath,args:['-e','console.log(1)']}],workspace);
+  assert.equal(evalRejected.status,'failed');
+  assert.match(String(evalRejected.reason),/disabled by default/i);
+  const previousEvalPolicy=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
+  process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
+  try {
+    const evalOptIn=verifyChecks([{type:'command',command:process.execPath,args:['-e','console.log(1)']}],workspace);
+    assert.equal(evalOptIn.status,'failed');
+    assert.match(String(evalOptIn.reason),/eval\/loader arguments are not allowed/i);
+  } finally { if(previousEvalPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=previousEvalPolicy; }
   const good = [
     ['spaces-path', [{type: 'command', command: process.execPath, args: [spacedTool]}]],
     ['chinese-path', [{type: 'command', command: process.execPath, args: [chineseTool]}]],
     ['relative-script', [{type: 'command', command: process.execPath, args: ['plain.mjs']}]],
     ['unc-workspace-cwd', [{type: 'command', command: process.execPath, args: [plainTool]}], uncWorkspace],
     ['unc-file-check', [{type: 'file', path: path.join(uncWorkspace, 'plain.mjs')}]],
-    ['self-exiting-stdout', [{type: 'command', command: process.execPath, args: ['-e', 'console.log("ok")'], stdout: 'ok'}]],
+    ['self-exiting-stdout', [{type: 'command', command: process.execPath, args: [plainTool], stdout: 'ok'}]],
     ['file-hash-match', [{type: 'file', path: 'shape.json'}]],
     ['json-equals', [{type: 'json', path: 'shape.json', equals: {a: 1}}]],
   ];
   // 注：Node 本身无法把 UNC 路径当入口脚本跑（Cannot find module / ERR_INVALID_FILE_URL_PATH），
   // 那是运行时限制；这里验证的是验收契约对 UNC 工作区/UNC 路径的解析与执行不含糊。
-  for (const [label, checks, cwd] of good) {
+  const goodPolicy=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
+  process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
+  try { for (const [label, checks, cwd] of good) {
     const result = verifyChecks(checks, cwd || workspace);
     seen(`unit.${label}`, `${result.status} ${String(result.reason || '')}`);
     assert.equal(result.status, 'verified', `${label} 必须通过（实测 ${JSON.stringify(result)}）`);
-  }
+  }} finally { if(goodPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=goodPolicy; }
   const negatives = [
     ['hash-mismatch', [{type: 'file', path: 'shape.json', sha256: 'b'.repeat(64)}], /Hash mismatch/],
     ['missing-file', [{type: 'file', path: 'nope.txt'}], /Acceptance file missing/],

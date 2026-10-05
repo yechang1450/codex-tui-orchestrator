@@ -1,15 +1,19 @@
 # 0.9.29-rc.1 验收记录
 
-## 2026-10-02 公开仓库准备与最终离线回归（core 1.4.4-rc.1）
+## 2026-10-04 公开仓库准备、最终离线回归与官方 Deep Scan（core 1.4.4-rc.1）
 
 - 工作树在 `codex/public-readiness` 分支完成公开发布审查：README 中英文版本、版本号、1000 MB 内存预留、自动 RC 递增说明和 Codex CLI 版本口径已同步。
 - 最终串行离线回归为 535 项：532 通过、0 失败、3 项按配置跳过；跳过项只对应显式启用的真实 Codex 窗口验收、本机不可用的 UNC 管理共享和可选 pi CLI，不能据此宣称真实服务商或可见窗口已覆盖。
+- 同一提交的 GitHub Windows CI 运行 [37050856591](https://github.com/yechang1450/codex-tui-orchestrator/actions/runs/37050856591) 为 535 项：530 通过、0 失败、5 项跳过。CI 的跳过项由 CI 环境能力决定；本地 535/532/0/3 与 CI 535/530/0/5 必须分开解读。
 - 发布封印 `release-integrity.mjs --json` 通过（schema 2、core `1.4.4-rc.1`、31 个核心文件、73 个运行时文件）；源码与个人缓存的关键文件摘要一致，安装检查无问题或警告。
 - 本轮把自动安装与文档中的固定原生 Codex CLI 从 `0.157.0` 更新到官方 `@openai/codex@0.160.0`，x64/arm64 可执行文件和完整 47 文件平台包摘要均已重新封存并通过安装器回归。
-- 公开性审查未发现真实 API key、私钥或凭据；当前工作树和最新主线 tip 不含个人绝对路径。主线、旧的 `feat/exec-headless-status`、Dependabot 分支和 PR 只读 refs 仍保留历史验证快照；候选 v4 已清理文件内容，但还需清理提交者元数据。已关闭 PR #1 的正文仍含个人路径，公开前必须脱敏；PR #2–#4 仍开放。普通分支推送不能清除 `refs/pull/*` 或 GitHub 缓存，必要时须按 GitHub 官方流程处理 Support 请求。
+- 公开性审查未发现当前树中的真实 API key、私钥或凭据；当前树文件也不含个人绝对路径。但 GitHub 仍保留只读 PR refs 和缓存：`refs/pull/1/head` 对应的历史 PR #1 diff 含个人绝对路径，`refs/pull/2/head`、`refs/pull/3/head`、`refs/pull/4/head` 也仍存在。普通分支推送或 force-push 不能清除这些 refs 和缓存，公开前必须按 GitHub 官方流程提交 Support 请求并读回清理结果。
+- 历史提交 `13c2879dac279b93de522efa7ce78baa6ed99bf8` 的 commit message 仍含机器本地路径（当前文档只用 `<USER_HOME>` 占位，不复述该路径）。这属于公开前的历史清理门槛：若要移除它，必须重写历史、重新生成全部提交哈希并对新 tip 重新运行完整扫描；在 Support/历史处理完成前不得宣称仓库已可公开。
 - 本轮本地静态审查修复了未验证 Pi CLI、Windows shell 参数展开、插件安装路径越界、8.3/UNC 路径租约分叉、检查点命令注入候选、headless 身份快照失败导致的无界等待、旧 registry 损坏静默放行和 supervisor 中继模型漂移；新增 PowerShell 特殊路径、文件派生绑定和有限收尾回归通过。窗口注册表、registry lock 和启用标记已迁移到 controller-owned state，并统一物理工作区身份；升级时发现旧的损坏或非空 workspace registry 会 fail-closed。
-- 官方 Codex Security 深度扫描在本会话未能启动，原因是宿主没有提供该扫描要求的托管文件权限配置；本节的结论来自本地静态审查、针对性回归和发布完整性检查，不替代官方扫描。
-- 远端 Windows CI 的失败曾由 workflow 未提供可验证的 Codex CLI 引起，导致 `CLI_AUTO_INSTALL_FAILED (npm_untrusted)` 连锁失败；验证工作流现已在隔离的 `PLUGIN_DATA` 运行时中调用生产 `runtime-prepare.mjs`，使用相同的可执行文件 SHA-256 与 47 文件平台树校验，再只通过私有运行时路径发现 CLI，不写入全局 `ORCH_CLI` 或未验证旁路。修改后必须以新的 CI run 结果为准，不能把旧 run 当作通过证据。
+- 官方 Codex Security Deep Scan 已完成，绑定 candidate v7 的 c843 snapshot（commit `c8432650aeeb42bc4bb159789f7af9c3c3655dba`），scanId `09ada6d7-2822-4b29-abd4-09b242b3ea69`。结果为 coverage `complete`，报告列出 33 个 reportable findings（9 high、21 medium、3 low；31 high-confidence、2 medium-confidence）；这不是“零发现”结论，仍需逐项分诊、修复并复扫。token measurement 为 `partial`：扫描产物没有完整 token 用量测量，不能据此作成本或预算认证。
+- 本次扫描的可移植本地证据路径为 `<CODEX_HOME>\state\plugins\codex-security\scans\fresh-candidate-v7\c8432650aeeb42bc4bb159789f7af9c3c3655dba_20261003T020016Z_6ifq6qim\report.md`；同目录的 `scan-manifest.json`、`coverage.json` 和 `findings.json` 是对应的封存产物。仓库文档不写入实际用户目录，以免把宿主个人路径带入公开内容。
+- 旧的公开前运行账本已从仓库移除；其中记录的连续输入、容量级回执、长时间 provider 故障、真实重启恢复和登录后自动收集等门槛仍须按当前提交重新取得证据。
+- 远端 Windows CI 的失败曾由 workflow 未提供可验证的 Codex CLI 引起，导致 `CLI_AUTO_INSTALL_FAILED (npm_untrusted)` 连锁失败；当前 c843 的 CI 已有上方运行记录，但公开前仍须保留失败历史与修复后的绿色 run 之间的对应关系，不能把旧 run 当作当前证据。
 - 本轮还修正了此前封存的 0.160.0 平台树摘要：实际 npm tarball 的 x64/arm64 canonical manifest 分别为 `000baafd…d159d7d` 与 `447196ac…85620c`；旧摘要会使真实生产安装器错误地报告 `integrity_mismatch`，现已重新封印并做了隔离安装回归。
 
 ## 2026-09-29 0.9.29-rc.1 内存准入下限调整候选（core 1.4.4-rc.1）
@@ -97,9 +101,9 @@
 - [x] 容量级真实 Codex 任务全部得到有效回执（2026-09-18 动态内存预算快照重跑）：headless `acceptance-aeae71ac-880c-4620-a05d-a32da05d08a7` 与可见 TUI `acceptance-164be263-7c03-4744-8f7f-47034c98f2bc` 均 `passed=true`、9 项全 `verified`、回执/有序/并发证据齐全，见文末"动态内存预算下的双模式验收"。
 - [x] 重启验收按拆分证据收口（2026-09-19）：两次真实重启回执均证明"重启后健康"（见下节），自动收集机制已实现并离线端到端验证。
 - [x] 提交 `0fca067` 的真实重启后健康检查：2026-09-13 19:28（北京时间）启动，回到 Codex 后显式补收集，启动时间变化、release integrity、doctor 与 marketplace 注册回执均已读回。只认证这次重启后的插件文件和本地环境健康，不认证未完成任务的重启恢复。
-- [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见 [管理器生命周期证据](../test/manager-lifecycle-validation.json)；该证据使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；受控本地 HTTP 故障恢复 9/9 已通过。防火墙注入因未提权被拒绝，未改变网络状态。本次 RunOnce 未自动产出回执，不能用补收集结果替代自动触发验收。详见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 插件管理器 Git 市场的 add/install/upgrade/rollback/remove/uninstall 已在隔离 `CODEX_HOME` 中实际读回，见管理器生命周期测试；该测试使用本地 Git 传输映射，不能代替公开 GitHub 地址的网络抓取。长期断网、未完成真实模型任务跨系统重启恢复和登录后自动收集仍未通过；这些本机回执未随公开仓库发布。
 - [x] 私有源下的**升级/回滚**已在本机真实安装上演练（2026-09-19）：把注册源指向更高 cachebuster 的分发 → `codex plugin add` 升到 `0.5.0-rc.1+codex.20260919230000`；再指回当前分发 → `codex plugin add` 回滚到 `0.5.0-rc.1+codex.20260919211020`，每次安装后 `release-integrity` 与 `--doctor` 都通过，管理器每次只留一个版本缓存。仓库保持 private，"公网 GitHub 抓取"这条门槛按私有分发源重新定义；证据见 [私有源管理器生命周期证据](../test/manager-lifecycle-validation-private-source.json)。
-- [x] 代码提交 `4fdcaa3` 完成过一次标准源码安全扫描：7 个高风险源码面、0 个可报告发现、覆盖 partial。后续新增重启验证脚本不在该历史扫描范围内；扫描 ID 与限制见 [当前公开前证据](../test/private-readiness-validation.json)。
+- [x] 代码提交 `4fdcaa3` 的历史标准源码扫描仅作背景资料；它不覆盖当前提交，当前安全结论以本页记录的官方扫描为准。
 - [x] 本地安装默认回到**单一 checkout**（2026-10-01）：个人 marketplace 条目指向工作树本身，不再自动创建或依赖 `dist` 目录；`install-plugin.mjs` 只有显式 `--source dist --dist-root <目录>` 才导出干净包。`repair-plugin-registration.mjs --check` 同时接受 checkout 与显式 dist 源，并要求分发核心与工作树一致，否则报 `stale_dist`。干净发布包仍可用来做静态评估，但不再是本机默认安装源。
 - [x] 真实双模式验收在当前提交重跑通过（2026-09-19，两任务、默认动态内存预算路径、**从已安装缓存入口**运行）：可见 TUI `runId=mode-visible-bbf3d786-959e-4a8b-b1ce-5e7c6ca98a24`、headless `runId=mode-headless-afbf3afd-e221-477b-930f-762b1dfbdc8f`，两项都是 `passed=true`、`exitCode=0`、`closed=true`、`coreUnchanged=true`、T001/T002 全 `verified`、回执 `nonce/cwd/answer` 校验通过，见 [证据](../test/live-mode-validation-1.4.0-rc.1.json)。顺带修掉一个真实漂移：`test/live-execution-mode.mjs` 过去只发单任务，而单任务按设计直接 `out-of-scope`，已改为两个独立任务并各自独立验收。
 
@@ -149,7 +153,7 @@
 
 同一中间快照的单任务 headless 与可见 TUI 都得到 `answer:42` 回执、`verified` 状态、退出码 0 和已关闭进程。五分钟的进程范围代理断网也曾观察到 43 次被阻断连接，恢复后两项回执有效且副作用各一次。这些通过记录均保留哈希；后续核心修复使它们成为历史证据。当前版本的新一轮容量 headless/可见实测均达到计算出的 3 窗并发峰值，但真实 provider 返回 `usage_limit_exceeded`，因此没有进入有效回执或长断网阶段，不能登记为通过。
 
-当前版本源码离线回归为 284 项（283 通过、0 失败、1 跳过）；同一套 284 项从 plugin manager 安装缓存自身目录重跑也为 283 通过、0 失败、1 跳过。静态检查、安装副本与发布完整性结果统一记录在 [公开前账本](../test/private-readiness-validation.json)。仓库继续保持 Private。真实前台连续输入、当前容量验收、当前长断网、未完成任务跨系统重启与 RunOnce 自动调度仍是独立门槛。
+旧版本的离线回归和安装副本账本已移除；仓库继续保持 Private。真实前台连续输入、当前容量验收、当前长断网、未完成任务跨系统重启与 RunOnce 自动调度仍是独立门槛。
 
 ### 2026-09-14 较早一轮全量离线与双模式审计（历史快照）
 

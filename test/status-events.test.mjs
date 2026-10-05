@@ -7,9 +7,12 @@ import {createStatusPublisher,readRunStatus,readEvents,watchRunStatus,renderRunS
 const family=fileURLToPath(new URL('../temp/',import.meta.url));
 function fixture(){
   fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'status-'));
+  const previousControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
+  const controllerRoot=fs.mkdtempSync(path.join(family,'status-controller-'));
+  process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
   const dir=path.join(workspace,'temp','orchestrator','runs','live');fs.mkdirSync(dir,{recursive:true});
   const sum={runId:'live',workspace,generation:1,executionMode:'headless',tasks:[{id:'T001',prompt:'first'},{id:'T002',prompt:'second'}],blocks:[{key:'B1',title:'linked',taskIds:['T001','T002']}],results:{B1:{status:'running',attempts:[{number:1}],launcher:{ProcessId:123}}},taskResults:{T001:{status:'running'},T002:{status:'pending'}}};
-  return {workspace,dir,sum,close:()=>fs.rmSync(workspace,{recursive:true,force:true})};
+  return {workspace,dir,sum,close:()=>{if(previousControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=previousControllerRoot;fs.rmSync(workspace,{recursive:true,force:true});fs.rmSync(controllerRoot,{recursive:true,force:true});}};
 }
 test('status snapshots distinguish the active task from the process and survive publisher resume',()=>{
   const f=fixture();try{
@@ -54,6 +57,27 @@ test('watch starts from the planning inventory and delivers live task changes be
     assert.deepEqual(received[1].todoList.map(t=>t.status),['running','pending']);
     assert.equal(fs.readFileSync(file,'utf8'),original);
     assert.equal(fs.readdirSync(f.dir).length,3);
+  }finally{f.close();}
+});
+
+test('planning manifest cannot claim a completed or successful state without controller authority',()=>{
+  const f=fixture();try{
+    const file=path.join(f.dir,'manifest.json');
+    fs.writeFileSync(file,JSON.stringify({runId:'live',workspace:f.workspace,tasks:f.sum.tasks,success:true,finishedAt:Date.now()}));
+    assert.throws(()=>readRunStatus(f.workspace,'live'),/planning ledger|unauthenticated/i);
+    fs.writeFileSync(file,JSON.stringify({runId:'live',workspace:f.workspace,tasks:f.sum.tasks,taskResults:{T001:{status:'verified'}}}));
+    assert.throws(()=>readRunStatus(f.workspace,'live'),/planning ledger|unauthenticated/i);
+  }finally{f.close();}
+});
+
+test('watch retries a summary-authority publication gap without emitting an unauthenticated snapshot',async()=>{
+  const f=fixture();try{
+    // A summary without the controller-owned digest is never emitted.  The
+    // watcher retries the publication window and then fails closed at timeout.
+    fs.writeFileSync(path.join(f.dir,'summary.json'),JSON.stringify({...f.sum,success:true,finishedAt:Date.now()}));
+    const received=[];
+    await assert.rejects(()=>watchRunStatus({workspace:f.workspace,runId:'live',intervalMs:10,timeoutMs:40,onEvent:e=>received.push(e)}),/authority|unauthenticated/i);
+    assert.deepEqual(received,[]);
   }finally{f.close();}
 });
 

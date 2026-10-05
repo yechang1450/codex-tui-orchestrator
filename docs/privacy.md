@@ -12,7 +12,9 @@ The initiating workspace's `temp` directory holds run ledgers, checkpoints,
 receipts, and verification evidence. Controller-owned launch files, the shared
 coordinator, acceptance and immutable run-plan bindings, and supervisor authority live under
 `CODEX_HOME/state/plugins/codex-tui-orchestrator` by default. Headless launch
-files there include the prompt and CLI output streams in plaintext. A headless
+files there include task prompts and CLI output streams. Credential-shaped fields
+are redacted at the provider output boundary, while task text and local paths
+remain available for protocol recovery. A headless
 run successfully finalized by its controller removes its launch files; an unfinished or
 failed run retains them for recovery and inspection. Visible launch files are
 removed after their owned process exits. A user who discards a failed run must

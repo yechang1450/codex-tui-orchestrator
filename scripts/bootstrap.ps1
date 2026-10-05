@@ -37,12 +37,14 @@ try {
     $allowUnverifiedNpm = [bool]$NodePath -and [string]$env:ORCH_ALLOW_UNVERIFIED_NPM -eq '1'
     $runtime = Resolve-OrchNode -Candidates $candidates -RuntimeHome $runtimeHome -NoDownload:($NoDownload -or [bool]$NodePath) -AllowUnverified:$allowUnverifiedNode -AllowUnverifiedNpm:$allowUnverifiedNpm -TimeoutSeconds (Get-RemainingBootstrapSeconds)
     $lock = Enter-OrchRuntimeLock -RuntimeHome $runtimeHome -TimeoutSeconds (Get-RemainingBootstrapSeconds)
-    foreach ($name in @('PATH','npm_execpath','npm_config_prefix','npm_config_cache','CODEX_CLI_PATH','ORCH_CLI','ORCH_NPM_TRUSTED','ORCH_GIT_PATH')) {
+    foreach ($name in @('PATH','npm_execpath','npm_config_prefix','npm_config_cache','CODEX_CLI_PATH','ORCH_CLI','ORCH_NPM_TRUSTED','ORCH_NPM_TRUSTED_PATH','ORCH_NPM_TRUSTED_SHA256','ORCH_GIT_PATH')) {
         $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
     }
     $env:PATH = (Split-Path -Parent $runtime.NodePath) + ';' + $env:PATH
     $env:npm_execpath = $runtime.NpmPath
     $env:ORCH_NPM_TRUSTED = if ($runtime.NpmTrusted) { '1' } else { '0' }
+    $env:ORCH_NPM_TRUSTED_PATH = [IO.Path]::GetFullPath($runtime.NpmPath)
+    $env:ORCH_NPM_TRUSTED_SHA256 = (Get-FileHash -LiteralPath $env:ORCH_NPM_TRUSTED_PATH -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
     $env:npm_config_prefix = Join-Path $runtimeHome 'cli'
     [void](Assert-OrchSafePath $env:npm_config_prefix)
     $npmCache = Join-Path $runtimeHome ('.npm-cache-' + [guid]::NewGuid().ToString('N'))

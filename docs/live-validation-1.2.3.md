@@ -1,6 +1,6 @@
 # Core 1.2.3 live validation (historical evidence)
 
-The installed dedicated plugin passed both visible Codex TUI acceptance scenarios from `D:\` on 2026-09-06. No runtime files changed during either run. The source and installed core hashes match the tested hash recorded in [machine-readable evidence](../test/live-stability-1.2.3.json).
+The installed dedicated plugin passed both visible Codex TUI acceptance scenarios from `[WORKSPACE]\` on 2026-09-06. No runtime files changed during either run. The source and installed core hashes match the tested hash recorded in [machine-readable evidence](../test/live-stability-1.2.3.json).
 
 - Eight windows, nine tasks: eight unique launchers and eight simultaneous Codex processes; the first eight probes overlapped for 16,405 ms. The ninth task ran after the eighth in the same block. All nine result receipts passed independent verification. Engine and strict window polling both exited zero, with all windows closed.
 - Controller interruption: after the first task completed and the second was running, the test terminated only its own controller. A new controller adopted the same surviving window. Both tasks passed verification; the first task executed once, with one attempt and one window total.

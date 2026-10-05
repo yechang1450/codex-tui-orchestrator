@@ -6,6 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {verifyRelease} from '../scripts/release-integrity.mjs';
 const source=fileURLToPath(new URL('..',import.meta.url));
+const explicitCli=process.env.ORCH_CLI || (process.platform==='win32'
+  ? String(spawnSync(`${process.env.SystemRoot || 'C:\\Windows'}\\System32\\where.exe`,['codex.exe'],{encoding:'utf8',windowsHide:true}).stdout || '').split(/\r?\n/).map(s=>s.trim()).find(Boolean) || ''
+  : '');
 
 test('clean published package runs doctor and guards its public polling entry',()=>{
  const family=path.join(source,'temp');fs.mkdirSync(family,{recursive:true});
@@ -14,9 +17,17 @@ test('clean published package runs doctor and guards its public polling entry',(
   // A sibling of the copied fixture source avoids publishing into a source tree.
   const fixture=path.join(root,'candidate');
   fs.mkdirSync(fixture);
-  for(const name of ['scripts','skills','.codex-plugin','assets','docs','hooks'])if(fs.existsSync(path.join(source,name)))fs.cpSync(path.join(source,name),path.join(fixture,name),{recursive:true,filter:p=>!['node_modules','temp','.agent-cache.json'].includes(path.basename(p))});
-  for(const name of ['repair.mjs','release.json','README.md','LICENSE'])fs.copyFileSync(path.join(source,name),path.join(fixture,name));
-  const run=(file,args=[])=>spawnSync(process.execPath,[file,...args],{cwd:root,env:{...process.env,ORCH_AUTO_INSTALL_DEPS:'0'},encoding:'utf8',windowsHide:true,timeout:30000});
+  // Build the fixture from the schema-2 sealed runtime inventory.  Keeping
+  // this list data-driven prevents new public metadata (agents/assets/root
+  // policy files) from silently disappearing from the package test.
+  const sourceManifest=JSON.parse(fs.readFileSync(path.join(source,'release.json'),'utf8'));
+  assert.equal(sourceManifest.schema,2);
+  for(const rel of Object.keys(sourceManifest.runtimeFiles)){
+   const from=path.join(source,rel),to=path.join(fixture,rel);
+   fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to);
+  }
+  fs.copyFileSync(path.join(source,'release.json'),path.join(fixture,'release.json'));
+  const run=(file,args=[])=>spawnSync(process.execPath,[file,...args],{cwd:root,env:{...process.env,ORCH_AUTO_INSTALL_DEPS:'0',ORCH_ALLOW_UNVERIFIED_CLI:'1',...(explicitCli?{ORCH_CLI:explicitCli}: {})},encoding:'utf8',windowsHide:true,timeout:30000});
   const fault='import fs from "node:fs";const copy=fs.copyFileSync;let n=0;fs.copyFileSync=(...args)=>{if(++n===2)throw new Error("TEST_COPY_FAILURE");return copy(...args)};';
   const failed=spawnSync(process.execPath,['--import','data:text/javascript,'+encodeURIComponent(fault),path.join(fixture,'repair.mjs'),'--target',path.join(root,'failed-publication')],{cwd:root,encoding:'utf8',windowsHide:true,timeout:30000});
   assert.equal(failed.status,2);assert.match(failed.stderr,/TEST_COPY_FAILURE/);

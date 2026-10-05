@@ -24,7 +24,7 @@
   ],
   "publicExportsMatchEngine": true,
   "installedDoctor": {
-    "workspace": "D:\\",
+    "workspace": "[WORKSPACE]",
     "stateDir": "<temp-root>\\orchestrator",
     "approval": "never",
     "terminal": "wt",
