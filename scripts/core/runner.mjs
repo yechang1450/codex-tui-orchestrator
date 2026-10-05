@@ -82,11 +82,16 @@ export async function identifyWithRetry(identify,pid,pidFile,{attempts=3,pauseMs
   }
   throw lastError;
 }
-export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100,snapshot=processSnapshot}={}) {
+export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100,snapshot=processSnapshot,probePid}={}) {
   if(!expected||!Number.isFinite(Number(expected.ProcessId)))return true;
   const timeout=Math.max(0,Math.min(15000,Number(timeoutMs)||0)),interval=Math.max(10,Math.min(1000,Number(intervalMs)||100));
   const deadline=Date.now()+timeout;
   while(true){
+    // A full CIM snapshot can be temporarily unavailable under Windows load.
+    // ESRCH is direct evidence that this PID is gone; permission/other errors
+    // remain unknown and must never be treated as an exit proof.
+    const presenceProbe=probePid||(snapshot===processSnapshot?probeProcessPresence:null);
+    try{if(presenceProbe&&presenceProbe(expected.ProcessId)===false)return true;}catch{/* fall through to identity-bound snapshot */}
     let current;
     try{current=snapshot(Math.min(3000,Math.max(1,deadline-Date.now())));}catch{
       // Process enumeration can briefly fail while a launcher exits. Retry within
@@ -98,6 +103,15 @@ export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100
     if(!sameProcess(expected,current?.get(Number(expected.ProcessId))))return true;
     if(Date.now()>=deadline)return false;
     await pause(Math.min(interval,Math.max(1,deadline-Date.now())));
+  }
+}
+
+function probeProcessPresence(pid){
+  try{process.kill(Number(pid),0);return true;}
+  catch(error){
+    if(error?.code==='ESRCH')return false;
+    if(error?.code==='EPERM'||error?.code==='EACCES')return null;
+    throw error;
   }
 }
 
