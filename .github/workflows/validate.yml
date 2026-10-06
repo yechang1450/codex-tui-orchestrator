@@ -64,6 +64,11 @@ jobs:
           $env:PLUGIN_DATA = $autoData
           $env:npm_config_prefix = $autoRoot
           $env:npm_execpath = $npmCli
+          # Attest the exact npm entry consumed by the bootstrap guard.
+          $npmEntry = (Get-Item -LiteralPath $npmCli -ErrorAction Stop).FullName
+          $npmDigest = (Get-FileHash -LiteralPath $npmEntry -Algorithm SHA256).Hash.ToLowerInvariant()
+          $env:ORCH_NPM_TRUSTED_PATH = $npmEntry
+          $env:ORCH_NPM_TRUSTED_SHA256 = $npmDigest
           $env:ORCH_NPM_TRUSTED = '1'
           $env:ORCH_AUTO_INSTALL_CLI = '1'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
