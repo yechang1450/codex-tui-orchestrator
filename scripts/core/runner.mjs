@@ -7,7 +7,7 @@ import {coordinatorDir,reserve,bind,release,prepare,atomicJson,launcherIdentity,
 import {scheduleReady,recoveryTasks,taskPolicy,validateRecoverySummary,hasReconciledCheckpoint,hasParentInspection,resolveAttemptFile,validateSavedLauncherFiles} from './recovery.mjs';
 import {readCheckpoints,checkpointMatches} from './checkpoint.mjs';
 import {capacityRetryPolicy} from './retry-policy.mjs';
-import {availableMB, admissionOk, unconsumedReservationMB, blockCostMB as budgetBlockCostMB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost} from './memory-budget.mjs';
+import {availableMB, admissionOk, unconsumedReservationMB, blockCostMB as budgetBlockCostMB, DEFAULT_WINDOW_COST_MB, observedCostMB, loadBudgetState, saveBudgetState, updateRollingCost} from './memory-budget.mjs';
 import {createVerificationQueue} from './verification-queue.mjs';
 import {assertNoReparsePoints,physicallySameOrChild,physicalPathIdentity} from './runtime-context.mjs';
 import {controllerStateDir} from './controller-state.mjs';
@@ -15,6 +15,29 @@ import {controllerStateDir} from './controller-state.mjs';
 function blockCostFor(sum, key, budget) {
   const block = (sum.blocks || []).find(item => item.key === key);
   return budgetBlockCostMB(block, budget.windowCostMB, budget.taskCosts || {});
+}
+
+/**
+ * Order only the launch queue; the durable plan remains in planner order.
+ * Higher predicted memory enters the reservation/launcher path first so a
+ * long-running heavy block does not become the last tail of an otherwise
+ * finished wave. Dependencies are still enforced by scheduleReady.
+ */
+export function orderLaunchPlan(sum, plan, budget) {
+  if (!Array.isArray(plan) || budget?.mode !== 'dynamic') return plan;
+  const rawWindowCost = Number(budget.windowCostMB);
+  const windowCostMB = Number.isFinite(rawWindowCost) && rawWindowCost > 0
+    ? rawWindowCost
+    : DEFAULT_WINDOW_COST_MB;
+  const rawHeadroom = Number(budget.headroom);
+  const headroom = Number.isFinite(rawHeadroom) && rawHeadroom >= 1 ? rawHeadroom : 1;
+  const ranked = plan.map((record, index) => ({
+    record,
+    index,
+    cost: Math.ceil(blockCostFor(sum, record.key, {...budget, windowCostMB}) * headroom),
+  }));
+  ranked.sort((left, right) => right.cost - left.cost || left.index - right.index);
+  return ranked.map(item => item.record);
 }
 
 // Always union explicit planner hints with deterministic inference. Empty or
@@ -781,7 +804,8 @@ export async function runWindows(request,hooks,options={}) {
       }
       mark(r,'timeout','Run deadline exhausted');
     }
-    await scheduleReady(sum.plan,async r=>{try{await execute(r);}catch(e){mark(r,'failed',e.message);}},key=>sum.results[key]?.status,
+    const launchPlan=orderLaunchPlan(sum,sum.plan,options.memoryBudget);
+    await scheduleReady(launchPlan,async r=>{try{await execute(r);}catch(e){mark(r,'failed',e.message);}},key=>sum.results[key]?.status,
       (r,failed)=>mark(r,'blocked','Predecessors not verified: '+failed.join(', ')));
     sum.finalSweep=await sweepRunProcesses(sum,{
       close:hooks.close,identify:hooks.identity||launcherIdentity,waitForExit:hooks.waitForExit||waitForProcessExit,
