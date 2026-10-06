@@ -238,6 +238,14 @@ export function readLedgerJson(file){
 // verify/resume 必须重读到同一份契约。执行窗对工作区有写权限，能把
 // <runDir>/acceptance.json 换成对自己有利的版本；没有绑定就无法判断它是否被改过。
 function acceptanceBinding(checks,source){return {algorithm:'sha256',sha256:canonicalDigest(checks),source,boundAt:Date.now()};}
+export function rejectWorkspaceCommandChecks(checks) {
+  for (const entry of Object.values(checks || {})) {
+    const list=Array.isArray(entry)?entry:entry?.checks;
+    if (Array.isArray(list)&&list.some(check=>check?.type==='command')) {
+      throw new Error('Workspace command acceptance is disabled for controller runs; use declarative file/json/absent checks instead');
+    }
+  }
+}
 function readJsonIfPresent(file){
   let text;
   try{text=readUtf8Bounded(file,'controller ledger');}
@@ -466,6 +474,7 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
     const contractFile=acceptanceFile||path.join(dir,'acceptance.json');
     const acceptance=loadBoundChecks(contractFile,dir,sum,options.override===true);
     const checks=acceptance.checks;
+    rejectWorkspaceCommandChecks(checks);
     if(sum.tasks?.length){
       const keyDiff=acceptanceKeyDiff(checks,sum.tasks);
       if(keyDiff?.unknown.length)throw new Error('Acceptance keys do not match any task id: '+keyDiff.unknown.join(', ')+'（task ids: '+sum.tasks.map(t=>t.id).join(', ')+'）');
@@ -529,11 +538,14 @@ export async function runWindows(request,hooks,options={}) {
       // 恢复同样要复用被绑定的契约：执行窗改掉 acceptance.json 就能让未完成的任务被当成已验收。
       acceptance=loadBoundChecks(options.acceptanceFile||path.join(dir,'acceptance.json'),dir,savedResume,options.acceptanceOverride===true);
       checks=acceptance.checks;
+      rejectWorkspaceCommandChecks(checks);
       sum.history.push({generation:sum.generation,finishedAt:sum.finishedAt,success:sum.success});
       sum.generation++;delete sum.finishedAt;sum.success=false;
     }else {
       if(fs.existsSync(dir))throw new Error('Run ID already exists; use --resume-run or --verify-run');
-      fs.mkdirSync(dir,{recursive:true});checks=loadChecks(options.acceptanceFile);
+      checks=loadChecks(options.acceptanceFile);
+      rejectWorkspaceCommandChecks(checks);
+      fs.mkdirSync(dir,{recursive:true});
       const inventory=requestTasks(request);
       const manifest={runId,workspace,request,executionMode:options.executionMode||'visible',tasks:inventory,todoList:buildTodoList(inventory),startedAt:Date.now()};
       atomicJson(path.join(dir,'manifest.json'),manifest);

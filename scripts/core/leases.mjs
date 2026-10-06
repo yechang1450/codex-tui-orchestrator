@@ -70,6 +70,7 @@ const WINDOWS_HELPERS=Object.freeze({
   where:path.win32.join('System32','where.exe'),
   reg:path.win32.join('System32','reg.exe'),
   chcp:path.win32.join('System32','chcp.com'),
+  conhost:path.win32.join('System32','conhost.exe'),
 });
 export function trustedWindowsHelper(name) {
   const relative=WINDOWS_HELPERS[name];

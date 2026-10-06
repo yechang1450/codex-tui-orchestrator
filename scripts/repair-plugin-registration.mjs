@@ -16,6 +16,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {coreInventory} from './release-integrity.mjs';
+import {physicalPathIdentity} from './core/runtime-context.mjs';
 
 const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const DEFAULT_PLUGIN_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -31,7 +32,16 @@ function samePath(left, right) {
 }
 
 function realPath(file) {
-  return fs.realpathSync.native(file);
+  // Reuse the runtime's physical identity resolver. Managed Windows hosts can
+  // deny native realpath even when the path is readable; the resolver keeps a
+  // canonical long-name identity through its guarded fallback and still
+  // fails closed when neither resolver is available.
+  if (!fs.existsSync(file)) {
+    const error = new Error('ENOENT: path does not exist: ' + file);
+    error.code = 'ENOENT';
+    throw error;
+  }
+  return physicalPathIdentity(file);
 }
 
 function readJson(file) {

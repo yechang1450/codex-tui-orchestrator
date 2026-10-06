@@ -10,10 +10,16 @@
 // third-party endpoint or credentials, and is selected explicitly through
 // ORCH_PROVIDER=openai-https or through a relay base URL.
 import {spawnSync} from 'node:child_process';
+import path from 'node:path';
+import {trustedWindowsHelper, trustedWindowsRoot, controllerEnvironment} from './leases.mjs';
 
-function systemProxyRegistry() {
-  const result = spawnSync('reg.exe', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
-    {encoding:'utf8', windowsHide:true, timeout:3000, maxBuffer:64 * 1024});
+export function systemProxyRegistry({run=spawnSync}={}) {
+  const windows = process.platform === 'win32';
+  const root = windows ? trustedWindowsRoot() : (process.env.SystemRoot || 'C:\\Windows');
+  const helper = windows ? trustedWindowsHelper('reg') : path.win32.join(root, 'System32', 'reg.exe');
+  const result = run(helper, ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings'],
+    {encoding:'utf8', windowsHide:true, timeout:3000, maxBuffer:64 * 1024, shell:false,
+      cwd:root, env:windows ? controllerEnvironment() : process.env});
   return result.status === 0 ? result.stdout : '';
 }
 

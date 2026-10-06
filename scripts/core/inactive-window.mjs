@@ -3,7 +3,7 @@ import {fileURLToPath} from 'node:url';
 import fs from 'node:fs';
 import path from 'node:path';
 import {assertNoReparsePoints} from './runtime-context.mjs';
-import {trustedWindowsHelper} from './leases.mjs';
+import {trustedWindowsHelper,trustedWindowsRoot} from './leases.mjs';
 
 // Windows command-line quoting, including quotes and trailing backslashes.
 export function quoteWindowsArgument(value){
@@ -14,7 +14,7 @@ export function quoteWindowsArgument(value){
 export function spawnInactiveWindow(file,args,cwd,{invoke=spawnSync}={}){
  validateLaunchBoundary(file,args,cwd);
  const payload=Buffer.from(JSON.stringify({file,parameters:args.map(quoteWindowsArgument).join(' '),cwd}),'utf8').toString('base64');
- const result=invoke(powerShellPath(),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./inactive-window.ps1',import.meta.url)),'-Payload',payload],{cwd,windowsHide:true,shell:false,encoding:'utf8',timeout:15000});
+ const result=invoke(powerShellPath(),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./inactive-window.ps1',import.meta.url)),'-Payload',payload],{...helperOptions(cwd),windowsHide:true,shell:false,encoding:'utf8',timeout:15000});
  if(result.error||result.status!==0)throw new Error('INACTIVE_WINDOW_LAUNCH_FAILED: '+(result.error?.message||result.stderr||result.status));
 }
 
@@ -27,7 +27,7 @@ export function spawnInactiveWindowDetached(file,args,cwd,{invoke=spawn}={}){
  const payload=Buffer.from(JSON.stringify({file,parameters:args.map(quoteWindowsArgument).join(' '),cwd}),'utf8').toString('base64');
  let child;
  try{
-  child=invoke(powerShellPath(),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./inactive-window.ps1',import.meta.url)),'-Payload',payload],{cwd,windowsHide:true,shell:false,stdio:'ignore'});
+  child=invoke(powerShellPath(),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',fileURLToPath(new URL('./inactive-window.ps1',import.meta.url)),'-Payload',payload],{...helperOptions(cwd),windowsHide:true,shell:false,stdio:'ignore'});
  }catch(error){throw new Error('INACTIVE_WINDOW_LAUNCH_FAILED: '+(error?.message||String(error)));}
  if(!child||typeof child.unref!=='function')throw new Error('INACTIVE_WINDOW_LAUNCH_FAILED: helper did not return a detached process');
  child.launchResult=new Promise(resolve=>{
@@ -38,6 +38,13 @@ export function spawnInactiveWindowDetached(file,args,cwd,{invoke=spawn}={}){
 }
 
 function powerShellPath(){return process.platform==='win32'?trustedWindowsHelper('powershell'):'powershell.exe';}
+function helperOptions(cwd){
+ if(process.platform!=='win32')return {cwd};
+ const root=trustedWindowsRoot();
+ // Preserve the initiating agent's credentials/configuration, but pin the
+ // system-root variables used by the helper script to the verified root.
+ return {cwd:root,env:{...process.env,SystemRoot:root,WINDIR:root}};
+}
 function validateLaunchBoundary(file,args,cwd){
  if(typeof file!=='string'||!path.isAbsolute(file))throw new Error('INACTIVE_WINDOW_LAUNCH_FAILED: target executable must be absolute');
  if(!Array.isArray(args)||args.some(arg=>typeof arg!=='string'))throw new Error('INACTIVE_WINDOW_LAUNCH_FAILED: target arguments must be strings');

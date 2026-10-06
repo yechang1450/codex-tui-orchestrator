@@ -39,7 +39,7 @@ Acceptance JSON maps T001, T002... to arrays of parent-defined checks. Supported
 
     {"T001":[{"type":"json","path":"temp/result.json","equals":{"answer":42}}]}
 
-file checks require a regular file and optionally sha256; json checks compare specified top-level values; absent checks confirm deletion. Check paths stay inside the initiating workspace and cannot traverse an existing symbolic link or junction. command checks run an explicit executable with an args array, shell disabled, from the initiating workspace; they check exitCode (default 0) and optional stdout. Checks may run repeatedly, so they must be read-only. The parent must choose checks that establish the intended result: file existence alone is insufficient for semantic correctness. Acceptance commands are parent-authored verification code and are not a sandbox or trust boundary; do not accept task-controlled command strings. Checkpoint tokens identify this execution; they are not a security boundary against an intentionally malicious agent.
+file checks require a regular file and optionally sha256; json checks compare specified top-level values; absent checks confirm deletion. Check paths stay inside the initiating workspace and cannot traverse an existing symbolic link or junction. Controller acceptance is declarative only: workspace command checks are rejected because executing workspace-controlled code with controller authority is not a trust boundary. The parent must choose checks that establish the intended result: file existence alone is insufficient for semantic correctness. Checkpoint tokens identify this execution; they are not a security boundary against an intentionally malicious agent.
 
 ## Interruption and recovery
 
@@ -63,7 +63,7 @@ A `started` checkpoint without `completed` is not automatic success, even if the
 
 Deliberately replacing a contract — the parent narrowing or extending checks after inspecting an uncertain result — requires the explicit `--allow-acceptance-change` flag (place it after the run ID) or `ORCH_ACCEPTANCE_OVERRIDE=1`. The override prints a warning, rebinds the new digest in the controller state and both ledgers, and appends an `acceptanceRebound` entry (`from`, `to`, timestamp, generation, and the conflict when present) to the run history. Historical ledgers without a controller binding require this explicit adoption before verification.
 
-The controller-side binding assumes the worker has workspace-write access and cannot write CODEX_HOME. With danger-full-access, both controller and child run as the same Windows user, so the directory is not an OS-enforced security boundary. Command checks are disabled by default; an acceptance-only command requires explicit `ORCH_ALLOW_ACCEPTANCE_COMMANDS=1`, and the parent must review and trust the exact executable and arguments, avoiding mutable scripts for adversarial work.
+The controller-side binding assumes the worker has workspace-write access and cannot write CODEX_HOME. With danger-full-access, both controller and child run as the same Windows user, so the directory is not an OS-enforced security boundary. Acceptance checks remain declarative and do not execute workspace-provided code.
 
 ## Global coordination and process identity
 

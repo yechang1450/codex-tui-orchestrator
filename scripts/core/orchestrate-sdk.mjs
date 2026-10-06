@@ -17,9 +17,9 @@ import {runWindows,verifyRun,readLedgerJson,sweepRunProcesses} from "./runner.mj
 import {resolveExecutionMode,resolveTuiMode,buildExecArgs} from './execution-mode.mjs';
 import {createHeadlessHooks} from './headless-executor.mjs';
 import {resolveInitiatorSettings,resolveInitiatorPolicy,assertInitiatorWorkspace} from './initiator-settings.mjs';
-import {controllerWindowsDir} from './controller-state.mjs';
+import {controllerWindowsDir,controllerStateDir} from './controller-state.mjs';
 import {renderRunStatus} from './status-events.mjs';
-import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,bind,release,prepare,trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from "./leases.mjs";
+import {launcherIdentity,processSnapshot,sameProcess,coordinatorDir,bind,release,prepare,trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment,readUtf8Bounded,atomicJson} from "./leases.mjs";
 import {admitAuxiliaryWindow} from './auxiliary-admission.mjs';
 import {runPiPlanner,writePiLauncher,waitPiResult} from './pi-runtime.mjs';
 import {isCapacityError, capacityRetryPolicy,rolloutCapacityError,isProviderQuotaError,rolloutQuotaError} from './retry-policy.mjs';
@@ -57,7 +57,7 @@ function diagnosticArg(value) {
   const text = String(value ?? '');
   return path.isAbsolute(text) || /[\\/]/.test(text) ? diagnosticPath(text) : text;
 }
-import { resolveRuntimeContext, assertNoReparsePoints, physicallySameOrChild } from './runtime-context.mjs';
+import { resolveRuntimeContext, assertNoReparsePoints, physicallySameOrChild, physicalPathIdentity } from './runtime-context.mjs';
 // 子代理/窗内公共授权模板加载：把超长 auth 从 SDK 源码下沉到独立模板文件（UTF-8 无 BOM），
 // 运行时读回作为每个窗 prompt 的【公共前缀】，保持字节级一致以命中缓存；读失败回退一段防御文本。
 // 用 import.meta.url 自动推导脚本同目录，绝不硬编码绝对路径；读出的内容必须以 UTF-8 无 BOM 落盘。
@@ -543,7 +543,12 @@ function extractTasks(raw) {
 // hardcoded project paths. Deterministic safety heuristic below is generic
 // (any mention of multiple distinct project-like dirs), not specific to build/80|81|82|83.
 // ---------------------------------------------------------------------------
-const DECOMPOSE_CACHE = path.join(STATE_DIR, "orchestrator-decompose-cache.json");
+// Plans contain model-authored prompts and are later replayed into workers.
+// Keep the cache in controller-owned state; a workspace-write worker must not
+// be able to replace a plan that a later run will trust.
+const DECOMPOSE_CACHE_ID = crypto.createHash("sha256").update(physicalPathIdentity(WORKSPACE)).digest("hex");
+const DECOMPOSE_CACHE = path.join(controllerStateDir(WORKSPACE), "decompose", DECOMPOSE_CACHE_ID, "orchestrator-decompose-cache.json");
+const MAX_DECOMPOSE_CACHE_BYTES = 8 * 1024 * 1024;
 function buildBlockPrompt(body, tk) {
   return String(body || "") + "\n\n【本块唯一标识】" + tk + "\n（执行结束判定 = 本窗完成实际操作并现场验证后，**最后只输出一行结束标记 `__ORCH_DONE__ " + tk + "`**，不做任何汇报/多余输出；输出后等待被 watchdog 关闭。主控会关窗后按本任务提示词核对真实落盘状态。）\n";
 }
@@ -562,14 +567,19 @@ function decomposeHash(request, hints = {}) {
 function loadDecomposeCache() {
   try {
     if (existsSync(DECOMPOSE_CACHE)) {
-      const j = JSON.parse(readFileSync(DECOMPOSE_CACHE, "utf8").replace(/^\uFEFF/, ""));
+      assertNoReparsePoints(DECOMPOSE_CACHE, "decompose cache");
+      const text = readUtf8Bounded(DECOMPOSE_CACHE, "decompose cache", MAX_DECOMPOSE_CACHE_BYTES);
+      const j = JSON.parse(String(text || "").replace(/^\uFEFF/, ""));
       if (j && j.version === CORE_VERSION && j.entries && typeof j.entries === "object") return j; // 永不自动失效（用户 --clear-cache 才清）
     }
   } catch { /* corrupted -> rebuild */ }
   return { version: CORE_VERSION, entries: {} };
 }
 function saveDecomposeCache(obj) {
-  try { mkdirSync(STATE_DIR, { recursive: true }); writeFileSync(DECOMPOSE_CACHE, JSON.stringify(obj), "utf8"); } catch { /* best effort */ }
+  try {
+    assertNoReparsePoints(DECOMPOSE_CACHE, "decompose cache");
+    atomicJson(DECOMPOSE_CACHE, obj, () => assertNoReparsePoints(DECOMPOSE_CACHE, "decompose cache"));
+  } catch { /* best effort */ }
 }
 function loadCachedDecompose(request, hints) {
   const h = decomposeHash(request, hints);
@@ -973,10 +983,11 @@ export function workspaceTrustState(workspace, { configPath = trustConfigPath() 
   return "untrusted";
 }
 export function buildWindowsTerminalArguments(workspace, windowName, launcherPath) {
+  const powershell = process.platform === 'win32' ? trustedWindowsHelper('powershell') : 'powershell.exe';
   return [
     "-w", windowName,
     "-d", workspace,
-    "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+    powershell, "-NoProfile", "-ExecutionPolicy", "Bypass",
     "-File", launcherPath
   ];
 }
@@ -1000,12 +1011,14 @@ function spawnVisibleWindow(lp, title) {
     const bn = path.basename(String(lp || ""));
     const winS = bn.replace(/^win-launch-/, "").replace(/\.ps1$/, "");
     const windowName = "win-" + (winS || "x");
+    // buildWindowsTerminalArguments pins PowerShell to the system directory;
+    // Windows Terminal must not resolve a workspace shadow executable.
     spawnInactiveWindow(WT_EXE, buildWindowsTerminalArguments(WORKSPACE, windowName, lp), WORKSPACE);
     console.log("spawned visible " + AGENT.agent + " TUI (Windows Terminal): " + title + " (window=" + windowName + ")");
     return;
   }
-  const powershell=path.join(process.env.SystemRoot||process.env.WINDIR||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-  const conhost=path.join(process.env.SystemRoot||process.env.WINDIR||'C:\\Windows','System32','conhost.exe');
+  const powershell=trustedWindowsHelper('powershell');
+  const conhost=trustedWindowsHelper('conhost');
   spawnInactiveWindow(conhost,[powershell,'-NoProfile','-ExecutionPolicy','Bypass','-File',lp],WORKSPACE);
   console.log("spawned visible " + AGENT.agent + " TUI (inactive console): " + title);
 }
@@ -1021,9 +1034,9 @@ function launcherPidByScript(lp) {
   if (launcherScanAt.size > 256) launcherScanAt.delete(launcherScanAt.keys().next().value);
   try {
     const escaped = String(lp).replace(/'/g, "''");
-    const r = spawnSync("powershell.exe", ["-NoProfile", "-Command",
+    const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-Command",
       "$ErrorActionPreference='SilentlyContinue'; $q = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*" + escaped + "*' } | Sort-Object CreationDate | Select-Object -First 1; if ($q) { $q.ProcessId }"],
-      { windowsHide: true, encoding: "utf8", timeout: 8000 });
+      { windowsHide: true, encoding: "utf8", timeout: 8000, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     const pid = readPidFileValue(String(r.stdout || "").trim());
     return pidAliveCheck(pid) ? pid : 0;
   } catch { return 0; }
@@ -1059,9 +1072,9 @@ function agentDescendantAlive(pidf) {
   try {
     const pid = readPidFile(pidf);
     if (!pid) return false;
-    const r = spawnSync("powershell.exe", ["-NoProfile", "-Command",
+    const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-Command",
       "$ErrorActionPreference='SilentlyContinue'; $a=@{}; $p=Get-CimInstance Win32_Process; foreach($pr in $p){ if($pr.ParentProcessId -eq 0){continue}; $a[$pr.ProcessId]=$pr.ParentProcessId }; $root=" + Number(pid) + "; $s=@($root); $i=0; while($i -lt $s.Count){ $cur=$s[$i]; $i++; foreach($pr in $p){ if($pr.ParentProcessId -eq $cur){ if(($pr.Name -match 'codex|node') -or ($pr.CommandLine -like '*codex*')){ Write-Output 1; exit 0 }; $s+=$pr.ProcessId } } }; Write-Output 0"],
-      { windowsHide: true, encoding: "utf8", timeout: 8000 });
+      { windowsHide: true, encoding: "utf8", timeout: 8000, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     return /^1/m.test(String(r.stdout || ""));
   } catch { return false; }
 }
@@ -1181,7 +1194,7 @@ function psKillDescendantsLines() {
     "  }",
     "}",
     "$victims.Reverse()",
-    "foreach ($v in $victims) { $before=$all | Where-Object ProcessId -eq $v; $now=Get-CimInstance Win32_Process -Filter ('ProcessId='+$v); if($now -and $now.CreationDate -eq $before.CreationDate -and $now.CommandLine -eq $before.CommandLine -and $now.Name -eq $before.Name){$cutoff[[int]$v]=[DateTime]::UtcNow;taskkill /PID $v /F /T 2>$null | Out-Null; try { Wait-Process -Id $v -Timeout 3 -ErrorAction SilentlyContinue } catch { } } }",
+    "foreach ($v in $victims) { $before=$all | Where-Object ProcessId -eq $v; $now=Get-CimInstance Win32_Process -Filter ('ProcessId='+$v); if($now -and $now.CreationDate -eq $before.CreationDate -and $now.CommandLine -eq $before.CommandLine -and $now.Name -eq $before.Name){$cutoff[[int]$v]=[DateTime]::UtcNow;& (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /PID $v /F /T 2>$null | Out-Null; try { Wait-Process -Id $v -Timeout 3 -ErrorAction SilentlyContinue } catch { } } }",
     "$total += $victims.Count",
     "}",
     "Write-Output $total",
@@ -1340,6 +1353,12 @@ function writeInteractiveLauncher(title, prompt, sfx, metadata={}) {
     // 否则 Windows Terminal 会留下「[已退出进程，代码为 1]」且不自动关的卡壳窗。
     "trap { exit 0 }",
     `$PID | Set-Content -Path '${pidfQ}' -Encoding UTF8`,
+    // A visible worker is a new Codex CLI session. Desktop injects the parent
+    // session identity and tool-host pipe into the initiating process; passing
+    // those two bindings through makes the child attach to the parent's
+    // code-mode host and eventually fail with `code-mode host closed its stdout`.
+    // Keep all sandbox, approval, network, and workspace-verification markers.
+    "foreach ($name in @('CODEX_APP_TOOLS_PIPE_PATH','CODEX_THREAD_ID','CODEX_SESSION_ID')) { Remove-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue }",
     "$env:TERM = 'xterm-256color'",
     "$env:Path = '" + PY_Q + ";' + $env:Path",
     "$env:ORCH_WINDOW = '1'",
@@ -1350,7 +1369,7 @@ function writeInteractiveLauncher(title, prompt, sfx, metadata={}) {
     // is 936 (GBK); Codex expects UTF-8 and the Microsoft Pinyin/TSF IME composes against the console
     // code page. chcp 65001 + InputEncoding UTF-8 keep IME composition UTF-8 (best-effort for CJK).
     "if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}",
-    "try { chcp 65001 | Out-Null } catch { }",
+    "try { & (Join-Path $env:SystemRoot 'System32\\chcp.com') 65001 | Out-Null } catch { }",
     "[Console]::InputEncoding = [System.Text.Encoding]::UTF8",
     "Write-Host '============================================='",
     "Write-Host '  TASK RUNNING - closes automatically on completion'",
@@ -1926,7 +1945,7 @@ async function closeWindowByPid(pid, expected) {
       '$all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue; $actual=$all | Where-Object ProcessId -eq '+p+'; if(-not $actual -or $actual.CreationDate.ToUniversalTime().ToString("o") -ne '+buildPsArrayLit([expected.Started])+'[0] -or $actual.CommandLine -ne '+buildPsArrayLit([expected.CommandLine])+'[0]) { exit 0 }');
   let killedCount = 0;
   try {
-    const r = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", killScript], { encoding: "utf8", windowsHide: true });
+    const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", killScript], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     killedCount = Number(String(r.stdout || "").trim().split(/\r?\n/).pop()) || 0;
   } catch { /* ignore */ }
   // Poll for the launcher to exit on its own; the launcher runs `exit 0` right after `& codex` returns.
@@ -1965,7 +1984,12 @@ try{
   if(-not [OrchOwnedExit]::TerminateProcess($handle,0)){exit 6}
 }finally{[void][OrchOwnedExit]::CloseHandle($handle)}
 exit 0`;
-    const result=run('powershell.exe',['-NoProfile','-Command',ps],{encoding:'utf8',windowsHide:true,timeout:15000});
+    const windows = process.platform === 'win32';
+    const command = windows ? trustedWindowsHelper('powershell') : 'powershell.exe';
+    const options = windows
+      ? {encoding:'utf8',windowsHide:true,timeout:15000,shell:false,cwd:trustedWindowsRoot(),env:controllerEnvironment()}
+      : {encoding:'utf8',windowsHide:true,timeout:15000,shell:false};
+    const result=run(command,['-NoProfile','-Command',ps],options);
     return result.status===0&&!sameProcess(expected,snapshot().get(expected.ProcessId));
   }catch{return false;}
 }
@@ -1978,8 +2002,8 @@ async function closeWindowRobust(w) {
     const lp = path.join(path.dirname(pidf), path.basename(pidf).replace(/^window-/, "win-launch-").replace(/\.pid$/, ".ps1"));
     try {
       const esc = String(lp).replace(/'/g, "''");
-      const r = spawnSync("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
-        "$ErrorActionPreference='SilentlyContinue'; $q = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*" + esc + "*' } | Select-Object -First 1; if ($q) { $q.ProcessId }"], { encoding: "utf8", windowsHide: true });
+      const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+        "$ErrorActionPreference='SilentlyContinue'; $q = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*" + esc + "*' } | Select-Object -First 1; if ($q) { $q.ProcessId }"], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
       pid = Number(String(r.stdout || "").trim());
     } catch { /* ignore */ }
   }
@@ -2340,6 +2364,7 @@ function pidFileOfTransient(f) {
 function staleTransientFiles() {
   const res = [];
   for(const dir of [windowTemp(),TMP]){
+  try { assertNoReparsePoints(dir,'transient directory'); } catch { continue; }
   const alivePids = new Set();
   let names = [];
   try { names = readdirSync(dir); } catch { continue; }
@@ -2427,8 +2452,8 @@ async function cleanStaleWindows() {
         try { protectedPids.add(Number(String(readFileSync(w.pidFile, "utf8")).trim())); } catch { /* ignore */ }
       }
     }
-    const r = spawnSync("powershell.exe", ["-NoProfile","-ExecutionPolicy","Bypass","-Command",
-      "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*win-launch-*' } | ForEach-Object { $_.ProcessId }"], { encoding: "utf8", windowsHide: true });
+    const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile","-ExecutionPolicy","Bypass","-Command",
+      "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*win-launch-*' } | ForEach-Object { $_.ProcessId }"], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     const stale = String(r.stdout || "").split(/\r?\n/).map((s) => Number(String(s).trim())).filter((n) => Number.isFinite(n) && n > 0 && !protectedPids.has(n));
     const pidFiles = new Map();
     for (const dir of dirs) {
@@ -2448,7 +2473,16 @@ async function cleanStaleWindows() {
 function cleanStaleTransients() {
   try {
     const stale = staleTransientFiles();
-    for (const f of stale) rmSync(f, { force: true });
+    for (const f of stale) {
+      try {
+        // Revalidate the directory and file immediately before removal. A
+        // workspace-write worker can race the directory scan by swapping a
+        // junction or link after names were read.
+        assertNoReparsePoints(path.dirname(f),'transient directory');
+        assertNoReparsePoints(f,'stale transient');
+        rmSync(f, { force: true });
+      } catch { /* changed or unsafe path: leave it for a later safe pass */ }
+    }
     if (stale.length) console.log("[orchestrator] cleaned " + stale.length + " stale transient file(s)");
   } catch { /* ignore */ }
 }
@@ -2504,9 +2538,9 @@ export async function main() {
   const modeFlags = new Set(['--run-windows','--visible','--run','--exec','--headless','--resume-run','--spawn','--selftest-close','--doctor','--plan','--status','--tasks','--clear-cache','--verify-run']);
   const requestedModes = leadingModeFlags(process.argv.slice(2),modeFlags);
   if (requestedModes.length > 1) throw new Error('Conflicting execution modes: ' + requestedModes.join(', '));
+  if(['--plan','--run','--exec','--headless','--visible','--run-windows','--spawn','--selftest-close','--resume-run'].includes(mode))requireInitiatorPolicy();
   if (AGENT.agent === 'codex' && ['--plan','--run','--exec','--headless','--visible','--run-windows','--spawn','--selftest-close','--resume-run'].includes(mode))
     applyWindowsProxyEnv();
-  if(['--plan','--run','--exec','--headless','--visible','--run-windows','--spawn','--selftest-close','--resume-run'].includes(mode))requireInitiatorPolicy();
   if (mode === "--doctor") {
     const requestedMode=resolveExecutionMode('',process.env);
     const executionMode=requestedMode==='headless'&&APPROVAL!=='never'?'visible':requestedMode;
@@ -2603,9 +2637,12 @@ export async function main() {
       const report = await waitForCapturedReport(rf, matchToken);
       if (report) res = { done: true, verified: true, text: report, exitCode: readExitCode(rf) };
     }
-    const summaryPath = path.join(TMP, "win-summary.json");
+    const summaryPath = assertNoReparsePoints(path.join(TMP, "win-summary.json"), "spawn summary");
     let summary = {};
-    try { summary = JSON.parse(readFileSync(summaryPath, "utf8")); } catch {}
+    try {
+      const summaryText = readUtf8Bounded(summaryPath, "spawn summary", 4 * 1024 * 1024);
+      if (summaryText !== null) summary = JSON.parse(summaryText.replace(/^\uFEFF/, ""));
+    } catch {}
     const captured = Boolean(res.done && res.verified === true && res.text && !/^\(.*(?:no report captured|no rollout matched|no result captured|before task_complete captured)/i.test(String(res.text).trim()));
     // Wait for launcher to exit on its own, then force close if needed.
     let launcherAliveAfter = true;
@@ -2631,6 +2668,7 @@ export async function main() {
     }
     const spawnPassed = captured && !launcherAliveAfter;
     summary["spawn-" + rid] = { title, status: spawnPassed ? "done" : (captured ? "close-failed" : (res.done ? "uncaptured" : "timeout")), reportCaptured: captured, closed: !launcherAliveAfter, exitCode: res.exitCode ?? null, result: (res.text || "(no result captured)").trim().slice(0, 2000) };
+    assertNoReparsePoints(summaryPath, "spawn summary");
     writeFileSync(summaryPath, JSON.stringify(summary, null, 2), "utf8");
     console.log("=== spawn result ===");
     console.log("done=" + spawnPassed);

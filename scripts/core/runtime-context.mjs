@@ -65,7 +65,24 @@ export function physicalPathIdentity(target) {
   const tail = [];
   while (true) {
     try {
-      const resolved = path.resolve(fs.realpathSync.native(existing), ...tail);
+      // Some managed Windows hosts deny the native realpath syscall for an
+      // otherwise readable local workspace. Keep native resolution as the
+      // first choice, then use Node's regular realpath implementation for
+      // that narrow permission failure. If both paths fail, preserve the
+      // fail-closed behavior below instead of inventing an identity.
+      let real;
+      let nativeResolved = false;
+      try {
+        real = typeof fs.realpathSync.native === 'function'
+          ? fs.realpathSync.native(existing)
+          : fs.realpathSync(existing);
+        nativeResolved = typeof fs.realpathSync.native === 'function';
+      } catch (error) {
+        if (!['EPERM', 'EACCES'].includes(error?.code)) throw error;
+        real = fs.realpathSync(existing);
+      }
+      if (process.platform === 'win32' && !nativeResolved) real = canonicalWindowsPath(real);
+      const resolved = path.resolve(real, ...tail);
       return normalizePhysicalPath(resolved);
     } catch (error) {
       if (error?.code !== 'ENOENT') throw error;
@@ -81,11 +98,50 @@ export function physicalPathIdentity(target) {
   }
 }
 
+// The regular Windows realpath implementation can preserve an 8.3 component
+// when the native call is denied by a managed host. Resolve each existing
+// component back to the directory entry with the same file identity so the
+// fallback keeps the same long-name identity as native realpath. If directory
+// enumeration or identity matching is unavailable, fail closed instead of
+// returning an alias that could split locks and controller state.
+function canonicalWindowsPath(value) {
+  const absolute = path.resolve(String(value));
+  const parsed = path.parse(absolute);
+  const relative = path.relative(parsed.root, absolute);
+  if (!relative) return parsed.root;
+  let current = parsed.root;
+  for (const segment of relative.split(path.sep).filter(Boolean)) {
+    const candidate = path.join(current, segment);
+    const target = fs.statSync(candidate, { bigint: true });
+    let match;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      const entryPath = path.join(current, entry.name);
+      try {
+        const stat = fs.statSync(entryPath, { bigint: true });
+        if (stat.dev === target.dev && stat.ino === target.ino) {
+          match = entry.name;
+          break;
+        }
+      } catch (error) {
+        if (!['ENOENT', 'EACCES', 'EPERM'].includes(error?.code)) throw error;
+      }
+    }
+    if (!match) throw new Error(`Unable to canonicalize Windows path component: ${candidate}`);
+    current = path.join(current, match);
+  }
+  return current;
+}
+
 function normalizePhysicalPath(value) {
   if (process.platform !== 'win32') return path.resolve(value);
   let normalized = path.resolve(String(value)).replaceAll('/', '\\');
-  // realpathSync.native can retain the extended-path prefix.
-  normalized = normalized.replace(/^\\\\\?\\/, '');
+  // realpathSync.native can retain the extended-path prefix. Preserve the
+  // UNC introducer when removing \\?\UNC\; dropping it would turn an UNC
+  // path into the unrelated relative spelling `UNC\\server\\share`.
+  const extendedUnc = /^\\\\\?\\UNC\\(.*)$/i.exec(normalized);
+  if (extendedUnc) normalized = `\\\\${extendedUnc[1]}`;
+  else normalized = normalized.replace(/^\\\\\?\\/, '');
   // A local administrative share is another spelling of the local drive. The
   // machine name is read once from the OS; arbitrary remote UNC shares are not
   // rewritten because they may refer to a different filesystem.

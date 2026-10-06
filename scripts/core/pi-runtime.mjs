@@ -47,7 +47,7 @@ export function writePiLauncher(config,{key,prompt,suffix,workspace,temp}) {
   const body=["$ErrorActionPreference = 'Stop'",`$PID | Set-Content -LiteralPath ${quote(pidf)} -Encoding UTF8`,
     '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8','$OutputEncoding = [System.Text.Encoding]::UTF8',
     "if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}",
-    'try { chcp 65001 | Out-Null } catch { }',
+    "try { & (Join-Path $env:SystemRoot 'System32\\chcp.com') 65001 | Out-Null } catch { }",
     `Set-Location -LiteralPath ${quote(workspace)}`,`$env:ORCH_WINDOW = '1'`,`$env:ORCH_PI_TOKEN = ${quote(token)}`,`$env:ORCH_PI_RESULT = ${quote(rf)}`,
     '$code = 1','try {','$agentArgs = @('+args.map(quote).join(',')+')',...nativeArgumentLines(),`& ${quote(config.bin)} @agentArgs`,'$code = $LASTEXITCODE','} catch { $code = 1 }',
     `if (-not (Test-Path -LiteralPath ${quote(rf)})) { @{__EXIT__=$code;__DONE__=$true;token=${quote(token)}} | ConvertTo-Json -Compress | Set-Content -LiteralPath ${quote(rf)} -Encoding UTF8 }`,'exit 0'].join('\r\n');

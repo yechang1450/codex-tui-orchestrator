@@ -51,7 +51,7 @@ function locations(id){
   // 执行工作区独立于编排器仓库：编排器拒绝"改自己"的请求（自引用守卫），
   // 而仓库路径出现在任务文本里会命中该守卫，所以这里用一个中立的 ws 目录承载这次运行。
   const runWorkspace=path.join(root,'ws');
-  return {id,runId,root,runWorkspace,summaryFile:path.join(runWorkspace,'temp','orchestrator','runs',runId,'summary.json'),entry:path.join(repo,'scripts','orchestrate-sdk.mjs')};
+  return {id,runId,root,runWorkspace,controllerRoot:path.join(root,'controller'),summaryFile:path.join(runWorkspace,'temp','orchestrator','runs',runId,'summary.json'),entry:path.join(repo,'scripts','orchestrate-sdk.mjs')};
 }
 
 function cancelOwned(state){
@@ -82,7 +82,7 @@ ${id==='one'
 assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(JSON.stringify(receipt));`;
   fs.writeFileSync(probes.one,probeSource('one'));fs.writeFileSync(probes.two,probeSource('two'));
   writeNew(acceptance,Object.fromEntries(['one','two'].map((task,i)=>['T00'+(i+1),{retrySafe:task==='two',checks:[{type:'json',path:path.join(state.root,task+'.json'),equals:{nonce,cwd:state.runWorkspace,id:task,count:1,answer:42}}]}])));
-  const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:state.runWorkspace,ORCH_RUN_ID:state.runId,ORCH_ACCEPTANCE_FILE:acceptance,ORCH_MAX_POLL_MS:'1800000'};delete env.ORCH_STATE_DIR;
+  const env={...process.env,ORCH_AGENT:'codex',WORKSPACE_DIR:state.runWorkspace,ORCH_CONTROLLER_ROOT:state.controllerRoot,ORCH_RUN_ID:state.runId,ORCH_ACCEPTANCE_FILE:acceptance,ORCH_MAX_POLL_MS:'1800000'};delete env.ORCH_STATE_DIR;
   for(const key of ['ORCH_TASK_HINTS','ORCH_TASK_FOLD','ORCH_TASK_TAIL'])delete env[key];
   // 提示词刻意不用"修改/更新"这类词：任务文本里出现仓库路径 + 修改意图会被自引用守卫判成"改编排器自己"。
   // 顺序由预置的拆块缓存保证（B1 完成后才允许开 B2），不指望模型自觉按序执行。
@@ -91,7 +91,8 @@ assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(J
     two:`项目 92：在工作目录 ${state.runWorkspace} 执行 node "${probes.two}"，等命令结束后读回 two.json，核验 nonce=${nonce}、cwd=${state.runWorkspace}、id=two、count=1、answer=42。先 started、成功读回后 completed。不要触碰测试脚本，不要读写记忆，不要另开窗口或提交`,
   };
   const request=[sentences.one,sentences.two].join('；');
-  const stateDir=path.join(state.runWorkspace,'temp','orchestrator');
+  const workspaceId=crypto.createHash('sha256').update(fs.realpathSync(state.runWorkspace).toLowerCase()).digest('hex');
+  const stateDir=path.join(state.controllerRoot,'decompose',workspaceId);
   fs.mkdirSync(stateDir,{recursive:true});
   const hints={moduleToProj:{},foldRules:{},tailKeywords:['清爽','清理','保持干净','收尾','整理']};
   const blocks=[

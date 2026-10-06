@@ -233,6 +233,18 @@ test('watch refuses events belonging to another run',async()=>{
   }finally{f.close();}
 });
 
+test('watch does not terminate or publish a forged terminal event',async()=>{
+  const f=fixture();try{
+    createStatusPublisher(f.dir).publish(f.sum,'task.started');
+    const received=[];
+    await assert.rejects(()=>watchRunStatus({workspace:f.workspace,runId:'live',intervalMs:10,timeoutMs:60,onEvent:event=>{
+      received.push(event);
+      if(event.type==='snapshot')fs.appendFileSync(path.join(f.dir,'events.jsonl'),JSON.stringify({schema:1,seq:2,runId:'live',type:'run.finished',at:Date.now(),finishedAt:Date.now(),success:false})+'\n');
+    }}),/timed out/i);
+    assert.deepEqual(received.map(event=>event.type),['snapshot']);
+  }finally{f.close();}
+});
+
 test('a fresh status publisher binds every later publication to its first run',()=>{
   const f=fixture();try{
     const publisher=createStatusPublisher(f.dir);

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import fs from 'node:fs';
-import { resolveRuntimeContext } from '../scripts/runtime-context.mjs';
+import { resolveRuntimeContext, physicalPathIdentity } from '../scripts/runtime-context.mjs';
 import { launchArgs } from '../scripts/host-cli.mjs';
 import { runDirectory } from '../scripts/core/runner.mjs';
 
@@ -18,6 +18,40 @@ test('explicit workspace resolves against caller and propagates without relocati
   const context = resolveRuntimeContext({ WORKSPACE_DIR: 'project' }, cwd);
   assert.equal(context.workspace, path.join(cwd, 'project'));
   assert.equal(context.state, path.join(cwd, 'project', 'temp', 'orchestrator'));
+});
+test('physical workspace identity falls back when native realpath is denied', () => {
+  const cwd = fs.mkdtempSync(path.join(path.resolve('temp'), 'realpath-fallback-'));
+  const native = fs.realpathSync.native;
+  try {
+    fs.realpathSync.native = () => {
+      const error = new Error('native realpath denied by host');
+      error.code = 'EACCES';
+      throw error;
+    };
+    assert.equal(physicalPathIdentity(cwd), cwd.toLowerCase());
+  } finally {
+    fs.realpathSync.native = native;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+test('physical workspace identity remains fail-closed when both realpath paths are denied', () => {
+  const cwd = fs.mkdtempSync(path.join(path.resolve('temp'), 'realpath-denied-'));
+  const native = fs.realpathSync.native;
+  const regular = fs.realpathSync;
+  try {
+    const denied = () => {
+      const error = new Error('realpath denied by host');
+      error.code = 'EACCES';
+      throw error;
+    };
+    fs.realpathSync.native = denied;
+    fs.realpathSync = denied;
+    assert.throws(() => physicalPathIdentity(cwd), /EACCES|realpath denied/i);
+  } finally {
+    fs.realpathSync.native = native;
+    fs.realpathSync = regular;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 test('state override stays inside the initiating workspace temp directory', () => {
   const cwd = path.resolve('temp', 'state-owner');

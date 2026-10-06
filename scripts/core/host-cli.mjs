@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import { assertTrustedNpm, pickNpmCli } from '../npm-cli.mjs';
 import {resolvePiHost,piArgs} from './pi-host.mjs';
 import {assertNoReparsePoints} from './runtime-context.mjs';
+import {trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from './leases.mjs';
 
 const WIN_TARGETS = Object.freeze([
   ['x86_64-pc-windows-msvc', 'codex.exe'],
@@ -92,15 +93,15 @@ export function verifyAuthenticodePublisher(file, env = process.env, spawn = spa
     // The verifier itself is security-sensitive.  Never let a caller-supplied
     // child environment select a different PowerShell or module tree: the
     // parent process' host environment is the only trusted system-root source.
-    const trustedRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows';
+    const trustedRoot = trustedWindowsRoot();
     const suppliedRoot = env.SystemRoot || env.WINDIR;
     if (suppliedRoot && path.win32.normalize(suppliedRoot).toLowerCase() !== path.win32.normalize(trustedRoot).toLowerCase()) return false;
     const systemRoot = trustedRoot;
-    const powershell = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const powershell = trustedWindowsHelper('powershell');
     const systemModules = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
     const result = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', AUTHENTICODE_SCRIPT], {
       encoding: 'utf8', windowsHide: true, shell: false, timeout: 30000,
-      env: {...env, PSModulePath: systemModules, ORCH_AUTHENTICODE_TARGET: path.resolve(file)},
+      env: controllerEnvironment({PSModulePath: systemModules, ORCH_AUTHENTICODE_TARGET: path.resolve(file)}),
     });
     if (result?.status !== 0) return false;
     const thumbprint = String(result.stdout || '').trim().replace(/\s+/g, '').toUpperCase();
@@ -152,8 +153,14 @@ export function cliCandidates(env = process.env, platform = process.platform, {w
   // resolver for codex.exe in that case; this never installs or selects a shim.
   if (platform === 'win32' && !found.some(file => { try { return fs.existsSync(file); } catch { return false; } })) {
     try {
-      const whereExe = p.join(env.SystemRoot || env.WINDIR || 'C:\\Windows', 'System32', 'where.exe');
-      const result = where(whereExe, ['codex.exe'], {encoding:'utf8', windowsHide:true, shell:false, timeout:8000});
+      const runningWindows = process.platform === 'win32' && platform === 'win32';
+      const whereExe = runningWindows
+        ? trustedWindowsHelper('where')
+        : p.join(env.SystemRoot || env.WINDIR || 'C:\\Windows', 'System32', 'where.exe');
+      const result = where(whereExe, ['codex.exe'], {
+        encoding:'utf8', windowsHide:true, shell:false, timeout:8000,
+        ...(runningWindows ? {cwd: trustedWindowsRoot(), env: controllerEnvironment()} : {env}),
+      });
       if (result?.status === 0) for (const line of String(result.stdout || '').split(/\r?\n/)) {
         const candidate = line.trim();
         if (candidate) found.push(candidate);

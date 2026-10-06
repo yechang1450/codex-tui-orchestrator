@@ -1,4 +1,3 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {performance} from 'node:perf_hooks';
@@ -6,10 +5,11 @@ import {resolveRuntimeContext} from './runtime-context.mjs';
 import {runDirectory} from './runner.mjs';
 import {processSnapshot,sameProcess} from './leases.mjs';
 import {TERMINAL,SUCCESS,summaryComplete} from './contracts.mjs';
+import {readRunStatus} from './status-events.mjs';
 export {TERMINAL,SUCCESS,summaryComplete};
 export const summaryTerminal=sum=>summaryComplete(sum,false);
 export const failures=sum=>Object.entries(sum?.taskResults||{}).filter(([,r])=>!SUCCESS.has(r.status)).map(([id,r])=>id+':'+r.status);
-export function loadSummary(workspace,runId){try{return JSON.parse(fs.readFileSync(path.join(runDirectory(workspace,runId),'summary.json'),'utf8'));}catch{return null;}}
+export function loadSummary(workspace,runId){try{return readRunStatus(workspace,runId);}catch{return null;}}
 export function parsePollingOptions(argv,env=process.env){
   const result={runId:env.ORCH_RUN_ID,timeoutMs:1800000,intervalMs:5000,requireAllSuccess:true};
   const fields={'--run-id':'runId','--timeoutMs':'timeoutMs','--intervalMs':'intervalMs'};

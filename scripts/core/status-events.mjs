@@ -4,15 +4,19 @@ import crypto from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
 import {buildTodoList,jsonProblem,describeShape} from './contracts.mjs';
 import {atomicJson,readUtf8Bounded,MAX_CONTROLLER_ARTIFACT_BYTES} from './leases.mjs';
-import {assertNoReparsePoints} from './runtime-context.mjs';
+import {assertNoReparsePoints,physicalPathIdentity} from './runtime-context.mjs';
 import {controllerStateDir} from './controller-state.mjs';
 
 const MAX_STATUS_TEXT_BYTES=Math.min(MAX_CONTROLLER_ARTIFACT_BYTES,4*1024*1024);
 const MAX_STATUS_LINE_BYTES=256*1024;
 const MAX_RENDERED_FIELD=512;
 function statusDigest(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
+function sameWorkspaceIdentity(left,right){
+  if(typeof left!=='string'||!left.trim()||typeof right!=='string'||!right.trim())return false;
+  try{return physicalPathIdentity(left)===physicalPathIdentity(right);}catch{return false;}
+}
 function statusAuthorityFile(workspace,runId){
-  const identity=crypto.createHash('sha256').update(String(path.resolve(workspace)).toLowerCase()).digest('hex');
+  const identity=crypto.createHash('sha256').update(physicalPathIdentity(workspace)).digest('hex');
   return assertNoReparsePoints(path.join(controllerStateDir(workspace),'status',identity,runId+'.json'),'status authority');
 }
 function safeText(value,max=MAX_RENDERED_FIELD){
@@ -157,7 +161,7 @@ export function readRunStatus(workspace,runId){
   if(!sum){source=manifestFile;sum=readLedger(manifestFile);}
   if(!sum)throw new Error('Run ledger not found: '+summaryFile+'（同目录也没有 manifest.json：'+dir+'）');
   if(typeof sum.runId!=='string'||typeof sum.workspace!=='string')throw new Error('Invalid run ledger '+source+'：缺少 runId/workspace 字段（实测 runId='+describeShape(sum.runId)+'，workspace='+describeShape(sum.workspace)+'）');
-  if(sum.runId!==runId||path.resolve(sum.workspace)!==path.resolve(workspace))throw new Error('Status run identity mismatch');
+  if(sum.runId!==runId||!sameWorkspaceIdentity(sum.workspace,workspace))throw new Error('Status run identity mismatch');
   // Before the first controller publication only the planning manifest exists.
   // It may be displayed as pending inventory, but it is never accepted as an
   // authenticated result.  A manifest that looks like a result is rejected.
@@ -176,7 +180,7 @@ export function readRunStatus(workspace,runId){
   }
   try{authority=JSON.parse(authorityText);}
   catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
-  if(authority?.version!==1||authority.runId!==runId||path.resolve(authority.workspace||'')!==path.resolve(workspace)||authority.sha256!==statusDigest(sum))throw new Error('Status ledger authority mismatch');
+  if(authority?.version!==1||authority.runId!==runId||!sameWorkspaceIdentity(authority.workspace||'',workspace)||authority.sha256!==statusDigest(sum))throw new Error('Status ledger authority mismatch');
   return {...sum,todoList:buildTodoList(sum.tasks,sum.blocks,sum.taskResults),executionStatus:buildExecutionStatus(sum)};
 }
 // 坏账本既不能静默当成正常状态读出去（调用方会拿到半份状态），也不能只回裸 SyntaxError。
@@ -197,6 +201,10 @@ export function renderRunStatus(state){
     'Execution',...(state.executionStatus||[]).map(e=>`${safeText(e.block)} ${safeText(e.mode)} ${safeText(e.status)} | attempt ${safeText(e.attempt)} | PID ${safeText(e.pid??'-')} | tasks ${safeText((e.taskIds||[]).join(','))}${e.reason?' | '+safeText(e.reason):''}`)];
   return rows.join('\n');
 }
+function terminalEventMatchesSummary(workspace,runId,event){
+  const sum=readRunStatus(workspace,runId);
+  return !!sum.finishedAt&&sum.eventSeq===event.seq&&sum.finishedAt===event.finishedAt&&sum.success===event.success;
+}
 export async function watchRunStatus({workspace,runId,after=0,intervalMs=250,timeoutMs=21600000,signal,onEvent=console.log}){
   if(!Number.isSafeInteger(after)||after<0||!Number.isFinite(intervalMs)||intervalMs<10||!Number.isFinite(timeoutMs)||timeoutMs<0)throw new Error('Invalid status watch timing or cursor');
   const dir=directory(workspace,runId),deadline=Date.now()+timeoutMs;
@@ -216,7 +224,17 @@ export async function watchRunStatus({workspace,runId,after=0,intervalMs=250,tim
     }
     if(initial){onEvent({schema:1,seq:sum.eventSeq||0,type:'snapshot',...sum});seq=Math.max(seq,sum.eventSeq||0);initial=false;if(sum.finishedAt)return;}
     let size=0;try{size=fs.statSync(assertNoReparsePoints(path.join(dir,'events.jsonl'),'status events file')).size;}catch(error){if(error.code!=='ENOENT')throw error;}
-    if(size!==lastSize){for(const event of readEvents(dir,{after:seq,runId})){onEvent(event);seq=event.seq;if(event.finishedAt)return;}lastSize=size;}
+    if(size!==lastSize){for(const event of readEvents(dir,{after:seq,runId})){
+      seq=event.seq;
+      // Events are workspace-readable hints.  A worker can append a forged
+      // terminal event, so only a fresh controller-authenticated summary can
+      // authorize terminal output and watcher termination.
+      if(event.finishedAt){
+        if(!terminalEventMatchesSummary(workspace,runId,event))continue;
+        onEvent(event);return;
+      }
+      onEvent(event);
+    }lastSize=size;}
     // A controller may die between its atomic snapshot and event append.
     if((sum.eventSeq||0)>seq){onEvent({schema:1,seq:sum.eventSeq,type:'snapshot',...sum});seq=sum.eventSeq;if(sum.finishedAt)return;}
     if(Date.now()>=deadline)throw new Error('Status watch timed out');

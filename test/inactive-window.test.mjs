@@ -40,8 +40,12 @@ test('focus guard keeps the initiating window while typing unless the user actua
   'typing alone must not cancel focus restoration while the initiating window remains foreground');
  assert.match(source,/\[Console\]::OutputEncoding\s*=\s*\[Text\.UTF8Encoding\]::new\(\$false\)/,
   'PowerShell diagnostics must use UTF-8 output');
- assert.match(source,/\$OutputEncoding\s*=\s*\[Text\.UTF8Encoding\]::new\(\$false\)/,
+  assert.match(source,/\$OutputEncoding\s*=\s*\[Text\.UTF8Encoding\]::new\(\$false\)/,
   'PowerShell pipeline output must use UTF-8');
+  assert.match(source,/System32\\chcp\.com/,
+  'the encoding helper must be resolved from the Windows system directory');
+  assert.doesNotMatch(source,/(?<![$\\.\w])chcp\s+65001/,
+  'workspace current-directory executables must not shadow chcp');
 });
 
 test('controlled focus probe exposes opt-in input diagnostics',()=>{

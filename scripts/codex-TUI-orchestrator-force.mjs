@@ -11,7 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import {launcherIdentity,processSnapshot,sameProcess} from './core/leases.mjs';
+import {launcherIdentity,processSnapshot,sameProcess,trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from './core/leases.mjs';
 
 import { resolveRuntimeContext } from './runtime-context.mjs';
 import { controllerWindowsDir } from './core/controller-state.mjs';
@@ -67,7 +67,7 @@ function pidAlive(pid) {
   if (process.platform === "win32") {
     // 防伪造：仅识别“编排器工作窗”的真实进程，而非任意 powershell/codex 像。
     try {
-      const r = spawnSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
+      const r = spawnSync(trustedWindowsHelper('tasklist'), ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
       const out = String(r.stdout || "");
       if (!/"\S+","\d+"/.test(out)) return false; // 该 PID 无对应行
       const img = String(out.split(/\r?\n/)[0] || "").split(",")[0].replace(/"/g, "");
@@ -78,7 +78,7 @@ function pidAlive(pid) {
       // 其它任意 powershell/codex 一律视作伪造，不得过门禁（fail-closed）。
       // pid 已在 pidOf() 校验为 1..4194304 的合法整数，直接内联进 -Filter 安全；用 `$args[0]` 传参会
       // 触发 PowerShell 的 -Command 解析异常（UnexpectedToken），导致 CommandLine 查询返回空，故改为内联。
-      const ps = spawnSync("powershell.exe", ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`], { encoding: "utf8", windowsHide: true });
+      const ps = spawnSync(trustedWindowsHelper('powershell'), ["-NoProfile", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
       const cl = String(ps.stdout || "");
       return /win-launch-.*\.ps1/i.test(cl) || /orchestrate-sdk\.mjs/i.test(cl) || /--run-windows/i.test(cl);
     } catch { return false; }

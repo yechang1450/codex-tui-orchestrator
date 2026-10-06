@@ -2,6 +2,7 @@ import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {verifyChecks, buildTodoList, canonicalDigest, CORE_VERSION} from '../scripts/core/contracts.mjs';
@@ -29,7 +30,7 @@ const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 22
 const BARE_NODE = /^(Cannot read properties|Cannot use 'in' operator|Unexpected token|Unexpected end of JSON input|The "[^"]+" argument must be of type|Received type)|is not a function/;
 
 function cli(args, {workspace, env = {}, timeout = 60000} = {}) {
-  const clean = {...process.env, ...env};
+  const clean = {...process.env, ORCH_CONTROLLER_ROOT: controllerRoot, ...env};
   for (const key of ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'ORCH_TASK_HINTS', 'ORCH_TASK_FOLD', 'ORCH_TASK_TAIL', 'ORCH_RUN_ID', 'ORCH_STATE_DIR']) delete clean[key];
   clean.ORCH_AGENT = 'codex';
   if (workspace) clean.WORKSPACE_DIR = workspace;
@@ -39,7 +40,8 @@ function cli(args, {workspace, env = {}, timeout = 60000} = {}) {
 }
 
 function seedPlanCache(workspace, request, blocks, version) {
-  const stateDir = path.join(workspace, 'temp', 'orchestrator');
+  const workspaceId=crypto.createHash('sha256').update(fs.realpathSync(workspace).toLowerCase()).digest('hex');
+  const stateDir = path.join(controllerRoot, 'decompose', workspaceId);
   fs.mkdirSync(stateDir, {recursive: true});
   const cacheFile = path.join(stateDir, 'orchestrator-decompose-cache.json');
   const hash = decomposeHash(request, resolveHints());
@@ -319,67 +321,19 @@ test('U1-U9 单元命令/验收检查的畸形输入：命令类必须 fail-clos
   const uncWorkspace = '\\\\localhost\\' + workspace[0].toLowerCase() + '$' + workspace.slice(2);
   fs.writeFileSync(path.join(workspace, 'shim.cmd'), '@echo off\r\nexit /b 0\r\n', 'utf8');
   const cases = [
-    ['missing-exe', [{type: 'command', command: path.join(workspace, 'nope.exe'), args: []}], /only the verified Node executable is allowed/],
-    ['exit-code-mismatch', [{type: 'command', command: process.execPath, args: [exitTool]}], /Acceptance command failed/],
-    ['relative-exe', [{type: 'command', command: './shim.cmd', args: []}], /only the verified Node executable is allowed/],
-    ['non-string-command', [{type: 'command', command: 123, args: []}], /command/i],
-    ['non-string-args', [{type: 'command', command: process.execPath, args: [123]}], /args/i],
-    ['timeout', [{type: 'command', command: process.execPath, args: [timeoutTool], timeoutMs: 300}], /Acceptance command failed/],
-    ['negative-timeout', [{type: 'command', command: process.execPath, args: [plainTool], timeoutMs: -1}], null],
+    ['workspace-command', [{type: 'command', command: process.execPath, args: [plainTool]}], /Workspace command acceptance is disabled/],
+    ['workspace-command-with-loader', [{type: 'command', command: process.execPath, args: ['--loader', plainTool]}], /Workspace command acceptance is disabled/],
     ['non-object-check', [null], /Acceptance check/],
     ['json-equals-not-object', [{type: 'json', path: 'shape.json', equals: 'nope'}], /equals/],
   ];
   fs.writeFileSync(path.join(workspace, 'shape.json'), JSON.stringify({a: 1}), 'utf8');
   const previousCommandPolicy=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
   process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
-  try { for (const [label, checks, expected] of cases) {
-    let result = null;
-    let error = null;
-    try {
-      result = verifyChecks(checks, workspace);
-    } catch (caught) {
-      error = caught;
-    }
-    seen(`unit.${label}`, error ? `THREW ${error.message}` : `${result.status} ${String(result.reason || '').slice(0, 140)}`);
-    assert.equal(error, null, '验收检查不得向调用方抛异常（必须回 failed + reason）');
-    if (label === 'negative-timeout' && result.status === 'verified') continue; // 允许合法执行，但不得裸崩
-    assert.equal(result.status, 'failed', `畸形单元命令必须 fail-closed（实测 ${JSON.stringify(result)}）`);
-    assert.ok(result.reason, '失败必须给出 reason');
-    assert.doesNotMatch(String(result.reason), BARE_NODE, `真因不得是裸 Node 措辞：${result.reason}`);
-    if (expected) assert.match(String(result.reason), expected, '真因必须能定位到具体命令/字段');
-  }} finally { if(previousCommandPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=previousCommandPolicy; }
-  const defaultCommand = verifyChecks([{type:'command',command:process.execPath,args:[plainTool]}],workspace);
-  assert.equal(defaultCommand.status,'failed');
-  assert.match(String(defaultCommand.reason),/disabled by default/i);
-  const evalRejected = verifyChecks([{type:'command',command:process.execPath,args:['-e','console.log(1)']}],workspace);
-  assert.equal(evalRejected.status,'failed');
-  assert.match(String(evalRejected.reason),/disabled by default/i);
-  const previousEvalPolicy=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
-  process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
   try {
-    const evalOptIn=verifyChecks([{type:'command',command:process.execPath,args:['-e','console.log(1)']}],workspace);
-    assert.equal(evalOptIn.status,'failed');
-    assert.match(String(evalOptIn.reason),/eval\/loader arguments are not allowed/i);
-  } finally { if(previousEvalPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=previousEvalPolicy; }
-  const good = [
-    ['spaces-path', [{type: 'command', command: process.execPath, args: [spacedTool]}]],
-    ['chinese-path', [{type: 'command', command: process.execPath, args: [chineseTool]}]],
-    ['relative-script', [{type: 'command', command: process.execPath, args: ['plain.mjs']}]],
-    ['unc-workspace-cwd', [{type: 'command', command: process.execPath, args: [plainTool]}], uncWorkspace],
-    ['unc-file-check', [{type: 'file', path: path.join(uncWorkspace, 'plain.mjs')}]],
-    ['self-exiting-stdout', [{type: 'command', command: process.execPath, args: [plainTool], stdout: 'ok'}]],
-    ['file-hash-match', [{type: 'file', path: 'shape.json'}]],
-    ['json-equals', [{type: 'json', path: 'shape.json', equals: {a: 1}}]],
-  ];
-  // 注：Node 本身无法把 UNC 路径当入口脚本跑（Cannot find module / ERR_INVALID_FILE_URL_PATH），
-  // 那是运行时限制；这里验证的是验收契约对 UNC 工作区/UNC 路径的解析与执行不含糊。
-  const goodPolicy=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
-  process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
-  try { for (const [label, checks, cwd] of good) {
-    const result = verifyChecks(checks, cwd || workspace);
-    seen(`unit.${label}`, `${result.status} ${String(result.reason || '')}`);
-    assert.equal(result.status, 'verified', `${label} 必须通过（实测 ${JSON.stringify(result)}）`);
-  }} finally { if(goodPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=goodPolicy; }
+    const command=verifyChecks([{type:'command',command:process.execPath,args:[plainTool]}],workspace);
+    assert.equal(command.status,'failed');
+    assert.match(String(command.reason),/Workspace command acceptance is disabled/i);
+  } finally { if(previousCommandPolicy===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=previousCommandPolicy; }
   const negatives = [
     ['hash-mismatch', [{type: 'file', path: 'shape.json', sha256: 'b'.repeat(64)}], /Hash mismatch/],
     ['missing-file', [{type: 'file', path: 'nope.txt'}], /Acceptance file missing/],

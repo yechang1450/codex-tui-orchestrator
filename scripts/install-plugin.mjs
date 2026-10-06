@@ -29,6 +29,8 @@ import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultD
 import {publishDist} from './publish-dist.mjs';
 import {cliCandidates, resolveHost, verifyAuthenticodePublisher} from './core/host-cli.mjs';
 import {assertTrustedNpm} from './npm-cli.mjs';
+import {runtimeInventory} from './release-integrity.mjs';
+import {assertNoReparsePoints,physicallySameOrChild} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
@@ -138,8 +140,13 @@ export function parseCliJson(text) {
 export function listInstalledCaches({codexHome = null, homeDir = os.homedir(), marketplaceName, pluginName}) {
   const base = path.join(codexHome || path.join(homeDir, '.codex'), 'plugins', 'cache', marketplaceName, pluginName);
   if (!fs.existsSync(base)) return [];
+  try { assertNoReparsePoints(base, 'plugin cache root'); } catch { return []; }
   return fs.readdirSync(base, {withFileTypes: true})
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .filter((entry) => {
+      if (!entry.isDirectory() || entry.name.startsWith('.')) return false;
+      try { assertNoReparsePoints(path.join(base, entry.name), 'plugin version cache'); return true; }
+      catch { return false; }
+    })
     .map((entry) => ({version: entry.name, dir: path.join(base, entry.name)}))
     .sort((left, right) => left.version.localeCompare(right.version));
 }
@@ -264,14 +271,43 @@ export function checkInstall(options = {}) {
   const marketplaceName = registration.marketplaceName || 'personal';
   const caches = listInstalledCaches({codexHome, marketplaceName, pluginName});
   const cache = caches.find((entry) => entry.version === manifest.version) || caches[caches.length - 1] || null;
+  let validatedCache = null;
   if (!cache) {
     problems.push({step: 'cache', status: 'missing', reason: `no installed cache under ${path.join(codexHome, 'plugins', 'cache', marketplaceName, pluginName)}`});
   } else {
     if (cache.version !== manifest.version) problems.push({step: 'cache_version', status: 'stale', reason: `installed ${cache.version} but the working tree declares ${manifest.version}`});
-    if (!fs.existsSync(path.join(cache.dir, 'scripts', 'node_modules'))) {
-      problems.push({step: 'cache_deps', status: 'missing', reason: `restore with: npm ci --prefix "${path.join(cache.dir, 'scripts')}" --omit=optional --ignore-scripts --no-audit --no-fund`});
-    } else {
-      const integrity = run(process.execPath, [path.join(cache.dir, 'scripts', 'release-integrity.mjs')], {cwd: cache.dir, allowFailure: true});
+    try {
+      validatedCache = validateInstalledPath({
+        installedPath: cache.dir,
+        codexHome,
+        marketplaceName,
+        pluginName,
+        version: cache.version,
+      });
+    } catch (error) {
+      problems.push({step: 'cache_path', status: 'failed', reason: error?.message || String(error)});
+    }
+    const cacheDir = validatedCache?.installedPath || cache.dir;
+    if (validatedCache && !fs.existsSync(path.join(cacheDir, 'scripts', 'node_modules'))) {
+      problems.push({step: 'cache_deps', status: 'missing', reason: `restore with: npm ci --prefix "${path.join(cacheDir, 'scripts')}" --omit=optional --ignore-scripts --no-audit --no-fund`});
+    } else if (validatedCache && cache.version === manifest.version && registration.status === 'matched' && registration.sourceReal) {
+      try {
+        authenticateInstalledCache({sourcePath: registration.sourceReal, installedPath: cacheDir});
+      } catch (error) {
+        problems.push({step: 'cache_authentication', status: 'failed', reason: error?.message || String(error)});
+      }
+    } else if (validatedCache && cache.version === manifest.version && registration.status === 'matched') {
+      problems.push({step: 'cache_authentication', status: 'failed', reason: 'CACHE_AUTHENTICATION_FAILED: registered source path is unavailable'});
+    }
+    if (validatedCache && !problems.some((problem) => ['cache_path', 'cache_deps', 'cache_authentication'].includes(problem.step)) && cache.version === manifest.version && registration.status === 'matched') {
+      const integrity = runAuthenticatedCacheScript({
+        sourcePath: registration.sourceReal,
+        installedPath: cacheDir,
+        scriptPath: path.join(cacheDir, 'scripts', 'release-integrity.mjs'),
+        cwd: cacheDir,
+        timeoutMs: options.timeoutMs,
+        allowFailure: true,
+      });
       if (integrity.status !== 0) problems.push({step: 'cache_integrity', status: 'failed', reason: (integrity.stderr || integrity.stdout || '').trim().slice(0, 300)});
     }
   }
@@ -307,7 +343,7 @@ export function checkInstall(options = {}) {
     distRoot: configuredDistRoot,
     environment: {platform: process.platform, node: process.version, hostCli: options.codexCli || pickCodexCli()},
     registration: {status: registration.status, sourceKind: registration.sourceKind || null},
-    cache: cache ? cache.dir : null,
+    cache: validatedCache?.installedPath || (cache ? cache.dir : null),
     skills,
     problems,
     warnings,
@@ -345,6 +381,70 @@ export function skillNamesOf(pluginPath) {
 }
 
 /**
+ * Authenticate the installed cache against the exact local source selected by
+ * marketplace registration. The cache's release-integrity verifier and doctor
+ * are executable code, so neither may be trusted to authenticate itself.
+ */
+export function authenticateInstalledCache({sourcePath, installedPath} = {}) {
+  if (!sourcePath || !installedPath) throw new Error('CACHE_AUTHENTICATION_FAILED: source and installed cache paths are required');
+  const source = path.resolve(String(sourcePath || ''));
+  const installed = path.resolve(String(installedPath || ''));
+  let expected;
+  let actual;
+  try {
+    const sourceStat = fs.lstatSync(source);
+    const installedStat = fs.lstatSync(installed);
+    if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink() || !installedStat.isDirectory() || installedStat.isSymbolicLink()) {
+      throw new Error('source and installed cache roots must be regular directories');
+    }
+    expected = runtimeInventory(source);
+    actual = runtimeInventory(installed);
+  } catch (error) {
+    throw new Error(`CACHE_AUTHENTICATION_FAILED: unable to inventory source/cache (${error?.message || error})`);
+  }
+  for (const required of ['scripts/release-integrity.mjs', 'scripts/orchestrate-sdk.mjs']) {
+    if (!expected[required] || !actual[required]) {
+      throw new Error(`CACHE_AUTHENTICATION_FAILED: required cache verifier or doctor is missing: ${required}`);
+    }
+  }
+  const expectedNames = Object.keys(expected).sort();
+  const actualNames = Object.keys(actual).sort();
+  if (expectedNames.length !== actualNames.length || expectedNames.some((name, index) => name !== actualNames[index])) {
+    throw new Error('CACHE_AUTHENTICATION_FAILED: installed cache files differ from the registered source');
+  }
+  for (const name of expectedNames) {
+    if (actual[name] !== expected[name]) {
+      throw new Error(`CACHE_AUTHENTICATION_FAILED: installed cache file differs from the registered source: ${name}`);
+    }
+  }
+  return {ok: true, files: actualNames.length, sourcePath: source, installedPath: installed};
+}
+
+// Keep the authentication boundary on both sides of every cache script. A
+// cache can be replaced after the first inventory, so a successful child
+// process is not enough evidence that the authenticated bytes were the ones
+// that actually ran.
+function runAuthenticatedCacheScript({sourcePath, installedPath, scriptPath, args = [], cwd, timeoutMs, allowFailure = false}) {
+  authenticateInstalledCache({sourcePath, installedPath});
+  let result;
+  let executionError;
+  try {
+    result = run(process.execPath, [scriptPath, ...args], {cwd, timeoutMs, allowFailure});
+  } catch (error) {
+    executionError = error;
+  }
+  let authenticationError;
+  try {
+    authenticateInstalledCache({sourcePath, installedPath});
+  } catch (error) {
+    authenticationError = error;
+  }
+  if (authenticationError) throw authenticationError;
+  if (executionError) throw executionError;
+  return result;
+}
+
+/**
  * Validate the host-reported cache path before any dependency install or
  * script execution. The native host is trusted for the install operation, but
  * its JSON result is still treated as untrusted input at this boundary.
@@ -352,17 +452,30 @@ export function skillNamesOf(pluginPath) {
 export function validateInstalledPath({installedPath, codexHome, marketplaceName, pluginName, version}) {
   const reported = path.resolve(String(installedPath || ''));
   const cacheRoot = path.resolve(codexHome, 'plugins', 'cache', marketplaceName, pluginName);
+  const cacheBase = path.resolve(codexHome, 'plugins', 'cache');
+  const marketplaceRoot = path.resolve(cacheBase, marketplaceName);
   const expected = path.join(cacheRoot, version);
-  let realReported, realExpected, realRoot;
+  let realReported, realExpected, realRoot, realCacheBase, realMarketplaceRoot;
   try {
+    // The host's reported cache path is untrusted. Reject a reparse point at
+    // any ancestor before resolving it; checking only the final version path
+    // would allow a junction at <cache>/<marketplace>/<plugin> to redirect
+    // authentication and execution outside CODEX_HOME.
+    for (const [label, candidate] of [['cache root', cacheBase], ['marketplace root', marketplaceRoot], ['plugin cache root', cacheRoot], ['version cache', expected], ['reported cache', reported]]) {
+      assertNoReparsePoints(candidate, label);
+    }
+    if (!physicallySameOrChild(cacheBase, cacheRoot)) throw new Error('cache root is outside the canonical CODEX_HOME cache directory');
     realReported = fs.realpathSync(reported);
     realExpected = fs.realpathSync(expected);
     realRoot = fs.realpathSync(cacheRoot);
+    realCacheBase = fs.realpathSync(cacheBase);
+    realMarketplaceRoot = fs.realpathSync(marketplaceRoot);
   } catch {
     throw new Error('HOST_INSTALL_PATH_INVALID: installed cache path is missing or not canonical');
   }
   const same = process.platform === 'win32' ? (a, b) => a.toLowerCase() === b.toLowerCase() : (a, b) => a === b;
-  if (!same(realReported, realExpected) || !same(path.dirname(realExpected), realRoot)) {
+  if (!same(realReported, realExpected) || !same(path.dirname(realExpected), realRoot) ||
+      !same(path.dirname(realRoot), realMarketplaceRoot) || !same(path.dirname(realMarketplaceRoot), realCacheBase)) {
     throw new Error('HOST_INSTALL_PATH_INVALID: installed cache path is outside the expected plugin cache');
   }
   const manifestPath = path.join(realReported, '.codex-plugin', 'plugin.json');
@@ -433,14 +546,30 @@ export function installPlugin(options = {}) {
     pluginName,
     version: installedVersion,
   });
+  authenticateInstalledCache({sourcePath: registration.sourceReal, installedPath: validatedInstall.installedPath});
   steps.push({step: 'plugin-add', status: 'ok', version: installedVersion, installedPath: validatedInstall.installedPath});
 
   const cacheScripts = validatedInstall.scriptsPath;
   runNpm(['ci', '--prefix', cacheScripts, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], {timeoutMs: options.timeoutMs});
   steps.push({step: 'cache-deps', status: 'ok'});
-  run(process.execPath, [path.join(cacheScripts, 'release-integrity.mjs')], {cwd: installedPath, timeoutMs: options.timeoutMs});
+  // npm ci is intentionally script-free. Authenticate on both sides of each
+  // cache script so a changed cache is detected even if it races finalization.
+  runAuthenticatedCacheScript({
+    sourcePath: registration.sourceReal,
+    installedPath: validatedInstall.installedPath,
+    scriptPath: path.join(cacheScripts, 'release-integrity.mjs'),
+    cwd: validatedInstall.installedPath,
+    timeoutMs: options.timeoutMs,
+  });
   steps.push({step: 'cache-integrity', status: 'ok'});
-  run(process.execPath, [path.join(cacheScripts, 'orchestrate-sdk.mjs'), '--doctor'], {cwd: installedPath, timeoutMs: options.timeoutMs});
+  runAuthenticatedCacheScript({
+    sourcePath: registration.sourceReal,
+    installedPath: validatedInstall.installedPath,
+    scriptPath: path.join(cacheScripts, 'orchestrate-sdk.mjs'),
+    args: ['--doctor'],
+    cwd: validatedInstall.installedPath,
+    timeoutMs: options.timeoutMs,
+  });
   steps.push({step: 'cache-doctor', status: 'ok'});
 
   const summary = {

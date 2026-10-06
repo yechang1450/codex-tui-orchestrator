@@ -2,7 +2,6 @@ import path from 'node:path';
 import fs from 'node:fs';
 import {isDeepStrictEqual} from 'node:util';
 import crypto from 'node:crypto';
-import {spawnSync} from 'node:child_process';
 import {blockCostMB as budgetBlockCostMB, DEFAULT_WINDOW_COST_MB} from './memory-budget.mjs';
 import {assertNoReparsePoints,physicalPathIdentity} from './runtime-context.mjs';
 
@@ -243,50 +242,10 @@ export function verifyChecks(checks,workspace) {
   const evidence=[];
   try {
     for(const [index,check] of checks.entries()) {
-      // 检查项本身的类型错误必须在执行前就点名，而不是让 spawnSync/path.resolve 抛 Node 内部措辞。
+      // 检查项本身的类型错误必须在执行前就点名，而不是让 path.resolve 抛 Node 内部措辞。
       if(!check||typeof check!=='object'||Array.isArray(check))throw new Error('Acceptance check #'+index+' must be an object (实测 '+describeShape(check)+')');
       const where=' (check #'+index+(check.type?'，type='+check.type:'')+')';
-      if(check.type==='command') {
-        if(process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS!=='1')throw new Error('Command acceptance is disabled by default; set ORCH_ALLOW_ACCEPTANCE_COMMANDS=1 only for an explicitly reviewed contract'+where);
-        if(typeof check.command!=='string'||!check.command)throw new Error('Command acceptance requires command and args'+where+'：command 必须是非空字符串（实测 '+describeShape(check.command)+'）');
-        if(!Array.isArray(check.args))throw new Error('Command acceptance requires command and args'+where+'：args 必须是数组');
-        const badArg=check.args.findIndex(arg=>typeof arg!=='string');
-        if(badArg>=0)throw new Error('Command acceptance args must be strings'+where+'：args['+badArg+'] 是 '+describeShape(check.args[badArg]));
-        if(check.timeoutMs!==undefined&&(!Number.isFinite(check.timeoutMs)||check.timeoutMs<0))throw new Error('Command acceptance timeoutMs must be a non-negative finite number'+where+'：实测 '+JSON.stringify(check.timeoutMs));
-        // Acceptance files are workspace-controlled input.  A command check
-        // may execute only the controller's verified Node binary, with a
-        // script rooted in the initiating workspace.  Eval/shell forms are
-        // rejected so a public acceptance file cannot turn verification into
-        // arbitrary host command execution.
-        const command=path.resolve(check.command),trustedNode=path.resolve(process.execPath);
-        assertNoReparsePoints(command,'Acceptance command');
-        if(command.toLowerCase()!==trustedNode.toLowerCase())throw new Error('Acceptance command executable is not trusted'+where+'：only the verified Node executable is allowed');
-        if(check.args.some(arg=>/^(?:-e|-p|-r|--eval|--print|--require|--import|--experimental-loader)(?:=|$)/.test(arg)))throw new Error('Acceptance command eval/loader arguments are not allowed'+where);
-        const scriptArg=check.args.find(arg=>typeof arg==='string'&&!arg.startsWith('-'));
-        if(!scriptArg)throw new Error('Acceptance command requires a workspace script path'+where);
-        const script=path.resolve(workspace,scriptArg);
-        // A local administrative UNC share is another spelling of the same
-        // workspace drive. Normalize only for the containment comparison;
-        // retain the original drive path for the actual child cwd and argv.
-        const localEquivalent=value=>{
-          const normalized=path.normalize(value);
-          const match=/^\\\\(?:localhost|127\.0\.0\.1)\\([A-Za-z])\$(?:\\(.*))?$/i.exec(normalized);
-          return match?`${match[1].toUpperCase()}:\\${match[2]||''}`:normalized;
-        };
-        const rel=path.relative(localEquivalent(path.resolve(workspace)),localEquivalent(script));
-        if(rel==='..'||rel.startsWith(`..${path.sep}`)||path.isAbsolute(rel))throw new Error('Acceptance command script escapes the initiating workspace'+where);
-        assertNoReparsePoints(script,'Acceptance command script');
-        let scriptStat;try{scriptStat=fs.statSync(script);}catch{throw new Error('Acceptance command script is missing'+where);}
-        if(!scriptStat.isFile())throw new Error('Acceptance command script is not a regular file'+where);
-        // Acceptance commands are controller checks, but their executable may
-        // still be workspace-controlled. Keep the existing argv contract while
-        // bounding both captured streams so a mutable checker cannot exhaust
-        // controller memory before its timeout fires.
-        const result=spawnSync(check.command,check.args,{cwd:workspace,encoding:'utf8',windowsHide:true,shell:false,timeout:check.timeoutMs||30000,maxBuffer:4*1024*1024});
-        if(result.error||result.status!==(check.exitCode??0))throw new Error('Acceptance command failed: '+(result.error?.message||result.status));
-        if(check.stdout!==undefined&&result.stdout.trim()!==check.stdout)throw new Error('Acceptance stdout mismatch');
-        evidence.push({type:'command',command:check.command,args:check.args,exitCode:result.status});continue;
-      }
+      if(check.type==='command')throw new Error('Workspace command acceptance is disabled; use declarative file/json/absent checks instead'+where);
       if(typeof check.path!=='string'||!check.path)throw new Error('Acceptance check requires a path string'+where+'：实测 '+describeShape(check.path));
       if(check.type==='json'&&check.equals!==undefined&&(check.equals===null||typeof check.equals!=='object'||Array.isArray(check.equals)))throw new Error('JSON acceptance equals must be a JSON object'+where+'：实测 '+describeShape(check.equals));
       const file=path.resolve(workspace,check.path);

@@ -13,6 +13,7 @@ import {
 } from '../scripts/repair-plugin-registration.mjs';
 import {
   checkInstall,
+  authenticateInstalledCache,
   listInstalledCaches,
   parseArgs,
   parseCliJson,
@@ -62,6 +63,8 @@ function coreFixture(pluginDir) {
   fs.mkdirSync(core, {recursive: true});
   fs.writeFileSync(path.join(core, 'orchestrate-sdk.mjs'), 'export const marker = "checkout";\n');
   fs.writeFileSync(path.join(core, 'contracts.mjs'), 'export const CORE_VERSION = "test";\n');
+  fs.writeFileSync(path.join(pluginDir, 'scripts', 'release-integrity.mjs'), "console.log(JSON.stringify({schema: 2, coreVersion: 'test', files: 0, runtimeFiles: 0}));\n");
+  fs.writeFileSync(path.join(pluginDir, 'scripts', 'orchestrate-sdk.mjs'), 'console.log("doctor ok");\n');
 }
 
 /** 个人 marketplace 场景的夹具：home/<.agents/plugins>/marketplace.json + 单目录插件 checkout。 */
@@ -89,8 +92,8 @@ function completeFixture({codexHomeRelative = '.codex', cli = null} = {}) {
   assert.equal(ensureRegistration(f.options).ok, true);
   const codexHome = path.join(f.home, codexHomeRelative);
   const cache = path.join(codexHome, 'plugins', 'cache', 'personal', 'demo-plugin', '1.0.0');
+  fs.cpSync(f.plugin, cache, {recursive: true});
   fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
-  fs.writeFileSync(path.join(cache, 'scripts', 'release-integrity.mjs'), "console.log(JSON.stringify({schema: 2, coreVersion: 'test', files: 0, runtimeFiles: 0}));\n");
   fs.mkdirSync(codexHome, {recursive: true});
   fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@personal"]\nenabled = true\n');
   return {...f, codexHome, cache, options: {...f.options, codexHome, ...(cli ? {codexCli: cli} : {})}};
@@ -138,6 +141,63 @@ test('host-reported install paths are contained canonical cache directories', ()
     fs.writeFileSync(path.join(outside, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}));
     assert.throws(() => validateInstalledPath({installedPath: outside, codexHome: path.join(home, '.codex'), marketplaceName: 'personal', pluginName: 'demo-plugin', version: '1.0.0'}), /HOST_INSTALL_PATH_INVALID/);
   } finally { fs.rmSync(home, {recursive: true, force: true}); }
+});
+
+test('cache authentication rejects modified verifier or doctor bytes', () => {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'install-cache-auth-'));
+  const source = path.join(root, 'source');
+  const cache = path.join(root, 'cache');
+  try {
+    fs.mkdirSync(path.join(source, '.codex-plugin'), {recursive: true});
+    fs.mkdirSync(path.join(source, 'scripts', 'core'), {recursive: true});
+    fs.writeFileSync(path.join(source, '.codex-plugin', 'plugin.json'), '{}\n');
+    fs.writeFileSync(path.join(source, 'scripts', 'release-integrity.mjs'), 'export const verifier = true;\n');
+    fs.writeFileSync(path.join(source, 'scripts', 'orchestrate-sdk.mjs'), 'export const doctor = true;\n');
+    fs.writeFileSync(path.join(source, 'scripts', 'core', 'orchestrate-sdk.mjs'), 'export const core = true;\n');
+    fs.cpSync(source, cache, {recursive: true});
+
+    assert.equal(authenticateInstalledCache({sourcePath: source, installedPath: cache}).ok, true);
+    fs.writeFileSync(path.join(cache, 'scripts', 'release-integrity.mjs'), 'console.log("forged verifier");\n');
+    assert.throws(
+      () => authenticateInstalledCache({sourcePath: source, installedPath: cache}),
+      error => /CACHE_AUTHENTICATION_FAILED/.test(error.message) && error.message.includes('scripts/release-integrity.mjs'),
+    );
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('checkInstall does not execute a cache verifier before authentication', () => {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'install-cache-gate-'));
+  const plugin = path.join(root, 'plugin');
+  const marketplacePath = path.join(root, '.agents', 'plugins', 'marketplace.json');
+  const codexHome = path.join(root, '.codex');
+  const cache = path.join(codexHome, 'plugins', 'cache', 'personal', 'demo-plugin', '1.0.0');
+  const marker = path.join(root, 'verifier-ran');
+  const originalNative = fs.realpathSync.native;
+  fs.realpathSync.native = fs.realpathSync;
+  try {
+    fs.mkdirSync(path.join(plugin, '.codex-plugin'), {recursive: true});
+    fs.mkdirSync(path.join(plugin, 'scripts', 'core'), {recursive: true});
+    fs.writeFileSync(path.join(plugin, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}) + '\n');
+    fs.writeFileSync(path.join(plugin, 'scripts', 'release-integrity.mjs'), 'export const verifier = true;\n');
+    fs.writeFileSync(path.join(plugin, 'scripts', 'orchestrate-sdk.mjs'), 'export const doctor = true;\n');
+    fs.writeFileSync(path.join(plugin, 'scripts', 'core', 'orchestrate-sdk.mjs'), 'export const core = true;\n');
+    assert.equal(ensureRegistration({pluginPath: plugin, marketplacePath, marketplaceRoot: root, homeDir: root}).ok, true);
+    fs.cpSync(plugin, cache, {recursive: true});
+    fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
+    fs.mkdirSync(codexHome, {recursive: true});
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@personal"]\nenabled = true\n');
+    fs.writeFileSync(path.join(cache, 'scripts', 'release-integrity.mjs'), `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
+
+    const result = checkInstall({pluginPath: plugin, marketplacePath, marketplaceRoot: root, codexHome, homeDir: root});
+    assert.equal(result.ok, false);
+    assert.equal(result.problems.some((problem) => problem.step === 'cache_authentication'), true);
+    assert.equal(fs.existsSync(marker), false, 'untrusted cache verifier must never run');
+  } finally {
+    fs.realpathSync.native = originalNative;
+    fs.rmSync(root, {recursive: true, force: true});
+  }
 });
 
 test('ensureRegistration appends to an existing marketplace without touching other entries', () => {
@@ -205,8 +265,8 @@ test('checkInstall accepts a complete install and reports each broken step', () 
     assert.equal(ensureRegistration(f.options).ok, true);
     const version = '1.0.0';
     const cache = path.join(f.home, '.codex', 'plugins', 'cache', 'personal', 'demo-plugin', version);
+    fs.cpSync(f.plugin, cache, {recursive: true});
     fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
-    fs.writeFileSync(path.join(cache, 'scripts', 'release-integrity.mjs'), "console.log(JSON.stringify({schema: 2, coreVersion: 'test', files: 0, runtimeFiles: 0}));\n");
     fs.mkdirSync(path.join(f.home, '.codex'), {recursive: true});
     fs.writeFileSync(path.join(f.home, '.codex', 'config.toml'), '[plugins."demo-plugin@personal"]\nenabled = true\n');
 

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {runWindows,runDirectory,verifyRun} from '../scripts/core/runner.mjs';
+import {runWindows,runDirectory,verifyRun,rejectWorkspaceCommandChecks} from '../scripts/core/runner.mjs';
 import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
 import {canonicalDigest,buildTodoList} from '../scripts/core/contracts.mjs';
 import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
@@ -30,6 +30,16 @@ recordCheckpoint(started[1],started[2],'started');recordCheckpoint(started[1],st
 console.log(JSON.stringify({type:'thread.started',thread_id:'binding-worker'}));
 console.log(JSON.stringify({type:'turn.completed'}));`;
 }
+
+test('controller acceptance rejects workspace command checks even when legacy opt-in is set',()=>{
+  const previous=process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;
+  process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS='1';
+  try {
+    assert.throws(()=>rejectWorkspaceCommandChecks({T001:[{type:'command',command:process.execPath,args:['checker.mjs']}]}),/Workspace command acceptance is disabled/);
+  } finally {
+    if(previous===undefined)delete process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS;else process.env.ORCH_ALLOW_ACCEPTANCE_COMMANDS=previous;
+  }
+});
 
 /** 跑一轮最小 headless 执行：一个块、一个任务、一份显式验收契约。 */
 async function runOnce(runId,checks){

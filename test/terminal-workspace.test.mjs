@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {buildWindowsTerminalArguments,resolveWindowsTerminalExecutable} from '../scripts/core/orchestrate-sdk.mjs';
 
 test('visible Windows Terminal launcher pins the initiating workspace', () => {
@@ -8,10 +9,13 @@ test('visible Windows Terminal launcher pins the initiating workspace', () => {
     'win-abc',
     'C:\\Users\\fixture-user\\workspace\\temp\\launcher.ps1'
   );
+  const expectedPowerShell = process.platform === 'win32'
+    ? path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    : 'powershell.exe';
   assert.deepEqual(args, [
     '-w', 'win-abc',
     '-d', 'C:\\Users\\fixture-user\\workspace',
-    'powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    expectedPowerShell, '-NoProfile', '-ExecutionPolicy', 'Bypass',
     '-File', 'C:\\Users\\fixture-user\\workspace\\temp\\launcher.ps1'
   ]);
 });

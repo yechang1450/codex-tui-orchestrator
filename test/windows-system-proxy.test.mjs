@@ -31,3 +31,13 @@ test('per-protocol Windows proxy prefers the HTTPS endpoint', () => {
   assert.equal(network.applyWindowsProxyEnv(env,{platform:'win32',query:()=>text}),'system');
   assert.equal(env.HTTPS_PROXY,'http://127.0.0.1:7892');
 });
+
+test('default registry lookup uses the trusted SystemRoot helper contract', () => {
+  let call;
+  const output=network.systemProxyRegistry({run:(file,args,options)=>{call={file,args,options};return {status:1,stdout:''};}});
+  assert.equal(output,'');
+  assert.match(call.file,/System32[\\/]reg\.exe$/i);
+  assert.deepEqual(call.args,['query','HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings']);
+  assert.equal(call.options.shell,false);
+  assert.equal(call.options.cwd,process.env.SystemRoot||'C:\\Windows');
+});

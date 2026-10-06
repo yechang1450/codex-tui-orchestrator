@@ -591,6 +591,27 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.equal(parse.status, 0, 'generated launcher ps1 must be parseable by PowerShell: ' + String(parse.stdout || parse.stderr || ''));
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
 });
+
+test('runtime: visible launcher detaches inherited Codex Desktop session and tool-host IPC state', () => {
+  const { lp } = writeInteractiveLauncher('env-isolation', 'task\n\n【本块唯一标识】ENV-iso', 'rt');
+  try {
+    const body = fs.readFileSync(lp, 'utf8');
+    for (const name of [
+      'CODEX_APP_TOOLS_PIPE_PATH',
+      'CODEX_THREAD_ID',
+      'CODEX_SESSION_ID',
+    ]) {
+      assert.match(body, new RegExp(`['\\"]${name}['\\"]`), `launcher must name inherited ${name}`);
+    }
+    assert.match(body, /foreach \(\$name in @\(/, 'launcher must iterate the inherited session variables');
+    assert.match(body, /Remove-Item -LiteralPath/, 'launcher must clear the inherited session variables');
+    assert.doesNotMatch(body, /CODEX_PERMISSION_PROFILE|CODEX_SANDBOX_NETWORK_DISABLED|CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY/,
+      'launcher must retain the host policy and workspace-verification environment');
+    assert.match(body, /CODEX_HOME/, 'launcher must retain the selected Codex home');
+  } finally {
+    fs.rmSync(lp, { force: true });
+  }
+});
 test('orchestrate-sdk computeMaxWindows: floors machine memory MB divided by 2000 (2 GB per block)', () => {
   assert.equal(computeMaxWindows(2_000), 1, '2000 MB -> 1 window');
   assert.equal(computeMaxWindows(4_000), 2, '4000 MB -> 2 windows');
@@ -652,8 +673,9 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
     // 3) watchdog 沿 ParentProcessId 链递归枚举全部后代并逐一 kill，绝不强杀 launcher 自身
     assert.match(body, /function Stop-LauncherDescendants/, 'watchdog must define a recursive descendant-kill helper');
     assert.match(body, /Stop-LauncherDescendants \$rootPid/, 'watchdog must invoke the recursive descendant kill');
-    assert.match(body, /taskkill \/PID \$v \/F/, 'watchdog must kill each enumerated descendant individually');
-    assert.match(body, /taskkill \/PID \$v \/F \/T/, 'watchdog must atomically reap descendants that appear between process snapshots');
+    assert.match(body, /SystemRoot[^\r\n]*System32\\taskkill\.exe[^\r\n]*\/PID \$v \/F/, 'watchdog must invoke the trusted taskkill helper for each enumerated descendant');
+    assert.match(body, /SystemRoot[^\r\n]*System32\\taskkill\.exe[^\r\n]*\/PID \$v \/F \/T/, 'watchdog must atomically reap descendants that appear between process snapshots');
+    assert.match(body, /SystemRoot[^\r\n]*System32\\chcp\.com[^\r\n]*65001/, 'launcher must invoke the trusted chcp helper');
     assert.doesNotMatch(body, /ParentProcessId -eq \$rootPid/, 'watchdog must not be limited to direct children');
     assert.ok(!body.includes('taskkill /PID $PID'), 'watchdog must never force-kill the launcher pid');
     // 4) 加固：watchdog 用连续重扫的 Kill-LauncherTree 兜底（codex 重新生成子进程也一并回收），两个完成分支都调用它

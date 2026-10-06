@@ -5,7 +5,10 @@ $OutputEncoding=[Text.UTF8Encoding]::new($false)
 if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}
 # PowerShell 5.1 does not rescan PATHEXT after startup, so a process launched from WSL
 # may not resolve chcp. Encoding is already set above, so chcp is only hardening here.
-try { chcp 65001 | Out-Null } catch { }
+try {
+  $chcp = Join-Path ([Environment]::GetEnvironmentVariable('SystemRoot')) 'System32\chcp.com'
+  & $chcp 65001 | Out-Null
+} catch { }
 try {
   $request=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Payload)) | ConvertFrom-Json
   Add-Type -TypeDefinition @'
