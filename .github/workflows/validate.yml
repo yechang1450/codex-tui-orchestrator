@@ -58,12 +58,17 @@ jobs:
           $autoData = Join-Path $env:RUNNER_TEMP 'codex-plugin-data-auto'
           $autoRoot = Join-Path $autoData 'runtime\cli'
           $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
-          foreach ($name in @('npm_execpath','NPM_EXEC_PATH','ORCH_NPM_TRUSTED','ORCH_ALLOW_UNVERIFIED_NPM','npm_config_prefix','NPM_CONFIG_PREFIX')) {
+          foreach ($name in @('npm_execpath','NPM_EXEC_PATH','ORCH_NPM_TRUSTED','ORCH_NPM_TRUSTED_PATH','ORCH_NPM_TRUSTED_SHA256','ORCH_ALLOW_UNVERIFIED_NPM','npm_config_prefix','NPM_CONFIG_PREFIX')) {
             Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
           }
           $env:PLUGIN_DATA = $autoData
           $env:npm_config_prefix = $autoRoot
           $env:npm_execpath = $npmCli
+          # Attest the exact npm entry consumed by the bootstrap guard.
+          $npmEntry = [IO.Path]::GetFullPath($npmCli)
+          $npmDigest = (Get-FileHash -LiteralPath $npmEntry -Algorithm SHA256).Hash.ToLowerInvariant()
+          $env:ORCH_NPM_TRUSTED_PATH = $npmEntry
+          $env:ORCH_NPM_TRUSTED_SHA256 = $npmDigest
           $env:ORCH_NPM_TRUSTED = '1'
           $env:ORCH_AUTO_INSTALL_CLI = '1'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
