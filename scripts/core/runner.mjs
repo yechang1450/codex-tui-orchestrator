@@ -40,6 +40,15 @@ export function orderLaunchPlan(sum, plan, budget) {
   return ranked.map(item => item.record);
 }
 
+// A boolean false from a launcher is ambiguous unless the launcher adapter
+// independently proved that no owned process exists. Keep that distinction
+// explicit so a delayed PID/result cannot be mistaken for a clean spawn miss.
+export function classifySpawnResult(result,observed=false){
+  const spawned=result===true||result?.ok===true;
+  const noProcess=!spawned&&result?.noProcess===true&&!observed;
+  return {spawned,noProcess,unknown:!spawned&&!noProcess};
+}
+
 // Always union explicit planner hints with deterministic inference. Empty or
 // partial conflictKeys from raw, custom, or fallback plans must not bypass the
 // safety check; command-input inference itself excludes only proven read-only
@@ -72,7 +81,7 @@ function treeWorkingSetMB(snapshot, rootPid) {
   }
   return Math.round(total / 1024 ** 2);
 }
-import {createStatusPublisher,buildExecutionStatus} from './status-events.mjs';
+import {createStatusPublisher,buildExecutionStatus,readRunStatus} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -115,6 +124,66 @@ export async function identifyWithRetry(identify,pid,pidFile,{attempts=3,pauseMs
   }
   throw lastError;
 }
+
+function readPidFromFile(file){
+  try{
+    const pid=Number((readUtf8Bounded(file,'launcher PID',128)||'').replace(/^\uFEFF/,'').trim());
+    return validLauncherPid(pid)?pid:0;
+  }catch{return 0;}
+}
+
+function validLauncherPid(value){
+  const pid=Number(value);
+  return Number.isSafeInteger(pid)&&pid>=1&&pid<=4194304;
+}
+
+// A missing CIM identity is not proof that a launcher exited. Bind the
+// controller result to the current attempt and PID before accepting a plain
+// process-presence probe as exit evidence.
+export function readOwnedLauncherExitEvidence(files,attempt,pid){
+  if(!files?.rf||!attempt?.token)return null;
+  try{
+    const raw=readUtf8Bounded(files.rf,'launcher result',1024*1024);
+    const first=String(raw||'').replace(/^\uFEFF/,'').split(/\r?\n/,1)[0];
+    const result=JSON.parse(first),expectedPid=Number(pid);
+    const resultPid=Number(result?.__LAUNCHER_PID__);
+    if(result?.__DONE__!==true||result.__TOKEN__!==attempt.token||
+       !validLauncherPid(expectedPid)||!validLauncherPid(resultPid)||resultPid!==expectedPid)return null;
+    return result;
+  }catch{return null;}
+}
+
+function defaultPidPresence(pid){
+  const value=Number(pid);
+  if(!Number.isSafeInteger(value)||value<=0)return false;
+  try{process.kill(value,0);return true;}
+  catch(error){
+    if(error?.code==='ESRCH')return false;
+    if(error?.code==='EPERM'||error?.code==='EACCES')return null;
+    return null;
+  }
+}
+
+/** Prove an identity-null launcher exited; unknown state stays recoverable. */
+export async function waitForOwnedLauncherExit(files,attempt,{readPid=readPidFromFile,probePid=defaultPidPresence,timeoutMs=5000,intervalMs=100}={}){
+  const deadline=Date.now()+Math.max(0,Math.min(15000,Number(timeoutMs)||0));
+  const interval=Math.max(10,Math.min(1000,Number(intervalMs)||100));
+  while(true){
+    let pid=0;
+    try{pid=Number(readPid?.(files?.pidf));}catch{pid=0;}
+    if(!validLauncherPid(pid)){
+      if(Date.now()>=deadline)return null;
+      await pause(Math.min(interval,Math.max(1,deadline-Date.now())));
+      continue;
+    }
+    const evidence=readOwnedLauncherExitEvidence(files,attempt,pid);
+    let absent=false;
+    try{absent=probePid(pid)===false;}catch{absent=false;}
+    if(evidence&&absent)return evidence;
+    if(Date.now()>=deadline)return null;
+    await pause(Math.min(interval,Math.max(1,deadline-Date.now())));
+  }
+}
 export async function waitForProcessExit(expected,{timeoutMs=5000,intervalMs=100,snapshot=processSnapshot,probePid}={}) {
   if(!expected||!Number.isFinite(Number(expected.ProcessId)))return true;
   const timeout=Math.max(0,Math.min(15000,Number(timeoutMs)||0)),interval=Math.max(10,Math.min(1000,Number(intervalMs)||100));
@@ -149,11 +218,15 @@ function probeProcessPresence(pid){
 }
 
 /** Final cleanup is scoped to this run's durable attempts, never terminal hosts. */
-export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExit,identify=launcherIdentity,snapshot=processSnapshot,onClosed=async()=>{},onFailed=()=>{}}={}) {
-  const stats={checked:0,closed:0,failed:0};
+export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExit,identify=launcherIdentity,snapshot=processSnapshot,probePid=defaultPidPresence,onClosed=async()=>{},onFailed=()=>{}}={}) {
+  const stats={checked:0,closed:0,failed:0,retained:0};
   for(const block of sum?.blocks||[]){
     const entry=sum.results?.[block.key],attempt=entry?.attempts?.at(-1);
     if(!attempt&&!entry?.launcher&&!entry?.launcherFiles)continue;
+    if(entry?.status==='needs-reconciliation'&&entry.exitConfirmed!==true&&(entry.exitUnprovenAt||attempt?.exitUnprovenAt)){stats.checked++;stats.retained++;continue;}
+    const exitEvidenceMatches=typeof attempt?.token==='string'&&
+      (entry?.exitEvidence?.token===attempt.token||attempt?.exitEvidence?.token===attempt.token);
+    if(entry?.exitConfirmed===true&&exitEvidenceMatches)continue;
     stats.checked++;
     try{
       if(!attempt||attempt.runId!==sum.runId||!attempt.token||entry.token!==attempt.token||
@@ -171,7 +244,10 @@ export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExi
           expected=current;entry.launcher=current;
         }else{
           if(expected&&Number(expected.ProcessId)!==pid)throw new Error('Final cleanup saved launcher identity mismatch');
-          if(snapshot().has(pid))throw new Error('Final cleanup cannot prove launcher exit from its controller PID file');
+          const present=probePid(pid);
+          if(present===true)throw new Error('Final cleanup cannot prove launcher exit from its controller PID file');
+          if(present!==false)throw new Error('Final cleanup launcher presence is unavailable; exit remains unproven');
+          if(!readOwnedLauncherExitEvidence(entry.launcherFiles,attempt,pid))throw new Error('Final cleanup cannot prove launcher exit from its controller PID file and attempt result');
           confirmedExitedByPidFile=true;
         }
       }
@@ -295,6 +371,18 @@ function validateBoundRunPlan(sum,{required=false}={}){
     typeof binding.sha256!=='string'||!/^[a-f0-9]{64}$/.test(binding.sha256))throw new Error('Trusted run plan binding is invalid');
   if(binding.sha256!==canonicalDigest(immutableRunPlan(sum)))throw new Error('Trusted run plan binding differs from the workspace ledger');
   return true;
+}
+function validateResumeStatusAuthority(workspace,runId,expected){
+  const authenticated=readRunStatus(workspace,runId);
+  if(authenticated.runId!==expected.runId||authenticated.generation!==expected.generation||
+     authenticated.eventSeq!==expected.eventSeq)throw new Error('Resume status authority does not match the saved run ledger');
+  return authenticated;
+}
+function unresolvedResumeLaunchers(sum){
+  return (sum?.blocks||[]).filter(block=>{
+    const entry=sum.results?.[block.key],attempt=entry?.attempts?.at(-1);
+    return entry?.exitConfirmed!==true&&Boolean(attempt?.exitUnprovenAt);
+  }).map(block=>block.key);
 }
 function loadBoundChecks(file,dir,sum,override){
   const checks=loadChecks(file),digest=canonicalDigest(checks),recorded=recordedAcceptanceDigest(sum,dir,{allowConflict:override===true});
@@ -467,7 +555,7 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
   const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=readLedgerJson(file);
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
   if(!sameWorkspace(sum.workspace||'',workspace))throw new Error('Run workspace/identity mismatch');
-  if(sum.protocol===2){validateRecoverySummary(sum);validateBoundRunPlan(sum);}
+  if(sum.protocol===2){validateRecoverySummary(sum);validateBoundRunPlan(sum);if(Number.isSafeInteger(sum.eventSeq))validateResumeStatusAuthority(workspace,runId,sum);}
   const coordinator=trustedSavedCoordinator(workspace,sum.coordinator,options.coordinator,{required:sum.protocol===2});
   const claim=claimRun(coordinator,'run:'+physicalPathIdentity(dir));
   try{
@@ -524,6 +612,9 @@ export async function runWindows(request,hooks,options={}) {
     }
     if(savedResume.blocks.length>capacity)throw new Error('Current memory capacity is below the saved block count');
     validateBoundRunPlan(savedResume,{required:true});
+    validateResumeStatusAuthority(workspace,runId,savedResume);
+    const unresolved=unresolvedResumeLaunchers(savedResume);
+    if(unresolved.length)throw new Error('Launcher exit remains unproven for '+unresolved.join(', ')+ '; reconcile the saved run before resume');
   }
   const coordinator=options.resume
     ?trustedSavedCoordinator(workspace,savedResume.coordinator,options.coordinator,{required:true})
@@ -534,6 +625,7 @@ export async function runWindows(request,hooks,options={}) {
     let checks,acceptance={checks:null,rebound:false};
     if(options.resume) {
       if(readUtf8Bounded(summaryFile,'run summary')!==savedResumeRaw)throw new Error('Run changed while acquiring recovery ownership; retry resume');
+      validateResumeStatusAuthority(workspace,runId,savedResume);
       sum=savedResume;
       // 恢复同样要复用被绑定的契约：执行窗改掉 acceptance.json 就能让未完成的任务被当成已验收。
       acceptance=loadBoundChecks(options.acceptanceFile||path.join(dir,'acceptance.json'),dir,savedResume,options.acceptanceOverride===true);
@@ -620,6 +712,8 @@ export async function runWindows(request,hooks,options={}) {
       const limit=Math.max(1,Math.min(3,Number(options.maxAttempts||2)));
       let capacityRetries=0;
       let memTimer=null,memStats=null;
+      let spawnConfirmed=false;
+      let spawnNoProcess=false;
       while(Date.now()<deadline) {
         if(progressError)throw progressError;
         let e=sum.results[r.key],la=e.launcherFiles,identity;
@@ -627,7 +721,7 @@ export async function runWindows(request,hooks,options={}) {
         // 没有 pid 文件就没有可认领的启动器；这里不查进程表，省掉一次昂贵的 CIM 枚举。
         if(la&&fs.existsSync(la.pidf))identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
         const adopted=identity&&(!e.launcher||sameProcess(e.launcher,identity));
-        let active;
+        let active,persistAttempt=()=>{};
         if(adopted) {
           active=e.attempts.at(-1);console.log(`[resume] adopting live ${r.key}; no duplicate window`);
           hooks.ready?.(la);
@@ -659,6 +753,7 @@ export async function runWindows(request,hooks,options={}) {
           const attemptFile=path.join(dir,'attempts',r.key,String(number),'attempt.json');
           active={file:attemptFile,runId,token,number,taskIds:recovery.pending,createdAt:Date.now()};
           atomicJson(attemptFile,active);e.attempts.push(active);
+          persistAttempt=()=>{try{atomicJson(active.file,active);}catch{}};
           const helper=fileURLToPath(new URL('./checkpoint.mjs',import.meta.url));
           const command=(id,state)=>checkpointCommand(helper,attemptFile,id,state);
           const todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
@@ -670,7 +765,9 @@ export async function runWindows(request,hooks,options={}) {
             '\n本块列出的全部待办都已分别写入 completed 检查点后，最后仅输出 __ORCH_DONE__ '+token;
           try{la=hooks.launcher(r.key,hooks.prompt(body,token),runId+'-a'+number,{attemptFile,runId,token,taskIds:recovery.pending});}
           catch(error){await coordinate(()=>release(coordinator,leaseId),deadline);throw error;}
-          e={...e,status:'launching',launchFailed:false,leaseId,token,launcherFiles:la,launcher:null,endedAt:null,exitConfirmed:false,startedAt:Date.now(),reason:'',retryAt:null};sum.results[r.key]=e;persist(`block.${r.key}.launching`);
+          e={...e,status:'launching',launchFailed:false,leaseId,token,launcherFiles:la,launcher:null,endedAt:null,exitConfirmed:false,exitUnprovenAt:null,exitEvidence:null,startedAt:Date.now(),reason:'',retryAt:null};sum.results[r.key]=e;persist(`block.${r.key}.launching`);
+          spawnNoProcess=false;
+          spawnConfirmed=false;
           try {
             hooks.register({id:leaseId,runId,title:r.title,keys:r.keys,pidFile:la.pidf,pid:0,pending:true,reservedAt:Date.now()});
             await coordinate(()=>prepare(coordinator,leaseId,la.pidf),deadline);
@@ -679,16 +776,38 @@ export async function runWindows(request,hooks,options={}) {
             // failures collapse an otherwise full-capacity wave into a single
             // live window, then produced incomplete receipts.
             const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
-            if(!await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token))throw new Error('Execution process did not start');
-            identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
-            if(!identity)throw new Error('Launcher process identity mismatch');
+             const spawnResult=await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token);
+             let observedPid=0;
+             try{observedPid=Number(hooks.readPid(la.pidf));}catch{}
+             const observed=validLauncherPid(observedPid)||fs.existsSync(la.rf)||fs.existsSync(la.rf+'.self-closed');
+             const spawnState=classifySpawnResult(spawnResult,observed);
+             const spawned=spawnState.spawned;
+             if(!spawned){
+               spawnConfirmed=observed;
+               spawnNoProcess=spawnState.noProcess;
+               if(!spawnNoProcess)active.spawnOutcomeUnknownAt=Date.now();
+               persistAttempt();
+               throw new Error('Execution process did not start');
+             }
+             spawnConfirmed=true;
+             active.popupConfirmedAt=Date.now();
+             active.launcherPid=Number(hooks.readPid(la.pidf))||null;
+             persist(`block.${r.key}.popup-confirmed`);
+             persistAttempt();
+             identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
+             persistAttempt();
+             if(!identity)throw new Error('Launcher process identity mismatch');
+             active.launcherObserved={ProcessId:identity.ProcessId,Name:identity.Name,Started:identity.Started,CommandLine:identity.CommandLine,at:Date.now()};
+             active.identityObservedAt=Date.now();
+             persistAttempt();
             await coordinate(()=>bind(coordinator,leaseId,identity),deadline);hooks.commit?.(leaseId,identity.ProcessId);
             hooks.ready?.(la);
           }catch(error){e.status='popup-failed';e.reason=error.message;e.launchFailed=true;
             // Admission failed after a worker was created: signal it before releasing
             // the lease, then wait for the worker's durable result/exit. A blocked go
             // latch must never remain as an orphan or be adopted as a running block.
-            try{if(identity)await hooks.close(identity.ProcessId,identity);else if(la)await hooks.close(hooks.readPid(la.pidf));}catch{}
+             // Never pass an unauthenticated PID to a closer; PID reuse can target a foreign process.
+             try{if(identity)await hooks.close(identity.ProcessId,identity);}catch{}
           }
         }
         e=sum.results[r.key];e.launcher=identity||e.launcher;
@@ -761,28 +880,57 @@ export async function runWindows(request,hooks,options={}) {
             memStats=null;
           }
           if(!identity&&la&&fs.existsSync(la.pidf)){
-            // 身份枚举是瞬时故障源（Windows CIM / 互斥体在机器繁忙时会超时）。它绝不能
-            // 从 finally 里抛出去，把一次枚举抖动变成任务级终态失败：保留租约、给出真因，
-            // 交给 --resume-run 接管。
+            // A transient/foreign identity result is not an exit proof. Keep
+            // the attempt recoverable and only continue when its own result
+            // record proves an exited launcher.
             try{identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);}
-            catch(error){
-              e.status='failed';e.reason='Process identity enumeration failed: '+(error&&error.message?error.message:error);
-              e.endedAt=Date.now();persist();return;
-            }
+            catch(error){e.identityError=error&&error.message?error.message:String(error);}
           }
           if(identity)await hooks.close(identity.ProcessId,identity);
           if(identity&&!(await waitExit(identity))){
-            // Keep the lease for resume/adoption, but never leave tasks at their
-            // initial pending state when a durable checkpoint is already present.
             refreshTaskProgress(sum);
             const uncertain=blockCheckpoints(e,b,sum);
             for(const id of b.taskIds)if(uncertain[id]?.state==='started')sum.taskResults[id]={status:'needs-reconciliation',reason:'Launcher exit is unproven; reconcile before retrying',checkpoint:uncertain[id]};
-            e.status='failed';e.reason='Launcher still alive; lease retained';e.endedAt=Date.now();persist();return;
+            e.status='needs-reconciliation';e.reason='Launcher still alive; lease retained';e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;
           }
+          let exitProven=Boolean(identity||spawnNoProcess);
+          if(!identity&&spawnConfirmed){
+            const evidence=await waitForOwnedLauncherExit(la,active,{
+              readPid:hooks.readPid||readPidFromFile,
+              probePid:hooks.probePid||defaultPidPresence,
+              timeoutMs:Math.min(10000,Math.max(1000,deadline-Date.now())),
+            });
+            if(!evidence){
+              active.launcherIdentityUnavailableAt=Date.now();
+              active.exitUnprovenAt=active.launcherIdentityUnavailableAt;
+              e.exitUnprovenAt=active.exitUnprovenAt;
+              e.status='needs-reconciliation';
+              e.reason='Launcher identity unavailable after popup confirmation; owned exit is unproven; recovery files and lease retained'+(e.identityError?': '+e.identityError:'');
+              for(const id of b.taskIds)if(sum.taskResults[id]?.status==='pending'||sum.taskResults[id]?.status==='running')sum.taskResults[id]={status:'needs-reconciliation',reason:e.reason};
+              persistAttempt();
+              e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;
+            }
+            active.exitEvidence={token:evidence.__TOKEN__,pid:Number(evidence.__LAUNCHER_PID__),exitCode:evidence.__EXIT__,at:Date.now()};
+            active.selfCloseAt=Date.now();
+            persistAttempt();
+            exitProven=true;
+          }
+          if(!exitProven){
+            active.exitUnprovenAt ||= Date.now();
+            e.exitUnprovenAt ||= active.exitUnprovenAt;
+            persistAttempt();
+            e.status='needs-reconciliation';e.reason='Launcher exit is unproven; recovery files and lease retained';e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;
+          }
+          if(identity&&!active.exitEvidence){
+            active.exitEvidence={token:active.token,pid:Number(identity.ProcessId),authenticated:true,at:Date.now()};
+            persistAttempt();
+          }
+          if(active.exitEvidence)e.exitEvidence={...active.exitEvidence};
           await coordinate(()=>release(coordinator,e.leaseId||leaseId),Date.now()+30000);
-          e.exitConfirmed=!!identity;
+          e.exitConfirmed=true;
           hooks.unregister(e.leaseId||leaseId);if(la)hooks.cleanup(la);
           e.endedAt=Date.now();active.endedAt=e.endedAt;active.exitCode=e.exitCode;
+          persistAttempt();
           // A provider-capacity failure is retryable only before any task has a
           // durable side-effect checkpoint. Do not publish the reconciliation
           // status before the safe retry branch below; status events are
@@ -821,6 +969,7 @@ export async function runWindows(request,hooks,options={}) {
       (r,failed)=>mark(r,'blocked','Predecessors not verified: '+failed.join(', ')));
     sum.finalSweep=await sweepRunProcesses(sum,{
       close:hooks.close,identify:hooks.identity||launcherIdentity,waitForExit:hooks.waitForExit||waitForProcessExit,
+      snapshot:hooks.snapshot||processSnapshot,probePid:hooks.probePid||defaultPidPresence,
       onClosed:async(b,e,attempt,{wasConfirmed})=>{
         e.endedAt ||= Date.now();attempt.endedAt ||= e.endedAt;
         if(!wasConfirmed){

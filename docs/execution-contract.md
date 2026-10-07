@@ -45,7 +45,7 @@ file checks require a regular file and optionally sha256; json checks compare sp
 
 Typed provider account-quota errors such as usage_limit_exceeded are terminal for the invocation. The adapter accepts them from a typed `error`/`turn.failed` event or a structured `task_complete.error`; task text and tool output remain data. The runner records the provider error, closes the owned window, and skips both capacity backoff and the ordinary replacement-window budget; a later invocation may retry after the provider quota resets.
 
-The launcher invokes the CLI once. It preserves failure evidence instead of blindly replaying a whole block. The controller independently rechecks every checkpoint and retries only remaining work, with a bounded attempt count (default two per block per controller) and backoff. Replacement windows use the same planned block and cannot exceed global concurrent capacity; verified tasks are omitted from their prompts.
+The launcher invokes the CLI once. It preserves failure evidence instead of blindly replaying a whole block. The controller independently rechecks every checkpoint and retries only remaining work, with a bounded attempt count (default two per block per controller) and backoff. Replacement windows use the same planned block and cannot exceed global concurrent capacity; verified tasks are omitted from their prompts. After a popup is confirmed, an unavailable launcher identity is not treated as an exit: only a result record bound to the current attempt token and launcher PID can prove the owned launcher exited; otherwise the lease and recovery files remain for reconciliation.
 
 If a task started but its output cannot be proven, automatic retry requires an explicit parent-defined policy:
 

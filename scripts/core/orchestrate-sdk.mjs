@@ -1062,6 +1062,12 @@ function windowGenuinelyPopped(pidf, token, launcherPath) {
   }
   if (!pid) return false;
   if (!pidAliveCheck(pid)) return false;
+  // A live PID alone is only a popup hint. When the launcher path is known,
+  // authenticate the exact PowerShell script before reporting confirmation;
+  // this rejects stale pid files and PID-reused foreign processes early.
+  if (launcherPath) {
+    try { if (!launcherIdentity(pid, pidf)) return false; } catch { return false; }
+  }
   return true;
 }
 // 加固②：检测「launcher 下是否已出现 agent 子进程」。windowGenuinelyPopped 只证明 launcher(WT pane 宿主)活着，
@@ -1090,6 +1096,7 @@ async function warmupWindow(pidf, token) {
 }
 async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token, reservedByRunner = false, preAdmission = null) {
   let auxiliaryId=preAdmission?.id||"aux-"+path.basename(lp); let coordinator,admitted=false,bound=false;
+  const outcome={ok:false,noProcess:false};
   try {
     if(!reservedByRunner){
       const claim=preAdmission||await admitAuxiliaryWindow({coordinator:coordinatorDir(WORKSPACE),stateDir:STATE_DIR,id:auxiliaryId,keys:["aux:"+token],timeoutMs:POLL_TIMEOUT_MS});
@@ -1122,22 +1129,26 @@ async function spawnWindowWithRetry(lp, title, pidf, maxRetry = 3, token, reserv
         await warmupWindow(pidf, token);
         if(!reservedByRunner){bind(coordinator,auxiliaryId,launcherIdentity(readPidFile(pidf),pidf));bound=true;}
         if (attempt > 1 || Date.now() - t0 > 6500) console.log("  [window] popup CONFIRMED (pidf+launcher+" + AGENT.agent + " child) for [" + title + "]");
-        return true;
+        outcome.ok=true;
+        return outcome;
       }
       console.log("  [window] popup NOT confirmed (attempt " + attempt + "/" + maxRetry + ") for [" + title + "]");
     }
     console.log("  !! [window] popup FAILED after " + maxRetry + " attempts for [" + title + "]");
-    return false;
+    return outcome;
   } finally {
     // A failed admission/popup/bind must release its coordinator lease. A
     // successful auxiliary window remains leased until its caller closes it.
-    if(admitted&&!bound){
+    if(!outcome.ok&&!outcome.noProcess){
       let owned;
       try{owned=launcherIdentity(readPidFile(pidf),pidf);}
       catch(error){console.warn('[orchestrator] auxiliary ownership check failed; retaining lease: '+error.message);owned=true;}
       if(owned)console.warn('[orchestrator] retaining auxiliary lease for a possibly live owned launcher');
-      else try{release(coordinator,auxiliaryId);}
-      catch(error){console.warn("[orchestrator] auxiliary lease cleanup failed: "+error.message);}
+      else {
+        outcome.noProcess=true;
+        if(admitted&&!bound)try{release(coordinator,auxiliaryId);}
+        catch(error){console.warn("[orchestrator] auxiliary lease cleanup failed: "+error.message);}
+      }
     }
   }
 }
@@ -2613,7 +2624,7 @@ export async function main() {
       process.exitCode = 1;
       return;
     }
-    if (!popped) {
+    if (!popped?.ok) {
       cleanupFailedAuxiliary(admission,{lp,pf,pidf,rf},claim.id);
       console.log("spawn POPUP-FAILED: window did not appear.");
       process.exitCode = 1;
@@ -2723,7 +2734,7 @@ export async function main() {
       process.exitCode = 1;
       return;
     }
-    if (!popped) {
+    if (!popped?.ok) {
       cleanupFailedAuxiliary(admission,{lp,pf,pidf,rf},claim.id);
       console.log("selftest POPUP-FAILED: window did not appear.");
       process.exitCode = 1;

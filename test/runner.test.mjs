@@ -60,7 +60,7 @@ test('failed prerequisite retains both original tasks and never starts its depen
   plan:async()=>[{title:'A',tasks:[{prompt:'执行甲'}]},{title:'B',dependsOn:['A'],tasks:[{prompt:'执行乙'}]}],
   compact:p=>p,infer:()=>[],prompt:p=>{prompts.push(p);return p;},
   launcher:(key,_prompt,suffix)=>{launches++;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return{lp:path.join(dir,'win-launch-'+stem+'.ps1'),pf:path.join(dir,'agent-win-'+stem+'.md'),pidf:path.join(dir,'window-'+stem+'.pid'),rf:path.join(dir,'win-'+stem+'.result.json')};},
-  register:()=>{},unregister:()=>{},cleanup:()=>{},spawn:async()=>false,readPid:()=>0,
+  register:()=>{},unregister:()=>{},cleanup:()=>{},spawn:async()=>({ok:false,noProcess:true}),readPid:()=>0,
  };
  try{
   const sum=await runWindows('执行甲；执行乙',hooks,{workspace,capacity:8,runId:'failure',auth:'test',coordinator:path.join(controllerRoot,'coordinator')});

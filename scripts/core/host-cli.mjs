@@ -83,6 +83,8 @@ const TRUSTED_CLI_CERTIFICATES = Object.freeze([
   // API validates its timestamp and trust chain; pinning prevents accepting an
   // unrelated publisher with a locally trusted certificate.
   'AAB04F57830B69182775AB3CEB6CE37981FE71C5',
+  // OpenAI desktop CLI certificate observed on the 0.160.1 Windows build.
+  'CDBF18EB36CF54344875E8F92C87FA732EF42F52',
 ]);
 const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine($s.SignerCertificate.Thumbprint)';
 
