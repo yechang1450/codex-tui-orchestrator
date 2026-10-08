@@ -49,6 +49,7 @@ const DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS=120000;
 const MAX_PROCESS_SNAPSHOT_TIMEOUT_MS=120000;
 const DEFAULT_COORDINATOR_TIMEOUT_MS=120000;
 const MAX_COORDINATOR_TIMEOUT_MS=120000;
+const COORDINATOR_SNAPSHOT_CACHE_TTL_MS=120000;
 export const MAX_CONTROLLER_ARTIFACT_BYTES=8*1024*1024;
 
 // Windows resolves a bare executable through the caller's current directory
@@ -100,6 +101,33 @@ export function readUtf8Bounded(file,label='controller artifact',maxBytes=MAX_CO
     return fs.readFileSync(fd,'utf8');
   } finally { fs.closeSync(fd); }
 }
+function ledgerRevision(file) {
+  let fd;
+  try {
+    assertNoReparsePoints(file,'coordinator ledger');
+    fd=fs.openSync(file,'r');
+    const stat=fs.fstatSync(fd);
+    if(!stat.isFile()||!Number.isSafeInteger(Number(stat.size))||Number(stat.size)>MAX_CONTROLLER_ARTIFACT_BYTES)return 'unknown';
+    const bytes=Buffer.allocUnsafe(MAX_CONTROLLER_ARTIFACT_BYTES+1);let count=0;
+    while(count<bytes.length){const read=fs.readSync(fd,bytes,count,bytes.length-count,count);if(read===0)break;count+=read;}
+    if(count>MAX_CONTROLLER_ARTIFACT_BYTES)return 'unknown';
+    return crypto.createHash('sha256').update(bytes.subarray(0,count)).digest('hex');
+  } catch(error) {
+    if(error.code==='ENOENT')return 'absent';
+    return 'unknown';
+  } finally { if(fd!==undefined)fs.closeSync(fd); }
+}
+function validProcessIdentity(value) {
+  return !!value&&typeof value==='object'&&Number.isSafeInteger(value.ProcessId)&&value.ProcessId>0&&
+    typeof value.Started==='string'&&typeof value.Name==='string'&&(value.CommandLine===null||typeof value.CommandLine==='string');
+}
+function validLeaseRecord(value) {
+  return !!value&&typeof value==='object'&&typeof value.id==='string'&&value.id.length>0&&Array.isArray(value.keys)&&
+    (validProcessIdentity(value.owner)||validProcessIdentity(value.launcher));
+}
+function validRunOwner(value) {
+  return !!value&&typeof value==='object'&&typeof value.token==='string'&&value.token.length>0&&validProcessIdentity(value.owner);
+}
 
 function coordinatorTimeoutMs() {
   const configured=Number(process.env.ORCH_COORDINATOR_TIMEOUT_MS);
@@ -127,6 +155,91 @@ export function processSnapshot(timeoutMs=Number(process.env.ORCH_PROCESS_SNAPSH
       (result.status===null?'null：超时/被中断':result.status)+(detail?'：'+detail:'')+')');
   }
   return new Map(JSON.parse(result.stdout).map(p=>[p.ProcessId,p]));
+}
+function coordinatorProcessSnapshot(dir) {
+  if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
+  const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(process.env.ORCH_PROCESS_SNAPSHOT_TIMEOUT_MS)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
+  const cacheFile=assertNoReparsePoints(path.join(dir,'process-snapshot-cache.json'),'coordinator process snapshot cache');
+  const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
+  const cachePath=quote(cacheFile),maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES,ttl=COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller=process.pid;
+  const script=`
+$ErrorActionPreference='Stop';$OutputEncoding=[Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+$cachePath=${cachePath};$maxBytes=${maxBytes};$ttlMs=${ttl};$callerPid=${caller};$waitMs=${waitMs}
+$m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false
+function Get-ProcessRows([int]$pidValue){
+  @(Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
+}
+function Test-ProcessRow($row){
+  if($null -eq $row){return $false};$pidValue=0
+  if(-not [int]::TryParse([string]$row.ProcessId,[ref]$pidValue) -or $pidValue -lt 0){return $false}
+  if($row.Started -isnot [string] -or $row.Name -isnot [string] -or ($null -ne $row.CommandLine -and $row.CommandLine -isnot [string])){return $false}
+  $parent=0L;$working=0L;$peak=0L
+  if(-not [long]::TryParse([string]$row.ParentProcessId,[ref]$parent) -or -not [long]::TryParse([string]$row.WorkingSet64,[ref]$working) -or -not [long]::TryParse([string]$row.PeakWorkingSet64,[ref]$peak)){return $false}
+  return $true
+}
+function Read-Cache {
+  try {
+    if(-not [IO.File]::Exists($cachePath)){return $null}
+    $item=Get-Item -LiteralPath $cachePath -Force
+    if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or $item.Length -le 0 -or $item.Length -gt $maxBytes){return $null}
+    $stream=[IO.File]::Open($cachePath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+    try{$buffer=New-Object byte[] ($maxBytes+1);$count=0;while($count -lt $buffer.Length){$read=$stream.Read($buffer,$count,$buffer.Length-$count);if($read -le 0){break};$count+=$read};if($count -gt $maxBytes){return $null};$text=[Text.UTF8Encoding]::new($false,$true).GetString($buffer,0,$count)}finally{$stream.Dispose()}
+    $cache=($text | ConvertFrom-Json -ErrorAction Stop)
+    $created=[long]$cache.createdAt;$age=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$created
+    if(($cache.schema -isnot [int] -and $cache.schema -isnot [long]) -or [int]$cache.schema -ne 1 -or $age -lt 0 -or $age -gt $ttlMs -or $cache.processes -isnot [System.Array]){return $null}
+    $rows=@($cache.processes);if($rows.Count -le 0){return $null}
+    foreach($row in $rows){if(-not (Test-ProcessRow $row)){return $null}}
+    return ,$rows
+  } catch {return $null}
+}
+function Publish-Cache($rows){
+  $payload=@{schema=1;createdAt=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();processes=$rows}|ConvertTo-Json -Compress -Depth 6
+  $bytes=[Text.UTF8Encoding]::new($false).GetBytes($payload)
+  if($bytes.Length -gt $maxBytes){throw 'Coordinator process snapshot exceeds cache safety limit.'}
+  $temp=$cachePath+'.'+[Guid]::NewGuid().ToString('N')+'.tmp'
+  try {
+    [IO.File]::WriteAllBytes($temp,$bytes)
+    if([IO.File]::Exists($cachePath)){$item=Get-Item -LiteralPath $cachePath -Force;if(($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0){throw 'Coordinator process snapshot cache is a reparse point.'};$backup=$cachePath+'.'+[Guid]::NewGuid().ToString('N')+'.bak';[IO.File]::Replace($temp,$cachePath,$backup,$true);if([IO.File]::Exists($backup)){[IO.File]::Delete($backup)}}else{[IO.File]::Move($temp,$cachePath)}
+  } finally {if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
+}
+try {
+  try{$held=$m.WaitOne($waitMs)}catch [Threading.AbandonedMutexException]{$held=$true}
+  if(-not $held){throw 'Process snapshot mutex timeout'}
+  $rows=Read-Cache;$fresh=$false
+  if($null -eq $rows){
+    $rows=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
+    if($rows.Count -le 0){throw 'Process snapshot returned no rows.'}
+    foreach($row in $rows){if(-not (Test-ProcessRow $row)){throw 'Process snapshot returned an invalid row.'}}
+    Publish-Cache $rows;$fresh=$true
+  }
+  $owner=@($rows | Where-Object { [int]$_.ProcessId -eq $callerPid }) | Select-Object -First 1
+  if($null -eq $owner){$owner=@(Get-ProcessRows $callerPid) | Select-Object -First 1;if($null -eq $owner){throw 'Coordinator owner identity unavailable'};$rows=@($rows)+@($owner)}
+  $result=@{fresh=$fresh;processes=@($rows);owner=$owner}
+  $result|ConvertTo-Json -Compress -Depth 6
+} finally {if($held){$m.ReleaseMutex()};$m.Dispose()}`;
+  const result=spawnSync(trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',script],
+    {encoding:'utf8',windowsHide:true,timeout:waitMs,maxBuffer:MAX_CONTROLLER_ARTIFACT_BYTES*2,cwd:trustedWindowsRoot(),env:controllerEnvironment()});
+  if(result.status!==0){
+    const detail=String(result.stderr||'').trim().split('\n')[0].slice(0,200);
+    throw new Error('Cannot verify process identities (powershell 退出码 '+(result.status===null?'null：超时/被中断':result.status)+(detail?'：'+detail:'')+')');
+  }
+  let value;try{value=JSON.parse(result.stdout);}catch(error){throw new Error('Invalid coordinator process snapshot response: '+error.message);}
+  if(typeof value?.fresh!=='boolean'||!Array.isArray(value.processes)||!value.owner)throw new Error('Invalid coordinator process snapshot response');
+  const processes=new Map();
+  for(const item of value.processes){
+    if(!item||!Number.isSafeInteger(item.ProcessId)||item.ProcessId<0||typeof item.Started!=='string'||typeof item.Name!=='string'||(item.CommandLine!==null&&typeof item.CommandLine!=='string'))throw new Error('Invalid coordinator process snapshot row');
+    processes.set(item.ProcessId,item);
+  }
+  const owner=processes.get(process.pid);
+  if(!owner||!sameProcess(owner,value.owner))throw new Error('Coordinator owner identity unavailable');
+  return {processes,fresh:value.fresh};
+}
+function transactionObservation(dir,snapshot) {
+  if(snapshot===processSnapshot)return coordinatorProcessSnapshot(dir);
+  const value=snapshot();
+  if(value instanceof Map)return {processes:value,fresh:true};
+  if(value&&value.processes instanceof Map&&typeof value.fresh==='boolean')return value;
+  throw new Error('Invalid process snapshot observation');
 }
 export function sameProcess(expected,actual) {
   return !!expected&&!!actual&&expected.ProcessId===actual.ProcessId&&expected.Started===actual.Started&&expected.Name===actual.Name&&expected.CommandLine===actual.CommandLine;
@@ -195,7 +308,12 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
   // spellings of one leases.json.
   const physicalDir = physicalPathIdentity(dir);
   const lock=path.join(dir,'mutex.json'),file=path.join(dir,'leases.json');
-  let processes=snapshot();let owner=processes.get(process.pid);
+  const ownersFile=path.join(dir,'run-owners.json');
+  // Capture both ledger revisions before the snapshot/cache wait. The only
+  // negative evidence that can prune entries comes from this call's fresh
+  // producer; cache hits retain valid identities until a producer sees them.
+  const initialRevisions=new Map([[file,ledgerRevision(file)],[ownersFile,ledgerRevision(ownersFile)]]);
+  const {processes,fresh}=transactionObservation(physicalDir,snapshot),owner=processes.get(process.pid);
   if(!owner)throw new Error('Coordinator owner identity unavailable');
   // A kernel mutex is released by Windows on a crash. Unlike a stale lockfile,
   // it cannot be reclaimed by two contenders or strand an empty lock forever.
@@ -249,27 +367,22 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
         '常见原因：协调器目录不可写、Windows PowerShell 不可用，或同名互斥锁被其它协调器长期持有');
     }
   }
-  // The first snapshot supplies the owner identity needed to start the lock
-  // helper. It is deliberately refreshed after admission: a contender may
-  // have created and bound a launcher (or claimed a run) while this process
-  // waited for the mutex. Filtering with the pre-lock snapshot would delete
-  // that live record and could over-admit the same capacity or run twice.
-  // The refresh remains bounded by processSnapshot's 120s cap; unlike the old
-  // implementation it is no longer performed speculatively before admission.
   try {
-    if(snapshot===processSnapshot){
-      processes=snapshot();
-      owner=processes.get(process.pid);
-      if(!owner)throw new Error('Coordinator owner identity unavailable after mutex acquisition');
-    }
+    const observation={processes,fresh,changed(target){
+      const before=initialRevisions.get(target)??'unknown',after=ledgerRevision(target);
+      return before==='unknown'||after==='unknown'||before!==after;
+    }};
+    const leasesChanged=observation.changed(file);
     let leases=readState(file,Array.isArray,'协调器租约表 '+file)||[];
     leases=leases.filter(l=>{
       // 畸形/外来条目绝不能毒死协调器：非对象直接剪掉；没有 owner 的条目按"新鲜度"兜底
       // （90s 内当作可能正在写入而保留，过后自愈剪掉），绝不在这里解引用 undefined。
       // 回归：test/lease-poison.test.mjs（修前这里是裸 TypeError，160 次并发事务实测 159 次死在这）。
       if(!l||typeof l!=='object')return false;
-      if(l.launcher)return sameProcess(l.launcher,processes.get(l.launcher.ProcessId));
-      if(l.pidFile){let pid=0;try{pid=Number(fs.readFileSync(l.pidFile,'utf8').replace(/^\uFEFF/,''));}catch{};const found=launcherIdentity(pid,l.pidFile,processes);if(found){l.launcher=found;return true;}}
+      if(l.launcher&&sameProcess(l.launcher,processes.get(l.launcher.ProcessId)))return true;
+      if(!fresh&&validLeaseRecord(l))return true;
+      if(fresh&&leasesChanged&&validLeaseRecord(l))return true;
+      if(fresh&&l.pidFile){let pid=0;try{pid=Number(fs.readFileSync(l.pidFile,'utf8').replace(/^\uFEFF/,''));}catch{};const found=launcherIdentity(pid,l.pidFile,processes);if(found){l.launcher=found;return true;}}
       if(!l.owner)return Date.now()-(l.reservedAt||0)<90000;
       return sameProcess(l.owner,processes.get(l.owner.ProcessId))||Date.now()-(l.reservedAt||0)<90000;
     });
@@ -285,16 +398,16 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
     }
     if(unique.length!==leases.length)console.warn('[orchestrator] 协调器租约表含重复 id（'+leases.length+' -> '+unique.length+' 条）；已收敛为最新记录，避免容量重复计数');
     leases=unique;
-    const result=fn(leases,owner,processes);atomicJson(file,leases);return result;
+    const result=fn(leases,owner,processes,observation);atomicJson(file,leases);return result;
   }finally{unlock();}
 }
 export function reserve(dir,rec,capacity,snapshot,memoryAdmission) {
-  return transaction(dir,(leases,owner,processes)=>{
+  return transaction(dir,(leases,owner,processes,observation)=>{
     if(leases.some(l=>l.id===rec.id))return {ok:false,reason:'existing reservation'};
     const limit=Math.min(capacity,...leases.map(l=>l.capacity||capacity));
     if(leases.length>=limit)return {ok:false,reason:'capacity'};
     if(leases.some(l=>keysOverlap(l.keys,rec.keys)))return {ok:false,reason:'conflict'};
-    if(memoryAdmission&&!memoryAdmission(leases,rec,processes))return {ok:false,reason:'memory'};
+    if(memoryAdmission&&!memoryAdmission(leases,rec,observation.fresh?processes:new Map()))return {ok:false,reason:'memory'};
     leases.push({...rec,owner,capacity,reservedAt:Date.now()});return {ok:true};
   },snapshot);
 }
@@ -303,18 +416,19 @@ export function release(dir,id,snapshot){return transaction(dir,leases=>{const i
 
 export function prepare(dir,id,pidFile){return transaction(dir,leases=>{const l=leases.find(l=>l.id===id);if(!l)throw new Error("Reservation expired");l.pidFile=pidFile;});}
 
-export function claimRun(dir,key) {
-  return transaction(dir,(_leases,owner,processes)=>{
+export function claimRun(dir,key,snapshot=processSnapshot) {
+  return transaction(dir,(_leases,owner,processes,observation)=>{
     const file=path.join(dir,'run-owners.json');
     const owners=readState(file,value=>!!value&&typeof value==='object'&&!Array.isArray(value),'运行占用账本 '+file)||{};
+    const ownersChanged=observation.changed(file);
     for(const [id,r] of Object.entries(owners)){
       // 条目本身被写坏（不是对象/没有 owner）时直接剪掉，绝不解引用 undefined。
       if(!r||typeof r!=='object'||!r.owner||typeof r.owner!=='object'){delete owners[id];continue;}
-      if(!sameProcess(r.owner,processes.get(r.owner.ProcessId)))delete owners[id];
+      if(!sameProcess(r.owner,processes.get(r.owner.ProcessId))&&!(validRunOwner(r)&&(!observation.fresh||ownersChanged)))delete owners[id];
     }
     if(owners[key])throw new Error('Run already has a live controller');
     const claim={owner,token:crypto.randomUUID()};owners[key]=claim;atomicJson(file,owners);return claim;
-  });
+  },snapshot);
 }
 export function releaseRun(dir,key,claim) {
   return transaction(dir,(_leases,_owner,processes)=>{

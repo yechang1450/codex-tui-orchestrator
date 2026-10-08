@@ -1,14 +1,16 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {coordinatorDir} from '../scripts/core/leases.mjs';
+import {claimRun,coordinatorDir,reserve,transaction} from '../scripts/core/leases.mjs';
 import {controllerStateDir} from '../scripts/core/controller-state.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+const missingProcessIdentity={ProcessId:987654321,Started:'2020-01-01T00:00:00.000Z',Name:'powershell.exe',CommandLine:'powershell.exe -File stale.ps1'};
 test('Codex default coordinator is isolated from the generic TUI pool',()=>{
  const workspace=path.resolve(family,'..'),env={...process.env,ORCH_COORDINATOR_DIR:''};
  const dir=coordinatorDir(workspace,env);
@@ -26,6 +28,119 @@ test('default coordinator authority stays outside a child-writable workspace',()
   assert.ok(dir.startsWith(path.join(codexHome,'state','plugins','codex-tui-orchestrator')));
   assert.equal(coordinatorDir(path.join(root,'other-workspace'),env),dir);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('an advisory cache hit preserves a valid negative lease even when its ledger is unchanged',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-hit-'));
+ try{
+  const stale={id:'stale-lease',keys:['dir:stale'],owner:missingProcessIdentity,reservedAt:1};
+  fs.writeFileSync(path.join(dir,'leases.json'),JSON.stringify([stale]));
+  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:false});
+  let fresh;
+  transaction(dir,(_leases,_owner,_processes,observation)=>{fresh=observation?.fresh;},snapshot);
+  assert.equal(fresh,false,'cache hit must be labeled advisory');
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir,'leases.json'),'utf8')).some(lease=>lease.id==='stale-lease'));
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a fresh producer can reclaim an old negative lease when the ledger is stable',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-producer-'));
+ try{
+  fs.writeFileSync(path.join(dir,'leases.json'),JSON.stringify([{id:'stale-lease',keys:['dir:stale'],owner:missingProcessIdentity,reservedAt:1}]));
+  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:true});
+  transaction(dir,(_leases,_owner,_processes,observation)=>assert.equal(observation?.fresh,true),snapshot);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir,'leases.json'),'utf8')),[]);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a fresh producer preserves a negative lease when its ledger changed after observation',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-fresh-revision-'));
+ try{
+  const file=path.join(dir,'leases.json'),stale={id:'stale-lease',keys:['dir:stale'],owner:missingProcessIdentity,reservedAt:1};
+  fs.writeFileSync(file,JSON.stringify([stale]));
+  const snapshot=()=>{fs.writeFileSync(file,JSON.stringify([stale,{id:'concurrent',keys:['dir:other'],owner:missingProcessIdentity,reservedAt:1}]));return new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]);};
+  transaction(dir,()=>{},snapshot);
+  const ids=JSON.parse(fs.readFileSync(file,'utf8')).map(lease=>lease.id);
+  assert.ok(ids.includes('stale-lease'));
+  assert.ok(ids.includes('concurrent'));
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('an advisory cache hit preserves a valid negative run owner even when its ledger is unchanged',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-cache-hit-'));
+ try{
+  const stale={owner:missingProcessIdentity,token:'stale-token'};
+  fs.writeFileSync(path.join(dir,'run-owners.json'),JSON.stringify({stale}));
+  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:false});
+  let result;
+  assert.throws(()=>claimRun(dir,'stale',snapshot),/Run already has a live controller/);
+  result=JSON.parse(fs.readFileSync(path.join(dir,'run-owners.json'),'utf8'));
+  assert.equal(result.stale.token,'stale-token');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a fresh run-owner observation reclaims a stale owner only while its ledger is stable',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-fresh-revision-'));
+ try{
+  const file=path.join(dir,'run-owners.json');
+  fs.writeFileSync(file,JSON.stringify({stale:{owner:missingProcessIdentity,token:'stale-token'}}));
+  const snapshot=()=>new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]);
+  claimRun(dir,'new-run',snapshot);
+  const owners=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.equal(owners.stale,undefined);
+  assert.ok(owners['new-run']);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a fresh run-owner observation preserves valid owners when its ledger changed',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-fresh-changed-'));
+ try{
+  const file=path.join(dir,'run-owners.json'),stale={owner:missingProcessIdentity,token:'stale-token'};
+  fs.writeFileSync(file,JSON.stringify({stale}));
+  const snapshot=()=>{fs.writeFileSync(file,JSON.stringify({stale,concurrent:{owner:missingProcessIdentity,token:'concurrent-token'}}));return new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]);};
+  claimRun(dir,'new-run',snapshot);
+  const owners=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.equal(owners.stale.token,'stale-token');
+  assert.equal(owners.concurrent.token,'concurrent-token');
+  assert.ok(owners['new-run']);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a cache hit cannot use cached process memory to admit a reservation',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-memory-'));
+ try{
+  let admissionSnapshot;
+  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' '),WorkingSet64:1,PeakWorkingSet64:1}]]),fresh:false});
+  const result=reserve(dir,{id:'candidate',keys:['dir:candidate'],memoryCostMB:100},4,snapshot,(_leases,_record,processes)=>{admissionSnapshot=processes;return processes.has(process.pid);});
+  assert.deepEqual(result,{ok:false,reason:'memory'});
+  assert.ok(admissionSnapshot instanceof Map);
+  assert.equal(admissionSnapshot.size,0,'advisory process memory must not reduce the reservation estimate');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a malformed coordinator snapshot cache triggers a fresh enumeration',t=>{
+ if(process.platform!=='win32')return t.skip('Windows process snapshot cache integration only');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-corrupt-'));
+ try{
+  const cache=path.join(dir,'process-snapshot-cache.json');
+  fs.writeFileSync(cache,'{not json');
+  let fresh;
+  transaction(dir,(_leases,_owner,_processes,observation)=>{fresh=observation?.fresh;});
+  assert.equal(fresh,true,'cache corruption must force a fresh complete enumeration');
+  const repaired=JSON.parse(fs.readFileSync(cache,'utf8'));
+  assert.equal(repaired.schema,1);
+  assert.ok(Array.isArray(repaired.processes)&&repaired.processes.length>0);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a cache entry without the caller uses a fresh targeted owner before lock acquisition',t=>{
+ if(process.platform!=='win32')return t.skip('Windows process snapshot cache integration only');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-targeted-'));
+ try{
+  const cache=path.join(dir,'process-snapshot-cache.json');
+  const original={schema:1,createdAt:Date.now(),processes:[{...missingProcessIdentity,ParentProcessId:1,WorkingSet64:1,PeakWorkingSet64:1}]};
+  fs.writeFileSync(cache,JSON.stringify(original));
+  const before=fs.readFileSync(cache,'utf8');
+  let fresh,owner;
+  transaction(dir,(_leases,current,_processes,observation)=>{owner=current;fresh=observation?.fresh;});
+  // The transaction succeeds with a real current owner, while an advisory hit
+  // leaves the caller-omitting cache untouched (a full refresh would replace it).
+  assert.ok(owner&&owner.ProcessId===process.pid);
+  assert.equal(fresh,false);
+  assert.equal(fs.readFileSync(cache,'utf8'),before);
+ }
+ finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('explicit coordinator refuses a symlink or junction in its path',()=>{
  fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'coordinator-link-'));
@@ -66,13 +181,16 @@ test('local UNC aliases share controller identity and conflict keys with the dri
   assert.equal(coordinatorDir(workspace),coordinatorDir(unc));
  } catch (error) { return t.skip('UNC administrative share unavailable: '+error.message); }
 });
-for(const [parents,capacity] of [[9,8],[12,4],[40,16]])test(`${parents} independent parent processes contend for ${capacity} shared slots without lost updates`,async()=>{
+for(const [parents,capacity] of [[9,8],[12,4],[40,16]])test(`${parents} independent parent processes contend for ${capacity} shared slots without lost updates`,async t=>{
  fs.mkdirSync(family,{recursive:true});const dir=fs.mkdtempSync(path.join(family,'cross-process-'));
  const module=new URL('../scripts/core/leases.mjs',import.meta.url).href;
  const worker=path.join(dir,'worker.mjs');
- fs.writeFileSync(worker,`import fs from 'node:fs';import path from 'node:path';import {reserve,release} from ${JSON.stringify(module)};
+ fs.writeFileSync(worker,`import fs from 'node:fs';import path from 'node:path';import {reserve,release,transaction} from ${JSON.stringify(module)};
  const dir=process.argv[2],id=process.argv[3];
- try{const result=reserve(dir,{id,runId:id,keys:['test:'+id]},${capacity});fs.writeFileSync(path.join(dir,id+'.json'),JSON.stringify(result));
+ try{const result=${parents===40?`transaction(dir,(leases,owner,_processes,observation)=>{
+ const result=leases.some(l=>l.id===id)?{ok:false,reason:'existing reservation'}:leases.length>=${capacity}?{ok:false,reason:'capacity'}:leases.some(l=>l.keys.some(k=>k==='test:'+id))?{ok:false,reason:'conflict'}:(leases.push({id,runId:id,keys:['test:'+id],owner,capacity:${capacity},reservedAt:Date.now()}),{ok:true});
+ return {...result,fresh:observation?.fresh};
+})`:`reserve(dir,{id,runId:id,keys:['test:'+id]},${capacity})`};fs.writeFileSync(path.join(dir,id+'.json'),JSON.stringify(result));
  while(!fs.existsSync(path.join(dir,'release')))await new Promise(r=>setTimeout(r,50));
  if(result.ok)release(dir,id);
  }catch(e){fs.writeFileSync(path.join(dir,id+'.json'),JSON.stringify({error:e.message}));process.exitCode=1;}`);
@@ -97,6 +215,7 @@ for(const [parents,capacity] of [[9,8],[12,4],[40,16]])test(`${parents} independ
   assert.ok(results,'bounded wait for every child result expired');
   assert.equal(results.filter(r=>r.ok).length,capacity,JSON.stringify(results));
   assert.equal(results.filter(r=>r.reason==='capacity').length,parents-capacity,JSON.stringify(results));
+  if(parents===40){const freshCount=results.filter(r=>r.fresh===true).length;t.diagnostic(`full process enumerations in 40-process burst: ${freshCount}`);assert.equal(freshCount,1,'40-process burst must share one full process enumeration');}
   const leases=JSON.parse(fs.readFileSync(path.join(dir,'leases.json'),'utf8'));
   assert.equal(new Set(leases.map(l=>l.runId)).size,capacity);
  }finally{
