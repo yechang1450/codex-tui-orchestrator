@@ -11,9 +11,6 @@ const lib=path.join(root,'scripts','runtime-bootstrap.ps1');
 const windows=process.platform==='win32';
 const ps=path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
 const quote=s=>`'${String(s).replaceAll("'","''")}'`;
-// A trusted portable Node probe hashes the complete bundled npm tree.  Keep
-// this test-only process deadline bounded while allowing cold Windows I/O.
-const trustedNpmProbeTimeoutMs=180000;
 const hashArchive=archive=>`$sha=[Security.Cryptography.SHA256]::Create(); try { $hash=[BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes(${quote(archive)}))).Replace('-','') } finally { $sha.Dispose() }`;
 function run(code,{timeout=30000}={}){
   const script=`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; . ${quote(lib)}; ${code}`;
@@ -28,6 +25,28 @@ function fixture(t){
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   return dir;
 }
+function pairedNodeRuntime(dir){
+  const runtime=path.join(dir,'paired-node-runtime');
+  const node=path.join(runtime,'bin','node.exe');
+  const npm=path.join(runtime,'node_modules','npm','bin','npm-cli.js');
+  fs.mkdirSync(path.dirname(node),{recursive:true});
+  try { fs.linkSync(process.execPath,node); } catch { fs.copyFileSync(process.execPath,node); }
+  fs.mkdirSync(path.dirname(npm),{recursive:true});
+  fs.writeFileSync(npm,"process.stdout.write('10.0.0\\n');",'utf8');
+  return {node,npm};
+}
+function trustedRuntimeOverrides(runtime){
+  return `
+function Test-OrchTrustedSignature {
+  param([Parameter(Mandatory)][string]$Path, [string[]]$AllowedThumbprints)
+  return [string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath(${quote(runtime.node)}), [StringComparison]::OrdinalIgnoreCase)
+}
+function Test-OrchTrustedNpm {
+  param([Parameter(Mandatory)][string]$NpmPath, [string[]]$AllowedDigests)
+  return [string]::Equals([IO.Path]::GetFullPath($NpmPath), [IO.Path]::GetFullPath(${quote(runtime.npm)}), [StringComparison]::OrdinalIgnoreCase)
+}
+`;
+}
 const winTest=(name,fn)=>test(name,{skip:!windows},fn);
 
 winTest('runtime home stays with plugin data or plugin temp, never global installs',t=>{
@@ -36,12 +55,14 @@ winTest('runtime home stays with plugin data or plugin temp, never global instal
   const result=JSON.parse(run(`@((Get-OrchRuntimeHome -PluginRoot ${quote(dir)} -DataRoot ${quote(data)}),(Get-OrchRuntimeHome -PluginRoot ${quote(dir)} -DataRoot '')) | ConvertTo-Json -Compress`));
   assert.deepEqual(result,[path.join(data,'runtime'),path.join(dir,'temp','runtime')]);
 });
-winTest('existing node and npm are verified without downloading or creating runtime state',t=>{
-  const dir=fixture(t);
-  const result=JSON.parse(run(`Resolve-OrchNode -Candidates @(${quote(process.execPath)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`,{timeout:trustedNpmProbeTimeoutMs}));
-  assert.equal(path.resolve(result.NodePath).toLowerCase(),path.resolve(process.execPath).toLowerCase());
+winTest('an explicitly trusted paired Node/npm runtime is verified without downloading or creating runtime state',t=>{
+  const dir=fixture(t),runtime=pairedNodeRuntime(dir);
+  const result=JSON.parse(run(`${trustedRuntimeOverrides(runtime)}; Resolve-OrchNode -Candidates @(${quote(runtime.node)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`));
+  assert.equal(path.resolve(result.NodePath).toLowerCase(),path.resolve(runtime.node).toLowerCase());
+  assert.equal(path.resolve(result.NpmPath).toLowerCase(),path.resolve(runtime.npm).toLowerCase());
   assert.ok(result.NpmPath.endsWith('npm-cli.js'));
   assert.ok(Number(result.Version.split('.')[0])>=22);
+  assert.equal(result.NpmTrusted,true);
   assert.equal(fs.existsSync(path.join(dir,'runtime')),false);
 });
 winTest('missing runtime produces actionable refusal when network installation is disabled',t=>{
@@ -57,9 +78,9 @@ winTest('a Node executable without npm cannot be accepted as a ready runtime',t=
   assert.match(out,/NODE_RUNTIME_MISSING/);
 });
 winTest('unsafe executable candidates are rejected before selecting a working runtime',t=>{
-  const dir=fixture(t);
-  const result=JSON.parse(run(`Resolve-OrchNode -Candidates @(${quote(ps)},${quote(process.execPath)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`,{timeout:trustedNpmProbeTimeoutMs}));
-  assert.equal(path.resolve(result.NodePath).toLowerCase(),path.resolve(process.execPath).toLowerCase());
+  const dir=fixture(t),runtime=pairedNodeRuntime(dir);
+  const result=JSON.parse(run(`${trustedRuntimeOverrides(runtime)}; Resolve-OrchNode -Candidates @(${quote(ps)},${quote(runtime.node)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`));
+  assert.equal(path.resolve(result.NodePath).toLowerCase(),path.resolve(runtime.node).toLowerCase());
 });
 winTest('failed automatic download removes every partial download directory',t=>{
   const dir=fixture(t),home=path.join(dir,'runtime');

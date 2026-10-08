@@ -22,13 +22,20 @@ function fixture(t){
   for(const file of ['bootstrap.ps1','runtime-bootstrap.ps1']) fs.copyFileSync(path.join(root,'scripts',file),path.join(dir,'scripts',file));
   fs.writeFileSync(path.join(dir,'scripts','runtime-prepare.mjs'),'console.log(JSON.stringify({ok:true,stage:"ready",nodeVersion:process.versions.node,sdkVersion:"fixture",cliPath:process.execPath,agent:"codex"}));','utf8');
   for(const file of ['install-plugin.mjs','orchestrate-sdk.mjs']) fs.writeFileSync(path.join(dir,'scripts',file),'console.log(JSON.stringify({args:process.argv.slice(2),path:process.env.PATH,npm:process.env.npm_execpath,prefix:process.env.npm_config_prefix,cli:process.env.CODEX_CLI_PATH}));','utf8');
+  const node=testNodePath(dir),npm=testNpmPath(dir);
+  fs.mkdirSync(path.dirname(node),{recursive:true});
+  try { fs.linkSync(process.execPath,node); } catch { fs.copyFileSync(process.execPath,node); }
+  fs.mkdirSync(path.dirname(npm),{recursive:true});
+  fs.writeFileSync(npm,"process.stdout.write('10.0.0\\n');",'utf8');
   return dir;
 }
+function testNodePath(dir){ return path.join(dir,'paired-node-runtime','bin','node.exe'); }
+function testNpmPath(dir){ return path.join(dir,'paired-node-runtime','node_modules','npm','bin','npm-cli.js'); }
 function run(dir,args=[],env={}){
   // These entrypoint fixtures exercise argument forwarding and environment
-  // restoration.  Their Node executable is supplied by the test harness, so
-  // keep certificate-network latency out of this suite.  CLI identity remains
-  // independently covered by runtime-prepare and host-cli tests.
+  // restoration. Their paired Node/npm runtime is created by the fixture and
+  // deliberately accepted only by the explicit test override below. CLI
+  // identity remains independently covered by runtime-prepare and host-cli tests.
   return spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),...args],{env:{...process.env,ORCH_ALLOW_UNVERIFIED_NODE:'1',ORCH_ALLOW_UNVERIFIED_NPM:'1',...env},encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
 }
 function nativeCliFixture(file){
@@ -40,7 +47,7 @@ function nativeCliFixture(file){
 }
 test('bootstrap prepares without Node on PATH and passes structured runtime report',{skip:!windows},t=>{
   const dir=fixture(t),data=path.join(dir,'plugin data');
-  const r=run(dir,['-Action','prepare','-Json','-NoDownload','-NodePath',process.execPath],{PATH:path.join(process.env.SystemRoot,'System32'),PLUGIN_DATA:data});
+  const r=run(dir,['-Action','prepare','-Json','-NoDownload','-NodePath',testNodePath(dir)],{PATH:path.join(process.env.SystemRoot,'System32'),PLUGIN_DATA:data});
   assert.equal(r.status,0,r.stderr);
   assert.equal(JSON.parse(r.stdout).stage,'ready');
   assert.equal(fs.existsSync(path.join(data,'runtime','.bootstrap.lock')),true);
@@ -57,29 +64,29 @@ function Test-OrchTrustedNpm {
   throw 'npm digest must be skipped under explicit test override'
 }
 `,'utf8');
-  const r=run(dir,['-Action','prepare','-Json','-NoDownload','-NodePath',process.execPath],{PATH:path.join(process.env.SystemRoot,'System32'),PLUGIN_DATA:data});
+  const r=run(dir,['-Action','prepare','-Json','-NoDownload','-NodePath',testNodePath(dir)],{PATH:path.join(process.env.SystemRoot,'System32'),PLUGIN_DATA:data});
   assert.equal(r.status,0,r.stderr);
   assert.equal(JSON.parse(r.stdout).stage,'ready');
 });
 test('bootstrap dispatches an explicit distribution install literally and uses private CLI prefix',{skip:!windows},t=>{
   const dir=fixture(t),data=path.join(dir,'plugin data'),value='中文 x & echo BAD | more';
-  const r=run(dir,['-Action','install','-NoDownload','-NodePath',process.execPath,'--source','dist','--dist-root',value],{PLUGIN_DATA:data});
+  const r=run(dir,['-Action','install','-NoDownload','-NodePath',testNodePath(dir),'--source','dist','--dist-root',value],{PLUGIN_DATA:data});
   assert.equal(r.status,0,r.stderr);
   const result=JSON.parse(r.stdout);
   assert.deepEqual(result.args,['--source','dist','--dist-root',value]);
   assert.equal(result.prefix,path.join(data,'runtime','cli'));
-  assert.equal(result.cli,process.execPath);
+  assert.equal(result.cli,testNodePath(dir));
 });
 test('bootstrap marks its default checkout installation as an explicit local-development install',{skip:!windows},t=>{
   const dir=fixture(t),data=path.join(dir,'plugin data');
-  const r=run(dir,['-Action','install','-NoDownload','-NodePath',process.execPath],{PLUGIN_DATA:data});
+  const r=run(dir,['-Action','install','-NoDownload','-NodePath',testNodePath(dir)],{PLUGIN_DATA:data});
   assert.equal(r.status,0,r.stderr);
   assert.deepEqual(JSON.parse(r.stdout).args,['--local-development']);
 });
 test('bootstrap doctor forwards doctor flag and run keeps the original argument list',{skip:!windows},t=>{
   const dir=fixture(t);
   for(const [action,args,want] of [['doctor',[],['--doctor']],['run',['--plan','任务 spaces'],['--plan','任务 spaces']]]){
-    const r=run(dir,['-Action',action,'-NoDownload','-NodePath',process.execPath,...args]);
+    const r=run(dir,['-Action',action,'-NoDownload','-NodePath',testNodePath(dir),...args]);
     assert.equal(r.status,0,r.stderr);
     assert.deepEqual(JSON.parse(r.stdout).args,want);
   }
@@ -95,7 +102,7 @@ function Test-OrchTrustedNpm {
   throw 'fixture npm digest must be skipped by the explicit test override'
 }
 `,'utf8');
-  const code=`$before=$env:PATH; $npm=$env:npm_execpath; $prefix=$env:npm_config_prefix; & ${q(path.join(dir,'scripts','bootstrap.ps1'))} -Action prepare -NoDownload -NodePath ${q(process.execPath)} -Json; if($env:PATH -ne $before -or $env:npm_execpath -ne $npm -or $env:npm_config_prefix -ne $prefix){throw 'leaked environment'}`;
+  const code=`$before=$env:PATH; $npm=$env:npm_execpath; $prefix=$env:npm_config_prefix; & ${q(path.join(dir,'scripts','bootstrap.ps1'))} -Action prepare -NoDownload -NodePath ${q(testNodePath(dir))} -Json; if($env:PATH -ne $before -or $env:npm_execpath -ne $npm -or $env:npm_config_prefix -ne $prefix){throw 'leaked environment'}`;
   const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(code,'utf16le').toString('base64')],{env:{...process.env,ORCH_ALLOW_UNVERIFIED_NODE:'1',ORCH_ALLOW_UNVERIFIED_NPM:'1'},encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
   assert.equal(r.status,0,r.stderr);
 });
@@ -106,11 +113,11 @@ test('run streams progress immediately and is not killed by the preparation budg
   fs.appendFileSync(path.join(dir,'scripts','runtime-bootstrap.ps1'),`
 function Resolve-OrchNode {
   param([string[]]$Candidates,[string]$RuntimeHome,[switch]$NoDownload,[switch]$AllowUnverified,[switch]$AllowUnverifiedNpm,[int]$TimeoutSeconds)
-  return [pscustomobject]@{NodePath=${q(process.execPath)};NpmPath=${q(path.join(path.dirname(process.execPath),'node_modules','npm','bin','npm-cli.js'))};Version='fixture';NpmTrusted=$true}
+  return [pscustomobject]@{NodePath=${q(testNodePath(dir))};NpmPath=${q(testNpmPath(dir))};Version='fixture';NpmTrusted=$true}
 }
 `,'utf8');
   fs.writeFileSync(path.join(dir,'scripts','orchestrate-sdk.mjs'),'console.log("START"); setTimeout(()=>console.log("END"),11500);','utf8');
-  const child=spawn(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),'-Action','run','-NoDownload','-NodePath',process.execPath,'-TimeoutSeconds','10'],{windowsHide:true});
+  const child=spawn(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),'-Action','run','-NoDownload','-NodePath',testNodePath(dir),'-TimeoutSeconds','10'],{windowsHide:true});
   let firstAt=0,stdout='',stderr='';
   child.stdout.on('data',b=>{if(!firstAt)firstAt=Date.now();stdout+=b;});
   child.stderr.on('data',b=>stderr+=b);
