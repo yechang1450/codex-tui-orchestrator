@@ -140,6 +140,18 @@ async function readLauncherPidWithRetry(readPid,pidFile,{attempts=3,pauseMs=ms=>
       const pid=Number(readPid(pidFile));
       if(validLauncherPid(pid))return {pid,error:null};
       if(pid!==0)return {pid:0,error:new Error('Launcher PID is invalid')};
+      // Production hooks intentionally collapse unreadable and malformed PID
+      // files to zero. Inspect the bounded artifact so a malformed value does
+      // not borrow the short startup retry reserved for an actual zero.
+      const raw=readUtf8Bounded(pidFile,'launcher PID',128);
+      if(raw!==null){
+        const text=String(raw).replace(/^\uFEFF/,'').trim();
+        if(text&&text!=='0'){
+          const filePid=Number(text);
+          if(validLauncherPid(filePid))return {pid:filePid,error:null};
+          return {pid:0,error:new Error('Launcher PID is invalid')};
+        }
+      }
       lastError=new Error('Launcher PID is unavailable during startup');
     }catch(error){
       if(!['EBUSY','EPERM','EACCES'].includes(error?.code))return {pid:0,error};
@@ -855,9 +867,19 @@ export async function runWindows(request,hooks,options={}) {
             // hard-coded one-shot spawn made transient WT/provider startup
             // failures collapse an otherwise full-capacity wave into a single
             // live window, then produced incomplete receipts.
-            const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
+             const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
              const spawnResult=await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token);
              const observedPid=await readLauncherPidWithRetry(hooks.readPid,la.pidf);
+             if(observedPid.error){
+               // A launcher adapter cannot prove a clean miss while its own
+               // controller PID file is unreadable or malformed. Preserve the
+               // lease and artifacts for reconciliation instead of trusting a
+               // concurrent `noProcess` result.
+               spawnConfirmed=true;
+               active.pidReadUnavailableAt=Date.now();
+               persistAttempt();
+               throw observedPid.error;
+             }
              const observed=validLauncherPid(observedPid.pid)||fs.existsSync(la.rf)||fs.existsSync(la.rf+'.self-closed');
              const spawnState=classifySpawnResult(spawnResult,observed);
              const spawned=spawnState.spawned;
