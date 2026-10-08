@@ -62,21 +62,26 @@ test('a fresh producer preserves a negative lease when its ledger changed after 
   assert.ok(ids.includes('concurrent'));
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('a same-key advisory owner collision forces one fresh recheck before reclaiming a stable stale owner',()=>{
+test('a same-key positive advisory owner collision forces one fresh recheck before reclaiming a stable stale owner',()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-cache-hit-'));
  try{
   const stale={owner:missingProcessIdentity,token:'stale-token'};
   const file=path.join(dir,'run-owners.json');
   fs.writeFileSync(file,JSON.stringify({stale}));
   let calls=0;
-  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:++calls===2});
+  const snapshot=()=>{
+   calls++;
+   const processes=new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]);
+   if(calls===1)processes.set(stale.owner.ProcessId,stale.owner);
+   return {processes,fresh:calls===2};
+  };
   const claim=claimRun(dir,'stale',snapshot);
-  assert.equal(calls,2,'one advisory collision may request exactly one fresh recheck');
+  assert.equal(calls,2,'one positive advisory collision may request exactly one fresh recheck');
   assert.notEqual(claim.token,'stale-token');
   assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).stale.token,claim.token);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('a same-key advisory owner collision rejects a still-live controller without a fresh retry',()=>{
+test('a same-key positive advisory owner collision confirms a still-live controller with one fresh recheck',()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-live-'));
  try{
   const live={ProcessId:987654321,Started:'2026-10-09T00:00:00.000Z',Name:'node.exe',CommandLine:'node controller.mjs'};
@@ -84,7 +89,8 @@ test('a same-key advisory owner collision rejects a still-live controller withou
   let calls=0;
   const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}],[live.ProcessId,live]]),fresh:++calls>1});
   assert.throws(()=>claimRun(dir,'same',snapshot),/Run already has a live controller/);
-  assert.equal(calls,1,'a live owner is authoritative even when the cache is advisory');
+  assert.equal(calls,2,'a positive advisory owner must be confirmed by one fresh recheck');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,'run-owners.json'),'utf8')).same.token,'live-token');
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('a same-key advisory owner collision propagates a failed fresh recheck without retrying again',()=>{
@@ -129,7 +135,8 @@ test('the default coordinator bypasses its advisory cache once before reclaiming
  try{
   const current=processSnapshot().get(process.pid);
   const createdAt=Date.now()-1000;
-  fs.writeFileSync(path.join(dir,'process-snapshot-cache.json'),JSON.stringify({schema:1,createdAt,processes:[{...current,ParentProcessId:current.ParentProcessId||1,WorkingSet64:current.WorkingSet64||1,PeakWorkingSet64:current.PeakWorkingSet64||1}]}));
+  const oldOwner={...missingProcessIdentity,ParentProcessId:1,WorkingSet64:1,PeakWorkingSet64:1};
+  fs.writeFileSync(path.join(dir,'process-snapshot-cache.json'),JSON.stringify({schema:1,createdAt,processes:[{...current,ParentProcessId:current.ParentProcessId||1,WorkingSet64:current.WorkingSet64||1,PeakWorkingSet64:current.PeakWorkingSet64||1},oldOwner]}));
   fs.writeFileSync(path.join(dir,'run-owners.json'),JSON.stringify({same:{owner:missingProcessIdentity,token:'stale-token'}}));
   const claim=claimRun(dir,'same');
   assert.notEqual(claim.token,'stale-token');

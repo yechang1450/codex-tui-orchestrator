@@ -438,11 +438,12 @@ export function claimRun(dir,key,snapshot=processSnapshot) {
     const incumbent=owners[key];
     if(incumbent){
       // A cache hit is advisory: a dead controller may still be listed until a
-      // complete process snapshot proves otherwise. Recheck exactly once only
-      // for this same-key, valid-but-negative collision. Live owners, changed
-      // ledgers, and failed/indeterminate fresh observations stay fail-closed.
-      const live=sameProcess(incumbent.owner,processes.get(incumbent.owner?.ProcessId));
-      if(!live&&!observation.fresh&&!forceFresh&&validRunOwner(incumbent))return FRESH_RUN_OWNER_RECHECK;
+      // complete process snapshot proves otherwise. A positive cached row can
+      // be stale after a controller crash and PID reuse too, so every valid
+      // same-key advisory collision gets exactly one fresh recheck. Changed
+      // ledgers, failed/indeterminate fresh observations, and a confirmed
+      // live owner stay fail-closed.
+      if(!observation.fresh&&!forceFresh&&validRunOwner(incumbent))return FRESH_RUN_OWNER_RECHECK;
       throw new Error('Run already has a live controller');
     }
     const claim={owner,token:crypto.randomUUID()};owners[key]=claim;atomicJson(file,owners);return claim;
