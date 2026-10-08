@@ -49,8 +49,10 @@ Clone the repository, then install and register the checkout:
 ```powershell
 git clone https://github.com/yechang1450/codex-tui-orchestrator.git "$HOME\plugins\codex-tui-orchestrator"
 Set-Location "$HOME\plugins\codex-tui-orchestrator"
-powershell.exe -NoProfile -File ".\scripts\bootstrap.ps1" -Action install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\bootstrap.ps1" -Action install
 ```
+
+`-ExecutionPolicy Bypass` applies only to this bootstrap child process. It does not change the machine or user execution policy; an organization-managed `MachinePolicy` or `UserPolicy` can still take precedence.
 
 The checkout includes `.agents/plugins/marketplace.json`. Bootstrap registers this checkout as the local `codex-tui-orchestrator-local` marketplace, installs `codex-tui-orchestrator` through the host CLI, and verifies the installed copy. It does not reuse an earlier plugin cache.
 

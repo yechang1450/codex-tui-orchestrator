@@ -25,7 +25,7 @@
 ```powershell
 git clone git@github.com:yechang1450/codex-tui-orchestrator.git "$HOME\plugins\codex-tui-orchestrator"
 if ($LASTEXITCODE -ne 0) { throw '克隆失败。' }
-& "$HOME\plugins\codex-tui-orchestrator\scripts\bootstrap.ps1" -Action install -Arguments @('--verify-skills')
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$HOME\plugins\codex-tui-orchestrator\scripts\bootstrap.ps1" -Action install -Arguments @('--verify-skills')
 if ($LASTEXITCODE -ne 0) { throw '准备或安装失败。' }
 ```
 

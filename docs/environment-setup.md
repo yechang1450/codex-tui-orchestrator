@@ -5,9 +5,11 @@
 Windows PowerShell 5.1 can run the bootstrap before Node/npm exist:
 
 ```powershell
-& '<plugin-root>\scripts\bootstrap.ps1' -Action prepare -Json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File '<plugin-root>\scripts\bootstrap.ps1' -Action prepare -Json
 if ($LASTEXITCODE -ne 0) { throw 'Environment preparation failed.' }
 ```
+
+`-ExecutionPolicy Bypass` sets the policy only for this child PowerShell process. It does not change a machine or user setting, and a `MachinePolicy` or `UserPolicy` set by an organization can still take precedence.
 
 `prepare` checks runtime prerequisites without calling a model or registering the plugin. `install` prepares them and invokes the existing installer. `doctor` prepares and runs installation diagnostics. `run -Arguments @('--exec', '<authorized request>')` prepares and forwards argument boundaries to the orchestration entry. The preparation deadline does not terminate long-running orchestration, whose task deadlines are managed by the controller. Live execution output is forwarded as it arrives.
 
@@ -25,7 +27,7 @@ The existing locked SDK installer restores missing SDK dependencies. The CLI ins
 
 `hooks/hooks.json` is discovered by the host. After the host trusts this definition, the SessionStart command performs bounded preparation on startup/resume/clear. Compact notifications and orchestrated child sessions are skipped. Available memory at or below 1000 MB, or an unreadable memory measurement, leaves execution in the original conversation. A process lock prevents duplicate concurrent preparation; failures have a ten-minute cooldown to avoid repeated downloads in every new session. The hook allows 110 seconds for preparation within the host's 120-second command limit; explicit `prepare` offers a longer default budget. Small state and lock files live under `PLUGIN_DATA/session-start`, or the plugin `temp/session-start` fallback. A healthy session is probed afresh rather than assumed healthy from cached success.
 
-Installation and hook trust are separate host operations. Installing/enabling a plugin does not grant hook trust. The installer does not modify that trust. A direct bootstrap installation prepares immediately; a plugin-manager installation prepares when its trusted hook next runs. If the hook reports a timeout, run `bootstrap.ps1 -Action prepare` directly with the longer preparation budget and inspect the diagnostic before retrying a task.
+Installation and hook trust are separate host operations. Installing/enabling a plugin does not grant hook trust. The installer does not modify that trust. A direct bootstrap installation prepares immediately; a plugin-manager installation prepares when its trusted hook next runs. If the hook reports a timeout, rerun the process-scoped command above with the longer preparation budget and inspect the diagnostic before retrying a task.
 
 Orchestrated Codex child sessions pass `--disable hooks`: environment preparation belongs to the initiating host session, and a fresh hook review prompt would otherwise stop every visible worker before its task starts. This does not trust or execute an unreviewed hook. The initiating host still applies its normal hook trust decision.
 

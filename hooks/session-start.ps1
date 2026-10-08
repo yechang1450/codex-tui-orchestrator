@@ -53,6 +53,7 @@ function Invoke-OrchSessionStart {
         . (Join-Path $PluginRoot 'scripts\runtime-bootstrap.ps1')
         $bootstrap = Assert-OrchSafePath (Join-Path $PluginRoot 'scripts\bootstrap.ps1')
         if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf)) { throw 'bootstrap missing' }
+        $manualPrepareCommand = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + $bootstrap + '" -Action prepare -Json'
         $dataHome = if ($DataRoot) { $DataRoot } else { Join-Path $PluginRoot 'temp' }
         $stateHome = Assert-OrchSafePath (Join-Path $dataHome 'session-start')
         [void][IO.Directory]::CreateDirectory($stateHome)
@@ -70,7 +71,7 @@ function Invoke-OrchSessionStart {
                 if ((Get-Item -LiteralPath $statePath).Length -gt 8192) { throw 'state too large' }
                 $state = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
                 if ($state.schema -eq 1 -and $state.fingerprint -eq $fingerprint -and $state.retryAfter -gt $now -and $state.retryAfter -le ($now + 600)) {
-                    return New-OrchSessionOutput 'COOLDOWN' 'A recent preparation attempt failed; continue inline. Automatic retry is limited to once per ten minutes; bootstrap.ps1 -Action prepare can be run explicitly.'
+                    return New-OrchSessionOutput 'COOLDOWN' ('A recent preparation attempt failed; continue inline. Automatic retry is limited to once per ten minutes; ' + $manualPrepareCommand + ' can be run explicitly.')
                 }
             } catch { # Corrupt state is not evidence of runtime health.
             }
@@ -104,7 +105,7 @@ function Invoke-OrchSessionStart {
         if ($code -eq 'READY') {
             return New-OrchSessionOutput $code 'Environment preparation passed. Wait for an authorized task, then use the skill to assess independent blocks; one block stays inline. Preparation alone launches no task.'
         }
-        return New-OrchSessionOutput $code 'Environment preparation did not finish successfully; continue inline without orchestration. Diagnose with scripts/bootstrap.ps1 -Action prepare -Json; automatic retry is limited to once per ten minutes.'
+        return New-OrchSessionOutput $code ('Environment preparation did not finish successfully; continue inline without orchestration. Diagnose with ' + $manualPrepareCommand + '; automatic retry is limited to once per ten minutes.')
     } catch { return New-OrchSessionOutput 'STATE_UNAVAILABLE' 'Preparation state or bootstrap files could not be accessed safely; continue inline without orchestration.' }
     finally { if ($null -ne $lock) { $lock.Dispose() } }
 }

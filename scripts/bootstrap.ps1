@@ -2,9 +2,9 @@
 .SYNOPSIS
 Prepare Node/npm, the locked SDK and native Codex CLI without administrator rights.
 .EXAMPLE
-& .\scripts\bootstrap.ps1 -Action install
-& .\scripts\bootstrap.ps1 -Action prepare -Json
-& .\scripts\bootstrap.ps1 -Action run -Arguments @('--plan', 'Your task')
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 -Action install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 -Action prepare -Json
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1 -Action run -Arguments @('--plan', 'Your task')
 #>
 [CmdletBinding()]
 param(

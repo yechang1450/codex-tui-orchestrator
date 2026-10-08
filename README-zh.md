@@ -49,8 +49,10 @@ Codex 原生 TodoList/spawn 卡片属于宿主界面；插件提供状态事件�
 ```powershell
 git clone https://github.com/yechang1450/codex-tui-orchestrator.git "$HOME\plugins\codex-tui-orchestrator"
 Set-Location "$HOME\plugins\codex-tui-orchestrator"
-powershell.exe -NoProfile -File ".\scripts\bootstrap.ps1" -Action install
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\bootstrap.ps1" -Action install
 ```
+
+`-ExecutionPolicy Bypass` 只作用于这次 bootstrap 子进程，不会修改机器或当前用户的执行策略；由组织设置的 `MachinePolicy` 或 `UserPolicy` 仍可优先于它。
 
 checkout 内含 `.agents/plugins/marketplace.json`。Bootstrap 会把当前 checkout 注册为本地 `codex-tui-orchestrator-local` marketplace，通过宿主 CLI 安装 `codex-tui-orchestrator`，再校验安装副本；它不会复用旧插件缓存。
 

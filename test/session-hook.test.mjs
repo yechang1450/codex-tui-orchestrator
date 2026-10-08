@@ -90,6 +90,7 @@ winTest('failed preparation is nonblocking and sanitized, and does not retry dur
   const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'calls.txt'),'x',[Text.Encoding]::UTF8)\n[Console]::Error.WriteLine('secret=fixture_token_DO_NOT_PRINT')\nWrite-Output '{\"ok\":false,\"message\":\"password=fixture_DO_NOT_PRINT\"}'\nexit 7\n");
   const first=run(f);assert.match(first.text,/PREPARE_FAILED/);assert.doesNotMatch(first.stdout+first.stderr,/DO_NOT_PRINT|password|secret/);
   const second=run(f);assert.match(second.text,/COOLDOWN/);
+  assert.match(second.text,/powershell\.exe -NoProfile -ExecutionPolicy Bypass -File ".+scripts\\bootstrap\.ps1" -Action prepare -Json/);
   assert.equal(fs.readFileSync(path.join(f.dir,'scripts','calls.txt'),'utf8').replace(/^\uFEFF/,''),'x');
   const state=fs.readFileSync(path.join(f.data,'session-start','state.json'),'utf8');assert.doesNotMatch(state,/DO_NOT_PRINT|password|secret/);
 });

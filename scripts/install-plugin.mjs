@@ -12,10 +12,10 @@
  * 以及条目还指向旧克隆或别的机器时用 `--set-source` 重新指向本机 checkout。
  *
  * 用法：
- *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install # 安装/更新（幂等）
+ *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install # 安装/更新（幂等）
  *   node scripts/install-plugin.mjs --check         # 只读校验：注册、可选分发新鲜度、缓存依赖、宿主启用状态（跟随 CODEX_HOME）
- *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install -Arguments @('--pull')
- *   powershell.exe -NoProfile -File scripts/bootstrap.ps1 -Action install -Arguments @('--set-source','--verify-skills')
+ *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install -Arguments @('--pull')
+ *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install -Arguments @('--set-source','--verify-skills')
  *   # --pull、--set-source、--verify-skills、--strict-skills 均由可信引导入口转交。
  *   node scripts/install-plugin.mjs --json          # 机器可读输出
  *   node scripts/install-plugin.mjs --source checkout|dist --timeout-ms <ms> --marketplace <path> --marketplace-root <path> --dist-root <path>
@@ -698,7 +698,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
     if (options.help) {
       console.log('Usage: install-plugin.mjs [--check] [--install] [--pull] [--set-source] [--verify-skills] [--strict-skills] [--local-development] [--json] [--quiet]');
       console.log('       [--source checkout|dist] [--timeout-ms ms] [--plugin path] [--marketplace path] [--marketplace-root path] [--dist-root path] [--home path]');
-      console.log('On Windows use scripts/bootstrap.ps1 -Action install -Arguments @(...) for installs; direct --check is read-only.');
+      console.log('On Windows use powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install -Arguments @(...) for installs; direct --check is read-only.');
       process.exit(0);
     }
     const result = options.mode === 'check' ? checkInstall(options) : installPlugin(options);
