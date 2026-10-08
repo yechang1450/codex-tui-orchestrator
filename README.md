@@ -14,6 +14,8 @@ The listed agents reflect the author's personal testing experience. They do not 
 
 A Windows-focused Codex plugin for running a long, unrelated task list concurrently when dependencies, conflicts, and available resources permit it.
 
+Current sealed core: `1.4.4-rc.1`.
+
 ## The model
 
 The orchestrator keeps each task's original identity, groups dependent, conflicting, or uncertain work into serial blocks, and launches only independent blocks in parallel. It records execution state and checks each task against independent acceptance conditions; a worker report or window closure alone does not prove success.

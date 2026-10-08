@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.29-rc.2
+
+- Recovery and reliability updates now preserve bounded worker refusal, controller and workspace identity validation, malformed-state rejection, and retry-safe run recovery.
+- Documentation now describes the current recovery, execution, and release-sealing contracts for this candidate.
+- Plugin/package version is now standard `0.9.29-rc.2`; the execution core remains sealed at `1.4.4-rc.1`.
+
 ## 0.9.29-rc.1
 
 - Public-readiness hardening: headless identity-snapshot failures now publish a bounded refusal instead of hanging a worker and lease; controller file stems and attempt ledgers are revalidated before execution; malformed legacy workspace registries fail closed; runner and supervisor authority records use physical workspace identity; local UNC normalization no longer trusts the caller's `COMPUTERNAME`; and supervisor relay mode inherits the initiating Codex model and effort.

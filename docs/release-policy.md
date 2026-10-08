@@ -23,6 +23,8 @@ The legacy mixed-case invocation remains documented for existing local reference
 
 ## Candidate configuration
 
+Current candidate: core 1.4.4-rc.1, plugin 0.9.29-rc.2.
+
 Candidate labels describe the package and execution-core pairing only. They do not certify validation, installed-cache, publication, or compatibility status for a later commit. Establish those facts with fresh evidence bound to the final commit and release seal.
 
 The planner and both execution modes inherit the initiating Codex provider and credentials by default, including third-party providers configured in `CODEX_HOME`. `ORCH_PROVIDER` accepts `inherit` and its compatibility alias `native` to preserve that inheritance; `openai-https` and its compatibility alias `relay` select the hardened OpenAI HTTPS provider. When `ORCH_PROVIDER` is unset, `ORCH_OPENAI_BASE_URL` or the legacy `ORCH_STEADY_RELAY_BASE_URL` selects the hardened provider; otherwise the initiating provider is inherited. An explicit `inherit` or `native` overrides a relay URL. Other values fail closed.
