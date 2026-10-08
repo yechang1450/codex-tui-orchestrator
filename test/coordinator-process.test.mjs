@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {claimRun,coordinatorDir,reserve,transaction} from '../scripts/core/leases.mjs';
+import {claimRun,coordinatorDir,processSnapshot,reserve,transaction} from '../scripts/core/leases.mjs';
 import {controllerStateDir} from '../scripts/core/controller-state.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
@@ -141,6 +141,28 @@ test('a cache entry without the caller uses a fresh targeted owner before lock a
   assert.equal(fs.readFileSync(cache,'utf8'),before);
  }
  finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a same-PID stale cache row cannot authorize a second run owner',t=>{
+ if(process.platform!=='win32')return t.skip('Windows process snapshot cache integration only');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-stale-caller-'));
+ try{
+  const expected=processSnapshot().get(process.pid),cache=path.join(dir,'process-snapshot-cache.json');
+  const stale={...expected,Started:new Date(Date.parse(expected.Started)+1000).toISOString()};
+  fs.writeFileSync(cache,JSON.stringify({schema:1,createdAt:Date.now(),processes:[{...stale,ParentProcessId:1,WorkingSet64:1,PeakWorkingSet64:1}]}));
+  const first=claimRun(dir,'protected-run');
+  for(const key of ['ProcessId','Started','Name','CommandLine'])assert.equal(first.owner[key],expected[key],`cache PID matches must use the caller live ${key}`);
+  const expired=JSON.parse(fs.readFileSync(cache,'utf8'));expired.createdAt=Date.now()-180000;fs.writeFileSync(cache,JSON.stringify(expired));
+  assert.throws(()=>claimRun(dir,'protected-run'),/Run already has a live controller/,'a fresh producer must still see the live claim');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('transaction invokes its injected generic snapshot callback exactly once',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-snapshot-count-'));
+ try{
+  let calls=0;
+  const snapshot=()=>{calls++;return new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]);};
+  transaction(dir,()=>{},snapshot);
+  assert.equal(calls,1);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('explicit coordinator refuses a symlink or junction in its path',()=>{
  fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'coordinator-link-'));

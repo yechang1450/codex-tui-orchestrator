@@ -212,8 +212,16 @@ try {
     foreach($row in $rows){if(-not (Test-ProcessRow $row)){throw 'Process snapshot returned an invalid row.'}}
     Publish-Cache $rows;$fresh=$true
   }
-  $owner=@($rows | Where-Object { [int]$_.ProcessId -eq $callerPid }) | Select-Object -First 1
-  if($null -eq $owner){$owner=@(Get-ProcessRows $callerPid) | Select-Object -First 1;if($null -eq $owner){throw 'Coordinator owner identity unavailable'};$rows=@($rows)+@($owner)}
+  if(-not $fresh){
+    # Cache identity may be stale across PID reuse. Always replace the current
+    # caller's row with a live targeted identity before the lease mutex.
+    $owner=@(Get-ProcessRows $callerPid) | Select-Object -First 1
+    if($null -eq $owner){throw 'Coordinator owner identity unavailable'}
+    $rows=@($rows | Where-Object { [int]$_.ProcessId -ne $callerPid })+@($owner)
+  }else{
+    $owner=@($rows | Where-Object { [int]$_.ProcessId -eq $callerPid }) | Select-Object -First 1
+    if($null -eq $owner){$owner=@(Get-ProcessRows $callerPid) | Select-Object -First 1;if($null -eq $owner){throw 'Coordinator owner identity unavailable'};$rows=@($rows)+@($owner)}
+  }
   $result=@{fresh=$fresh;processes=@($rows);owner=$owner}
   $result|ConvertTo-Json -Compress -Depth 6
 } finally {if($held){$m.ReleaseMutex()};$m.Dispose()}`;
