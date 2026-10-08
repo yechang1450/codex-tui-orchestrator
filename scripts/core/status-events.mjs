@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {setTimeout as sleep} from 'node:timers/promises';
-import {buildTodoList,jsonProblem,describeShape} from './contracts.mjs';
+import {buildTodoList,jsonProblem,describeShape,canonicalDigest} from './contracts.mjs';
 import {atomicJson,readUtf8Bounded,MAX_CONTROLLER_ARTIFACT_BYTES} from './leases.mjs';
 import {assertNoReparsePoints,physicalPathIdentity} from './runtime-context.mjs';
 import {controllerStateDir} from './controller-state.mjs';
@@ -11,6 +11,16 @@ const MAX_STATUS_TEXT_BYTES=Math.min(MAX_CONTROLLER_ARTIFACT_BYTES,4*1024*1024);
 const MAX_STATUS_LINE_BYTES=256*1024;
 const MAX_RENDERED_FIELD=512;
 function statusDigest(value){return crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');}
+function acceptanceInvariantDigest(value){
+  // Authority is compared to the JSON ledger after it crosses the filesystem
+  // boundary. Normalize undefined and other JSON-elided values first; a
+  // controller-only in-memory field must not make a legitimate persisted
+  // acceptance override look like a wider status mutation.
+  const copy=JSON.parse(JSON.stringify(value));
+  delete copy.acceptance;
+  return canonicalDigest(copy);
+}
+function isDigest(value){return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);}
 function sameWorkspaceIdentity(left,right){
   if(typeof left!=='string'||!left.trim()||typeof right!=='string'||!right.trim())return false;
   try{return physicalPathIdentity(left)===physicalPathIdentity(right);}catch{return false;}
@@ -18,6 +28,34 @@ function sameWorkspaceIdentity(left,right){
 function statusAuthorityFile(workspace,runId){
   const identity=crypto.createHash('sha256').update(physicalPathIdentity(workspace)).digest('hex');
   return assertNoReparsePoints(path.join(controllerStateDir(workspace),'status',identity,runId+'.json'),'status authority');
+}
+function readStatusAuthority(workspace,runId){
+  let authorityText;
+  try{authorityText=readUtf8Bounded(statusAuthorityFile(workspace,runId),'status authority');}
+  catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
+  if(authorityText===null){
+    const error=new Error('Status authority is pending for '+runId+'; refusing unauthenticated summary');
+    error.code='STATUS_AUTHORITY_PENDING';
+    throw error;
+  }
+  let authority;
+  try{authority=JSON.parse(authorityText);}
+  catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
+  if(!authority||!Number.isSafeInteger(authority.version)||![1,2].includes(authority.version)||authority.runId!==runId||
+    !sameWorkspaceIdentity(authority.workspace||'',workspace)||!isDigest(authority.sha256))throw new Error('Status ledger authority mismatch');
+  if(authority.version===2&&!isDigest(authority.acceptanceInvariantSha256))throw new Error('Status ledger authority mismatch');
+  return authority;
+}
+// An acceptance override is deliberately narrower than a status override. The
+// controller owns this projection, so the workspace mirror may differ only in
+// the acceptance binding. A changed plan, task result, run identity or history
+// remains fail-closed even when the caller explicitly adopts a new contract.
+export function authorizeAcceptanceStatusOverride(workspace,runId,sum){
+  const authority=readStatusAuthority(workspace,runId),observedSummarySha256=statusDigest(sum);
+  if(authority.version!==2)throw new Error('Status authority does not retain an acceptance recovery binding; refusing override');
+  if(authority.sha256===observedSummarySha256)throw new Error('Status authority already matches the workspace summary');
+  if(authority.acceptanceInvariantSha256!==acceptanceInvariantDigest(sum))throw new Error('Status ledger authority mismatch outside the acceptance binding; refusing override');
+  return {runId,workspace,fromSummarySha256:authority.sha256,observedSummarySha256};
 }
 function safeText(value,max=MAX_RENDERED_FIELD){
   return String(value??'').slice(0,max).replace(/[\u0000-\u001f\u007f-\u009f]/g,ch=>'\\u'+ch.charCodeAt(0).toString(16).padStart(4,'0'));
@@ -119,6 +157,7 @@ export function createStatusPublisher(dir,{onEvent}={}){
   const events=readEvents(safeDir),text=eventText(safeDir),file=assertNoReparsePoints(path.join(safeDir,'events.jsonl'),'status events file');
   let seq=events.at(-1)?.seq||0;
   let boundRunId=events[0]?.runId||null;
+  let retainedTransition,loadedTransition=false;
   // Only the controller holding the run claim creates a publisher. A partial
   // final append belongs to its dead predecessor; readers never repair files.
   if(text&&!text.endsWith('\n')){
@@ -129,8 +168,11 @@ export function createStatusPublisher(dir,{onEvent}={}){
       fs.ftruncateSync(truncateFd,Buffer.byteLength(text.slice(0,text.lastIndexOf('\n')+1)));
     }finally{fs.closeSync(truncateFd);}
   }
-  return {publish(sum,type='run.updated'){
+  return {publish(sum,type='run.updated',{authorityTransition}={}){
     if(boundRunId&&boundRunId!==sum.runId)throw new Error('Status publisher run identity mismatch');
+    if(authorityTransition!==undefined&&(!authorityTransition||authorityTransition.runId!==sum.runId||
+      !sameWorkspaceIdentity(authorityTransition.workspace||'',sum.workspace)||!isDigest(authorityTransition.fromSummarySha256)||
+      !isDigest(authorityTransition.observedSummarySha256)))throw new Error('Invalid status authority override transition');
     boundRunId=boundRunId||sum.runId;
     seq=Math.max(seq,sum.eventSeq||0)+1;
     sum.todoList=buildTodoList(sum.tasks,sum.blocks,sum.taskResults);
@@ -141,7 +183,26 @@ export function createStatusPublisher(dir,{onEvent}={}){
     atomicJson(summaryFile,sum,()=>assertNoReparsePoints(safeDir,'status directory'));
     // The workspace summary is a derived mirror. Keep its digest in the
     // controller-owned root so readers can reject a worker-written success.
-    atomicJson(statusAuthorityFile(sum.workspace,sum.runId),{version:1,runId:sum.runId,workspace:sum.workspace,sha256:statusDigest(sum)});
+    // Version 2 also binds every field except `acceptance`; that narrow
+    // projection is the only state an explicit acceptance override may repair.
+    const digest=statusDigest(sum),authority={version:2,runId:sum.runId,workspace:sum.workspace,sha256:digest,
+      acceptanceInvariantSha256:acceptanceInvariantDigest(sum)};
+    if(authorityTransition!==undefined){
+      retainedTransition={version:1,kind:'acceptance-override',runId:sum.runId,workspace:sum.workspace,
+        fromSummarySha256:authorityTransition.fromSummarySha256,observedSummarySha256:authorityTransition.observedSummarySha256,
+        toSummarySha256:digest,at:sum.updatedAt};
+    }
+    if(!loadedTransition){
+      loadedTransition=true;
+      if(!retainedTransition)try{
+        const prior=readStatusAuthority(sum.workspace,sum.runId),transition=prior.transition;
+        if(transition?.version===1&&transition.kind==='acceptance-override'&&transition.runId===sum.runId&&
+          sameWorkspaceIdentity(transition.workspace||'',sum.workspace)&&isDigest(transition.fromSummarySha256)&&
+          isDigest(transition.observedSummarySha256)&&isDigest(transition.toSummarySha256)&&Number.isFinite(transition.at))retainedTransition=transition;
+      }catch{/* A fresh run has no authority yet; malformed prior audit cannot authorize anything. */}
+    }
+    if(retainedTransition)authority.transition=retainedTransition;
+    atomicJson(statusAuthorityFile(sum.workspace,sum.runId),authority);
     // Recheck after the atomic snapshot and after opening the append handle.
     // If a same-user race swaps the run directory to a junction in either
     // window, fail before appending the event through the redirected handle.
@@ -169,18 +230,8 @@ export function readRunStatus(workspace,runId){
     if(!isPlanningManifest(sum))throw new Error('Status manifest is not a planning ledger; refusing unauthenticated execution state');
     return {...sum,todoList:buildTodoList(sum.tasks,sum.blocks,sum.taskResults),executionStatus:buildExecutionStatus(sum)};
   }
-  let authority;
-  let authorityText;
-  try{authorityText=readUtf8Bounded(statusAuthorityFile(workspace,runId),'status authority');}
-  catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
-  if(authorityText===null){
-    const error=new Error('Status authority is pending for '+runId+'; refusing unauthenticated summary');
-    error.code='STATUS_AUTHORITY_PENDING';
-    throw error;
-  }
-  try{authority=JSON.parse(authorityText);}
-  catch(error){throw new Error('Status authority unavailable: '+(error?.message||error));}
-  if(authority?.version!==1||authority.runId!==runId||!sameWorkspaceIdentity(authority.workspace||'',workspace)||authority.sha256!==statusDigest(sum))throw new Error('Status ledger authority mismatch');
+  const authority=readStatusAuthority(workspace,runId);
+  if(authority.sha256!==statusDigest(sum))throw new Error('Status ledger authority mismatch');
   return {...sum,todoList:buildTodoList(sum.tasks,sum.blocks,sum.taskResults),executionStatus:buildExecutionStatus(sum)};
 }
 // 坏账本既不能静默当成正常状态读出去（调用方会拿到半份状态），也不能只回裸 SyntaxError。

@@ -81,7 +81,7 @@ function treeWorkingSetMB(snapshot, rootPid) {
   }
   return Math.round(total / 1024 ** 2);
 }
-import {createStatusPublisher,buildExecutionStatus,readRunStatus} from './status-events.mjs';
+import {createStatusPublisher,buildExecutionStatus,readRunStatus,authorizeAcceptanceStatusOverride} from './status-events.mjs';
 export {scheduleReady,recoveryTasks};
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 
@@ -378,6 +378,18 @@ function validateResumeStatusAuthority(workspace,runId,expected){
      authenticated.eventSeq!==expected.eventSeq)throw new Error('Resume status authority does not match the saved run ledger');
   return authenticated;
 }
+function isStatusAuthorityMismatch(error){return error?.message==='Status ledger authority mismatch';}
+function revalidateAcceptanceStatusOverride(workspace,runId,summary,transition){
+  const current=authorizeAcceptanceStatusOverride(workspace,runId,summary);
+  if(current.observedSummarySha256!==transition.observedSummarySha256||current.fromSummarySha256!==transition.fromSummarySha256)
+    throw new Error('Status changed while preparing acceptance override; retry with a newly reviewed contract');
+  return current;
+}
+function statusAuthorityReboundRecord(transition,binding){
+  return {at:binding.boundAt,runId:transition.runId,workspace:transition.workspace,
+    fromSummarySha256:transition.fromSummarySha256,observedSummarySha256:transition.observedSummarySha256,
+    acceptanceSha256:binding.sha256};
+}
 function unresolvedResumeLaunchers(sum){
   return (sum?.blocks||[]).filter(block=>{
     const entry=sum.results?.[block.key],attempt=entry?.attempts?.at(-1);
@@ -555,10 +567,21 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
   const dir=runDirectory(workspace,runId),file=path.join(dir,'summary.json'),sum=readLedgerJson(file);
   if(sum.runId!==runId||!sum.finishedAt)throw new Error('Run is not finalized');
   if(!sameWorkspace(sum.workspace||'',workspace))throw new Error('Run workspace/identity mismatch');
-  if(sum.protocol===2){validateRecoverySummary(sum);validateBoundRunPlan(sum);if(Number.isSafeInteger(sum.eventSeq))validateResumeStatusAuthority(workspace,runId,sum);}
+  let statusTransition;
+  if(sum.protocol===2){
+    validateRecoverySummary(sum);validateBoundRunPlan(sum);
+    if(Number.isSafeInteger(sum.eventSeq)){
+      try{validateResumeStatusAuthority(workspace,runId,sum);}
+      catch(error){
+        if(options.override!==true||!isStatusAuthorityMismatch(error))throw error;
+        statusTransition=authorizeAcceptanceStatusOverride(workspace,runId,sum);
+      }
+    }
+  }
   const coordinator=trustedSavedCoordinator(workspace,sum.coordinator,options.coordinator,{required:sum.protocol===2});
   const claim=claimRun(coordinator,'run:'+physicalPathIdentity(dir));
   try{
+    if(statusTransition)revalidateAcceptanceStatusOverride(workspace,runId,readLedgerJson(file),statusTransition);
     const contractFile=acceptanceFile||path.join(dir,'acceptance.json');
     const acceptance=loadBoundChecks(contractFile,dir,sum,options.override===true);
     const checks=acceptance.checks;
@@ -569,13 +592,16 @@ export function verifyRun(workspace,runId,acceptanceFile,options={}) {
       if(keyDiff?.missing.length)console.warn('[orchestrator] acceptance has no checks for task(s): '+keyDiff.missing.join(', ')+'；这些任务将停在 awaiting-verification');
     }
     // 先校验再用新契约覆盖账本：无效的 override 契约不能把原来能用的绑定改坏。
-    if(acceptance.rebound){
+    if(acceptance.rebound||statusTransition){
       const binding=bindAcceptance(workspace,runId,dir,checks,path.resolve(contractFile));
       sum.acceptance=binding;
-      sum.history.push({generation:sum.generation,acceptanceRebound:acceptanceReboundRecord(acceptance,binding)});
+      const history={generation:sum.generation};
+      if(acceptance.rebound)history.acceptanceRebound=acceptanceReboundRecord(acceptance,binding);
+      if(statusTransition)history.statusAuthorityRebound=statusAuthorityReboundRecord(statusTransition,binding);
+      sum.history.push(history);
     }
     collectVerification(sum,checks,workspace,{allowStarted:true});sum.success=summaryComplete(sum,true);
-    createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed');
+    createStatusPublisher(dir).publish(sum,sum.success?'verify.completed':'verify.failed',statusTransition?{authorityTransition:statusTransition}:undefined);
     writeGoalMirror(dir,sum,sum.success?'verify.completed':'verify.failed',sum.success?'completed':'failed');return sum.success;
   }
   finally{releaseRun(coordinator,'run:'+physicalPathIdentity(dir),claim);}
@@ -593,7 +619,7 @@ export async function runWindows(request,hooks,options={}) {
   const deadline=Date.now()+(options.timeoutMs||21600000);
   // A resumed run must stay attached to the coordinator recorded in its
   // validated ledger. New runs use the Codex-specific default locator.
-  let savedResume=null,savedResumeRaw;
+  let savedResume=null,savedResumeRaw,resumeStatusTransition;
   if(options.resume){
       savedResumeRaw=readUtf8Bounded(summaryFile,'run summary');savedResume=parseLedger(summaryFile,savedResumeRaw);
     if(savedResume.protocol!==2||!Array.isArray(savedResume.plan))throw new Error('This run has no recoverable task checkpoints');
@@ -612,7 +638,11 @@ export async function runWindows(request,hooks,options={}) {
     }
     if(savedResume.blocks.length>capacity)throw new Error('Current memory capacity is below the saved block count');
     validateBoundRunPlan(savedResume,{required:true});
-    validateResumeStatusAuthority(workspace,runId,savedResume);
+    try{validateResumeStatusAuthority(workspace,runId,savedResume);}
+    catch(error){
+      if(options.acceptanceOverride!==true||!isStatusAuthorityMismatch(error))throw error;
+      resumeStatusTransition=authorizeAcceptanceStatusOverride(workspace,runId,savedResume);
+    }
     const unresolved=unresolvedResumeLaunchers(savedResume);
     if(unresolved.length)throw new Error('Launcher exit remains unproven for '+unresolved.join(', ')+ '; reconcile the saved run before resume');
   }
@@ -625,7 +655,8 @@ export async function runWindows(request,hooks,options={}) {
     let checks,acceptance={checks:null,rebound:false};
     if(options.resume) {
       if(readUtf8Bounded(summaryFile,'run summary')!==savedResumeRaw)throw new Error('Run changed while acquiring recovery ownership; retry resume');
-      validateResumeStatusAuthority(workspace,runId,savedResume);
+      if(resumeStatusTransition)revalidateAcceptanceStatusOverride(workspace,runId,savedResume,resumeStatusTransition);
+      else validateResumeStatusAuthority(workspace,runId,savedResume);
       sum=savedResume;
       // 恢复同样要复用被绑定的契约：执行窗改掉 acceptance.json 就能让未完成的任务被当成已验收。
       acceptance=loadBoundChecks(options.acceptanceFile||path.join(dir,'acceptance.json'),dir,savedResume,options.acceptanceOverride===true);
@@ -669,12 +700,19 @@ export async function runWindows(request,hooks,options={}) {
     {
       const binding=bindAcceptance(workspace,runId,dir,checks,options.acceptanceFile?path.resolve(options.acceptanceFile):path.join(dir,'acceptance.json'));
       sum.acceptance=binding;
-      if(acceptance.rebound)sum.history.push({generation:sum.generation,acceptanceRebound:acceptanceReboundRecord(acceptance,binding)});
+      if(acceptance.rebound||resumeStatusTransition){
+        const history={generation:sum.generation};
+        if(acceptance.rebound)history.acceptanceRebound=acceptanceReboundRecord(acceptance,binding);
+        if(resumeStatusTransition)history.statusAuthorityRebound=statusAuthorityReboundRecord(resumeStatusTransition,binding);
+        sum.history.push(history);
+      }
     }
     if(!options.resume)bindRunPlan(sum);
     const publisher=createStatusPublisher(dir,{onEvent:options.onEvent});
+    let pendingAuthorityTransition=resumeStatusTransition;
     const persist=(event='run.updated')=>{
-      publisher.publish(sum,event);
+      publisher.publish(sum,event,pendingAuthorityTransition?{authorityTransition:pendingAuthorityTransition}:undefined);
+      pendingAuthorityTransition=undefined;
       writeGoalMirror(dir,sum,event,sum.finishedAt?(sum.success?'completed':'failed'):'active');
     };
     const mark=(r,status,reason)=>{
