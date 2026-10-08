@@ -207,14 +207,29 @@ test('a malformed coordinator snapshot cache triggers a fresh enumeration',t=>{
   assert.ok(Array.isArray(repaired.processes)&&repaired.processes.length>0);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('Windows PowerShell cache paths preserve local, UNC, extended, and relative semantics',()=>{
+test('Windows PowerShell cache paths preserve legal local and UNC roots while rejecting malformed extended paths',()=>{
  assert.deepEqual([
   leases.windowsPowerShellCachePath('C:\\runtime\\cache'),
   leases.windowsPowerShellCachePath('\\\\server\\share\\cache'),
+  leases.windowsPowerShellCachePath('\\\\server\\share/cache'),
+  leases.windowsPowerShellCachePath('\\\\server\\share\\cache/leaf'),
   leases.windowsPowerShellCachePath('\\\\?\\C:\\runtime\\cache'),
   leases.windowsPowerShellCachePath('\\\\?\\UNC\\server\\share\\cache'),
- ],['\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache','\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache']);
+ ],['\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache','\\\\?\\UNC\\server\\share\\cache','\\\\?\\UNC\\server\\share\\cache\\leaf','\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache']);
  assert.throws(()=>leases.windowsPowerShellCachePath('relative\\cache'),/absolute/i);
+ assert.throws(()=>leases.windowsPowerShellCachePath('\\\\.\\pipe\\cache'),/absolute/i,'must retain the device-namespace rejection');
+ for(const malformed of ['\\\\?\\relative\\cache','\\\\?\\C:relative\\cache','\\\\?\\UNC\\server','\\\\?\\UNC\\server\\','\\\\?\\C:\\cache/leaf','\\\\?\\UNC\\server\\share\\cache/leaf']){
+  assert.throws(()=>leases.windowsPowerShellCachePath(malformed),/absolute|extended/i,`must reject malformed extended path ${malformed}`);
+ }
+});
+test('coordinator cache PowerShell script receives an extended remote UNC cache path',()=>{
+ const cacheFile='\\\\server\\share\\coordinator\\process-snapshot-cache.json';
+ const script=leases.coordinatorProcessSnapshotScript?.(cacheFile);
+ assert.equal(typeof script,'string','the script builder must expose the exact -Command payload');
+ // No remote SMB share is available to this isolated test. Inspect the exact
+ // -Command payload instead of mislabeling a local administrative share as remote.
+ const cacheAssignment=script.split('\n').find(line=>line.startsWith('$cachePath='))?.split(';')[0];
+ assert.equal(cacheAssignment,"$cachePath='\\\\?\\UNC\\server\\share\\coordinator\\process-snapshot-cache.json'");
 });
 test('coordinator snapshot cache survives Windows paths with spaces and Unicode',t=>{
  if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
@@ -239,12 +254,14 @@ test('coordinator snapshot cache survives a Windows trailing-dot directory',t=>{
   assertCoordinatorSnapshotCache(dir);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
-test('coordinator snapshot cache accepts a local UNC path when the administrative share is available',t=>{
+test('coordinator snapshot cache accepts a local administrative UNC path when available',t=>{
  if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
- const local=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-unc-')),drive=path.parse(local).root.slice(0,1).toLowerCase(),unc=`\\\\localhost\\${drive}$${local.slice(2)}`;
+ const local=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-local-unc-')),drive=path.parse(local).root.slice(0,1).toLowerCase(),localAdminUnc=`\\\\localhost\\${drive}$${local.slice(2)}`;
  try{
-  try{fs.statSync(unc);}catch(error){return t.skip('UNC administrative share unavailable: '+error.message);}
-  assertCoordinatorSnapshotCache(unc);
+  // This is local-share coverage only. The separate script test above covers
+  // remote UNC construction without presenting this host share as remote SMB.
+  try{fs.statSync(localAdminUnc);}catch(error){return t.skip('local administrative UNC share unavailable: '+error.message);}
+  assertCoordinatorSnapshotCache(localAdminUnc);
  }finally{fs.rmSync(local,{recursive:true,force:true});}
 });
 test('a cache entry without the caller uses a fresh targeted owner before lock acquisition',t=>{

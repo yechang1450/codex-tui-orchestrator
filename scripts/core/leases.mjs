@@ -162,20 +162,20 @@ export function processSnapshot(timeoutMs=Number(process.env.ORCH_PROCESS_SNAPSH
 // reparse checks, and every ledger file path in its original spelling.
 export function windowsPowerShellCachePath(value) {
   const raw=String(value);
-  if(/^\\\\\?\\/.test(raw))return raw;
-  if(/^\\\\(?![.?]\\)/.test(raw))return '\\\\?\\UNC\\'+raw.slice(2);
-  if(/^[A-Za-z]:[\\/]/.test(raw))return '\\\\?\\'+raw;
-  throw new Error('Windows PowerShell cache path must be absolute: '+raw);
+  if(/^\\\\\?\\/.test(raw)){
+    if(!raw.includes('/')&&(/^\\\\\?\\[A-Za-z]:\\/.test(raw)||/^\\\\\?\\UNC\\[^\\/]+\\[^\\/]+(?:\\|$)/i.test(raw)))return raw;
+    throw new Error('Windows PowerShell cache path must be an absolute local or UNC path: '+raw);
+  }
+  if(/^\\\\(?![.?]\\)[^\\/?]+\\[^\\/?]+(?:[\\/]|$)/.test(raw))return '\\\\?\\UNC\\'+raw.slice(2).replaceAll('/','\\');
+  if(/^[A-Za-z]:[\\/]/.test(raw))return '\\\\?\\'+raw.replaceAll('/','\\');
+  throw new Error('Windows PowerShell cache path must be an absolute local or UNC path: '+raw);
 }
-function coordinatorProcessSnapshot(dir,forceFresh=false) {
-  if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
-  const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(process.env.ORCH_PROCESS_SNAPSHOT_TIMEOUT_MS)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
-  const cacheFile=assertNoReparsePoints(path.join(dir,'process-snapshot-cache.json'),'coordinator process snapshot cache');
+export function coordinatorProcessSnapshotScript(cacheFile,{maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES,ttlMs=COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller=process.pid,waitMs=DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS,forceFresh=false}={}) {
   const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
-  const cachePath=quote(windowsPowerShellCachePath(cacheFile)),maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES,ttl=COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller=process.pid;
-  const script=`
+  const cachePath=quote(windowsPowerShellCachePath(cacheFile));
+  return `
 $ErrorActionPreference='Stop';$OutputEncoding=[Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-$cachePath=${cachePath};$maxBytes=${maxBytes};$ttlMs=${ttl};$callerPid=${caller};$waitMs=${waitMs};$forceFresh=${forceFresh?'$true':'$false'}
+$cachePath=${cachePath};$maxBytes=${maxBytes};$ttlMs=${ttlMs};$callerPid=${caller};$waitMs=${waitMs};$forceFresh=${forceFresh?'$true':'$false'}
 $m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false
 function Get-ProcessRows([int]$pidValue){
   @(Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
@@ -236,6 +236,12 @@ try {
   $result=@{fresh=$fresh;processes=@($rows);owner=$owner}
   $result|ConvertTo-Json -Compress -Depth 6
 } finally {if($held){$m.ReleaseMutex()};$m.Dispose()}`;
+}
+function coordinatorProcessSnapshot(dir,forceFresh=false) {
+  if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
+  const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(process.env.ORCH_PROCESS_SNAPSHOT_TIMEOUT_MS)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
+  const cacheFile=assertNoReparsePoints(path.join(dir,'process-snapshot-cache.json'),'coordinator process snapshot cache');
+  const script=coordinatorProcessSnapshotScript(cacheFile,{maxBytes:MAX_CONTROLLER_ARTIFACT_BYTES,ttlMs:COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller:process.pid,waitMs,forceFresh});
   const result=spawnSync(trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',script],
     {encoding:'utf8',windowsHide:true,timeout:waitMs,maxBuffer:MAX_CONTROLLER_ARTIFACT_BYTES*2,cwd:trustedWindowsRoot(),env:controllerEnvironment()});
   if(result.status!==0){
