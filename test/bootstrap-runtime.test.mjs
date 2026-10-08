@@ -112,3 +112,36 @@ winTest('runtime junctions cannot redirect installation or cleanup outside runti
   assert.match(out,/RUNTIME_REPARSE_PATH/);
   assert.deepEqual(fs.readdirSync(outside),[]);
 });
+winTest('owned cleanup removes readonly npm cache content beyond the Windows legacy path limit',t=>{
+  const dir=fixture(t),home=path.join(dir,'runtime');
+  const cache=path.join(home,'.npm-cache-'+('a'.repeat(32)));
+  const leaf=path.join(cache,'_cacache','content-v2','sha512','8b','87','f'.repeat(128));
+  fs.mkdirSync(path.dirname(leaf),{recursive:true});
+  fs.writeFileSync(leaf,'x');
+  fs.chmodSync(leaf,0o444);
+  assert.ok(leaf.length>260,`fixture must exercise a legacy-long path, got ${leaf.length}`);
+  const out=run(`Remove-OrchOwnedDirectory -Path ${quote(cache)} -RuntimeHome ${quote(home)}; [bool](Test-Path -LiteralPath ${quote(cache)}) | ConvertTo-Json -Compress`);
+  assert.equal(JSON.parse(out),false);
+});
+winTest('extended cleanup path conversion preserves local and UNC roots',()=>{
+  const local='C:\\runtime\\cache',unc='\\\\server\\share\\cache',alreadyExtended='\\\\?\\C:\\runtime\\cache';
+  const out=run(`@(
+    ConvertTo-OrchExtendedPath -Path ${quote(local)}
+    ConvertTo-OrchExtendedPath -Path ${quote(unc)}
+    ConvertTo-OrchExtendedPath -Path ${quote(alreadyExtended)}
+  ) | ConvertTo-Json -Compress`);
+  assert.deepEqual(JSON.parse(out),['\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache','\\\\?\\C:\\runtime\\cache']);
+});
+winTest('owned cleanup refuses reparse descendants and paths outside its runtime home',t=>{
+  const dir=fixture(t),home=path.join(dir,'runtime'),outside=path.join(dir,'outside'),cache=path.join(home,'.npm-cache-owned'),escape=path.join(dir,'not-owned');
+  fs.mkdirSync(outside);fs.writeFileSync(path.join(outside,'sentinel.txt'),'outside');
+  fs.mkdirSync(cache,{recursive:true});fs.symlinkSync(outside,path.join(cache,'linked'),'junction');
+  fs.mkdirSync(escape);fs.writeFileSync(path.join(escape,'sentinel.txt'),'escape');
+  const reparse=run(`try { Remove-OrchOwnedDirectory -Path ${quote(cache)} -RuntimeHome ${quote(home)}; 'unexpected success' } catch { $_.Exception.Message }`);
+  assert.match(reparse,/RUNTIME_REPARSE_PATH/);
+  assert.equal(fs.readFileSync(path.join(outside,'sentinel.txt'),'utf8'),'outside');
+  assert.equal(fs.existsSync(cache),true);
+  const outsideMessage=run(`try { Remove-OrchOwnedDirectory -Path ${quote(escape)} -RuntimeHome ${quote(home)}; 'unexpected success' } catch { $_.Exception.Message }`);
+  assert.match(outsideMessage,/RUNTIME_CLEANUP_PATH/);
+  assert.equal(fs.readFileSync(path.join(escape,'sentinel.txt'),'utf8'),'escape');
+});

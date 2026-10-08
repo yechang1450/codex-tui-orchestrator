@@ -92,7 +92,7 @@
     "scripts/publish-dist.mjs": "7ca0a130d2a1e10a4df6f1996b703ffbda3315f80fea2ea7141d05eb05d2a81a",
     "scripts/release-integrity.mjs": "b669a7b60133291153c0870f773f9f2467f0cddf0eab91cc13ab7dbd191018ec",
     "scripts/repair-plugin-registration.mjs": "fdd0db127a8494f274df8b4cf3ff29907bab0d1497a11c4ca47e7fd677c0279e",
-    "scripts/runtime-bootstrap.ps1": "f4c5a0832ca34dcd08425125d09c20bc9e97718ccaee4898590c320dcd125a05",
+    "scripts/runtime-bootstrap.ps1": "c79be53de9515fb1689e3cc4c14d20c6d136496cf760304d31fbf504d0004a2c",
     "scripts/runtime-context.mjs": "deb2671a6f36e428e452c9dc03b1add6f94ccbb4533c0018efc8e3c778a55045",
     "scripts/runtime-prepare.mjs": "e768786013680f4c1db6a60282824b80a13304ff45d7fef335202bb211fa3be1",
     "scripts/sdk-dependency-check.mjs": "4045a64225a4e39e521eba02553be966b0d4bcec9b8253d95009bc2ed5fefe15",

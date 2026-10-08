@@ -47,16 +47,36 @@ function Assert-OrchRuntimeIdentity {
     return $item.FullName
 }
 
+function ConvertTo-OrchExtendedPath {
+    param([Parameter(Mandatory)][string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.StartsWith('\\?\', [StringComparison]::Ordinal)) { return $full }
+    if ($full.StartsWith('\\', [StringComparison]::Ordinal)) { return '\\?\UNC\' + $full.Substring(2) }
+    return '\\?\' + $full
+}
+
 function Remove-OrchOwnedDirectory {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$RuntimeHome)
     $homeFull = (Assert-OrchSafePath $RuntimeHome).TrimEnd('\') + '\'
     $full = Assert-OrchSafePath $Path
     if (-not $full.StartsWith($homeFull, [StringComparison]::OrdinalIgnoreCase)) { throw 'RUNTIME_CLEANUP_PATH: refusing cleanup outside runtime home.' }
     if (Test-Path -LiteralPath $full) {
-        foreach ($entry in Get-ChildItem -LiteralPath $full -Recurse -Force -ErrorAction Stop) {
+        $entries = @((Get-Item -LiteralPath $full -Force -ErrorAction Stop)) + @(Get-ChildItem -LiteralPath $full -Recurse -Force -ErrorAction Stop)
+        foreach ($entry in $entries) {
             if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'RUNTIME_REPARSE_PATH: refusing recursive cleanup through a reparse point.' }
         }
-        Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction Stop
+        # Directory.Delete accepts the Windows extended-length prefix while the
+        # Windows PowerShell 5.1 file-system provider rejects npm cache leaves
+        # past MAX_PATH. Clear only the ReadOnly bit after all reparse checks,
+        # preserving Remove-Item -Force cleanup behavior without broadening the
+        # path scope that was validated above.
+        foreach ($entry in $entries) {
+            if ($entry.Attributes -band [IO.FileAttributes]::ReadOnly) {
+                $attributes = [IO.FileAttributes](([int]$entry.Attributes) -band (-bnot [int][IO.FileAttributes]::ReadOnly))
+                [IO.File]::SetAttributes((ConvertTo-OrchExtendedPath -Path $entry.FullName), $attributes)
+            }
+        }
+        [IO.Directory]::Delete((ConvertTo-OrchExtendedPath -Path $full), $true)
     }
 }
 
