@@ -12,13 +12,13 @@
  * 行为：
  *   1) 删除旧分发目录（避免新旧混合），再调用 repair.mjs --target 复制当前工作树；
  *   2) 在分发里跑 release-integrity（分发自校验），失败即返回非零；
- *   3) 打印分发路径和后续安装命令。
+ *   3) 写入分发自有 catalog、重新封存并校验，再打印注册该 catalog 和安装插件的命令。
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {manifestNameProblem} from './repair-plugin-registration.mjs';
+import {DIST_MARKETPLACE_NAME, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {assertNoReparsePoints} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -40,7 +40,8 @@ function parseArgs(argv) {
 
 export function publishDist({target = null, quiet = false} = {}) {
   if (!target) throw new Error('--target is required; the default checkout layout has no dist folder');
-  const pluginName = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8')).name;
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, '.codex-plugin', 'plugin.json'), 'utf8'));
+  const pluginName = manifest.name;
   const resolvedTarget = path.resolve(target);
   const dist = resolveDistDir(resolvedTarget, pluginName);
   // The next operation is recursive deletion. Validate the target and every
@@ -60,8 +61,14 @@ export function publishDist({target = null, quiet = false} = {}) {
   fs.mkdirSync(resolvedTarget, {recursive: true});
   // repair.mjs 拒绝已存在的目标，正是为了避免新旧混合；这里先删旧分发再重建。
   fs.rmSync(dist, {recursive: true, force: true});
-  const repair = spawnSync(process.execPath, [path.join(root, 'repair.mjs'), '--target', resolvedTarget], {encoding: 'utf8', windowsHide: true, cwd: root});
+  const repair = spawnSync(process.execPath, [path.join(root, 'repair.mjs'), '--target', resolvedTarget, '--name', pluginName], {encoding: 'utf8', windowsHide: true, cwd: root});
   if (repair.status !== 0) throw new Error('repair.mjs failed: ' + (repair.stderr || repair.stdout || 'exit ' + repair.status));
+  const catalogPath = writeDistMarketplaceCatalog({dist, pluginName, category: manifest?.interface?.category});
+  // repair.mjs correctly verifies the copied checkout, whose release seal names
+  // the checkout catalog. Replacing that catalog is a release mutation, so seal
+  // the dist copy itself and immediately verify the newly sealed bytes.
+  const seal = spawnSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs'), '--seal'], {encoding: 'utf8', windowsHide: true, cwd: dist});
+  if (seal.status !== 0) throw new Error('distribution sealing failed: ' + (seal.stderr || seal.stdout || 'exit ' + seal.status));
   const verify = spawnSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', windowsHide: true, cwd: dist});
   if (verify.status !== 0) throw new Error('distribution integrity failed: ' + (verify.stderr || verify.stdout || 'exit ' + verify.status));
   const summary = JSON.parse(String(verify.stdout).trim().split('\n').pop());
@@ -71,12 +78,54 @@ export function publishDist({target = null, quiet = false} = {}) {
     walk(dist);
     return total;
   })();
-  const result = {dist, target: resolvedTarget, pluginName, files, coreVersion: summary.coreVersion, coreFiles: summary.files, runtimeFiles: summary.runtimeFiles, install: 'codex plugin add ' + pluginName + '@personal'};
+  const result = {
+    dist,
+    target: resolvedTarget,
+    pluginName,
+    marketplaceName: DIST_MARKETPLACE_NAME,
+    marketplaceRoot: dist,
+    marketplacePath: catalogPath,
+    files,
+    coreVersion: summary.coreVersion,
+    coreFiles: summary.files,
+    runtimeFiles: summary.runtimeFiles,
+    marketplaceAdd: 'codex plugin marketplace add ' + JSON.stringify(dist),
+    install: 'codex plugin add ' + pluginName + '@' + DIST_MARKETPLACE_NAME,
+  };
   if (!quiet) {
     console.log('[publish-dist] ' + dist + ' (' + files + ' files, core ' + summary.coreVersion + ')');
+    console.log('[publish-dist] register: ' + result.marketplaceAdd);
     console.log('[publish-dist] next: ' + result.install);
   }
   return result;
+}
+
+/** Build the dist-owned catalog after repair.mjs copies the checkout catalog. */
+export function writeDistMarketplaceCatalog({dist, pluginName, category = 'Productivity'} = {}) {
+  const problem = manifestNameProblem(pluginName);
+  if (problem) throw new Error(`invalid .codex-plugin/plugin.json name ${JSON.stringify(pluginName)}: ${problem}`);
+  const distRoot = path.resolve(dist);
+  const catalogPath = path.join(distRoot, '.agents', 'plugins', 'marketplace.json');
+  // repair.mjs already guarded the publication target. Re-check after the
+  // copy completes so a junction or symlink introduced during that interval
+  // cannot redirect this catalog write outside the newly published package.
+  assertNoReparsePoints(distRoot, 'distribution root before catalog sealing');
+  assertNoReparsePoints(path.dirname(catalogPath), 'distribution catalog directory');
+  const catalog = {
+    name: DIST_MARKETPLACE_NAME,
+    interface: {displayName: 'Codex TUI Orchestrator (Distribution)'},
+    plugins: [{
+      name: pluginName,
+      source: {source: 'local', path: './'},
+      policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'},
+      category: category || 'Productivity',
+  }],
+  };
+  fs.mkdirSync(path.dirname(catalogPath), {recursive: true});
+  assertNoReparsePoints(distRoot, 'distribution root before catalog commit');
+  assertNoReparsePoints(path.dirname(catalogPath), 'distribution catalog directory before catalog commit');
+  fs.writeFileSync(catalogPath, `${JSON.stringify(catalog, null, 2)}\n`, 'utf8');
+  return catalogPath;
 }
 
 // 回归（2026-09-22 穷举审计实测抓到）：此前 pluginName 直接从清单取出后 path.join 到
@@ -90,11 +139,9 @@ export function resolveDistDir(resolvedTarget, pluginName) {
   if (path.dirname(dist) !== path.resolve(resolvedTarget)) {
     throw new Error(`plugin name escapes the distribution root: ${JSON.stringify(pluginName)}`);
   }
-  // repair.mjs 按**检出目录名**落盘（<target>/<basename>），分发路径按清单名计算；
-  // 两者不一致时原地失败并指明原因，别让后面的完整性校验报一个看不懂的 ENOENT。
-  if (path.basename(root) !== pluginName) {
-    throw new Error(`checkout directory ${JSON.stringify(path.basename(root))} must equal manifest.name ${JSON.stringify(pluginName)} so the distribution lands in ${JSON.stringify(dist)}`);
-  }
+  // repair.mjs receives the already validated manifest name through --name.
+  // Recovery worktrees may have a suffix, so their directory basename must
+  // never determine the public distribution directory.
   return dist;
 }
 
@@ -103,6 +150,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToP
     const options = parseArgs(process.argv.slice(2));
     if (options.help) {
       console.log('Usage: publish-dist.mjs --target <distribution root> [--quiet]');
+      console.log('Exports a sealed package with its own codex-tui-orchestrator-dist local marketplace catalog.');
       process.exit(0);
     }
     publishDist({...options, ...(options.quiet ? {} : {})});

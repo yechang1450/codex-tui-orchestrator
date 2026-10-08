@@ -295,8 +295,50 @@ test('installer defaults use the repository marketplace rooted at the checkout',
   assert.equal(defaultMarketplacePath(checkout), path.join(path.resolve(checkout), '.agents', 'plugins', 'marketplace.json'));
 });
 
+test('explicit dist source defaults bind installer and registration to the dist-owned catalog', () => {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'dist-marketplace-defaults-'));
+  try {
+    const checkout = path.join(root, 'checkout');
+    const distRoot = path.join(root, 'export');
+    const dist = path.join(distRoot, 'demo-plugin');
+    fs.mkdirSync(path.join(checkout, '.codex-plugin'), {recursive: true});
+    fs.writeFileSync(path.join(checkout, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}) + '\n');
+    coreFixture(checkout);
+    fs.cpSync(checkout, dist, {recursive: true});
+    fs.mkdirSync(path.join(dist, '.agents', 'plugins'), {recursive: true});
+    fs.writeFileSync(path.join(dist, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({
+      name: 'codex-tui-orchestrator-dist',
+      plugins: [{name: 'demo-plugin', source: {source: 'local', path: './'}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Productivity'}],
+    }, null, 2) + '\n');
+
+    const parsed = parseArgs(['--plugin', checkout, '--source', 'dist', '--dist-root', distRoot]);
+    assert.equal(parsed.marketplaceRoot, dist);
+    assert.equal(parsed.marketplacePath, path.join(dist, '.agents', 'plugins', 'marketplace.json'));
+
+    const registration = inspectRegistration({pluginPath: checkout, source: 'dist', distRoot});
+    assert.equal(registration.status, 'matched', JSON.stringify(registration));
+    assert.equal(registration.marketplaceRoot, dist);
+    const ensured = ensureRegistration({pluginPath: checkout, source: 'dist', distRoot});
+    assert.equal(ensured.status, 'matched', JSON.stringify(ensured));
+    assert.equal(ensured.marketplacePath, path.join(dist, '.agents', 'plugins', 'marketplace.json'));
+
+    const codexHome = path.join(root, '.codex');
+    const cache = path.join(codexHome, 'plugins', 'cache', 'codex-tui-orchestrator-dist', 'demo-plugin', 'local');
+    fs.cpSync(dist, cache, {recursive: true});
+    fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
+    fs.mkdirSync(codexHome, {recursive: true});
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@codex-tui-orchestrator-dist"]\nenabled = true\n');
+    const checked = checkInstall({pluginPath: checkout, source: 'dist', distRoot, codexHome, homeDir: root});
+    assert.equal(checked.ok, true, JSON.stringify(checked.problems));
+    assert.equal(checked.marketplaceName, 'codex-tui-orchestrator-dist');
+    assert.equal(checked.marketplacePath, path.join(dist, '.agents', 'plugins', 'marketplace.json'));
+    assert.equal(checked.registration.sourceKind, 'dist');
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
 test('marketplace discovery binds the catalog name to the exact repository root', () => {
   const root = path.join(TEST_TEMP, 'marketplace-discovery', 'codex-tui-orchestrator');
+  const dist = path.join(TEST_TEMP, 'marketplace-discovery', 'export', 'codex-tui-orchestrator');
   assert.equal(marketplaceIsConfigured([
     {name: 'codex-tui-orchestrator-local', root},
   ], {name: 'codex-tui-orchestrator-local', root}), true);
@@ -312,6 +354,12 @@ test('marketplace discovery binds the catalog name to the exact repository root'
   assert.equal(marketplaceNameConflict([
     {name: 'other-marketplace', root: path.join(TEST_TEMP, 'elsewhere')},
   ], {name: 'codex-tui-orchestrator-local', root}), null);
+  const coexisting = [
+    {name: 'codex-tui-orchestrator-local', root},
+    {name: 'codex-tui-orchestrator-dist', root: dist},
+  ];
+  assert.equal(marketplaceIsConfigured(coexisting, {name: 'codex-tui-orchestrator-local', root}), true);
+  assert.equal(marketplaceIsConfigured(coexisting, {name: 'codex-tui-orchestrator-dist', root: dist}), true);
 });
 
 test('checkInstall accepts a complete install and reports each broken step', () => {

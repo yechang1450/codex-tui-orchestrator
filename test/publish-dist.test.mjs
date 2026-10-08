@@ -40,7 +40,7 @@ test('publication refuses a target that would delete its source checkout', () =>
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
 
-test('publish-dist builds a clean distribution that registration accepts as install source', () => {
+test('publish-dist builds a sealed distribution with its own local marketplace catalog', () => {
   // Explicit external targets remain supported; fixtures are removed after the test.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-dist-'));
   try {
@@ -48,7 +48,8 @@ test('publish-dist builds a clean distribution that registration accepts as inst
     if(checkout!==repo)fs.cpSync(repo,checkout,{recursive:true,filter:source=>!['.git','temp','node_modules'].includes(path.basename(source))});
     const target = path.join(root, 'dist');
     const output = execFileSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', target], {encoding: 'utf8', cwd: checkout});
-    assert.match(output, /codex plugin add codex-tui-orchestrator@personal/);
+    assert.ok(output.includes('codex plugin marketplace add ' + JSON.stringify(path.join(target, 'codex-tui-orchestrator'))));
+    assert.match(output, /codex plugin add codex-tui-orchestrator@codex-tui-orchestrator-dist/);
     const dist = path.join(target, 'codex-tui-orchestrator');
     assert.ok(fs.existsSync(path.join(dist, '.codex-plugin', 'plugin.json')), '分发必须带插件清单');
     assert.equal(fs.existsSync(path.join(dist, 'temp')), false, '分发不带本地运行状态');
@@ -58,20 +59,48 @@ test('publish-dist builds a clean distribution that registration accepts as inst
     assert.equal(fs.existsSync(path.join(dist, 'scripts', 'node_modules')), false, '分发不带依赖目录');
     const verify = JSON.parse(execFileSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', cwd: dist}));
     assert.equal(verify.schema, 2);
+    const catalogPath = path.join(dist, '.agents', 'plugins', 'marketplace.json');
+    const catalog = JSON.parse(fs.readFileSync(catalogPath, 'utf8'));
+    assert.equal(catalog.name, 'codex-tui-orchestrator-dist');
+    assert.equal(catalog.plugins.length, 1);
+    assert.deepEqual(catalog.plugins[0].source, {source: 'local', path: './'});
+    const release = JSON.parse(fs.readFileSync(path.join(dist, 'release.json'), 'utf8'));
+    assert.ok(release.runtimeFiles['.agents/plugins/marketplace.json'], 'the distribution catalog must be sealed into the distribution release manifest');
 
-    // 注册校验必须认识这个分发源（否则重启健康检查会误报 source_mismatch）
-    const marketRoot = path.join(root, 'home');
-    const marketplace = path.join(marketRoot, '.agents', 'plugins', 'marketplace.json');
-    fs.mkdirSync(path.dirname(marketplace), {recursive: true});
-    const relative = './' + path.relative(marketRoot, dist).replaceAll('\\', '/');
-    fs.writeFileSync(marketplace, JSON.stringify({
-      name: 'personal',
-      interface: {displayName: 'Personal'},
-      plugins: [{name: 'codex-tui-orchestrator', source: {source: 'local', path: relative}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Developer Tools'}],
-    }, null, 2) + '\n');
-    const result = inspectRegistration({pluginPath: checkout, marketplacePath: marketplace, marketplaceRoot: marketRoot, distRoot: target});
+    // `--source dist --dist-root` must choose the dist-owned catalog by default,
+    // rather than trying to construct a relative path from the checkout catalog.
+    const result = inspectRegistration({pluginPath: checkout, source: 'dist', distRoot: target});
     assert.equal(result.status, 'matched', JSON.stringify(result));
     assert.equal(result.sourceKind, 'dist');
+    assert.equal(result.marketplacePath, catalogPath);
+    assert.equal(result.marketplaceRoot, dist);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
+test('publish-dist uses the verified manifest name when the checkout directory has a recovery suffix', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-recovery-name-'));
+  try {
+    const checkout = path.join(root, 'codex-tui-orchestrator-recovery');
+    fs.cpSync(repo, checkout, {recursive: true, filter: source => !['.git', 'temp', 'node_modules', 'dist', '.plugin-eval'].includes(path.basename(source))});
+    const target = path.join(root, 'export');
+    const result = spawnSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', target], {cwd: checkout, encoding: 'utf8', windowsHide: true});
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(fs.existsSync(path.join(target, 'codex-tui-orchestrator', '.codex-plugin', 'plugin.json')), true);
+    assert.equal(fs.existsSync(path.join(target, 'codex-tui-orchestrator-recovery')), false);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
+test('repair rejects an unsafe explicit destination name before writing outside its target', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-name-escape-'));
+  try {
+    const target = path.join(root, 'export');
+    const victim = path.join(root, 'victim');
+    fs.mkdirSync(victim, {recursive: true});
+    fs.writeFileSync(path.join(victim, 'marker.txt'), 'must survive', 'utf8');
+    const result = spawnSync(process.execPath, [path.join(repo, 'repair.mjs'), '--target', target, '--name', '..\\victim'], {encoding: 'utf8', cwd: repo, windowsHide: true});
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /destination name|safe path segment/i);
+    assert.equal(fs.readFileSync(path.join(victim, 'marker.txt'), 'utf8'), 'must survive');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
 

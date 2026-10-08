@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * install-plugin — 一条命令完成"个人 marketplace 注册 → 插件管理器安装 → 缓存依赖恢复 → 校验"。
+ * install-plugin — 一条命令完成“本地 catalog 注册 → 插件管理器安装 → 缓存依赖恢复 → 校验”。
  *
  * 为什么需要它：本机实测安装链路有三段容易漏掉的手工步骤；下面第 1 行是可选的发布导出——
  *   1) 默认直接使用工作树（单目录布局）；需要干净发布包时显式选择 `--source dist --dist-root <dir>`；
- *   2) 个人 marketplace 文件/条目还不存在时要先补（缺了 `codex plugin add` 直接失败）；
+ *   2) 选定源内的 marketplace catalog 必须先由宿主注册（缺了 `codex plugin add` 直接失败）；
  *   3) 插件管理器每次安装都会建不带 node_modules 的新缓存，必须对**新缓存路径**恢复依赖；
  *   4) 恢复后要在同一个缓存路径跑完整性检查和 doctor，确认技能与运行时都到位。
  * 漏掉第 3 步得到的是"技能在、运行时缺依赖"的半成品；漏掉第 2 步连安装都进不去。
@@ -25,7 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, defaultMarketplacePath, defaultMarketplaceRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
+import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, defaultMarketplacePath, defaultMarketplaceRoot, CHECKOUT_MARKETPLACE_NAME, DIST_MARKETPLACE_NAME, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {publishDist} from './publish-dist.mjs';
 import {cliCandidates, resolveHost, verifyAuthenticodePublisher} from './core/host-cli.mjs';
 import {assertTrustedNpm} from './npm-cli.mjs';
@@ -80,8 +80,9 @@ export function parseArgs(argv) {
     else if (arg === '-h' || arg === '--help') out.help = true;
     else throw new Error('unknown option: ' + arg);
   }
-  if (!out.marketplacePath) out.marketplacePath = defaultMarketplacePath(out.pluginPath);
-  if (!out.marketplaceRoot) out.marketplaceRoot = defaultMarketplaceRoot(out.pluginPath);
+  const marketplaceDefaults = {source: out.source, distRoot: out.distRoot};
+  if (!out.marketplacePath) out.marketplacePath = defaultMarketplacePath(out.pluginPath, marketplaceDefaults);
+  if (!out.marketplaceRoot) out.marketplaceRoot = defaultMarketplaceRoot(out.pluginPath, marketplaceDefaults);
   return out;
 }
 
@@ -288,10 +289,12 @@ export function checkInstall(options = {}) {
   const pluginPath = path.resolve(options.pluginPath || root);
   const manifest = readManifest(pluginPath);
   const pluginName = manifest.name;
-  const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath));
-  const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath));
+  const source = options.source || 'checkout';
   const configuredDistRoot = options.distRoot ? path.resolve(options.distRoot) : null;
   const distRoot = configuredDistRoot || defaultDistRoot(pluginPath);
+  const marketplaceDefaults = {source, distRoot};
+  const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath, marketplaceDefaults));
+  const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath, marketplaceDefaults));
   const homeDir = options.homeDir || os.homedir();
   const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(homeDir, '.codex');
   const problems = [];
@@ -320,11 +323,11 @@ export function checkInstall(options = {}) {
     };
   }
 
-  const registration = inspectRegistration({pluginPath, marketplacePath, marketplaceRoot, distRoot});
+  const registration = inspectRegistration({pluginPath, marketplacePath, marketplaceRoot, distRoot, source});
   if (registration.status !== 'matched') {
     problems.push({step: 'registration', status: registration.status, reason: registration.reason});
   }
-  const marketplaceName = registration.marketplaceName || 'personal';
+  const marketplaceName = registration.marketplaceName || (source === 'dist' ? DIST_MARKETPLACE_NAME : CHECKOUT_MARKETPLACE_NAME);
   const caches = listInstalledCaches({codexHome, marketplaceName, pluginName});
   // Current Codex hosts label copies from a local marketplace as `local`, while
   // the copied manifest retains the package's real semantic version.  Both
@@ -564,15 +567,17 @@ export function installPlugin(options = {}) {
   // 注册检查里的同名判据跑得太晚（回归：test/publish-dist.test.mjs 的越界删除用例）。
   const nameProblem = manifestNameProblem(pluginName);
   if (nameProblem) throw new Error(`invalid .codex-plugin/plugin.json name ${JSON.stringify(pluginName)}: ${nameProblem}`);
-  const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath));
-  const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath));
-  const homeDir = options.homeDir || os.homedir();
+  const source = options.source || 'checkout';
   const distRoot = options.distRoot ? path.resolve(options.distRoot) : null;
+  const marketplaceDefaults = {source, distRoot};
+  const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath, marketplaceDefaults));
+  const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath, marketplaceDefaults));
+  const homeDir = options.homeDir || os.homedir();
   // A live checkout can contain .git/temp/test receipts and is not a public
   // publication source. Keep checkout installs available for an explicitly
   // local development invocation only; release installs must use clean dist.
   const checkoutDev = options.localDevelopment === true || process.env.ORCH_LOCAL_DEVELOPMENT === '1';
-  if ((options.source || 'checkout') === 'checkout' && !checkoutDev) {
+  if (source === 'checkout' && !checkoutDev) {
     throw new Error('CHECKOUT_INSTALL_REQUIRES_LOCAL_DEVELOPMENT: use --source dist for a clean package, or pass --local-development for an explicit local-only install');
   }
   const codexCli = resolveInstallCli({candidate: options.codexCli});
@@ -586,12 +591,12 @@ export function installPlugin(options = {}) {
     run(git, ['-C', pluginPath, 'pull', '--ff-only']);
     steps.push({step: 'pull', status: 'ok'});
   }
-  if (shouldPublishDistribution({source: options.source, skipDist: options.skipDist})) {
+  if (shouldPublishDistribution({source, skipDist: options.skipDist})) {
     if (!distRoot) throw new Error('--source dist requires --dist-root <directory>; the default install layout has no dist folder');
     const published = publishDist({target: distRoot, quiet: true});
     steps.push({step: 'publish-dist', status: 'ok', dist: published.dist, files: published.files});
   }
-  const registrationOptions = {pluginPath, marketplacePath, marketplaceRoot, distRoot, source: options.source || 'checkout', homeDir};
+  const registrationOptions = {pluginPath, marketplacePath, marketplaceRoot, distRoot, source, homeDir};
   const registration = options.setSource ? setRegistrationSource(registrationOptions) : ensureRegistration(registrationOptions);
   if (!registration.ok) throw new Error(`registration failed (${registration.status}): ${registration.reason}`);
   steps.push({step: 'registration', status: registration.status, sourceKind: registration.sourceKind || null, entryCount: registration.entryCount, changed: registration.changed === true});

@@ -18,7 +18,7 @@
  * Usage:
  *   node repair.mjs                 # integrity check (read-only)
  *   node repair.mjs --clean         # remove runtime debris (use-and-discard only)
- *   node repair.mjs --target <root> # publish: byte-copy the skill folder to <root>/<skill>
+ *   node repair.mjs --target <root> [--name <safe-directory-name>] # publish: byte-copy to <root>/<name>
  *
  * No third-party deps; Node 22+; all reads/writes UTF-8 (no BOM) for text.
  */
@@ -256,7 +256,15 @@ function clean() {
   }
 }
 
-function publish(targetRoot) {
+function publishedDirectoryName(name = SKILL) {
+  if (typeof name !== 'string' || !name || name === '.' || name === '..'
+    || path.basename(name) !== name || /[\\/\0]/.test(name)) {
+    throw new Error(`Publish destination name must be one safe path segment, got: ${JSON.stringify(name)}`);
+  }
+  return name;
+}
+
+function publish(targetRoot, destinationName = SKILL) {
   let staging;
   try {
     verifyRelease(__dirname);
@@ -267,7 +275,8 @@ function publish(targetRoot) {
     // publish 前必须验证必需文件
     const missing = requiredPublishedFiles().filter((nf) => !isRegularFile(path.join(__dirname, nf)));
     if (missing.length || !findSkillFile()) { console.error("[" + SKILL + "] publish aborted: missing " + (missing.length ? missing.join(", ") : "skill SKILL.md (under skills/<name>/)")); process.exit(2); }
-    const dest = path.join(path.resolve(targetRoot), SKILL);
+    const name = publishedDirectoryName(destinationName);
+    const dest = path.join(path.resolve(targetRoot), name);
     assertNoReparsePoints(path.resolve(targetRoot), 'publish target root');
     assertNoReparsePoints(dest, 'publish target');
     if(fs.existsSync(dest))throw new Error('Publish target already exists; choose a fresh version directory');
@@ -281,7 +290,7 @@ function publish(targetRoot) {
     const physicalRelative=path.relative(fs.realpathSync(__dirname),physical);
     if(physicalRelative!=='..'&&!physicalRelative.startsWith('..'+path.sep)&&!path.isAbsolute(physicalRelative))throw new Error('Publish target must be outside the source tree');
     fs.mkdirSync(path.dirname(dest),{recursive:true});
-    staging=fs.mkdtempSync(path.join(path.dirname(dest),'.'+SKILL+'-staging-'));
+    staging=fs.mkdtempSync(path.join(path.dirname(dest),'.'+name+'-staging-'));
     console.log(`[${SKILL}] --target: publishing skill folder to ${dest}`);
     let copied = 0;
     const inventory = publicationFiles(__dirname);
@@ -309,9 +318,23 @@ function publish(targetRoot) {
 
 function main() {
   const args = process.argv.slice(2);
-  if (args.includes('--clean')) return clean();
-  const ti = args.indexOf('--target');
-  if (ti >= 0 && args[ti + 1]) return publish(args[ti + 1]);
+  const options = {clean: false, target: null, name: null};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--clean') options.clean = true;
+    else if (arg === '--target' || arg === '--name') {
+      const value = args[++i];
+      if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`);
+      if (arg === '--target') options.target = value;
+      else options.name = value;
+    } else throw new Error(`unknown option: ${arg}`);
+  }
+  if (options.clean) {
+    if (options.target || options.name) throw new Error('--clean cannot be combined with --target or --name');
+    return clean();
+  }
+  if (options.name && !options.target) throw new Error('--name requires --target');
+  if (options.target) return publish(options.target, options.name || SKILL);
   return check();
 }
 
