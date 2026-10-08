@@ -35,7 +35,7 @@ export function runtimeInventory(pluginRoot){
  }
  // The manifest itself is intentionally excluded to avoid a self-referential
  // hash. Every other shipped instruction and metadata file is covered.
-  for(const rel of ['.codex-plugin','repair.mjs','scripts','skills','hooks','docs','agents','assets','.gitattributes','.gitignore']){
+  for(const rel of ['.agents','.codex-plugin','repair.mjs','scripts','skills','hooks','docs','agents','assets','.gitattributes','.gitignore']){
   if(fs.existsSync(path.join(pluginRoot,rel)))walk(rel);
  }
  for(const name of ['SKILL.md','README.md','README-zh.md','CHANGELOG.md','LICENSE','LICENSE-zh.md','SECURITY.md','CONTRIBUTING.md','CODE_OF_CONDUCT.md']){

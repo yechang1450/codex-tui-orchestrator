@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {coreInventory,verifyRelease,runtimeInventory} from '../scripts/release-integrity.mjs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
@@ -30,6 +31,22 @@ test('release verification rejects changed and injected core files',()=>{
  fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion:'test',files:coreInventory(root),runtimeFiles:runtimeInventory(root)}));
  assert.equal(verifyRelease(root).files,2);fs.writeFileSync(path.join(core,'contracts.mjs'),'changed');assert.throws(()=>verifyRelease(root),/INTEGRITY_FAILED/);
  fs.writeFileSync(path.join(core,'contracts.mjs'),'original');fs.writeFileSync(path.join(core,'injected.mjs'),'extra');assert.throws(()=>verifyRelease(root),/INTEGRITY_FAILED/);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('runtime seal rejects a changed local marketplace catalog',()=>{
+ const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'marketplace-seal-'));
+ try{
+  const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});
+  fs.mkdirSync(path.join(root,'.agents','plugins'),{recursive:true});
+  fs.writeFileSync(path.join(core,'contracts.mjs'),'original');fs.writeFileSync(path.join(core,'orchestrate-sdk.mjs'),'entry');
+  const catalog=path.join(root,'.agents','plugins','marketplace.json');
+  fs.writeFileSync(catalog,'{"name":"trusted"}\n');
+  const snapshot=runtimeInventory(root);
+  assert.equal(snapshot['.agents/plugins/marketplace.json'],crypto.createHash('sha256').update('{"name":"trusted"}\n').digest('hex'));
+  fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion:'test',files:coreInventory(root),runtimeFiles:snapshot}));
+  verifyRelease(root);
+  fs.writeFileSync(catalog,'{"name":"redirected"}\n');
+  assert.throws(()=>verifyRelease(root),/RELEASE_INTEGRITY_FAILED/);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 test('publisher excludes git and runtime debris and refuses an existing release',()=>{
