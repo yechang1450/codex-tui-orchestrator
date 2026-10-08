@@ -86,8 +86,17 @@ test('bootstrap doctor forwards doctor flag and run keeps the original argument 
 });
 test('bootstrap restores parent process PATH and npm environment after completion',{skip:!windows},t=>{
   const dir=fixture(t);
+  // The nested PowerShell process is also a fixture-only runtime probe.  Make
+  // any attempt to hash the harness npm tree fail deterministically, so this
+  // test keeps exercising environment restoration rather than cold-cache I/O.
+  fs.appendFileSync(path.join(dir,'scripts','runtime-bootstrap.ps1'),`
+function Test-OrchTrustedNpm {
+  param([Parameter(Mandatory)][string]$NpmPath, [string[]]$AllowedDigests)
+  throw 'fixture npm digest must be skipped by the explicit test override'
+}
+`,'utf8');
   const code=`$before=$env:PATH; $npm=$env:npm_execpath; $prefix=$env:npm_config_prefix; & ${q(path.join(dir,'scripts','bootstrap.ps1'))} -Action prepare -NoDownload -NodePath ${q(process.execPath)} -Json; if($env:PATH -ne $before -or $env:npm_execpath -ne $npm -or $env:npm_config_prefix -ne $prefix){throw 'leaked environment'}`;
-  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(code,'utf16le').toString('base64')],{encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
+  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(code,'utf16le').toString('base64')],{env:{...process.env,ORCH_ALLOW_UNVERIFIED_NODE:'1',ORCH_ALLOW_UNVERIFIED_NPM:'1'},encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
   assert.equal(r.status,0,r.stderr);
 });
 test('run streams progress immediately and is not killed by the preparation budget',{skip:!windows},async t=>{
