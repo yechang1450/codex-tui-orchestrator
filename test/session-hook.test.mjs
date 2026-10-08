@@ -20,14 +20,28 @@ const sessionHookOuterTimeoutMs=45000;
 // The one-second child deadline is verified separately below.  This outer
 // wall-clock bound also includes a fresh Windows PowerShell startup.
 const timeoutCaseCompletionBoundMs=30000;
+const timeoutCaseOwnedProcessDeadlineSeconds=1;
 const success="param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'called.json'),(@{Action=$Action;Json=[bool]$Json;TimeoutSeconds=$TimeoutSeconds}|ConvertTo-Json),[Text.Encoding]::UTF8)\n@{ok=$true;stage='ready';nodeVersion='22.0.0';sdkVersion='0.149.0';cliPath='fixture';agent='codex'}|ConvertTo-Json -Compress\n";
-function fixture(t,bootstrap=success){
+function fixture(t,bootstrap=success,{observeOwnedPid=false}={}){
   assert.ok(fs.existsSync(path.join(root,'hooks','session-start.ps1')),'SessionStart preparation hook must exist');
   const base=path.join(process.env.USERPROFILE||os.homedir(),'workspace','temp');fs.mkdirSync(base,{recursive:true});
   const dir=fs.mkdtempSync(path.join(base,"orch-hook 中文 '& "));
   for(const folder of ['scripts','hooks'])fs.mkdirSync(path.join(dir,folder));
   for(const name of ['session-start.ps1','hooks.json'])fs.copyFileSync(path.join(root,'hooks',name),path.join(dir,'hooks',name));
-  fs.copyFileSync(path.join(root,'scripts','runtime-bootstrap.ps1'),path.join(dir,'scripts','runtime-bootstrap.ps1'));
+  const runtimePath=path.join(root,'scripts','runtime-bootstrap.ps1'),fixtureRuntime=path.join(dir,'scripts','runtime-bootstrap.ps1');
+  if(observeOwnedPid){
+    // Production only exposes the child PID inside Invoke-OrchProcess.  Copy
+    // its real implementation and add a fixture-only observation immediately
+    // after Process.Start(), before the one-second deadline can race PowerShell
+    // script initialization.  The timeout and taskkill paths remain unchanged.
+    const runtime=fs.readFileSync(runtimePath,'utf8');
+    const observed=runtime.replace(
+      /(\s+\[void\]\$process\.Start\(\)\r?\n)(\s+\$stdout = \$process\.StandardOutput\.ReadToEndAsync\(\))/,
+      '$1        if ($env:ORCH_TEST_CHILD_PID_FILE) { [IO.File]::WriteAllText($env:ORCH_TEST_CHILD_PID_FILE,[string]$process.Id,[Text.Encoding]::UTF8) }\n$2'
+    );
+    assert.notEqual(observed,runtime,'fixture must observe the real owned process after it starts');
+    fs.writeFileSync(fixtureRuntime,observed,'utf8');
+  }else fs.copyFileSync(runtimePath,fixtureRuntime);
   fs.writeFileSync(path.join(dir,'scripts','bootstrap.ps1'),'\uFEFF'+bootstrap,'utf8');
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   return {dir,data:path.join(dir,'plugin data'),called:path.join(dir,'scripts','called.json')};
@@ -104,9 +118,11 @@ winTest('failed preparation is nonblocking and sanitized, and does not retry dur
   const state=fs.readFileSync(path.join(f.data,'session-start','state.json'),'utf8');assert.doesNotMatch(state,/DO_NOT_PRINT|password|secret/);
 });
 winTest('preparation timeout ends the owned process and returns inline without blocking the session',t=>{
-  const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'pid.txt'),[string]$PID,[Text.Encoding]::UTF8)\nStart-Sleep -Seconds 12\n");
-  const started=Date.now(),r=run(f,{timeout:1});assert.match(r.text,/PREPARE_TIMEOUT.*inline/);assert.ok(Date.now()-started<timeoutCaseCompletionBoundMs);
-  const pid=Number(fs.readFileSync(path.join(f.dir,'scripts','pid.txt'),'utf8').replace(/^\uFEFF/,''));
+  const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'pid.txt'),[string]$PID,[Text.Encoding]::UTF8)\nStart-Sleep -Seconds 12\n",{observeOwnedPid:true});
+  const ownedPidFile=path.join(f.dir,'scripts','owned-process-pid.txt');
+  const started=Date.now(),r=run(f,{timeout:timeoutCaseOwnedProcessDeadlineSeconds,env:{ORCH_TEST_CHILD_PID_FILE:ownedPidFile}});assert.match(r.text,/PREPARE_TIMEOUT.*inline/);assert.ok(Date.now()-started<timeoutCaseCompletionBoundMs);
+  const pid=Number(fs.readFileSync(ownedPidFile,'utf8').replace(/^\uFEFF/,''));
+  assert.ok(Number.isInteger(pid)&&pid>0,'fixture must observe the owned process before its one-second timeout');
   assert.throws(()=>process.kill(pid,0));
 });
 winTest('a held preparation lock skips concurrent preparation instead of waiting on the host',t=>{
