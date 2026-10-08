@@ -11,6 +11,15 @@ const windows=process.platform==='win32';
 const ps=path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
 const quote=value=>`'${String(value).replaceAll("'","''")}'`;
 const event={session_id:'fixture-session',transcript_path:null,cwd:'C:\\workspace',hook_event_name:'SessionStart',source:'startup',model:'fixture',permission_mode:'default'};
+// This is a fixture deadline, separate from the production hook's 110-second
+// preparation limit.  A cold Windows PowerShell can spend almost three seconds
+// starting its module infrastructure before this deliberately small bootstrap
+// fixture runs.
+const fixturePrepareTimeoutSeconds=10;
+const sessionHookOuterTimeoutMs=45000;
+// The one-second child deadline is verified separately below.  This outer
+// wall-clock bound also includes a fresh Windows PowerShell startup.
+const timeoutCaseCompletionBoundMs=30000;
 const success="param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'called.json'),(@{Action=$Action;Json=[bool]$Json;TimeoutSeconds=$TimeoutSeconds}|ConvertTo-Json),[Text.Encoding]::UTF8)\n@{ok=$true;stage='ready';nodeVersion='22.0.0';sdkVersion='0.149.0';cliPath='fixture';agent='codex'}|ConvertTo-Json -Compress\n";
 function fixture(t,bootstrap=success){
   assert.ok(fs.existsSync(path.join(root,'hooks','session-start.ps1')),'SessionStart preparation hook must exist');
@@ -28,9 +37,9 @@ function cleanEnv(extra={}){
   for(const key of Object.keys(env))if(key.startsWith('ORCH_'))delete env[key];
   return {...env,...extra};
 }
-function run(f,{input=JSON.stringify(event),memory=8000,timeout=3,env={},prelude=''}={}){
+function run(f,{input=JSON.stringify(event),memory=8000,timeout=fixturePrepareTimeoutSeconds,env={},prelude=''}={}){
   const script=`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; . ${quote(path.join(f.dir,'hooks','session-start.ps1'))}; function Get-OrchSessionAvailableMemoryMB { ${memory===null?"throw 'unavailable'":`return ${memory}`} }; ${prelude}; Invoke-OrchSessionStart -InputJson ${quote(input)} -PluginRoot ${quote(f.dir)} -DataRoot ${quote(f.data)} -PrepareTimeoutSeconds ${timeout} | ConvertTo-Json -Depth 6 -Compress`;
-  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',timeout:20000,windowsHide:true,env:cleanEnv(env),maxBuffer:1024*1024});
+  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',timeout:sessionHookOuterTimeoutMs,windowsHide:true,env:cleanEnv(env),maxBuffer:1024*1024});
   assert.equal(r.status,0,`${r.error||''}\n${r.stdout}\n${r.stderr}`);
   const json=JSON.parse(r.stdout.trim());
   assert.equal(json.continue,true);
@@ -46,7 +55,7 @@ winTest('session hook prepares via a quoted Unicode path with fixed prepare-only
   const f=fixture(t),r=run(f);
   assert.match(r.text,/READY/,r.stderr);
   const called=JSON.parse(fs.readFileSync(f.called,'utf8').replace(/^\uFEFF/,''));
-  assert.deepEqual(called,{TimeoutSeconds:3,Json:true,Action:'prepare'});
+  assert.deepEqual(called,{TimeoutSeconds:fixturePrepareTimeoutSeconds,Json:true,Action:'prepare'});
 });
 winTest('explicit plugin data is forwarded to preparation and healthy sessions are freshly probed',t=>{
   const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::AppendAllText((Join-Path $PSScriptRoot 'data.txt'),($env:PLUGIN_DATA+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))\nWrite-Output '{\"ok\":true,\"stage\":\"ready\"}'\n");
@@ -96,7 +105,7 @@ winTest('failed preparation is nonblocking and sanitized, and does not retry dur
 });
 winTest('preparation timeout ends the owned process and returns inline without blocking the session',t=>{
   const f=fixture(t,"param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'pid.txt'),[string]$PID,[Text.Encoding]::UTF8)\nStart-Sleep -Seconds 12\n");
-  const started=Date.now(),r=run(f,{timeout:1});assert.match(r.text,/PREPARE_TIMEOUT.*inline/);assert.ok(Date.now()-started<10000);
+  const started=Date.now(),r=run(f,{timeout:1});assert.match(r.text,/PREPARE_TIMEOUT.*inline/);assert.ok(Date.now()-started<timeoutCaseCompletionBoundMs);
   const pid=Number(fs.readFileSync(path.join(f.dir,'scripts','pid.txt'),'utf8').replace(/^\uFEFF/,''));
   assert.throws(()=>process.kill(pid,0));
 });

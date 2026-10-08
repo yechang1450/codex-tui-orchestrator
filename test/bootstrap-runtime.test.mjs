@@ -11,6 +11,9 @@ const lib=path.join(root,'scripts','runtime-bootstrap.ps1');
 const windows=process.platform==='win32';
 const ps=path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
 const quote=s=>`'${String(s).replaceAll("'","''")}'`;
+// A trusted portable Node probe hashes the complete bundled npm tree.  Keep
+// this test-only process deadline bounded while allowing cold Windows I/O.
+const trustedNpmProbeTimeoutMs=180000;
 const hashArchive=archive=>`$sha=[Security.Cryptography.SHA256]::Create(); try { $hash=[BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes(${quote(archive)}))).Replace('-','') } finally { $sha.Dispose() }`;
 function run(code,{timeout=30000}={}){
   const script=`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; . ${quote(lib)}; ${code}`;
@@ -35,7 +38,7 @@ winTest('runtime home stays with plugin data or plugin temp, never global instal
 });
 winTest('existing node and npm are verified without downloading or creating runtime state',t=>{
   const dir=fixture(t);
-  const result=JSON.parse(run(`Resolve-OrchNode -Candidates @(${quote(process.execPath)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`));
+  const result=JSON.parse(run(`Resolve-OrchNode -Candidates @(${quote(process.execPath)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`,{timeout:trustedNpmProbeTimeoutMs}));
   assert.equal(path.resolve(result.NodePath).toLowerCase(),path.resolve(process.execPath).toLowerCase());
   assert.ok(result.NpmPath.endsWith('npm-cli.js'));
   assert.ok(Number(result.Version.split('.')[0])>=22);
@@ -55,7 +58,7 @@ winTest('a Node executable without npm cannot be accepted as a ready runtime',t=
 });
 winTest('unsafe executable candidates are rejected before selecting a working runtime',t=>{
   const dir=fixture(t);
-  const result=JSON.parse(run(`Resolve-OrchNode -Candidates @(${quote(ps)},${quote(process.execPath)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`));
+  const result=JSON.parse(run(`Resolve-OrchNode -Candidates @(${quote(ps)},${quote(process.execPath)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`,{timeout:trustedNpmProbeTimeoutMs}));
   assert.equal(path.resolve(result.NodePath).toLowerCase(),path.resolve(process.execPath).toLowerCase());
 });
 winTest('failed automatic download removes every partial download directory',t=>{
