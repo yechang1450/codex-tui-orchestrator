@@ -75,6 +75,12 @@ try {
             }
             $entry = Join-Path $PSScriptRoot 'install-plugin.mjs'
             $forward = @($Arguments)
+            # The documented one-command flow installs the local checkout.  Make
+            # that intent explicit so install-plugin keeps rejecting accidental
+            # checkout installs invoked directly without this bootstrap boundary.
+            $sourceIndex = [Array]::IndexOf([string[]]$forward, '--source')
+            $source = if ($sourceIndex -ge 0 -and $sourceIndex + 1 -lt $forward.Count) { $forward[$sourceIndex + 1] } else { 'checkout' }
+            if ($source -eq 'checkout' -and -not ($forward -contains '--local-development')) { $forward += '--local-development' }
             if ($Json -and -not ($forward -contains '--json')) { $forward += '--json' }
         } else {
             $entry = Join-Path $PSScriptRoot 'orchestrate-sdk.mjs'

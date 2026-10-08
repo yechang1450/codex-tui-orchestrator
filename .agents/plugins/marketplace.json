@@ -1,0 +1,20 @@
+{
+  "name": "codex-tui-orchestrator-local",
+  "interface": {
+    "displayName": "Codex TUI Orchestrator (Local)"
+  },
+  "plugins": [
+    {
+      "name": "codex-tui-orchestrator",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -52,6 +52,8 @@ Set-Location "$HOME\plugins\codex-tui-orchestrator"
 powershell.exe -NoProfile -File ".\scripts\bootstrap.ps1" -Action install
 ```
 
+checkout 内含 `.agents/plugins/marketplace.json`。Bootstrap 会把当前 checkout 注册为本地 `codex-tui-orchestrator-local` marketplace，通过宿主 CLI 安装 `codex-tui-orchestrator`，再校验安装副本；它不会复用旧插件缓存。
+
 安装不会提供账号凭据；实际运行还需要宿主启用并信任 SessionStart hook，并完成 Codex CLI 登录。
 
 先查看计划，再执行：

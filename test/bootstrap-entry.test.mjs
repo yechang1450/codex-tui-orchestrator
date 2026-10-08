@@ -25,7 +25,11 @@ function fixture(t){
   return dir;
 }
 function run(dir,args=[],env={}){
-  return spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),...args],{env:{...process.env,...env},encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
+  // These entrypoint fixtures exercise argument forwarding and environment
+  // restoration.  Their Node executable is supplied by the test harness, so
+  // keep certificate-network latency out of this suite.  CLI identity remains
+  // independently covered by runtime-prepare and host-cli tests.
+  return spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',path.join(dir,'scripts','bootstrap.ps1'),...args],{env:{...process.env,ORCH_ALLOW_UNVERIFIED_NODE:'1',ORCH_ALLOW_UNVERIFIED_NPM:'1',...env},encoding:'utf8',windowsHide:true,timeout:bootstrapProbeTimeoutMs});
 }
 function nativeCliFixture(file){
   fs.mkdirSync(path.dirname(file),{recursive:true});
@@ -42,14 +46,35 @@ test('bootstrap prepares without Node on PATH and passes structured runtime repo
   assert.equal(fs.existsSync(path.join(data,'runtime','.bootstrap.lock')),true);
   assert.equal(fs.readdirSync(path.join(data,'runtime')).some(n=>n.startsWith('.npm-cache-')),false);
 });
-test('bootstrap dispatches install arguments literally and uses private CLI prefix',{skip:!windows},t=>{
+test('an explicit unverified npm override does not hash the npm tree',{skip:!windows},t=>{
+  const dir=fixture(t),data=path.join(dir,'plugin data');
+  // If Test-OrchNode still digests npm before honoring the explicit override,
+  // this throw is caught as a missing runtime and bootstrap fails.  A trusted
+  // production path does not set this override.
+  fs.appendFileSync(path.join(dir,'scripts','runtime-bootstrap.ps1'),`
+function Test-OrchTrustedNpm {
+  param([Parameter(Mandatory)][string]$NpmPath, [string[]]$AllowedDigests)
+  throw 'npm digest must be skipped under explicit test override'
+}
+`,'utf8');
+  const r=run(dir,['-Action','prepare','-Json','-NoDownload','-NodePath',process.execPath],{PATH:path.join(process.env.SystemRoot,'System32'),PLUGIN_DATA:data});
+  assert.equal(r.status,0,r.stderr);
+  assert.equal(JSON.parse(r.stdout).stage,'ready');
+});
+test('bootstrap dispatches an explicit distribution install literally and uses private CLI prefix',{skip:!windows},t=>{
   const dir=fixture(t),data=path.join(dir,'plugin data'),value='中文 x & echo BAD | more';
-  const r=run(dir,['-Action','install','-NoDownload','-NodePath',process.execPath,'--dist-root',value],{PLUGIN_DATA:data});
+  const r=run(dir,['-Action','install','-NoDownload','-NodePath',process.execPath,'--source','dist','--dist-root',value],{PLUGIN_DATA:data});
   assert.equal(r.status,0,r.stderr);
   const result=JSON.parse(r.stdout);
-  assert.deepEqual(result.args,['--dist-root',value]);
+  assert.deepEqual(result.args,['--source','dist','--dist-root',value]);
   assert.equal(result.prefix,path.join(data,'runtime','cli'));
   assert.equal(result.cli,process.execPath);
+});
+test('bootstrap marks its default checkout installation as an explicit local-development install',{skip:!windows},t=>{
+  const dir=fixture(t),data=path.join(dir,'plugin data');
+  const r=run(dir,['-Action','install','-NoDownload','-NodePath',process.execPath],{PLUGIN_DATA:data});
+  assert.equal(r.status,0,r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout).args,['--local-development']);
 });
 test('bootstrap doctor forwards doctor flag and run keeps the original argument list',{skip:!windows},t=>{
   const dir=fixture(t);

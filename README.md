@@ -52,6 +52,8 @@ Set-Location "$HOME\plugins\codex-tui-orchestrator"
 powershell.exe -NoProfile -File ".\scripts\bootstrap.ps1" -Action install
 ```
 
+The checkout includes `.agents/plugins/marketplace.json`. Bootstrap registers this checkout as the local `codex-tui-orchestrator-local` marketplace, installs `codex-tui-orchestrator` through the host CLI, and verifies the installed copy. It does not reuse an earlier plugin cache.
+
 Installation does not provide credentials. Actual runs also require an enabled and trusted SessionStart hook and a logged-in Codex CLI.
 
 Inspect the plan before executing it:

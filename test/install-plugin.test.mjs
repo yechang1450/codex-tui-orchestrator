@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {
+  defaultMarketplacePath,
+  defaultMarketplaceRoot,
   ensureRegistration,
   inspectRegistration,
   isPersonalMarketplaceDir,
@@ -15,6 +17,8 @@ import {
   checkInstall,
   authenticateInstalledCache,
   listInstalledCaches,
+  marketplaceNameConflict,
+  marketplaceIsConfigured,
   parseArgs,
   parseCliJson,
   pickCodexCli,
@@ -143,6 +147,25 @@ test('host-reported install paths are contained canonical cache directories', ()
   } finally { fs.rmSync(home, {recursive: true, force: true}); }
 });
 
+test('a local marketplace cache may use the host cache label while preserving the manifest version', () => {
+  const home = fs.mkdtempSync(path.join(TEST_TEMP, 'install-local-cache-'));
+  try {
+    const cache = path.join(home, '.codex', 'plugins', 'cache', 'repo-local', 'demo-plugin', 'local');
+    fs.mkdirSync(path.join(cache, 'scripts'), {recursive: true});
+    fs.mkdirSync(path.join(cache, '.codex-plugin'), {recursive: true});
+    fs.writeFileSync(path.join(cache, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}));
+    const valid = validateInstalledPath({
+      installedPath: cache,
+      codexHome: path.join(home, '.codex'),
+      marketplaceName: 'repo-local',
+      pluginName: 'demo-plugin',
+      version: 'local',
+      manifestVersion: '1.0.0',
+    });
+    assert.equal(valid.installedPath, fs.realpathSync(cache));
+  } finally { fs.rmSync(home, {recursive: true, force: true}); }
+});
+
 test('cache authentication rejects modified verifier or doctor bytes', () => {
   const root = fs.mkdtempSync(path.join(TEST_TEMP, 'install-cache-auth-'));
   const source = path.join(root, 'source');
@@ -255,8 +278,40 @@ test('ensureRegistration uses the checkout by default and still reports an expli
 test('path helpers keep marketplace entries relative to the marketplace root', () => {
   assert.equal(relativeSourcePath('C:\\home\\me', 'C:\\home\\me\\plugins\\dist\\demo'), './plugins/dist/demo');
   assert.equal(relativeSourcePath('/home/me', '/home/me/plugins/dist/demo'), './plugins/dist/demo');
+  if (process.platform === 'win32') {
+    assert.throws(
+      () => relativeSourcePath('C:\\Users\\fixture', 'C:\\workspace\\codex-tui-orchestrator'),
+      /MARKETPLACE_SOURCE_OUTSIDE_ROOT/,
+      'a cross-volume local source must never become ./D:/... in marketplace.json',
+    );
+  }
   assert.equal(isPersonalMarketplaceDir(path.join('/home/me', '.agents', 'plugins'), '/home/me'), true);
   assert.equal(isPersonalMarketplaceDir(path.join('/home/me', 'plugins'), '/home/me'), false);
+});
+
+test('installer defaults use the repository marketplace rooted at the checkout', () => {
+  const checkout = path.join(TEST_TEMP, 'repo-marketplace-defaults', 'codex-tui-orchestrator');
+  assert.equal(defaultMarketplaceRoot(checkout), path.resolve(checkout));
+  assert.equal(defaultMarketplacePath(checkout), path.join(path.resolve(checkout), '.agents', 'plugins', 'marketplace.json'));
+});
+
+test('marketplace discovery binds the catalog name to the exact repository root', () => {
+  const root = path.join(TEST_TEMP, 'marketplace-discovery', 'codex-tui-orchestrator');
+  assert.equal(marketplaceIsConfigured([
+    {name: 'codex-tui-orchestrator-local', root},
+  ], {name: 'codex-tui-orchestrator-local', root}), true);
+  assert.equal(marketplaceIsConfigured([
+    {name: 'codex-tui-orchestrator-local', root: path.join(TEST_TEMP, 'elsewhere')},
+  ], {name: 'codex-tui-orchestrator-local', root}), false);
+  assert.equal(marketplaceIsConfigured([
+    {name: 'other-marketplace', root},
+  ], {name: 'codex-tui-orchestrator-local', root}), false);
+  assert.equal(marketplaceNameConflict([
+    {name: 'codex-tui-orchestrator-local', root: path.join(TEST_TEMP, 'elsewhere')},
+  ], {name: 'codex-tui-orchestrator-local', root}), path.resolve(TEST_TEMP, 'elsewhere'));
+  assert.equal(marketplaceNameConflict([
+    {name: 'other-marketplace', root: path.join(TEST_TEMP, 'elsewhere')},
+  ], {name: 'codex-tui-orchestrator-local', root}), null);
 });
 
 test('checkInstall accepts a complete install and reports each broken step', () => {
@@ -280,6 +335,19 @@ test('checkInstall accepts a complete install and reports each broken step', () 
     const broken = checkInstall({...f.options, codexHome: path.join(f.home, '.codex')});
     assert.equal(broken.ok, false);
     assert.deepEqual(broken.problems.map((problem) => problem.step).sort(), ['cache_deps', 'host_config']);
+  } finally {
+    fs.rmSync(f.home, {recursive: true, force: true});
+  }
+});
+
+test('checkInstall recognizes the current host local cache label', () => {
+  const f = completeFixture();
+  try {
+    const localCache = path.join(f.codexHome, 'plugins', 'cache', 'personal', 'demo-plugin', 'local');
+    fs.renameSync(f.cache, localCache);
+    const result = checkInstall(f.options);
+    assert.equal(result.ok, true, JSON.stringify(result.problems));
+    assert.equal(result.cache, localCache);
   } finally {
     fs.rmSync(f.home, {recursive: true, force: true});
   }

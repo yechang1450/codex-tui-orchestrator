@@ -18,8 +18,19 @@ import {fileURLToPath} from 'node:url';
 import {coreInventory} from './release-integrity.mjs';
 import {physicalPathIdentity} from './core/runtime-context.mjs';
 
-const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const DEFAULT_PLUGIN_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/**
+ * A plugin checkout is also its local marketplace root.  This follows Codex's
+ * repo-marketplace layout and keeps a Windows checkout on D: from being
+ * represented as an invalid relative path under a C: personal marketplace.
+ */
+export function defaultMarketplaceRoot(pluginPath = DEFAULT_PLUGIN_PATH) {
+  return path.resolve(pluginPath);
+}
+
+export function defaultMarketplacePath(pluginPath = DEFAULT_PLUGIN_PATH) {
+  return path.join(defaultMarketplaceRoot(pluginPath), '.agents', 'plugins', 'marketplace.json');
+}
 // 可选干净分发的默认根：插件工作树旁边的 dist/<插件名>（可用
 // ORCH_PLUGIN_DIST_ROOT 覆盖）。单目录安装不会触发它；只有显式 --source dist
 // 且提供 --dist-root 时才会生成或使用发布副本。
@@ -29,6 +40,22 @@ export function defaultDistRoot(pluginPath = DEFAULT_PLUGIN_PATH) {
 
 function samePath(left, right) {
   return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+function pathIsInside(root, target) {
+  const relative = path.relative(path.resolve(root), path.resolve(target));
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+function resolveLocalMarketplaceSource(marketplaceRoot, sourcePath) {
+  if (typeof sourcePath !== 'string' || !sourcePath.startsWith('./')) {
+    throw new Error('MARKETPLACE_SOURCE_INVALID: local source.path must start with ./');
+  }
+  const resolved = path.resolve(marketplaceRoot, sourcePath);
+  if (!pathIsInside(marketplaceRoot, resolved)) {
+    throw new Error('MARKETPLACE_SOURCE_OUTSIDE_ROOT: local source.path must stay inside the marketplace root');
+  }
+  return resolved;
 }
 
 function realPath(file) {
@@ -63,10 +90,10 @@ export function manifestNameProblem(pluginName) {
 }
 
 /** Inspect registration state without writing anything. */
-export function inspectRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null} = {}) {
+export function inspectRegistration({pluginPath = process.cwd(), marketplacePath = null, marketplaceRoot = null, distRoot = null} = {}) {
   const pluginRoot = path.resolve(pluginPath);
-  const marketplace = path.resolve(marketplacePath);
-  const root = path.resolve(marketplaceRoot);
+  const marketplace = path.resolve(marketplacePath || defaultMarketplacePath(pluginRoot));
+  const root = path.resolve(marketplaceRoot || defaultMarketplaceRoot(pluginRoot));
   let pluginName;
   let manifest;
   try {
@@ -107,7 +134,7 @@ export function inspectRegistration({pluginPath = process.cwd(), marketplacePath
   let sourceReal;
   let pluginReal;
   try {
-    sourcePath = path.resolve(root, entry.source.path);
+    sourcePath = resolveLocalMarketplaceSource(root, entry.source.path);
     sourceReal = realPath(sourcePath);
     pluginReal = realPath(pluginRoot);
   } catch (error) {
@@ -188,8 +215,13 @@ export function isPersonalMarketplaceDir(dir, homeDir = os.homedir()) {
 
 /** 把绝对路径写成相对 marketplaceRoot 的 POSIX 风格路径（marketplace source.path 的写法）。 */
 export function relativeSourcePath(marketplaceRoot, target) {
-  const rel = path.relative(path.resolve(marketplaceRoot), path.resolve(target)).replaceAll('\\', '/');
-  return rel.startsWith('.') ? rel : './' + rel;
+  const root = path.resolve(marketplaceRoot);
+  const source = path.resolve(target);
+  if (!pathIsInside(root, source)) {
+    throw new Error('MARKETPLACE_SOURCE_OUTSIDE_ROOT: local plugin source must stay inside the marketplace root');
+  }
+  const rel = path.relative(root, source).replaceAll('\\', '/');
+  return rel ? './' + rel : './';
 }
 
 /** 首次安装写入的条目不继承其它 marketplace 的写法：策略固定、名称用清单里的规范名。 */
@@ -211,10 +243,10 @@ function canonicalEntry({pluginName, category, sourcePath, marketplaceRoot}) {
  * 要求文件已存在，避免凭空造出别的 marketplace。既有条目、其它插件与顶层元数据一律保留。
  * `setRegistrationSource` 用于换机器/换克隆目录：把唯一条目的安装源改写到当前分发或工作树。
  */
-export function ensureRegistration({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'checkout', homeDir = os.homedir()} = {}) {
+export function ensureRegistration({pluginPath = process.cwd(), marketplacePath = null, marketplaceRoot = null, distRoot = null, source = 'checkout', homeDir = os.homedir()} = {}) {
   const pluginRoot = path.resolve(pluginPath);
-  const marketplace = path.resolve(marketplacePath);
-  const root = path.resolve(marketplaceRoot);
+  const marketplace = path.resolve(marketplacePath || defaultMarketplacePath(pluginRoot));
+  const root = path.resolve(marketplaceRoot || defaultMarketplaceRoot(pluginRoot));
   let manifest;
   try {
     manifest = readJson(path.join(pluginRoot, '.codex-plugin', 'plugin.json'));
@@ -251,7 +283,12 @@ export function ensureRegistration({pluginPath = process.cwd(), marketplacePath 
     return {...repaired, created: false};
   }
 
-  const entry = canonicalEntry({pluginName, category: manifest?.interface?.category, sourcePath: sourceReal, marketplaceRoot: root});
+  let entry;
+  try {
+    entry = canonicalEntry({pluginName, category: manifest?.interface?.category, sourcePath: sourceReal, marketplaceRoot: root});
+  } catch (error) {
+    return fail('source_outside_marketplace', error.message, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, sourcePath: sourceReal});
+  }
   const base = {pluginName, marketplaceName: null, pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, sourcePath: sourceReal, entry, created: false};
   const fileExists = fs.existsSync(marketplace);
 
@@ -293,8 +330,15 @@ export function ensureRegistration({pluginPath = process.cwd(), marketplacePath 
 }
 
 /** 把唯一条目的安装源改写到本插件当前的源（默认 checkout）；缺文件或条目时退化为 `--ensure`。 */
-export function setRegistrationSource({pluginPath = process.cwd(), marketplacePath = DEFAULT_MARKETPLACE, marketplaceRoot = os.homedir(), distRoot = null, source = 'checkout', homeDir = os.homedir()} = {}) {
-  const options = {pluginPath: path.resolve(pluginPath), marketplacePath: path.resolve(marketplacePath), marketplaceRoot: path.resolve(marketplaceRoot), distRoot, source};
+export function setRegistrationSource({pluginPath = process.cwd(), marketplacePath = null, marketplaceRoot = null, distRoot = null, source = 'checkout', homeDir = os.homedir()} = {}) {
+  const resolvedPluginPath = path.resolve(pluginPath);
+  const options = {
+    pluginPath: resolvedPluginPath,
+    marketplacePath: path.resolve(marketplacePath || defaultMarketplacePath(resolvedPluginPath)),
+    marketplaceRoot: path.resolve(marketplaceRoot || defaultMarketplaceRoot(resolvedPluginPath)),
+    distRoot,
+    source,
+  };
   const inspected = inspectRegistration(options);
   if (inspected.status === 'matched') {
     const requestedKind = options.source === 'checkout' ? 'checkout' : 'dist';
@@ -338,7 +382,11 @@ export function setRegistrationSource({pluginPath = process.cwd(), marketplacePa
   const previous = JSON.parse(JSON.stringify(matches[0]));
   const updated = JSON.parse(JSON.stringify(data));
   updated.plugins[index].name = pluginName;
-  updated.plugins[index].source = {source: 'local', path: relativeSourcePath(options.marketplaceRoot, sourceReal)};
+  try {
+    updated.plugins[index].source = {source: 'local', path: relativeSourcePath(options.marketplaceRoot, sourceReal)};
+  } catch (error) {
+    return fail('source_outside_marketplace', error.message, {pluginName, marketplacePath: options.marketplacePath, marketplaceRoot: options.marketplaceRoot, sourcePath: sourceReal});
+  }
   if (!updated.plugins[index].policy) updated.plugins[index].policy = {installation: 'AVAILABLE', authentication: 'ON_INSTALL'};
   if (!updated.plugins[index].category) updated.plugins[index].category = manifest?.interface?.category || 'Productivity';
   atomicReplace(options.marketplacePath, `${JSON.stringify(updated, null, 2)}\n`, expected);
@@ -362,7 +410,7 @@ function inspectFailure(inspected, base, status = inspected.status) {
 }
 
 function parseArgs(argv) {
-  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: DEFAULT_MARKETPLACE, marketplaceRoot: os.homedir(), distRoot: null, source: 'checkout', mode: 'check'};
+  const out = {pluginPath: DEFAULT_PLUGIN_PATH, marketplacePath: null, marketplaceRoot: null, distRoot: null, source: 'checkout', mode: 'check'};
   const positional = [];
   let mode;
   for (let i = 0; i < argv.length; i++) {
@@ -412,6 +460,8 @@ function parseArgs(argv) {
   }
   if (positional.length > 1) throw new Error('only one plugin path is supported');
   if (positional[0]) out.pluginPath = positional[0];
+  if (!out.marketplacePath) out.marketplacePath = defaultMarketplacePath(out.pluginPath);
+  if (!out.marketplaceRoot) out.marketplaceRoot = defaultMarketplaceRoot(out.pluginPath);
   if (mode) out.mode = mode;
   return out;
 }

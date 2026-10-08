@@ -25,7 +25,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
+import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, defaultMarketplacePath, defaultMarketplaceRoot, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {publishDist} from './publish-dist.mjs';
 import {cliCandidates, resolveHost, verifyAuthenticodePublisher} from './core/host-cli.mjs';
 import {assertTrustedNpm} from './npm-cli.mjs';
@@ -33,14 +33,13 @@ import {runtimeInventory} from './release-integrity.mjs';
 import {assertNoReparsePoints,physicallySameOrChild} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const DEFAULT_MARKETPLACE = path.join(os.homedir(), '.agents', 'plugins', 'marketplace.json');
 const PLATFORM_WARNING = "this plugin's execution core is Windows-only; a non-Windows host can hold the install but runs are out of contract";
 
 export function parseArgs(argv) {
   const out = {
     pluginPath: root,
-    marketplacePath: DEFAULT_MARKETPLACE,
-    marketplaceRoot: os.homedir(),
+    marketplacePath: null,
+    marketplaceRoot: null,
     distRoot: null,
     source: 'checkout',
     mode: 'install',
@@ -81,6 +80,8 @@ export function parseArgs(argv) {
     else if (arg === '-h' || arg === '--help') out.help = true;
     else throw new Error('unknown option: ' + arg);
   }
+  if (!out.marketplacePath) out.marketplacePath = defaultMarketplacePath(out.pluginPath);
+  if (!out.marketplaceRoot) out.marketplaceRoot = defaultMarketplaceRoot(out.pluginPath);
   return out;
 }
 
@@ -134,6 +135,61 @@ export function parseCliJson(text) {
     }
   }
   throw new Error('could not parse JSON from host CLI output: ' + trimmed.slice(0, 400));
+}
+
+function normalizeMarketplaceRoot(value) {
+  const raw = String(value || '').trim().replace(/^\\\\\?\\/, '');
+  if (!raw) return null;
+  return path.resolve(raw);
+}
+
+function sameFilesystemPath(left, right) {
+  if (!left || !right) return false;
+  return process.platform === 'win32'
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
+/** Match the host's configured marketplace by both its catalog name and root. */
+export function marketplaceIsConfigured(marketplaces, {name, root} = {}) {
+  const expectedRoot = normalizeMarketplaceRoot(root);
+  if (!expectedRoot || typeof name !== 'string' || !Array.isArray(marketplaces)) return false;
+  return marketplaces.some((entry) => entry?.name === name
+    && sameFilesystemPath(normalizeMarketplaceRoot(entry.root), expectedRoot));
+}
+
+/** A marketplace name is host-global; never replace a different checkout implicitly. */
+export function marketplaceNameConflict(marketplaces, {name, root} = {}) {
+  const expectedRoot = normalizeMarketplaceRoot(root);
+  if (!expectedRoot || typeof name !== 'string' || !Array.isArray(marketplaces)) return null;
+  const conflicting = marketplaces.find((entry) => entry?.name === name
+    && !sameFilesystemPath(normalizeMarketplaceRoot(entry.root), expectedRoot));
+  return conflicting ? normalizeMarketplaceRoot(conflicting.root) || String(conflicting.root || '') : null;
+}
+
+function readConfiguredMarketplaces(codexCli, timeoutMs) {
+  const result = run(codexCli, ['plugin', 'marketplace', 'list', '--json'], {timeoutMs});
+  const parsed = parseCliJson(result.stdout || result.stderr);
+  if (!Array.isArray(parsed.marketplaces)) throw new Error('host CLI did not return a marketplace list');
+  return parsed.marketplaces;
+}
+
+/** Register the checkout root through the host CLI, then read it back exactly. */
+function ensureMarketplaceConfigured({codexCli, marketplaceRoot, marketplaceName, timeoutMs}) {
+  const before = readConfiguredMarketplaces(codexCli, timeoutMs);
+  if (marketplaceIsConfigured(before, {name: marketplaceName, root: marketplaceRoot})) {
+    return {changed: false, marketplaces: before};
+  }
+  const conflictRoot = marketplaceNameConflict(before, {name: marketplaceName, root: marketplaceRoot});
+  if (conflictRoot) {
+    throw new Error(`MARKETPLACE_NAME_CONFLICT: ${marketplaceName} is already registered at ${conflictRoot}; refusing to replace it. Confirm the old checkout is unused, then run: codex plugin marketplace remove ${marketplaceName}`);
+  }
+  run(codexCli, ['plugin', 'marketplace', 'add', marketplaceRoot, '--json'], {timeoutMs});
+  const after = readConfiguredMarketplaces(codexCli, timeoutMs);
+  if (!marketplaceIsConfigured(after, {name: marketplaceName, root: marketplaceRoot})) {
+    throw new Error(`marketplace registration did not resolve ${marketplaceName} at ${marketplaceRoot}`);
+  }
+  return {changed: true, marketplaces: after};
 }
 
 /** 安装缓存按 `<version>` 分目录；返回 <version, dir> 列表（新的在后）。缓存根跟随 CODEX_HOME。 */
@@ -232,8 +288,8 @@ export function checkInstall(options = {}) {
   const pluginPath = path.resolve(options.pluginPath || root);
   const manifest = readManifest(pluginPath);
   const pluginName = manifest.name;
-  const marketplacePath = path.resolve(options.marketplacePath || DEFAULT_MARKETPLACE);
-  const marketplaceRoot = path.resolve(options.marketplaceRoot || os.homedir());
+  const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath));
+  const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath));
   const configuredDistRoot = options.distRoot ? path.resolve(options.distRoot) : null;
   const distRoot = configuredDistRoot || defaultDistRoot(pluginPath);
   const homeDir = options.homeDir || os.homedir();
@@ -270,12 +326,17 @@ export function checkInstall(options = {}) {
   }
   const marketplaceName = registration.marketplaceName || 'personal';
   const caches = listInstalledCaches({codexHome, marketplaceName, pluginName});
-  const cache = caches.find((entry) => entry.version === manifest.version) || caches[caches.length - 1] || null;
+  // Current Codex hosts label copies from a local marketplace as `local`, while
+  // the copied manifest retains the package's real semantic version.  Both
+  // values are part of the contract: the directory label selects the expected
+  // cache path and the manifest version authenticates the actual plugin.
+  const cache = caches.find((entry) => entry.version === manifest.version || entry.version === 'local') || caches[caches.length - 1] || null;
   let validatedCache = null;
   if (!cache) {
     problems.push({step: 'cache', status: 'missing', reason: `no installed cache under ${path.join(codexHome, 'plugins', 'cache', marketplaceName, pluginName)}`});
   } else {
-    if (cache.version !== manifest.version) problems.push({step: 'cache_version', status: 'stale', reason: `installed ${cache.version} but the working tree declares ${manifest.version}`});
+    const cacheVersionMatches = cache.version === manifest.version || cache.version === 'local';
+    if (!cacheVersionMatches) problems.push({step: 'cache_version', status: 'stale', reason: `installed ${cache.version} but the working tree declares ${manifest.version}`});
     try {
       validatedCache = validateInstalledPath({
         installedPath: cache.dir,
@@ -283,6 +344,7 @@ export function checkInstall(options = {}) {
         marketplaceName,
         pluginName,
         version: cache.version,
+        manifestVersion: manifest.version,
       });
     } catch (error) {
       problems.push({step: 'cache_path', status: 'failed', reason: error?.message || String(error)});
@@ -290,16 +352,16 @@ export function checkInstall(options = {}) {
     const cacheDir = validatedCache?.installedPath || cache.dir;
     if (validatedCache && !fs.existsSync(path.join(cacheDir, 'scripts', 'node_modules'))) {
       problems.push({step: 'cache_deps', status: 'missing', reason: `restore with: npm ci --prefix "${path.join(cacheDir, 'scripts')}" --omit=optional --ignore-scripts --no-audit --no-fund`});
-    } else if (validatedCache && cache.version === manifest.version && registration.status === 'matched' && registration.sourceReal) {
+    } else if (validatedCache && cacheVersionMatches && registration.status === 'matched' && registration.sourceReal) {
       try {
         authenticateInstalledCache({sourcePath: registration.sourceReal, installedPath: cacheDir});
       } catch (error) {
         problems.push({step: 'cache_authentication', status: 'failed', reason: error?.message || String(error)});
       }
-    } else if (validatedCache && cache.version === manifest.version && registration.status === 'matched') {
+    } else if (validatedCache && cacheVersionMatches && registration.status === 'matched') {
       problems.push({step: 'cache_authentication', status: 'failed', reason: 'CACHE_AUTHENTICATION_FAILED: registered source path is unavailable'});
     }
-    if (validatedCache && !problems.some((problem) => ['cache_path', 'cache_deps', 'cache_authentication'].includes(problem.step)) && cache.version === manifest.version && registration.status === 'matched') {
+    if (validatedCache && !problems.some((problem) => ['cache_path', 'cache_deps', 'cache_authentication'].includes(problem.step)) && cacheVersionMatches && registration.status === 'matched') {
       const integrity = runAuthenticatedCacheScript({
         sourcePath: registration.sourceReal,
         installedPath: cacheDir,
@@ -449,7 +511,7 @@ function runAuthenticatedCacheScript({sourcePath, installedPath, scriptPath, arg
  * script execution. The native host is trusted for the install operation, but
  * its JSON result is still treated as untrusted input at this boundary.
  */
-export function validateInstalledPath({installedPath, codexHome, marketplaceName, pluginName, version}) {
+export function validateInstalledPath({installedPath, codexHome, marketplaceName, pluginName, version, manifestVersion = version}) {
   const reported = path.resolve(String(installedPath || ''));
   const cacheRoot = path.resolve(codexHome, 'plugins', 'cache', marketplaceName, pluginName);
   const cacheBase = path.resolve(codexHome, 'plugins', 'cache');
@@ -487,7 +549,7 @@ export function validateInstalledPath({installedPath, codexHome, marketplaceName
   } catch {
     throw new Error('HOST_INSTALL_PATH_INVALID: installed cache is missing a regular scripts directory or manifest');
   }
-  if (manifest?.name !== pluginName || manifest?.version !== version) {
+  if (manifest?.name !== pluginName || manifest?.version !== manifestVersion) {
     throw new Error('HOST_INSTALL_PATH_INVALID: installed manifest does not match the requested plugin');
   }
   return {installedPath: realReported, scriptsPath: path.resolve(scriptsPath)};
@@ -502,8 +564,8 @@ export function installPlugin(options = {}) {
   // 注册检查里的同名判据跑得太晚（回归：test/publish-dist.test.mjs 的越界删除用例）。
   const nameProblem = manifestNameProblem(pluginName);
   if (nameProblem) throw new Error(`invalid .codex-plugin/plugin.json name ${JSON.stringify(pluginName)}: ${nameProblem}`);
-  const marketplacePath = path.resolve(options.marketplacePath || DEFAULT_MARKETPLACE);
-  const marketplaceRoot = path.resolve(options.marketplaceRoot || os.homedir());
+  const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath));
+  const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath));
   const homeDir = options.homeDir || os.homedir();
   const distRoot = options.distRoot ? path.resolve(options.distRoot) : null;
   // A live checkout can contain .git/temp/test receipts and is not a public
@@ -534,20 +596,29 @@ export function installPlugin(options = {}) {
   if (!registration.ok) throw new Error(`registration failed (${registration.status}): ${registration.reason}`);
   steps.push({step: 'registration', status: registration.status, sourceKind: registration.sourceKind || null, entryCount: registration.entryCount, changed: registration.changed === true});
 
+  const marketplace = ensureMarketplaceConfigured({
+    codexCli,
+    marketplaceRoot,
+    marketplaceName: registration.marketplaceName,
+    timeoutMs: options.timeoutMs,
+  });
+  steps.push({step: 'marketplace-add', status: 'ok', changed: marketplace.changed, root: marketplaceRoot});
+
   const added = run(codexCli, ['plugin', 'add', `${pluginName}@${registration.marketplaceName}`, '--json'], {timeoutMs: options.timeoutMs});
   const parsed = parseCliJson(added.stdout || added.stderr);
   const installedPath = parsed.installedPath;
   if (!installedPath || !fs.existsSync(installedPath)) throw new Error('host CLI did not report an installed path: ' + JSON.stringify(parsed).slice(0, 300));
-  const installedVersion = parsed.version || manifest.version;
+  const installedCacheVersion = parsed.version || manifest.version;
   const validatedInstall = validateInstalledPath({
     installedPath,
     codexHome: process.env.CODEX_HOME || path.join(homeDir, '.codex'),
     marketplaceName: registration.marketplaceName,
     pluginName,
-    version: installedVersion,
+    version: installedCacheVersion,
+    manifestVersion: manifest.version,
   });
   authenticateInstalledCache({sourcePath: registration.sourceReal, installedPath: validatedInstall.installedPath});
-  steps.push({step: 'plugin-add', status: 'ok', version: installedVersion, installedPath: validatedInstall.installedPath});
+  steps.push({step: 'plugin-add', status: 'ok', version: manifest.version, cacheVersion: installedCacheVersion, installedPath: validatedInstall.installedPath});
 
   const cacheScripts = validatedInstall.scriptsPath;
   runNpm(['ci', '--prefix', cacheScripts, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], {timeoutMs: options.timeoutMs});
@@ -576,7 +647,8 @@ export function installPlugin(options = {}) {
     ok: true,
     status: 'installed',
     pluginName,
-    version: installedVersion,
+    version: manifest.version,
+    cacheVersion: installedCacheVersion,
     marketplaceName: registration.marketplaceName,
     installedPath: validatedInstall.installedPath,
     codexHome: process.env.CODEX_HOME || path.join(homeDir, '.codex'),

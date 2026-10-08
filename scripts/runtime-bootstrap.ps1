@@ -211,7 +211,11 @@ function Test-OrchNode {
         $npmCandidates = @((Join-Path $nodeDir 'node_modules\npm\bin\npm-cli.js'), (Join-Path (Split-Path -Parent $nodeDir) 'node_modules\npm\bin\npm-cli.js'))
         foreach ($npmPath in $npmCandidates) {
             if (-not (Test-Path -LiteralPath $npmPath -PathType Leaf)) { continue }
-            $npmTrusted = Test-OrchTrustedNpm -NpmPath $npmPath
+            # An explicit development/test override authorizes an otherwise
+            # untrusted npm tree. Do not still hash every file in that tree:
+            # the digest is only evidence for the trusted path and can take a
+            # long time on a cold Windows volume.
+            $npmTrusted = if ($AllowUnverifiedNpm) { $false } else { Test-OrchTrustedNpm -NpmPath $npmPath }
             if (-not $npmTrusted -and -not $AllowUnverifiedNpm) { continue }
             $left = $TimeoutSeconds - [int][Math]::Floor($timer.Elapsed.TotalSeconds)
             if ($left -lt 1) { return $null }

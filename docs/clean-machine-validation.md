@@ -35,27 +35,26 @@ if ($LASTEXITCODE -ne 0) { throw '准备或安装失败。' }
 
 ## 二、手工诊断路径（已有 Node/npm）
 
-默认直接从 checkout 注册/运行；如果需要审查不含 `temp/`、`.git/` 和开发依赖的包，先显式导出到 checkout 外：
+第一节的 Bootstrap 是正式安装入口。它会明确标记本地 checkout 开发安装，注册仓库内的 `.agents/plugins/marketplace.json`，调用宿主的 marketplace 命令安装插件，再验证安装副本。直接调用安装脚本时，checkout 安装必须显式带 `--local-development`，以免把开发树误当成公开分发包。
+
+安装后可用只读检查核对当前状态：
 
 ```powershell
-node scripts\install-plugin.mjs --install --source checkout
 cd "$HOME\plugins\codex-tui-orchestrator"
-npm ci --prefix .\scripts --omit=optional --ignore-scripts --no-audit --no-fund
-node scripts\orchestrate-sdk.mjs --doctor
+node scripts\install-plugin.mjs --check
 ```
 
-期望：默认安装和注册都指向单一 checkout，不创建 `dist` 目录；`--doctor` 输出 JSON，`cli` 指向真实 `codex.exe`。需要审查干净包时另行运行 `node scripts\publish-dist.mjs --target <导出根目录>`，不要把导出目录放回 checkout 内。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
+期望：默认安装和注册都指向单一 checkout，不创建 `dist` 目录；检查会确认安装缓存、依赖和宿主启用状态。需要审查干净包时另行运行 `node scripts\publish-dist.mjs --target <导出根目录>`，不要把导出目录放回 checkout 内。若 CLI 探测超时导致 `CLI_MISSING`，用 `set ORCH_CLI=<codex.exe 绝对路径>` 明确指定。
 
-注册并安装（个人 marketplace 条目默认指向 checkout）：
+核对宿主的本地 marketplace 与已安装插件：
 
 ```powershell
 node scripts\repair-plugin-registration.mjs --check   # 期望 status=matched、sourceKind=checkout
-codex plugin add codex-tui-orchestrator@personal
-npm ci --prefix <安装缓存路径>\scripts --omit=optional --ignore-scripts --no-audit --no-fund
-node <安装缓存路径>\scripts\release-integrity.mjs      # 安装副本自校验
+codex plugin marketplace list --json
+codex plugin list --json
 ```
 
-期望：安装缓存来自这个 checkout，且它的 `scripts\core` 与工作树逐字节一致；`codex plugin list` 能看到该插件。只有显式注册分发源时才会检查 `stale_dist`，此时重新运行带 `--target` 的 `publish-dist` 再安装。
+期望：marketplace 列表中有根目录为当前 checkout 的 `codex-tui-orchestrator-local`；`codex plugin list` 中有 `codex-tui-orchestrator@codex-tui-orchestrator-local`。宿主可能把本地安装缓存目录标记为 `local`，安装副本的 manifest 版本仍须等于当前发布版本。只有显式注册分发源时才会检查 `stale_dist`，此时重新运行带 `--target` 的 `publish-dist` 再安装。
 
 ## 三、离线回归（源码目录内）
 
@@ -109,7 +108,7 @@ node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acce
 | --- | --- |
 | 机器与系统 | 型号（Lecoo mini pro）、内存、`winver` 版本、`node -v`、`codex --version`、WT 版本 |
 | 完整性 | `release-integrity.mjs` 输出 |
-| 分发 | `repair.mjs --target` 输出 + 文件数 |
+| 安装与 marketplace | Bootstrap 摘要、`codex plugin marketplace list --json`、`codex plugin list --json` |
 | 回归 | 测试汇总行（tests / pass / fail / skipped） |
 | 真实执行 | `summary.json` 的 `success`、任务状态、`acceptance.sha256`、耗时 |
 | 契约绑定 | `--verify-run` 的拒绝输出与 override 后的 history 记录 |
@@ -121,7 +120,7 @@ node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acce
 - **首次在全新工作区运行**：`temp\orchestrator` 不存在时，加锁会因目录缺失失败（已修复：加锁前先建目录）。修复前表现为规划静默退化成单串行块，或直接 `out-of-scope`。
 - **机器繁忙时进程枚举超时**：Windows CIM 查询在负载下会超时；身份校验现在有 3 次有界重试，且没有 pid 文件时不再枚举。身份不一致仍然立即失败，不做降级。
 - **单任务请求**：按设计不进编排，直接提示用 Codex 普通执行；验收用例至少给两个任务。
-- **私有仓库**：`git clone` 需要凭据；插件运行期不访问 GitHub，也不需要公网发布或 marketplace。
+- **私有仓库**：`git clone` 需要凭据；插件运行期不访问 GitHub。本地 marketplace 只用于安装，已安装的运行不依赖公网 marketplace。
 - **可见窗模式**：没有 Windows Terminal 时退回 conhost，功能等价但外观不同。
 
 ## 本清单不覆盖

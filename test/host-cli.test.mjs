@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import { detectHostAgent, installCodexCli, resolveHost, launchArgs, cliCandidates, verifyAuthenticodePublisher } from '../scripts/host-cli.mjs';
+import { detectHostAgent, installCodexCli, resolveHost, launchArgs, cliCandidates, verifyAuthenticodePublisher, verifyCodexCliPublisher } from '../scripts/host-cli.mjs';
 function fakeCli(t){
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'orch-cli-test-'));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
@@ -110,6 +110,41 @@ test('current OpenAI desktop CLI 0.160.1 signer remains trusted after certificat
   const bin = fakeCli(t);
   const sign = (_command, _args, _options) => ({status:0, stdout:'CDBF18EB36CF54344875E8F92C87FA732EF42F52\n'});
   assert.equal(verifyAuthenticodePublisher(bin, process.env, sign), true);
+});
+test('a valid current desktop Codex signer is accepted by identity and install-root policy, not a stale leaf pin', t => {
+  if (process.platform !== 'win32') return t.skip('Windows Authenticode contract');
+  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-desktop-codex-'));
+  t.after(() => fs.rmSync(localAppData, {recursive: true, force: true}));
+  const bin = path.join(localAppData, 'OpenAI', 'Codex', 'bin', 'current', 'codex.exe');
+  fs.mkdirSync(path.dirname(bin), {recursive: true});
+  fs.writeFileSync(bin, 'desktop fixture');
+  const sign = () => ({status: 0, stdout: JSON.stringify({
+    thumbprint: '46AD9CEDA30C7DA1645830DF4AAAEDBD78E19E8D',
+    subject: 'CN="OpenAI OpCo, LLC", O="OpenAI OpCo, LLC", L=San Francisco, S=California, C=US',
+  })});
+  assert.equal(verifyCodexCliPublisher(bin, {...process.env, LOCALAPPDATA: localAppData}, sign), true);
+});
+test('desktop rotation policy rejects an unexpected publisher or a valid identity outside the desktop install root', t => {
+  if (process.platform !== 'win32') return t.skip('Windows Authenticode contract');
+  const localAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-desktop-codex-reject-'));
+  t.after(() => fs.rmSync(localAppData, {recursive: true, force: true}));
+  const bin = path.join(localAppData, 'OpenAI', 'Codex', 'bin', 'current', 'codex.exe');
+  const outside = path.join(localAppData, 'elsewhere', 'codex.exe');
+  fs.mkdirSync(path.dirname(bin), {recursive: true});
+  fs.mkdirSync(path.dirname(outside), {recursive: true});
+  fs.writeFileSync(bin, 'desktop fixture');
+  fs.writeFileSync(outside, 'outside fixture');
+  const openai = () => ({status: 0, stdout: JSON.stringify({
+    thumbprint: '46AD9CEDA30C7DA1645830DF4AAAEDBD78E19E8D',
+    subject: 'CN="OpenAI OpCo, LLC", O="OpenAI OpCo, LLC", L=San Francisco, S=California, C=US',
+  })});
+  const otherPublisher = () => ({status: 0, stdout: JSON.stringify({
+    thumbprint: '46AD9CEDA30C7DA1645830DF4AAAEDBD78E19E8D',
+    subject: 'CN="Unrelated Publisher", O="Unrelated Publisher", C=US',
+  })});
+  const env = {...process.env, LOCALAPPDATA: localAppData};
+  assert.equal(verifyCodexCliPublisher(bin, env, otherPublisher), false);
+  assert.equal(verifyCodexCliPublisher(outside, env, openai), false);
 });
 test('a tampered plugin-private CLI is rejected before its version probe',()=>{
   const home=path.join(os.tmpdir(),'orch-cli-private-candidate');

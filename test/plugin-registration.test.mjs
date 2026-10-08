@@ -11,12 +11,12 @@ fs.mkdirSync(TEST_TEMP, {recursive: true});
 
 function fixture(entry, extra = []) {
   const root = fs.mkdtempSync(path.join(TEST_TEMP, 'plugin-registration-'));
-  const plugin = path.join(root, 'plugin');
-  const marketRoot = path.join(root, 'home');
+  const marketRoot = path.join(root, 'marketplace');
+  const plugin = path.join(marketRoot, 'plugins', 'demo-plugin');
   fs.mkdirSync(path.join(plugin, '.codex-plugin'), {recursive: true});
-  fs.mkdirSync(marketRoot, {recursive: true});
+  fs.mkdirSync(path.join(marketRoot, '.agents', 'plugins'), {recursive: true});
   fs.writeFileSync(path.join(plugin, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}));
-  const marketplace = path.join(marketRoot, 'marketplace.json');
+  const marketplace = path.join(marketRoot, '.agents', 'plugins', 'marketplace.json');
   fs.writeFileSync(marketplace, JSON.stringify({name: 'test', interface: {displayName: 'Test'}, plugins: [entry, ...extra]}, null, 2) + '\n');
   return {root, plugin, marketRoot, marketplace};
 }
@@ -29,14 +29,14 @@ function opts(f) { return {pluginPath: f.plugin, marketplacePath: f.marketplace,
 function cleanup(f) { fs.rmSync(f.root, {recursive: true, force: true}); }
 
 test('exactly matched registration passes check', () => {
-  const f = fixture(localEntry('demo-plugin', '../plugin')); try {
+  const f = fixture(localEntry('demo-plugin', './plugins/demo-plugin')); try {
     assert.deepEqual(inspectRegistration(opts(f)).status, 'matched');
   } finally { cleanup(f); }
 });
 
 test('case-only drift is repaired and preserves path, policy, and other entries', () => {
   const other = localEntry('other-plugin', './other');
-  const f = fixture(localEntry('Demo-Plugin', '../plugin'), [other]); try {
+  const f = fixture(localEntry('Demo-Plugin', './plugins/demo-plugin'), [other]); try {
     const before = JSON.parse(fs.readFileSync(f.marketplace, 'utf8'));
     assert.equal(inspectRegistration(opts(f)).status, 'repairable');
     const result = repairRegistration(opts(f));
@@ -57,13 +57,13 @@ test('duplicate case-insensitive entries are blocked', () => {
 });
 
 test('wrong source path and non-local source are blocked', () => {
-  const wrong = fixture(localEntry('Demo-Plugin', '../elsewhere')); try {
+  const wrong = fixture(localEntry('Demo-Plugin', './plugins/elsewhere')); try {
     assert.equal(inspectRegistration(opts(wrong)).status, 'source_mismatch');
   } finally { cleanup(wrong); }
-  const remote = fixture(localEntry('Demo-Plugin', '../plugin', 'git')); try {
+  const remote = fixture(localEntry('Demo-Plugin', './plugins/demo-plugin', 'git')); try {
     assert.equal(inspectRegistration(opts(remote)).status, 'source_mismatch');
   } finally { cleanup(remote); }
-  const exactWrong = fixture(localEntry('demo-plugin', '../elsewhere')); try {
+  const exactWrong = fixture(localEntry('demo-plugin', './plugins/elsewhere')); try {
     assert.equal(inspectRegistration(opts(exactWrong)).status, 'source_mismatch');
   } finally { cleanup(exactWrong); }
 });
@@ -77,9 +77,9 @@ function coreFixture(pluginDir, marker) {
 }
 
 test('a clean distribution is accepted as install source only while its core matches the checkout', () => {
-  const f = fixture(localEntry('demo-plugin', '../dist/demo-plugin')); try {
+  const f = fixture(localEntry('demo-plugin', './dist/demo-plugin')); try {
     coreFixture(f.plugin, 'checkout');
-    const distRoot = path.join(f.root, 'dist');
+    const distRoot = path.join(f.marketRoot, 'dist');
     const dist = path.join(distRoot, 'demo-plugin');
     coreFixture(dist, 'checkout');
     const matched = inspectRegistration({...opts(f), distRoot});
@@ -94,16 +94,16 @@ test('a clean distribution is accepted as install source only while its core mat
 });
 
 test('a dist path outside the plugin family is still rejected', () => {
-  const f = fixture(localEntry('demo-plugin', '../elsewhere/demo-plugin')); try {
+  const f = fixture(localEntry('demo-plugin', './elsewhere/demo-plugin')); try {
     coreFixture(f.plugin, 'checkout');
-    const distRoot = path.join(f.root, 'dist');
+    const distRoot = path.join(f.marketRoot, 'dist');
     coreFixture(path.join(distRoot, 'demo-plugin'), 'checkout');
     assert.equal(inspectRegistration({...opts(f), distRoot}).status, 'source_mismatch');
   } finally { cleanup(f); }
 });
 
 test('check is read-only and CLI emits machine-readable failure', () => {
-  const f = fixture(localEntry('Demo-Plugin', '../plugin')); try {
+  const f = fixture(localEntry('Demo-Plugin', './plugins/demo-plugin')); try {
     const before = fs.readFileSync(f.marketplace);
     const script = path.resolve('scripts/repair-plugin-registration.mjs');
     assert.throws(() => execFileSync(process.execPath, [script, f.plugin, '--check', '--marketplace', f.marketplace, '--marketplace-root', f.marketRoot], {encoding: 'utf8'}), (error) => {

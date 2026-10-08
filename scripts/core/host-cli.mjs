@@ -86,18 +86,26 @@ const TRUSTED_CLI_CERTIFICATES = Object.freeze([
   // OpenAI desktop CLI certificate observed on the 0.160.1 Windows build.
   'CDBF18EB36CF54344875E8F92C87FA732EF42F52',
 ]);
-const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine($s.SignerCertificate.Thumbprint)';
+// Microsoft-issued desktop certificates rotate more frequently than the
+// product identity.  A rotated signer is accepted only from the official
+// desktop install root and only when the full validated publisher identity
+// matches OpenAI's current desktop signer.  Other external executables still
+// require a release-pinned leaf certificate.
+const TRUSTED_DESKTOP_CLI_SUBJECTS = Object.freeze([
+  'CN="OpenAI OpCo, LLC", O="OpenAI OpCo, LLC", L=San Francisco, S=California, C=US',
+]);
+const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine(([PSCustomObject]@{thumbprint=$s.SignerCertificate.Thumbprint;subject=$s.SignerCertificate.Subject}|ConvertTo-Json -Compress))';
 
-export function verifyAuthenticodePublisher(file, env = process.env, spawn = spawnSync, allowedThumbprints = TRUSTED_CLI_CERTIFICATES) {
-  if (process.platform !== 'win32') return true;
+function readAuthenticodeSigner(file, env = process.env, spawn = spawnSync) {
+  if (process.platform !== 'win32') return {thumbprint: null, subject: null};
   try {
-    if (!fs.statSync(file).isFile()) return false;
+    if (!fs.statSync(file).isFile()) return null;
     // The verifier itself is security-sensitive.  Never let a caller-supplied
     // child environment select a different PowerShell or module tree: the
     // parent process' host environment is the only trusted system-root source.
     const trustedRoot = trustedWindowsRoot();
     const suppliedRoot = env.SystemRoot || env.WINDIR;
-    if (suppliedRoot && path.win32.normalize(suppliedRoot).toLowerCase() !== path.win32.normalize(trustedRoot).toLowerCase()) return false;
+    if (suppliedRoot && path.win32.normalize(suppliedRoot).toLowerCase() !== path.win32.normalize(trustedRoot).toLowerCase()) return null;
     const systemRoot = trustedRoot;
     const powershell = trustedWindowsHelper('powershell');
     const systemModules = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
@@ -105,12 +113,48 @@ export function verifyAuthenticodePublisher(file, env = process.env, spawn = spa
       encoding: 'utf8', windowsHide: true, shell: false, timeout: 30000,
       env: controllerEnvironment({PSModulePath: systemModules, ORCH_AUTHENTICODE_TARGET: path.resolve(file)}),
     });
-    if (result?.status !== 0) return false;
-    const thumbprint = String(result.stdout || '').trim().replace(/\s+/g, '').toUpperCase();
-    return allowedThumbprints.includes(thumbprint);
+    if (result?.status !== 0) return null;
+    const output = String(result.stdout || '').trim();
+    let parsed;
+    try { parsed = JSON.parse(output); }
+    catch { parsed = {thumbprint: output, subject: null}; }
+    const thumbprint = String(parsed?.thumbprint || '').replace(/\s+/g, '').toUpperCase();
+    if (!/^[A-F0-9]{40}$/.test(thumbprint)) return null;
+    return {thumbprint, subject: typeof parsed?.subject === 'string' ? parsed.subject : null};
+  } catch {
+    return null;
+  }
+}
+
+function isOfficialDesktopCliPath(file, env = process.env) {
+  if (process.platform !== 'win32' || !env.LOCALAPPDATA) return false;
+  try {
+    const root = path.win32.resolve(env.LOCALAPPDATA, 'OpenAI', 'Codex', 'bin');
+    const target = path.win32.resolve(file);
+    const relative = path.win32.relative(root, target);
+    if (!relative || path.win32.isAbsolute(relative) || relative === '..' || relative.startsWith('..\\')) return false;
+    if (path.win32.basename(target).toLowerCase() !== 'codex.exe') return false;
+    assertNoReparsePoints(root, 'Codex desktop install root');
+    assertNoReparsePoints(target, 'Codex desktop executable');
+    return true;
   } catch {
     return false;
   }
+}
+
+export function verifyAuthenticodePublisher(file, env = process.env, spawn = spawnSync, allowedThumbprints = TRUSTED_CLI_CERTIFICATES) {
+  if (process.platform !== 'win32') return true;
+  const signer = readAuthenticodeSigner(file, env, spawn);
+  return !!signer && allowedThumbprints.includes(signer.thumbprint);
+}
+
+/** Verify a Codex CLI without turning ordinary third-party signed binaries into candidates. */
+export function verifyCodexCliPublisher(file, env = process.env, spawn = spawnSync) {
+  if (process.platform !== 'win32') return true;
+  const signer = readAuthenticodeSigner(file, env, spawn);
+  if (!signer) return false;
+  if (TRUSTED_CLI_CERTIFICATES.includes(signer.thumbprint)) return true;
+  return isOfficialDesktopCliPath(file, env) && TRUSTED_DESKTOP_CLI_SUBJECTS.includes(signer.subject);
 }
 
 // Adapter contract: resolve a real CLI before any planner/window is started.
@@ -292,7 +336,7 @@ export function revalidateHostExecutable(config, env = process.env) {
     if (!verifiedPrivateCodexCandidate(file, env)) throw new Error('CLI_UNTRUSTED: private executable failed final integrity verification');
     return file;
   }
-  if (!verifyAuthenticodePublisher(file, env)) throw new Error('CLI_UNTRUSTED: executable failed final publisher verification');
+  if (!verifyCodexCliPublisher(file, env)) throw new Error('CLI_UNTRUSTED: executable failed final publisher verification');
   return file;
 }
 
@@ -330,7 +374,7 @@ export function installCodexCli({env = process.env, platform = process.platform,
 
 export function resolveHost({ env = process.env, agent, candidates = cliCandidates,
   probe = (file) => nativeProbe(file, env), verifyPrivate=file=>verifiedPrivateCodexCandidate(file,env),
-  verifyExternal=file=>verifyAuthenticodePublisher(file,env), install, autoInstall } = {}) {
+  verifyExternal=file=>verifyCodexCliPublisher(file,env), install, autoInstall } = {}) {
   const id = agent || detectHostAgent(env);
   if(id==='pi')return resolvePiHost(env,{verifyPublisher: verifyAuthenticodePublisher});
   const adapter = adapters[id];
