@@ -4,7 +4,7 @@
 
 **Goal:** Restore a reproducibly reliable Windows coordinator and launcher path so the recovered orchestrator can resume its public-readiness validation.
 
-**Architecture:** The coordinator will make one pre-lock process observation and use cryptographic ledger revisions as a fail-closed fence inside its mutex. The runner and generated launchers will make PID publication/read races explicit and bounded while retaining the existing identity and exit-evidence gates. Test fixtures will isolate restored host state instead of weakening production containment.
+**Architecture:** The coordinator will coalesce burst process observations through an advisory cache and use cryptographic ledger revisions as a fail-closed fence inside its mutex. Only a fresh cache producer may use negative process evidence; cache hits can only retain state. The runner and generated launchers will make PID publication/read races explicit and bounded while retaining the existing identity and exit-evidence gates. Test fixtures will isolate restored host state instead of weakening production containment.
 
 **Tech Stack:** Node.js ESM, Windows PowerShell 5+, named mutexes, filesystem atomic moves, `node:test`.
 
@@ -14,6 +14,7 @@
 
 - Support Windows PowerShell 5 and the restored Codex desktop runtime without adding a runtime dependency.
 - Take no CIM/WMI process snapshot while `lease-lock.ps1` holds the coordinator mutex.
+- Bound a concurrent coordinator burst to a small number of full CIM enumerations; cached snapshot data is advisory and cannot authorize lease/run-owner reclamation, PID identity, process termination, exit proof, or lower memory admission.
 - Preserve fail-closed behaviour for unreadable PID files, unverified launchers, ledger read errors, unknown ledger revisions, capacity, conflicts, and workspace containment.
 - Never use PID-file existence or a result file as launcher identity or exit proof.
 - Keep every launched TUI/EXEC window in the initiating Codex workspace; never close user-owned windows.
@@ -39,27 +40,27 @@
 
 **Interfaces:**
 - Consumes: `processSnapshot() -> Map<number, ProcessIdentity>` and `readUtf8Bounded()`.
-- Produces: an internal observation `{ processes, changed(file): boolean }` passed as the fourth argument to `transaction` callbacks.
+- Produces: an internal observation `{ processes, fresh, changed(file): boolean }` passed as the fourth argument to `transaction` callbacks.
 
-- [ ] **Step 1: Write failing coordinator revision-fence tests**
+- [ ] **Step 1: Write failing coordinator cache and revision-fence tests**
 
-Assert that an old snapshot that cannot see a valid stale lease or run owner preserves it when the ledger revision changes, but reclaims it when the revision is unchanged. Add a transaction instrumentation case that asserts exactly one snapshot call.
+Assert that cache-hit absence preserves a valid stale lease or run owner even when the ledger revision is unchanged; only a fresh snapshot may reclaim it when revisions are stable. Add instrumentation proving a burst shares a small number of full enumerations, a caller absent from cache obtains targeted identity, and cached working-set data cannot lower memory admission.
 
 - [ ] **Step 2: Run the focused coordinator tests to verify they fail**
 
 Run: `node --test --test-concurrency=1 test/coordinator-process.test.mjs test/lease-poison.test.mjs`
 
-Expected: FAIL because current `transaction()` takes a second snapshot inside the coordinator critical section and has no revision fence.
+Expected: FAIL because current `transaction()` takes a full snapshot for every contender and has no advisory-cache distinction.
 
-- [ ] **Step 3: Implement pre-lock observation and revision comparison in `leases.mjs`**
+- [ ] **Step 3: Implement cached pre-lock observation and revision comparison in `leases.mjs`**
 
-Hash bounded raw bytes with SHA-256 before and during the mutex. Treat `unknown` and any inequality as changed. Remove the post-lock `snapshot()` call and use the pre-lock owner identity. Apply the changed fence to both lease reclamation and `run-owners.json` cleanup.
+Build a bounded, atomically published coordinator-scoped cache outside the workspace. Only its producer has fresh complete identity evidence. Hash bounded raw ledger bytes before and during the mutex; treat `unknown` and any inequality as changed. Apply the changed fence to fresh observations and unconditional conservative retention to cache-hit negative evidence, including `run-owners.json`. Preserve the helper's PID/start-time handshake and use a fresh targeted identity when the cache lacks the caller.
 
 - [ ] **Step 4: Run focused and cross-process coordinator checks**
 
 Run: `node --test --test-concurrency=1 test/coordinator-process.test.mjs test/lease-poison.test.mjs`
 
-Expected: PASS, including 40 contenders producing exactly 16 admissions and 24 capacity rejections.
+Expected: PASS, including repeated 40-contender bursts producing exactly 16 admissions and 24 capacity rejections without increasing the existing timeout.
 
 - [ ] **Step 5: Commit the coordinator fix**
 

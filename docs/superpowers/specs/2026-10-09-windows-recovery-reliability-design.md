@@ -18,13 +18,15 @@ The recovered Windows environment completed 594 of 603 serial tests. Three failu
 
 ## Design decisions
 
-### Coordinator observation fence
+### Coordinator observation fence and burst cache
 
-Before the mutex is requested, `transaction()` captures one process snapshot and an observation revision for `leases.json` and `run-owners.json`. A revision is a SHA-256 hash of bounded raw file bytes, `absent`, or `unknown`. The latter includes a read error, reparse point, oversized artifact, or another condition that prevents a trustworthy comparison.
+Before the mutex is requested, `transaction()` captures observation revisions for `leases.json` and `run-owners.json`. A revision is a SHA-256 hash of bounded raw file bytes, `absent`, or `unknown`. The latter includes a read error, reparse point, oversized artifact, or another condition that prevents a trustworthy comparison.
 
-Inside the mutex, `transaction()` may compare the current local file revision with the observation, but it may not take a second process snapshot. If either revision is unknown or the revisions differ, a negative process match is not authority to reclaim a valid entry. The entry stays in the ledger and continues to count against admission. A later transaction with a stable revision and a new snapshot can reclaim it.
+A short-lived coordinator-scoped process-snapshot cache coalesces a burst of contenders behind the existing process-snapshot mutex. Its file is outside workspace-writable paths, is size/schema/reparse checked, and is published atomically. A cache miss performs one complete CIM enumeration. A cache hit is **advisory only**: it can retain a record but can never supply negative evidence to reclaim a lease or run owner, can never authenticate a PID for destructive work, and can never reduce a memory reservation. Missing, malformed, expired, unreadable, or reparse cache data must cause a fresh enumeration or a fail-closed error; it must never become an empty snapshot.
 
-The same fence applies to `run-owners.json`. Otherwise a stale snapshot could remove a controller claim written while another process waited for the coordinator mutex.
+The cache producer's complete enumeration is fresh evidence. Inside the coordinator mutex, it may compare local ledger revisions but may not take another full process snapshot. If either revision is unknown or changes, a negative fresh match is not authority to reclaim a valid entry. On an advisory cache hit, every structurally valid negative or absent match is retained regardless of revision. The entry continues to count against admission until a later fresh stable observation can reclaim it.
+
+The current controller's owner identity must remain exact. If a cached snapshot does not contain the caller, obtain a fresh targeted identity before starting the lock helper; do not pretend that the cache proves the caller's identity. The helper's existing PID/start-time handshake remains mandatory. `run-owners.json` uses the same revision and advisory-cache rules; otherwise a stale observation could remove a controller claim and start a second controller.
 
 ### PID publication and reading
 
