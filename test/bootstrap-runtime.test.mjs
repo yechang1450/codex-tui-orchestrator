@@ -11,6 +11,10 @@ const lib=path.join(root,'scripts','runtime-bootstrap.ps1');
 const windows=process.platform==='win32';
 const ps=path.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
 const quote=s=>`'${String(s).replaceAll("'","''")}'`;
+// Deep archive fixtures exercise PowerShell 5.1 extended-path enumeration.
+// Leave room for a cold, contended Windows filesystem without changing the
+// production extraction budget.
+const longPathFixtureTimeoutMs=120000;
 const hashArchive=archive=>`$sha=[Security.Cryptography.SHA256]::Create(); try { $hash=[BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes(${quote(archive)}))).Replace('-','') } finally { $sha.Dispose() }`;
 function run(code,{timeout=30000}={}){
   const script=`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; . ${quote(lib)}; ${code}`;
@@ -121,6 +125,34 @@ winTest('verified archive installs atomically under Unicode paths and removes ex
   assert.equal(fs.readFileSync(path.join(home,top,'node.exe'),'utf8'),'fixture');
   assert.equal(fs.readdirSync(home).some(n=>n.startsWith('.stage-')),false);
 });
+winTest('verified archive extracts deep npm paths from a realistic isolated runtime root and removes staging',t=>{
+  const dir=fixture(t),archive=path.join(dir,'legacy-long.zip'),top='node-v22.23.3-win-x64';
+  const homePrefix=path.join(dir,'runtime-');
+  const home=homePrefix+'x'.repeat(Math.max(1,105-homePrefix.length));
+  const deepDirectory=`${top}/node_modules/npm/node_modules/@npmcli/metavuln-calculator/node_modules/pacote/bin/`;
+  const deepFile=`${top}/node_modules/npm/node_modules/@npmcli/metavuln-calculator/node_modules/pacote/lib/util/tar-create-options.js`;
+  const stagedDirectory=path.join(home,'.stage-'+'0'.repeat(32),deepDirectory);
+  const stagedFile=path.join(home,'.stage-'+'0'.repeat(32),deepFile);
+  assert.ok(home.length>=105,`fixture must retain the observed runtime-root depth, got ${home.length}`);
+  assert.ok(stagedDirectory.length>=248,`fixture must exercise the legacy directory limit, got ${stagedDirectory.length}`);
+  assert.ok(stagedFile.length>=260,`fixture must exercise the legacy file limit, got ${stagedFile.length}`);
+  const out=run(`Add-Type -AssemblyName System.IO.Compression; Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip=[IO.Compression.ZipFile]::Open(${quote(archive)},'Create'); try { $entry=$zip.CreateEntry('${top}/node.exe'); $writer=[IO.StreamWriter]::new($entry.Open()); $writer.Write('fixture'); $writer.Dispose(); $null=$zip.CreateEntry('${deepDirectory}'); $entry=$zip.CreateEntry('${deepFile}'); $writer=[IO.StreamWriter]::new($entry.Open()); $writer.Write('deep'); $writer.Dispose() } finally { $zip.Dispose() }; ${hashArchive(archive)}; Install-OrchNodeArchive -Archive ${quote(archive)} -ExpectedHash $hash -RuntimeHome ${quote(home)} -DirectoryName '${top}'`,{timeout:longPathFixtureTimeoutMs});
+  assert.equal(path.resolve(out),path.join(home,top));
+  assert.equal(fs.readFileSync(path.join(home,top,'node.exe'),'utf8'),'fixture');
+  assert.equal(fs.readFileSync(path.join(home,...deepFile.split('/')),'utf8'),'deep');
+  assert.equal(fs.readdirSync(home).some(n=>n.startsWith('.stage-')),false);
+});
+winTest('deep staging cleanup survives a later archive rejection',t=>{
+  const dir=fixture(t),archive=path.join(dir,'legacy-long-reject.zip'),top='node-v22.23.3-win-x64';
+  const homePrefix=path.join(dir,'runtime-');
+  const home=homePrefix+'x'.repeat(Math.max(1,105-homePrefix.length));
+  const deepDirectory=`${top}/node_modules/npm/node_modules/@npmcli/metavuln-calculator/node_modules/pacote/bin/`;
+  const stagedDirectory=path.join(home,'.stage-'+'0'.repeat(32),deepDirectory);
+  assert.ok(stagedDirectory.length>=248,`fixture must exercise the legacy directory limit, got ${stagedDirectory.length}`);
+  const out=run(`Add-Type -AssemblyName System.IO.Compression; Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip=[IO.Compression.ZipFile]::Open(${quote(archive)},'Create'); try { $null=$zip.CreateEntry('${deepDirectory}'); $null=$zip.CreateEntry('${top}/../../escaped.txt') } finally { $zip.Dispose() }; ${hashArchive(archive)}; try { Install-OrchNodeArchive -Archive ${quote(archive)} -ExpectedHash $hash -RuntimeHome ${quote(home)} -DirectoryName '${top}'; throw 'unexpected success' } catch { $_.Exception.Message }`,{timeout:longPathFixtureTimeoutMs});
+  assert.match(out,/NODE_ARCHIVE_PATH/);
+  assert.equal(fs.readdirSync(home).some(n=>n.startsWith('.stage-')),false);
+});
 winTest('archive path traversal is rejected even when its checksum matches',t=>{
   const dir=fixture(t),archive=path.join(dir,'traversal.zip'),home=path.join(dir,'runtime');
   const out=run(`Add-Type -AssemblyName System.IO.Compression; Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip=[IO.Compression.ZipFile]::Open(${quote(archive)},'Create'); try { $null=$zip.CreateEntry('node-v22.23.3-win-x64/../../escaped.txt') } finally { $zip.Dispose() }; ${hashArchive(archive)}; try { Install-OrchNodeArchive -Archive ${quote(archive)} -ExpectedHash $hash -RuntimeHome ${quote(home)} -DirectoryName 'node-v22.23.3-win-x64'; throw 'unexpected success' } catch { $_.Exception.Message }`);
@@ -168,4 +200,14 @@ winTest('owned cleanup refuses reparse descendants and paths outside its runtime
   const outsideMessage=run(`try { Remove-OrchOwnedDirectory -Path ${quote(escape)} -RuntimeHome ${quote(home)}; 'unexpected success' } catch { $_.Exception.Message }`);
   assert.match(outsideMessage,/RUNTIME_CLEANUP_PATH/);
   assert.equal(fs.readFileSync(path.join(escape,'sentinel.txt'),'utf8'),'escape');
+});
+winTest('owned cleanup detects a reparse descendant beyond the legacy directory limit',t=>{
+  const dir=fixture(t),homePrefix=path.join(dir,'runtime-');
+  const home=homePrefix+'x'.repeat(Math.max(1,105-homePrefix.length));
+  const cache=path.join(home,'.npm-cache-owned'),outside=path.join(dir,'outside'),parent=path.join(cache,'a'.repeat(80),'b'.repeat(80)),link=path.join(parent,'link');
+  assert.ok(link.length>=248,`fixture must exercise a legacy-long reparse path, got ${link.length}`);
+  const out=run(`$outside=${quote(outside)}; $parent=${quote(parent)}; $link=${quote(link)}; [IO.Directory]::CreateDirectory((ConvertTo-OrchExtendedPath -Path $parent)) | Out-Null; [IO.Directory]::CreateDirectory((ConvertTo-OrchExtendedPath -Path $outside)) | Out-Null; [IO.File]::WriteAllText((Join-Path $outside 'sentinel.txt'),'outside'); & "$env:SystemRoot\\System32\\cmd.exe" /d /c ('mklink /J "' + (ConvertTo-OrchExtendedPath -Path $link) + '" "' + $outside + '"') | Out-Null; if($LASTEXITCODE -ne 0){throw 'junction creation failed'}; try { Remove-OrchOwnedDirectory -Path ${quote(cache)} -RuntimeHome ${quote(home)}; 'unexpected success' } catch { $_.Exception.Message }`,{timeout:longPathFixtureTimeoutMs});
+  assert.match(out,/RUNTIME_REPARSE_PATH/);
+  assert.equal(fs.readFileSync(path.join(outside,'sentinel.txt'),'utf8'),'outside');
+  assert.equal(fs.existsSync(cache),true);
 });

@@ -49,10 +49,17 @@ function Assert-OrchRuntimeIdentity {
 
 function ConvertTo-OrchExtendedPath {
     param([Parameter(Mandatory)][string]$Path)
+    if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) { return $Path }
     $full = [IO.Path]::GetFullPath($Path)
-    if ($full.StartsWith('\\?\', [StringComparison]::Ordinal)) { return $full }
     if ($full.StartsWith('\\', [StringComparison]::Ordinal)) { return '\\?\UNC\' + $full.Substring(2) }
     return '\\?\' + $full
+}
+
+function Get-OrchExistingPathAttributes {
+    param([Parameter(Mandatory)][string]$Path)
+    try { return [IO.File]::GetAttributes((ConvertTo-OrchExtendedPath -Path $Path)) }
+    catch [IO.FileNotFoundException] { return $null }
+    catch [IO.DirectoryNotFoundException] { return $null }
 }
 
 function Remove-OrchOwnedDirectory {
@@ -60,24 +67,35 @@ function Remove-OrchOwnedDirectory {
     $homeFull = (Assert-OrchSafePath $RuntimeHome).TrimEnd('\') + '\'
     $full = Assert-OrchSafePath $Path
     if (-not $full.StartsWith($homeFull, [StringComparison]::OrdinalIgnoreCase)) { throw 'RUNTIME_CLEANUP_PATH: refusing cleanup outside runtime home.' }
-    if (Test-Path -LiteralPath $full) {
-        $entries = @((Get-Item -LiteralPath $full -Force -ErrorAction Stop)) + @(Get-ChildItem -LiteralPath $full -Recurse -Force -ErrorAction Stop)
-        foreach ($entry in $entries) {
-            if ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'RUNTIME_REPARSE_PATH: refusing recursive cleanup through a reparse point.' }
+    $rootAttributes = Get-OrchExistingPathAttributes -Path $full
+    if ($null -eq $rootAttributes) { return }
+    if (-not ($rootAttributes -band [IO.FileAttributes]::Directory)) { throw 'RUNTIME_CLEANUP_PATH: refusing cleanup of a non-directory runtime path.' }
+    # PowerShell 5.1's provider cannot enumerate a deep npm extraction path.
+    # Traverse the validated private tree with .NET extended paths instead,
+    # checking every entry for reparses before any attributes are changed or
+    # deletion is attempted.
+    $entries = [Collections.Generic.List[object]]::new()
+    $pending = [Collections.Generic.Stack[string]]::new()
+    $pending.Push((ConvertTo-OrchExtendedPath -Path $full))
+    while ($pending.Count -gt 0) {
+        $current = $pending.Pop()
+        $attributes = Get-OrchExistingPathAttributes -Path $current
+        if ($null -eq $attributes) { throw 'RUNTIME_CLEANUP_RACE: runtime path changed during guarded cleanup.' }
+        if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'RUNTIME_REPARSE_PATH: refusing recursive cleanup through a reparse point.' }
+        [void]$entries.Add([pscustomobject]@{ Path = $current; Attributes = $attributes })
+        if ($attributes -band [IO.FileAttributes]::Directory) {
+            foreach ($entry in [IO.Directory]::EnumerateFileSystemEntries($current)) { $pending.Push($entry) }
         }
-        # Directory.Delete accepts the Windows extended-length prefix while the
-        # Windows PowerShell 5.1 file-system provider rejects npm cache leaves
-        # past MAX_PATH. Clear only the ReadOnly bit after all reparse checks,
-        # preserving Remove-Item -Force cleanup behavior without broadening the
-        # path scope that was validated above.
-        foreach ($entry in $entries) {
-            if ($entry.Attributes -band [IO.FileAttributes]::ReadOnly) {
-                $attributes = [IO.FileAttributes](([int]$entry.Attributes) -band (-bnot [int][IO.FileAttributes]::ReadOnly))
-                [IO.File]::SetAttributes((ConvertTo-OrchExtendedPath -Path $entry.FullName), $attributes)
-            }
-        }
-        [IO.Directory]::Delete((ConvertTo-OrchExtendedPath -Path $full), $true)
     }
+    # Clear only the ReadOnly bit after all reparse checks, preserving
+    # Remove-Item -Force cleanup behavior without broadening the path scope.
+    foreach ($entry in $entries) {
+        if ($entry.Attributes -band [IO.FileAttributes]::ReadOnly) {
+            $attributes = [IO.FileAttributes](([int]$entry.Attributes) -band (-bnot [int][IO.FileAttributes]::ReadOnly))
+            [IO.File]::SetAttributes($entry.Path, $attributes)
+        }
+    }
+    [IO.Directory]::Delete((ConvertTo-OrchExtendedPath -Path $full), $true)
 }
 
 # CommandLineToArgvW/CRT encoding, never shell evaluation. Required by .NET Framework
@@ -304,7 +322,7 @@ function Install-OrchNodeArchive {
             if (Test-OrchNode (Join-Path $target 'node.exe')) { return $target }
             throw 'NODE_RUNTIME_INVALID: existing private runtime failed its probe; repair the named runtime directory before retrying.'
         }
-        [void][IO.Directory]::CreateDirectory($stage)
+        [void][IO.Directory]::CreateDirectory((ConvertTo-OrchExtendedPath -Path $stage))
         [void](Assert-OrchRuntimeIdentity -Path $stage -RuntimeHome $RuntimeHome)
         Add-Type -AssemblyName System.IO.Compression
         Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -322,10 +340,10 @@ function Install-OrchNodeArchive {
                 if (-not $destination.StartsWith($stage.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'NODE_ARCHIVE_PATH: member escapes staging directory.' }
                 [void](Assert-OrchSafePath $destination)
                 [void](Assert-OrchRuntimeIdentity -Path $stage -RuntimeHome $RuntimeHome)
-                if ($name.EndsWith('/')) { [void][IO.Directory]::CreateDirectory($destination); continue }
-                [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($destination))
+                if ($name.EndsWith('/')) { [void][IO.Directory]::CreateDirectory((ConvertTo-OrchExtendedPath -Path $destination)); continue }
+                [void][IO.Directory]::CreateDirectory((ConvertTo-OrchExtendedPath -Path ([IO.Path]::GetDirectoryName($destination))))
                 [void](Assert-OrchRuntimeIdentity -Path ([IO.Path]::GetDirectoryName($destination)) -RuntimeHome $RuntimeHome)
-                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $false)
+                [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, (ConvertTo-OrchExtendedPath -Path $destination), $false)
                 [void](Assert-OrchRuntimeIdentity -Path $destination -RuntimeHome $RuntimeHome)
             }
         } finally { $zip.Dispose() }
