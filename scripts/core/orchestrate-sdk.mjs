@@ -1425,7 +1425,9 @@ function writeInteractiveLauncher(title, prompt, sfx, metadata={}) {
     // 根治：最外层 trap 兜底——任何未捕获的 terminating error 都恒 exit 0，绝不让 launcher 以非 0 退出，
     // 否则 Windows Terminal 会留下「[已退出进程，代码为 1]」且不自动关的卡壳窗。
     "trap { exit 0 }",
-    `$PID | Set-Content -Path '${pidfQ}' -Encoding UTF8`,
+    `$pidTemp = '${pidfQ}.tmp-' + $PID + '-' + [guid]::NewGuid().ToString('N')`,
+    '$PID | Set-Content -LiteralPath $pidTemp -Encoding UTF8',
+    `Move-Item -LiteralPath $pidTemp -Destination '${pidfQ}' -Force`,
     // A visible worker is a new Codex CLI session. Desktop injects the parent
     // session identity and tool-host pipe into the initiating process; passing
     // those two bindings through makes the child attach to the parent's

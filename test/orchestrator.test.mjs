@@ -587,6 +587,8 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.match(body, /Get-LastReport/);
     assert.match(body, /\$report = \$msg/);
     assert.match(body, /__ORCH_DONE__/);
+    assert.match(body, /window-t-rt\.pid' \+ '\.tmp-/,'write the PID through a same-directory temporary file');
+    assert.match(body, /Move-Item[^\r\n]*-LiteralPath \$pidTemp[^\r\n]*-Destination/,'publish the closed temporary PID file atomically');
     assert.match(body, /\$_\.content/);
     assert.match(body, /\$_\.value/);
     const parse = spawnSync('powershell.exe', ['-NoProfile', '-Command', '$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile($env:ORCH_PARSE_FILE,[ref]$t,[ref]$e)|Out-Null;if($e.Count){$e|ForEach-Object{$_.Message};exit 1}else{Write-Output PARSE_OK}'], { env: { ...process.env, ORCH_PARSE_FILE: lp }, encoding: 'utf8' });

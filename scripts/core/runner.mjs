@@ -132,6 +132,24 @@ function readPidFromFile(file){
   }catch{return 0;}
 }
 
+/** A PID file can be briefly locked while PowerShell closes its writer. */
+async function readLauncherPidWithRetry(readPid,pidFile,{attempts=3,pauseMs=ms=>pause(ms)}={}){
+  const limit=Math.max(1,Number(attempts)||1);let lastError;
+  for(let i=0;i<limit;i++){
+    try{
+      const pid=Number(readPid(pidFile));
+      if(validLauncherPid(pid))return {pid,error:null};
+      if(pid!==0)return {pid:0,error:new Error('Launcher PID is invalid')};
+      lastError=new Error('Launcher PID is unavailable during startup');
+    }catch(error){
+      if(!['EBUSY','EPERM','EACCES'].includes(error?.code))return {pid:0,error};
+      lastError=error;
+    }
+    if(i+1<limit)await pauseMs(100*(i+1));
+  }
+  return {pid:0,error:lastError};
+}
+
 function validLauncherPid(value){
   const pid=Number(value);
   return Number.isSafeInteger(pid)&&pid>=1&&pid<=4194304;
@@ -183,7 +201,7 @@ export async function waitForOwnedLauncherExit(files,attempt,{readPid=readPidFro
   const interval=Math.max(10,Math.min(1000,Number(intervalMs)||100));
   while(true){
     let pid=0;
-    try{pid=Number(readPid?.(files?.pidf));}catch{pid=0;}
+    try{pid=Number(await readPid?.(files?.pidf));}catch{pid=0;}
     if(!validLauncherPid(pid)){
       if(Date.now()>=deadline)return null;
       await pause(Math.min(interval,Math.max(1,deadline-Date.now())));
@@ -775,7 +793,13 @@ export async function runWindows(request,hooks,options={}) {
         let e=sum.results[r.key],la=e.launcherFiles,identity;
         if(la)validateSavedLauncherFiles(sum,b,e,e.attempts?.at(-1),{requireLiveFiles:['launching','running','awaiting-verification'].includes(e.status)});
         // 没有 pid 文件就没有可认领的启动器；这里不查进程表，省掉一次昂贵的 CIM 枚举。
-        if(la&&fs.existsSync(la.pidf))identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
+        if(la&&fs.existsSync(la.pidf)){
+          const pidRead=await readLauncherPidWithRetry(hooks.readPid,la.pidf);
+          if(pidRead.error){
+            e.status='needs-reconciliation';e.reason='Launcher PID is unavailable; recovery files and lease retained: '+(pidRead.error.message||String(pidRead.error));e.endedAt=Date.now();persist(`block.${r.key}.needs-reconciliation`);return;
+          }
+          identity=await identifyWithRetry(identify,pidRead.pid,la.pidf);
+        }
         const adopted=identity&&(!e.launcher||sameProcess(e.launcher,identity));
         let active,persistAttempt=()=>{};
         if(adopted) {
@@ -833,9 +857,8 @@ export async function runWindows(request,hooks,options={}) {
             // live window, then produced incomplete receipts.
             const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
              const spawnResult=await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token);
-             let observedPid=0;
-             try{observedPid=Number(hooks.readPid(la.pidf));}catch{}
-             const observed=validLauncherPid(observedPid)||fs.existsSync(la.rf)||fs.existsSync(la.rf+'.self-closed');
+             const observedPid=await readLauncherPidWithRetry(hooks.readPid,la.pidf);
+             const observed=validLauncherPid(observedPid.pid)||fs.existsSync(la.rf)||fs.existsSync(la.rf+'.self-closed');
              const spawnState=classifySpawnResult(spawnResult,observed);
              const spawned=spawnState.spawned;
              if(!spawned){
@@ -847,10 +870,12 @@ export async function runWindows(request,hooks,options={}) {
              }
              spawnConfirmed=true;
              active.popupConfirmedAt=Date.now();
-             active.launcherPid=Number(hooks.readPid(la.pidf))||null;
+             const identityPid=await readLauncherPidWithRetry(hooks.readPid,la.pidf);
+             if(identityPid.error)throw identityPid.error;
+             active.launcherPid=identityPid.pid||null;
              persist(`block.${r.key}.popup-confirmed`);
              persistAttempt();
-             identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);
+             identity=await identifyWithRetry(identify,identityPid.pid,la.pidf);
              persistAttempt();
              if(!identity)throw new Error('Launcher process identity mismatch');
              active.launcherObserved={ProcessId:identity.ProcessId,Name:identity.Name,Started:identity.Started,CommandLine:identity.CommandLine,at:Date.now()};
@@ -939,8 +964,11 @@ export async function runWindows(request,hooks,options={}) {
             // A transient/foreign identity result is not an exit proof. Keep
             // the attempt recoverable and only continue when its own result
             // record proves an exited launcher.
-            try{identity=await identifyWithRetry(identify,hooks.readPid(la.pidf),la.pidf);}
-            catch(error){e.identityError=error&&error.message?error.message:String(error);}
+            try{
+              const pidRead=await readLauncherPidWithRetry(hooks.readPid,la.pidf);
+              if(pidRead.error)throw pidRead.error;
+              identity=await identifyWithRetry(identify,pidRead.pid,la.pidf);
+            }catch(error){e.identityError=error&&error.message?error.message:String(error);}
           }
           if(identity)await hooks.close(identity.ProcessId,identity);
           if(identity&&!(await waitExit(identity))){
@@ -952,7 +980,7 @@ export async function runWindows(request,hooks,options={}) {
           let exitProven=Boolean(identity||spawnNoProcess);
           if(!identity&&spawnConfirmed){
             const evidence=await waitForOwnedLauncherExit(la,active,{
-              readPid:hooks.readPid||readPidFromFile,
+              readPid:async pidFile=>(await readLauncherPidWithRetry(hooks.readPid||readPidFromFile,pidFile)).pid,
               probePid:hooks.probePid||defaultPidPresence,
               timeoutMs:Math.min(10000,Math.max(1000,deadline-Date.now())),
             });

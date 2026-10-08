@@ -97,6 +97,51 @@ test('run owner release requires the claiming process identity, not only a reada
   releaseRun(d,'run',claim);claim=null;
  }finally{if(claim)releaseRun(d,'run',claim);await pause(500);fs.rmSync(d,{recursive:true,force:true});}
 });
+function pidReadRecoveryFixture(root,readPid,identity){
+ const artifacts={};let spawned=0,completed=0,attemptFile='';
+ const acceptance=path.join(root,'acceptance.json');
+ fs.writeFileSync(acceptance,JSON.stringify({T001:[{type:'json',path:'completed.json',equals:{count:1}}]}));
+ return {
+  acceptance,coordinator:path.join(controllerRoot,'pid-'+path.basename(root)),artifacts,get spawned(){return spawned},get completed(){return completed},
+  hooks:{
+   plan:async()=>[{title:'PID recovery',type:'single',tasks:[{prompt:'complete once'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
+   launcher:(key,prompt,suffix)=>{
+    attemptFile=/开始前：& '[^']+' '[^']+' '([^']+)'/.exec(prompt)[1];
+    const launchDir=controllerWindowsDir(root);fs.mkdirSync(launchDir,{recursive:true});
+    const stem=key+'-'+suffix;Object.assign(artifacts,{pidf:path.join(launchDir,'window-'+stem+'.pid'),lp:path.join(launchDir,'win-launch-'+stem+'.ps1'),pf:path.join(launchDir,'agent-win-'+stem+'.md'),rf:path.join(launchDir,'win-'+stem+'.result.json')});
+    fs.writeFileSync(artifacts.lp,'# launcher');fs.writeFileSync(artifacts.pf,prompt);return artifacts;
+   },
+   spawn:async()=>{spawned++;fs.writeFileSync(artifacts.pidf,'4321');return true;},readPid,
+   identity,session:async()=> 'controlled',
+   wait:async()=>{completed++;recordCheckpoint(attemptFile,'T001','started');recordCheckpoint(attemptFile,'T001','completed');fs.writeFileSync(path.join(root,'completed.json'),JSON.stringify({count:completed}));return {done:true,exitCode:0};},
+   exitCode:()=>0,register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},close:async()=>{},waitForExit:async()=>true,
+  },
+ };
+}
+test('PID reader retries transient EBUSY before authenticating one launcher and executing once',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'pid-read-transient-'));let reads=0;
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>{reads++;if(reads<=2){const error=new Error('sharing lock');error.code='EBUSY';throw error;}return 4321;},pid=>pid===4321?{ProcessId:4321,Name:'powershell.exe',Started:'s',CommandLine:'win-launch-B1.ps1'}:null);
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'transient-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test'});
+  assert.equal(sum.success,true,JSON.stringify(sum.results));assert.equal(fixture.spawned,1);assert.equal(fixture.completed,1);assert.ok(reads>=3);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('permanent PID EBUSY retains recovery artifacts and never opens a replacement',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'pid-read-permanent-'));let reads=0;
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>{reads++;const error=new Error('sharing lock');error.code='EBUSY';throw error;},()=>{throw new Error('identity must not run without a PID');});
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'permanent-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test'});
+  assert.equal(sum.success,false);assert.equal(sum.results.B1.status,'needs-reconciliation');assert.equal(fixture.spawned,1);assert.equal(fixture.completed,0);assert.ok(reads>=3);for(const file of [fixture.artifacts.pidf,fixture.artifacts.lp,fixture.artifacts.pf])assert.ok(fs.existsSync(file),'retain '+file);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('an unauthenticated launcher PID remains needs-reconciliation without a replacement',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'pid-read-mismatch-'));
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>4321,()=>null);
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'mismatch-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test'});
+  assert.equal(sum.success,false);assert.equal(sum.results.B1.status,'needs-reconciliation');assert.match(sum.results.B1.reason,/identity unavailable|exit is unproven/i);assert.equal(fixture.spawned,1);assert.equal(fixture.completed,0);for(const file of [fixture.artifacts.pidf,fixture.artifacts.lp,fixture.artifacts.pf])assert.ok(fs.existsSync(file),'retain '+file);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
 for(const fault of ['safe-retry','response-reset','response-timeout','started-only'])test('actual recovery without duplicate side effects: '+fault,async()=>{
  const d=fs.mkdtempSync(path.join(family,'recover-process-')),attempts=[],children=[];
  let requests=0,server,endpoint='';

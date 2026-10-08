@@ -33,6 +33,8 @@ test('pi PowerShell launcher preserves native argv and initiating directory',()=
   const launcher=fs.readFileSync(la.lp,'utf8');
   assert.match(launcher,/SystemRoot[^\r\n]*System32\\chcp\.com[^\r\n]*65001/);
   assert.doesNotMatch(launcher,/(?<![$\\.\w])chcp\s+65001/);
+  assert.match(launcher,/window-B1-test\.pid' \+ '\.tmp-/,'write the PID through a same-directory temporary file');
+  assert.match(launcher,/Move-Item[^\r\n]*-LiteralPath \$pidTemp[^\r\n]*-Destination/,'publish the closed temporary PID file atomically');
   const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',la.lp],{windowsHide:true,encoding:'utf8',timeout:15000});
   assert.equal(result.status,0,result.stderr);const r=JSON.parse(fs.readFileSync(la.rf));assert.equal(r.cwd,dir);assert.ok(r.args.includes('--approve'));assert.equal(r.args.at(-1),'@'+la.pf);assert.ok(r.args.includes(la.piSession));
  }finally{fs.rmSync(dir,{recursive:true,force:true});}

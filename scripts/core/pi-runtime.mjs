@@ -44,7 +44,7 @@ export function writePiLauncher(config,{key,prompt,suffix,workspace,temp}) {
   const piSession=path.join(temp,'orchestrator','pi','sessions',stem+'.jsonl');fs.mkdirSync(path.dirname(piSession),{recursive:true});
   fs.writeFileSync(pf,prompt,'utf8');
   const args=[...piArgs(config,{model:process.env.ORCH_MODEL,effort:process.env.ORCH_EFFORT}),'--session',piSession,'--extension',fileURLToPath(new URL('./pi-shutdown.mjs',import.meta.url)),'--','@'+pf];
-  const body=["$ErrorActionPreference = 'Stop'",`$PID | Set-Content -LiteralPath ${quote(pidf)} -Encoding UTF8`,
+  const body=["$ErrorActionPreference = 'Stop'",`$pidTemp = ${quote(pidf)} + '.tmp-' + $PID + '-' + [guid]::NewGuid().ToString('N')`,'$PID | Set-Content -LiteralPath $pidTemp -Encoding UTF8',`Move-Item -LiteralPath $pidTemp -Destination ${quote(pidf)} -Force`,
     '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8','$OutputEncoding = [System.Text.Encoding]::UTF8',
     "if(-not $env:PATHEXT){$env:PATHEXT='.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL'}",
     "try { & (Join-Path $env:SystemRoot 'System32\\chcp.com') 65001 | Out-Null } catch { }",
