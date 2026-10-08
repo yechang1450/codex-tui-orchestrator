@@ -958,6 +958,69 @@ export function trustConfigPath(env = process.env) {
 function normalizeWorkspaceKey(value) {
   return String(value || "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
 }
+function decodeTomlBasicString(raw) {
+  let decoded = "";
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char !== "\\") {
+      const code = char.charCodeAt(0);
+      if (code <= 0x1f || code === 0x7f) return null;
+      decoded += char;
+      continue;
+    }
+    const escaped = raw[index + 1];
+    if (escaped === undefined) return null;
+    switch (escaped) {
+      case "b": decoded += "\b"; index += 1; continue;
+      case "t": decoded += "\t"; index += 1; continue;
+      case "n": decoded += "\n"; index += 1; continue;
+      case "f": decoded += "\f"; index += 1; continue;
+      case "r": decoded += "\r"; index += 1; continue;
+      case '"': decoded += '"'; index += 1; continue;
+      case "\\": decoded += "\\"; index += 1; continue;
+      default: break;
+    }
+    const length = escaped === "u" ? 4 : escaped === "U" ? 8 : 0;
+    const hex = raw.slice(index + 2, index + 2 + length);
+    if (!length || !new RegExp("^[0-9A-Fa-f]{" + length + "}$").test(hex)) return null;
+    const codePoint = Number.parseInt(hex, 16);
+    if (codePoint > 0x10ffff || (codePoint >= 0xd800 && codePoint <= 0xdfff)) return null;
+    decoded += String.fromCodePoint(codePoint);
+    index += length + 1;
+  }
+  return decoded;
+}
+function parseTomlBasicString(source) {
+  if (!source.startsWith('"')) return null;
+  let raw = "";
+  for (let index = 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '"') {
+      if (!/^\s*$/.test(source.slice(index + 1))) return null;
+      return decodeTomlBasicString(raw);
+    }
+    raw += char;
+    if (char === "\\") {
+      index += 1;
+      if (index >= source.length) return null;
+      raw += source[index];
+    }
+  }
+  return null;
+}
+function parseProjectSectionKey(line) {
+  const header = /^\s*\[\s*projects\s*\.\s*(.*)\]\s*$/.exec(line);
+  if (!header) return null;
+  const source = header[1].trim();
+  if (source.startsWith('"')) return parseTomlBasicString(source);
+  if (source.startsWith("'")) {
+    const close = source.indexOf("'", 1);
+    if (close === -1 || !/^\s*$/.test(source.slice(close + 1))) return null;
+    return source.slice(1, close);
+  }
+  const bare = /^([A-Za-z0-9_-]+)$/.exec(source);
+  return bare ? bare[1] : null;
+}
 export function workspaceTrustState(workspace, { configPath = trustConfigPath() } = {}) {
   let text;
   try {
@@ -968,12 +1031,11 @@ export function workspaceTrustState(workspace, { configPath = trustConfigPath() 
   const lines = text.split(/\r?\n/);
   const wanted = normalizeWorkspaceKey(workspace);
   let inSection = false;
-  let seenSection = false;
   for (const line of lines) {
-    const header = /^\s*\[\s*projects\s*\.\s*(?:'([^']*)'|"([^"]*)"|([^\]]+))\s*\]\s*$/.exec(line);
-    if (header) {
-      inSection = normalizeWorkspaceKey(header[1] ?? header[2] ?? header[3]) === wanted;
-      if (inSection) seenSection = true;
+    if (/^\s*\[/.test(line)) {
+      inSection = false;
+      const projectKey = parseProjectSectionKey(line);
+      if (projectKey !== null) inSection = normalizeWorkspaceKey(projectKey) === wanted;
       continue;
     }
     if (!inSection) continue;

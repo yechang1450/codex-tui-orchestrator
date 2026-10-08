@@ -37,6 +37,50 @@ test('workspace trust preflight reads the same project entries the CLI writes', 
   }
 });
 
+test('workspace trust preflight decodes TOML basic-string project keys', () => {
+  const f = configFixture([
+    '[projects."C:\\\\Users\\\\Me\\\\Proj One"]',
+    'trust_level = "trusted"',
+    '',
+    '[projects."C:\\\\Users\\\\Me\\\\Project \\\"Quoted\\\""]',
+    'trust_level = "trusted"',
+    '',
+  ].join('\n'));
+  try {
+    assert.equal(workspaceTrustState('C:\\Users\\Me\\Proj One', {configPath: f.file}), 'trusted');
+    assert.equal(workspaceTrustState('C:\\Users\\Me\\Project "Quoted"', {configPath: f.file}), 'trusted');
+  } finally {
+    fs.rmSync(f.dir, {recursive: true, force: true});
+  }
+});
+
+test('workspace trust preflight does not read trust from an adjacent section', () => {
+  const f = configFixture([
+    '[projects."adjacent-target"]',
+    '[profiles.local]',
+    'trust_level = "trusted"',
+    '',
+  ].join('\n'));
+  try {
+    assert.equal(workspaceTrustState('adjacent-target', {configPath: f.file}), 'untrusted');
+  } finally {
+    fs.rmSync(f.dir, {recursive: true, force: true});
+  }
+});
+
+test('workspace trust preflight rejects invalid TOML basic-string escapes', () => {
+  const f = configFixture([
+    String.raw`[projects."C:\Users\Me\Invalid"]`,
+    'trust_level = "trusted"',
+    '',
+  ].join('\n'));
+  try {
+    assert.equal(workspaceTrustState('C:\\Users\\Me\\Invalid', {configPath: f.file}), 'untrusted');
+  } finally {
+    fs.rmSync(f.dir, {recursive: true, force: true});
+  }
+});
+
 test('trust config path follows CODEX_HOME', () => {
   const previous = process.env.CODEX_HOME;
   try {
