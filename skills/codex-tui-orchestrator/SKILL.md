@@ -18,13 +18,16 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 
 ## 入口与恢复
 
-```text
-node <插件绝对路径>/scripts/orchestrate-sdk.mjs --plan "<请求>"
-node <插件绝对路径>/scripts/orchestrate-sdk.mjs --run-id <ID> --acceptance-file <JSON> --exec "<请求>"
-node <插件绝对路径>/scripts/orchestrate-sdk.mjs --verify-run <ID> --acceptance-file <JSON>
-node <插件绝对路径>/scripts/status.mjs --workspace <工作区> --run-id <ID> --watch
+```powershell
+# 从拥有任务的工作区运行；@(...) 保留每个参数的边界。
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--plan', '<请求>')
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--run-id', '<ID>', '--acceptance-file', '<JSON>', '--exec', '<请求>')
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--verify-run', '<ID>', '--acceptance-file', '<JSON>')
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--status', '--workspace', '<工作区>', '--run-id', '<ID>', '--watch')
 ```
 
 `--resume-run` 复用原计划、模式和验收摘要；传输、超时、容量、服务端错误只做有上限退避，账户用量上限立即失败并保留证据。`--doctor`、`--plan`、`--status --readonly` 分别用于环境、规划和只读诊断；`--plan` 不改任务文件，但可能写拆分缓存。
+
+开发或发布前，在源码根目录且已有 Node 22+ 时运行 `node scripts/release-integrity.mjs`；无参数即执行封存校验，`--seal` 只用于准备新的发行封存，不能用旧证据代替新校验。
 
 执行时读取[执行协议](../../docs/execution-contract.md)；发布历史和审查证据按需读取，不在技能发现阶段递归加载。

@@ -8,89 +8,41 @@
 >
 > 我是一个在大学期间有过两年开发经验的个人开发者，我从来都没有在大厂上过班，也很少上班，现在我做这些，就是觉得这是我的人生钥匙，所以我边指挥Agent开发边在抖音上看各种视频去学习或了解信息，每天能沉浸在这项活动中十几个小时不觉得累，并且AI Agent开发已经完全成了我日常中最让我觉得有意思的事了，这让我每天过的充实又开心，希望未来可以产出更多，找到属于自己的路。
 
-以上是作者个人声明。其中列出的 Agent 是作者的实测经验，不构成本插件对其他 CLI 的兼容承诺。
+列出的 Agent 是作者的个人实测经验，不构成对其他 CLI 的兼容承诺。
 
 # codex-tui-orchestrator
 
-> 版本：`0.9.29-rc.1`；执行核心：`1.4.4-rc.1`。这是一个面向 Codex CLI 的 Codex plugin，运行环境为 Windows + Node.js 22+。
+这是一个面向 Windows 的 Codex plugin：当长任务清单中的任务已确认互不依赖、无冲突且资源允许时，它会并发执行这些任务。
 
-让一次长任务清单按依赖、冲突和资源约束安全并发执行，并逐项验收真实结果。
+## 工作方式
 
-## 核心思路
+编排器保留每项任务的原始身份，把有依赖、有冲突或作用域不明的工作归入串行执行块，只并发确认独立的执行块。它会记录执行状态，并用独立验收条件逐项核对结果；子窗口自报或窗口关闭本身不能证明任务成功。
 
-编排器不把任务简单切成窗口，而是先保留原始任务身份：
-
-1. **识别任务关系**：保留原始任务 ID 和原文，分析依赖、文件冲突、父子路径和未知作用域。
-2. **形成执行块**：有依赖、有冲突或作用域不明的任务放入同一串行块；只有确认相互独立的块才并发。
-3. **按资源启动**：每次开窗前重新检查实时内存，预留 `1000 MB` 安全余量；在可运行块中优先启动预计峰值更高的块，放不下的块排队。
-4. **逐项验收**：每个任务必须经过 `started → completed → verified`。主控按独立验收条件读回工作区产物；关窗、结束标记或子窗口自报都不能单独证明成功。
-
-`1000 MB` 是调度底线，不是机器永不耗尽内存的数学保证。实际并发还受实时内存、已有租约和任务依赖影响。
-
-## 执行模式
-
-| 模式 | 用途 |
-| --- | --- |
-| `--plan "<请求>"` | 只规划，供主控检查拆分结果 |
-| `--exec "<请求>"` | 默认无弹窗执行，使用持久账本 |
-| `--run-windows "<请求>"` | 显式打开可见 Windows TUI |
-| `--status --run-id <ID> --watch` | 观察 TodoList、执行块和等待原因 |
-| `--resume-run <ID>` | 沿用原计划和任务身份恢复 |
-| `--verify-run <ID> --acceptance-file <JSON>` | 不重跑任务，重新核对已有产物 |
-
-子窗口继承发起对话的工作区、执行策略和模型设置；可见窗口也以发起工作区作为启动目录。受限会话不能借此切换到别的工作区。
-
-Codex 原生 TodoList/spawn 卡片属于宿主界面；插件提供状态事件供宿主消费。
+使用 `--plan` 检查拆分建议。`--exec` 以无窗口方式执行，`--run-windows` 打开可见 Windows 会话，`--status` 观察运行状态，`--resume-run` 与 `--verify-run` 用于已保存的运行记录。
 
 ## 快速开始
 
-从 GitHub 获取源码并安装、注册当前 checkout：
+克隆并安装当前 checkout：
 
 ```powershell
-git clone https://github.com/yechang1450/codex-tui-orchestrator.git "$HOME\plugins\codex-tui-orchestrator"
-Set-Location "$HOME\plugins\codex-tui-orchestrator"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\scripts\bootstrap.ps1" -Action install
+$pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
+git clone https://github.com/yechang1450/codex-tui-orchestrator.git $pluginRoot
+Set-Location $pluginRoot
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action install
 ```
 
-`-ExecutionPolicy Bypass` 只作用于这次 bootstrap 子进程，不会修改机器或当前用户的执行策略；由组织设置的 `MachinePolicy` 或 `UserPolicy` 仍可优先于它。
-
-checkout 内含 `.agents/plugins/marketplace.json`。Bootstrap 会把当前 checkout 注册为本地 `codex-tui-orchestrator-local` marketplace，通过宿主 CLI 安装 `codex-tui-orchestrator`，再校验安装副本；它不会复用旧插件缓存。
-
-安装不会提供账号凭据；实际运行还需要宿主启用并信任 SessionStart hook，并完成 Codex CLI 登录。
-
-先查看计划，再执行：
+在拥有任务的工作区中，通过 bootstrap 入口检查计划：
 
 ```powershell
-node scripts/orchestrate-sdk.mjs --plan "项目 1：清理 build\80；项目 2：清理 build\81；项目 3：清理 build\82"
-node scripts/orchestrate-sdk.mjs --run-id demo-cleanup --acceptance-file .\temp\acceptance.json --exec "按计划完成这些任务，并逐项写入可核对的结果"
+$pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run -Arguments @('--plan', '任务 1：更新文档；任务 2：检查测试')
 ```
 
-需要观察窗口时，把 `--exec` 换成 `--run-windows`。`acceptance.json` 必须位于发起工作区内，由发起方定义每个任务的文件、JSON 或删除检查；没有独立验收条件的任务不会被宣称为成功。完整环境准备说明见 [环境准备](docs/environment-setup.md)。
-
-## 安全边界
-
-- 入口、插件封印、CLI 身份和工作区关系校验失败时停止，不静默替换。
-- 未知路径或未知副作用按保守规则串行；结果不明时进入 `needs-reconciliation`，不盲目重跑。
-- 控制器保存原始清单、尝试令牌、检查点和验收报告；每个任务只由当前运行的证据完成。
-- 子窗口不得递归启动编排器、子代理或额外编排窗口。
-- 运行账本、检查点和验收报告留在发起工作区的 `temp/orchestrator`；窗口注册、协调租约和不可变绑定等控制器状态留在独立的 Codex 状态目录。两者共同用于恢复和对账。
-
-## 验证与开发
-
-```powershell
-npm ci --prefix scripts --omit=optional --ignore-scripts --no-audit --no-fund
-node --test --test-concurrency=1 test/*.test.mjs
-node scripts/release-integrity.mjs --verify
-```
-
-- [执行与验收协议](docs/execution-contract.md)：完整状态、恢复和验收契约。
-- [RC 验收记录](docs/rc-validation.md)：按提交和版本保存的实测证据。
-- [贡献指南](CONTRIBUTING.md)：本地开发约定。
-- 本项目是独立个人项目，不代表或得到 OpenAI 背书。插件打包和本地 marketplace 结构参考 [OpenAI 插件文档](https://developers.openai.com/plugins/build/plugins)。
+`-ExecutionPolicy Bypass` 只作用于这个 PowerShell 子进程。安装和执行仍需要已登录的 Codex CLI，以及已受信任的 SessionStart hook。
 
 ## 相关项目
 
-`open-tui-orchestrator` 是另一个 npm 工具；它沿用相同的底层编排思路，面向更通用的 Agent CLI。它不包含在本 Codex plugin 中。
+[open-tui-orchestrator](https://github.com/yechang1450/open-tui-orchestrator) 是同一通用编排思路的独立 npm 实现。
 
 ## 隐私与法律
 

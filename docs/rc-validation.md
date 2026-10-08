@@ -1,13 +1,15 @@
-# 0.9.29-rc.1 验收记录
+# 0.9.29-rc.1 历史验收记录
 
-## 2026-10-06 当前提交实机验收与公开门槛状态（core 1.4.4-rc.1）
+> **档案状态（2026-10-09）**：本文件保存按日期、提交和封存哈希绑定的历史观察。它不认证此后任何工作树、已安装缓存、官方扫描状态或发布资格。下文出现的“当前”“最新”“本轮”和 `current` 均只表示相应记录当时的状态；任何现行结论都必须针对最终提交重新执行并另行记录。
 
-- 当前提交为 `5add98f3ac9d9bb97778159badf4575ff80496f3`，已同步到 GitHub 的 `master` 与 `codex/public-readiness`；工作树干净，`release-integrity.mjs` 通过（schema 2、core `1.4.4-rc.1`、31 个核心文件、117 个运行时文件）。
-- 当前安静宿主上的串行全量回归为 **556 项：553 通过、0 失败、3 跳过**。跳过项是环境能力未启用的可选测试；没有把跳过项计为通过。
+## 历史记录：2026-10-06 实机验收与公开门槛状态（core 1.4.4-rc.1）
+
+- 当时接受验收的提交为 `5add98f3ac9d9bb97778159badf4575ff80496f3`，当时已同步到 GitHub 的 `master` 与 `codex/public-readiness`；工作树干净，`release-integrity.mjs` 通过（schema 2、core `1.4.4-rc.1`、31 个核心文件、117 个运行时文件）。
+- 当时安静宿主上的串行全量回归为 **556 项：553 通过、0 失败、3 跳过**。跳过项是环境能力未启用的可选测试；没有把跳过项计为通过。
 - 真实可见 Windows Terminal 实跑 `cleanup-visible-d3e0ccc4-9ca4-4ed1-9640-282e30768777` 覆盖 `80`、`81`、`82`、`83`、`game`、`ai-drama` 六个独立清理任务，峰值并发为 6；六份收据均经主控验收，`cwd` 与 `workspace` 都是发起工作区（文档不记录本机绝对路径），清理后候选为空且受保护文件稳定。`81` 首次缺收据时保持未验证并自动重试，第二次才进入 `verified`。
-- 可见启动器现在解析受信任的 Windows Terminal 安装包 executable，并显式传递 `-d <发起工作区>`；确定性项目拆分在原始计划阶段保留 Windows 绝对文件冲突，原始/回退计划也会重新推断准入键。HTTP 429 过载可重试，类型化账户配额仍终止。
-- 官方 Codex Security Deep Scan 在本次会话未能启动：宿主返回 `Deep Scan cannot safely start a read-only worker: the parent must provide a managed filesystem permission profile.` 因此当前提交没有新的官方 Deep Scan 结论，也没有把旧扫描结果冒充当前扫描结果。
-- 公开门槛仍未关闭：远端仍可读到 `refs/pull/1/head` 至 `refs/pull/4/head`，历史中也有带本机路径的旧提交消息；这些历史/缓存清理需要按 GitHub 官方流程处理。仓库当前已推送，但不应据此宣称已经公开可发布。
+- 当时的可见启动器解析受信任的 Windows Terminal 安装包 executable，并显式传递 `-d <发起工作区>`；确定性项目拆分在原始计划阶段保留 Windows 绝对文件冲突，原始/回退计划也会重新推断准入键。HTTP 429 过载可重试，类型化账户配额仍终止。
+- 该会话未能启动官方 Codex Security Deep Scan：宿主返回 `Deep Scan cannot safely start a read-only worker: the parent must provide a managed filesystem permission profile.` 因而这条记录没有新的官方 Deep Scan 结论，也没有把旧扫描结果冒充为该提交的扫描结果。
+- 当时公开门槛尚未关闭：远端仍可读到 `refs/pull/1/head` 至 `refs/pull/4/head`，历史中也有带本机路径的旧提交消息；这些历史/缓存清理需要按 GitHub 官方流程处理。当时已推送的事实不构成现行的公开发布声明。
 
 ## Historical 2026-10-04 公开仓库准备、最终离线回归与官方 Deep Scan（旧快照）
 
@@ -19,9 +21,9 @@
 - 公开性审查未发现当前树中的真实 API key、私钥或凭据；当前树文件也不含个人绝对路径。但 GitHub 仍保留只读 PR refs 和缓存：`refs/pull/1/head` 对应的历史 PR #1 diff 含个人绝对路径，`refs/pull/2/head`、`refs/pull/3/head`、`refs/pull/4/head` 也仍存在。普通分支推送或 force-push 不能清除这些 refs 和缓存，公开前必须按 GitHub 官方流程提交 Support 请求并读回清理结果。
 - 历史提交 `13c2879dac279b93de522efa7ce78baa6ed99bf8` 的 commit message 仍含机器本地路径（当前文档只用 `<USER_HOME>` 占位，不复述该路径）。这属于公开前的历史清理门槛：若要移除它，必须重写历史、重新生成全部提交哈希并对新 tip 重新运行完整扫描；在 Support/历史处理完成前不得宣称仓库已可公开。
 - 本轮本地静态审查修复了未验证 Pi CLI、Windows shell 参数展开、插件安装路径越界、8.3/UNC 路径租约分叉、检查点命令注入候选、headless 身份快照失败导致的无界等待、旧 registry 损坏静默放行和 supervisor 中继模型漂移；新增 PowerShell 特殊路径、文件派生绑定和有限收尾回归通过。窗口注册表、registry lock 和启用标记已迁移到 controller-owned state，并统一物理工作区身份；升级时发现旧的损坏或非空 workspace registry 会 fail-closed。
-- **历史扫描说明**：下面的 candidate v7 / c843 Deep Scan 只属于当时的旧提交快照，不能证明当前提交已经完成官方扫描；当前扫描状态见本文件顶部的 2026-10-06 条目。
+- **历史扫描说明**：下面的 candidate v7 / c843 Deep Scan 只属于当时的旧提交快照，不能证明任何后续或最终提交已经完成官方扫描；本文件顶部的 2026-10-06 条目也只是历史记录。
 - 本次扫描的可移植本地证据路径为 `<CODEX_HOME>\state\plugins\codex-security\scans\fresh-candidate-v7\c8432650aeeb42bc4bb159789f7af9c3c3655dba_20261003T020016Z_6ifq6qim\report.md`；同目录的 `scan-manifest.json`、`coverage.json` 和 `findings.json` 是对应的封存产物。仓库文档不写入实际用户目录，以免把宿主个人路径带入公开内容。
-- 旧的公开前运行账本已从仓库移除；其中记录的连续输入、容量级回执、长时间 provider 故障、真实重启恢复和登录后自动收集等门槛仍须按当前提交重新取得证据。
+- 旧的公开前运行账本已从仓库移除；其中记录的连续输入、容量级回执、长时间 provider 故障、真实重启恢复和登录后自动收集等门槛仍须针对最终提交重新取得证据。
 - 远端 Windows CI 的失败曾由 workflow 未提供可验证的 Codex CLI 引起，导致 `CLI_AUTO_INSTALL_FAILED (npm_untrusted)` 连锁失败；当前 c843 的 CI 已有上方运行记录，但公开前仍须保留失败历史与修复后的绿色 run 之间的对应关系，不能把旧 run 当作当前证据。
 - 本轮还修正了此前封存的 0.160.0 平台树摘要：实际 npm tarball 的 x64/arm64 canonical manifest 分别为 `000baafd…d159d7d` 与 `447196ac…85620c`；旧摘要会使真实生产安装器错误地报告 `integrity_mismatch`，现已重新封印并做了隔离安装回归。
 

@@ -21,9 +21,13 @@ Runtime upgrades must retain the task ledger, calculated memory capacity, indepe
 
 The legacy mixed-case invocation remains documented for existing local references, while the canonical manifest and skill identifiers use lowercase hyphen-case. On Windows the existing marketplace source path remains compatible; any non-Windows migration must update that path explicitly.
 
-## Current candidate: core 1.4.4-rc.1
+## Candidate configuration
 
-Plugin 0.9.29-rc.1 introduces the current release candidate on the 1.4.4-rc.1 execution core. The planner and both execution modes inherit the initiating Codex provider and credentials by default, including third-party providers configured in CODEX_HOME; only `ORCH_PROVIDER=openai-https` or an explicit relay base URL selects the hardened OpenAI HTTPS provider, and any other `ORCH_PROVIDER` value fails closed. The current candidate remains Private until the installed selftest-close, capacity run and environment gates are recorded as passed. See [RC validation](rc-validation.md) for fresh source/package and live results. Publication still requires the complete source and fresh package gates. The official manager Git lifecycle (add, install, upgrade, rollback, remove and uninstall) is recorded in [manager lifecycle evidence](../test/manager-lifecycle-validation.json) using an isolated local Git transport; it validates manager/cache behavior, not external GitHub reachability. Native Codex UI cards are a host integration interface, not injected by the skill.
+Candidate labels describe the package and execution-core pairing only. They do not certify validation, installed-cache, publication, or compatibility status for a later commit. Establish those facts with fresh evidence bound to the final commit and release seal.
+
+The planner and both execution modes inherit the initiating Codex provider and credentials by default, including third-party providers configured in `CODEX_HOME`. `ORCH_PROVIDER` accepts `inherit` and its compatibility alias `native` to preserve that inheritance; `openai-https` and its compatibility alias `relay` select the hardened OpenAI HTTPS provider. When `ORCH_PROVIDER` is unset, `ORCH_OPENAI_BASE_URL` or the legacy `ORCH_STEADY_RELAY_BASE_URL` selects the hardened provider; otherwise the initiating provider is inherited. An explicit `inherit` or `native` overrides a relay URL. Other values fail closed.
+
+The [RC validation archive](rc-validation.md) and [manager lifecycle evidence](../test/manager-lifecycle-validation.json) are dated records. The latter uses an isolated local Git transport and validates manager/cache behavior, not external GitHub reachability. Native Codex UI cards are a host integration interface, not injected by the skill.
 
 ## Install tooling (2026-09-21, core 1.4.0-rc.1 unchanged)
 
