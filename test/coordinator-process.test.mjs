@@ -5,12 +5,26 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import * as leases from '../scripts/core/leases.mjs';
 import {claimRun,coordinatorDir,processSnapshot,reserve,transaction} from '../scripts/core/leases.mjs';
 import {controllerStateDir} from '../scripts/core/controller-state.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 const missingProcessIdentity={ProcessId:987654321,Started:'2020-01-01T00:00:00.000Z',Name:'powershell.exe',CommandLine:'powershell.exe -File stale.ps1'};
+function assertCoordinatorSnapshotCache(dir){
+ const cache=path.join(dir,'process-snapshot-cache.json');
+ let firstFresh,secondFresh;
+ transaction(dir,(_leases,_owner,_processes,observation)=>{firstFresh=observation?.fresh;});
+ assert.equal(firstFresh,true,'first cache observation must publish a complete snapshot');
+ const first=fs.readFileSync(cache,'utf8');
+ const parsed=JSON.parse(first);
+ assert.equal(parsed.schema,1);
+ assert.ok(Array.isArray(parsed.processes)&&parsed.processes.length>0,'published cache must be readable by Node');
+ transaction(dir,(_leases,_owner,_processes,observation)=>{secondFresh=observation?.fresh;});
+ assert.equal(secondFresh,false,'second observation must read the published cache');
+ assert.equal(fs.readFileSync(cache,'utf8'),first,'a cache hit must preserve the published file');
+}
 test('Codex default coordinator is isolated from the generic TUI pool',()=>{
  const workspace=path.resolve(family,'..'),env={...process.env,ORCH_COORDINATOR_DIR:''};
  const dir=coordinatorDir(workspace,env);
@@ -192,6 +206,46 @@ test('a malformed coordinator snapshot cache triggers a fresh enumeration',t=>{
   assert.equal(repaired.schema,1);
   assert.ok(Array.isArray(repaired.processes)&&repaired.processes.length>0);
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('Windows PowerShell cache paths preserve local, UNC, extended, and relative semantics',()=>{
+ assert.deepEqual([
+  leases.windowsPowerShellCachePath('C:\\runtime\\cache'),
+  leases.windowsPowerShellCachePath('\\\\server\\share\\cache'),
+  leases.windowsPowerShellCachePath('\\\\?\\C:\\runtime\\cache'),
+  leases.windowsPowerShellCachePath('\\\\?\\UNC\\server\\share\\cache'),
+ ],['\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache','\\\\?\\C:\\runtime\\cache','\\\\?\\UNC\\server\\share\\cache']);
+ assert.throws(()=>leases.windowsPowerShellCachePath('relative\\cache'),/absolute/i);
+});
+test('coordinator snapshot cache survives Windows paths with spaces and Unicode',t=>{
+ if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator cache 中文 & #-'));
+ try{assertCoordinatorSnapshotCache(dir);}finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('coordinator snapshot cache survives a Windows path longer than 260 characters',t=>{
+ if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-long-'));let dir=root;
+ try{
+  while(path.join(dir,'process-snapshot-cache.json').length<=270){dir=path.join(dir,'nested-component-for-process-snapshot-cache-length');fs.mkdirSync(dir);}
+  assert.ok(path.join(dir,'process-snapshot-cache.json').length>260,'fixture must exceed the legacy Windows path limit');
+  assertCoordinatorSnapshotCache(dir);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('coordinator snapshot cache survives a Windows trailing-dot directory',t=>{
+ if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-dot-')),dir=path.join(root,'coordinator.');
+ try{
+  fs.mkdirSync('\\\\?\\'+dir);
+  assert.deepEqual(fs.readdirSync(root),['coordinator.'],'fixture must retain its trailing dot');
+  assertCoordinatorSnapshotCache(dir);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+test('coordinator snapshot cache accepts a local UNC path when the administrative share is available',t=>{
+ if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
+ const local=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator-cache-unc-')),drive=path.parse(local).root.slice(0,1).toLowerCase(),unc=`\\\\localhost\\${drive}$${local.slice(2)}`;
+ try{
+  try{fs.statSync(unc);}catch(error){return t.skip('UNC administrative share unavailable: '+error.message);}
+  assertCoordinatorSnapshotCache(unc);
+ }finally{fs.rmSync(local,{recursive:true,force:true});}
 });
 test('a cache entry without the caller uses a fresh targeted owner before lock acquisition',t=>{
  if(process.platform!=='win32')return t.skip('Windows process snapshot cache integration only');

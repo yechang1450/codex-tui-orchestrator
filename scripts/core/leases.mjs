@@ -156,12 +156,23 @@ export function processSnapshot(timeoutMs=Number(process.env.ORCH_PROCESS_SNAPSH
   }
   return new Map(JSON.parse(result.stdout).map(p=>[p.ProcessId,p]));
 }
+// Windows PowerShell 5.1's provider and .NET file APIs otherwise apply the
+// legacy path parser to the coordinator snapshot cache. Keep this conversion
+// at the PowerShell boundary: Node continues to own the physical path identity,
+// reparse checks, and every ledger file path in its original spelling.
+export function windowsPowerShellCachePath(value) {
+  const raw=String(value);
+  if(/^\\\\\?\\/.test(raw))return raw;
+  if(/^\\\\(?![.?]\\)/.test(raw))return '\\\\?\\UNC\\'+raw.slice(2);
+  if(/^[A-Za-z]:[\\/]/.test(raw))return '\\\\?\\'+raw;
+  throw new Error('Windows PowerShell cache path must be absolute: '+raw);
+}
 function coordinatorProcessSnapshot(dir,forceFresh=false) {
   if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
   const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(process.env.ORCH_PROCESS_SNAPSHOT_TIMEOUT_MS)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
   const cacheFile=assertNoReparsePoints(path.join(dir,'process-snapshot-cache.json'),'coordinator process snapshot cache');
   const quote=value=>"'"+String(value).replaceAll("'","''")+"'";
-  const cachePath=quote(cacheFile),maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES,ttl=COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller=process.pid;
+  const cachePath=quote(windowsPowerShellCachePath(cacheFile)),maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES,ttl=COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller=process.pid;
   const script=`
 $ErrorActionPreference='Stop';$OutputEncoding=[Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 $cachePath=${cachePath};$maxBytes=${maxBytes};$ttlMs=${ttl};$callerPid=${caller};$waitMs=${waitMs};$forceFresh=${forceFresh?'$true':'$false'}
