@@ -7,6 +7,7 @@ import {runWindows,runDirectory,verifyRun,rejectWorkspaceCommandChecks} from '..
 import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
 import {canonicalDigest,buildTodoList} from '../scripts/core/contracts.mjs';
 import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
+import {createStatusPublisher} from '../scripts/core/status-events.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const family=path.join(repo,'temp','acceptance-binding');
@@ -19,6 +20,10 @@ const readJson=file=>JSON.parse(fs.readFileSync(file,'utf8'));
 const contract=equals=>({T001:[{type:'json',path:'evidence.json',equals}]});
 // 比原始契约宽松得多：只要文件存在就算通过，用来模拟有磁盘权限的执行窗自降验收条件。
 const weakened={T001:[{type:'file',path:'evidence.json'}]};
+// Headless fixture 仍走真实的 Windows 身份与协调器边界。它们会在宿主繁忙时
+// 排队等待，测试预算必须至少覆盖同一条控制面已承诺的有界等待，避免把安全
+// 前置条件尚未完成误报成验收绑定失败。
+const CONTROL_PLANE_TIMEOUT_MS=120000;
 
 function workerSource(evidence){
   return `import fs from 'node:fs';
@@ -48,12 +53,12 @@ async function runOnce(runId,checks){
   fs.writeFileSync(worker,workerSource(path.join(workspace,'evidence.json')));
   const checksFile=path.join(workspace,'contract.json');
   fs.writeFileSync(checksFile,JSON.stringify(checks));
-  const hooks={...createHeadlessHooks({workspace,cli:process.execPath,args:[worker]}),
+  const hooks={...createHeadlessHooks({workspace,cli:process.execPath,args:[worker],timeoutMs:CONTROL_PLANE_TIMEOUT_MS}),
     plan:async()=>[{title:'binding',tasks:[{prompt:'写证据'}]}],
     compact:value=>value,infer:()=>[],prompt:value=>value,register:()=>{},commit:()=>{},unregister:()=>{}};
   try{
     const sum=await runWindows('写证据',hooks,{workspace,capacity:1,executionMode:'headless',runId,
-      coordinator:path.join(controllerHome,'coordinator'),acceptanceFile:checksFile,auth:'binding',timeoutMs:30000});
+      coordinator:path.join(controllerHome,'coordinator'),acceptanceFile:checksFile,auth:'binding',timeoutMs:CONTROL_PLANE_TIMEOUT_MS});
     return {workspace,checksFile,dir:runDirectory(workspace,runId),sum};
   }catch(error){
     // 失败路径同样不留工作区：调用方的 finally 只有在拿到返回值之后才会执行。
@@ -142,7 +147,18 @@ test('verify rejects a contract forged together with both workspace digest recor
       record.acceptance.sha256=digest;
       fs.writeFileSync(file,JSON.stringify(record),'utf8');
     }
-    assert.throws(()=>verifyRun(workspace,runId,undefined,{coordinator:path.join(controllerHome,'coordinator')}),/trusted acceptance|controller-owned|contract changed/i);
+    // The controller-owned status projection catches the workspace rewrite
+    // before acceptance verification. Keep that guard explicit rather than
+    // weakening it just to reach the next independent security boundary.
+    const trusted={coordinator:path.join(controllerHome,'coordinator')};
+    assert.throws(()=>verifyRun(workspace,runId,undefined,trusted),/Status ledger authority mismatch/);
+    // Now emulate a controller-authenticated status projection for the
+    // already forged workspace ledger. This is stronger than the attacker
+    // model above and proves that acceptance authority remains independent:
+    // it must still reject the forged contract before command checks run.
+    const forgedSummary=readJson(path.join(dir,'summary.json'));
+    createStatusPublisher(dir).publish(forgedSummary,'test.forged-status-projection');
+    assert.throws(()=>verifyRun(workspace,runId,undefined,trusted),/trusted acceptance|controller-owned|contract changed/i);
     assert.equal(fs.existsSync(marker),false);
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
