@@ -62,16 +62,78 @@ test('a fresh producer preserves a negative lease when its ledger changed after 
   assert.ok(ids.includes('concurrent'));
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
-test('an advisory cache hit preserves a valid negative run owner even when its ledger is unchanged',()=>{
+test('a same-key advisory owner collision forces one fresh recheck before reclaiming a stable stale owner',()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-cache-hit-'));
  try{
   const stale={owner:missingProcessIdentity,token:'stale-token'};
-  fs.writeFileSync(path.join(dir,'run-owners.json'),JSON.stringify({stale}));
-  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:false});
-  let result;
-  assert.throws(()=>claimRun(dir,'stale',snapshot),/Run already has a live controller/);
-  result=JSON.parse(fs.readFileSync(path.join(dir,'run-owners.json'),'utf8'));
-  assert.equal(result.stale.token,'stale-token');
+  const file=path.join(dir,'run-owners.json');
+  fs.writeFileSync(file,JSON.stringify({stale}));
+  let calls=0;
+  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:++calls===2});
+  const claim=claimRun(dir,'stale',snapshot);
+  assert.equal(calls,2,'one advisory collision may request exactly one fresh recheck');
+  assert.notEqual(claim.token,'stale-token');
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).stale.token,claim.token);
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a same-key advisory owner collision rejects a still-live controller without a fresh retry',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-live-'));
+ try{
+  const live={ProcessId:987654321,Started:'2026-10-09T00:00:00.000Z',Name:'node.exe',CommandLine:'node controller.mjs'};
+  fs.writeFileSync(path.join(dir,'run-owners.json'),JSON.stringify({same:{owner:live,token:'live-token'}}));
+  let calls=0;
+  const snapshot=()=>({processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}],[live.ProcessId,live]]),fresh:++calls>1});
+  assert.throws(()=>claimRun(dir,'same',snapshot),/Run already has a live controller/);
+  assert.equal(calls,1,'a live owner is authoritative even when the cache is advisory');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a same-key advisory owner collision propagates a failed fresh recheck without retrying again',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-fresh-failure-'));
+ try{
+  const stale={owner:missingProcessIdentity,token:'stale-token'};
+  const file=path.join(dir,'run-owners.json');
+  fs.writeFileSync(file,JSON.stringify({same:stale}));
+  let calls=0;
+  const snapshot=()=>{
+   calls++;
+   if(calls===1)return {processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:false};
+   throw new Error('fresh snapshot unavailable');
+  };
+  assert.throws(()=>claimRun(dir,'same',snapshot),/fresh snapshot unavailable/);
+  assert.equal(calls,2,'a failed forced recheck must not spin or bypass the failure');
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).same.token,'stale-token');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('a same-key advisory owner collision rejects reclaim when the fresh recheck sees a changed ledger',()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-fresh-changed-same-key-'));
+ try{
+  const stale={owner:missingProcessIdentity,token:'stale-token'};
+  const file=path.join(dir,'run-owners.json');
+  fs.writeFileSync(file,JSON.stringify({same:stale}));
+  let calls=0;
+  const snapshot=()=>{
+   calls++;
+   if(calls===2)fs.writeFileSync(file,JSON.stringify({same:stale,concurrent:{owner:missingProcessIdentity,token:'concurrent-token'}}));
+   return {processes:new Map([[process.pid,{ProcessId:process.pid,Started:'current',Name:process.execPath,CommandLine:process.argv.join(' ')}]]),fresh:calls===2};
+  };
+  assert.throws(()=>claimRun(dir,'same',snapshot),/Run already has a live controller/);
+  assert.equal(calls,2,'only one forced recheck is permitted');
+  const owners=JSON.parse(fs.readFileSync(file,'utf8'));
+  assert.equal(owners.same.token,'stale-token');
+  assert.equal(owners.concurrent.token,'concurrent-token');
+ }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('the default coordinator bypasses its advisory cache once before reclaiming a same-key stale owner',t=>{
+ if(process.platform!=='win32')return t.skip('Windows process snapshot cache integration only');
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'run-owner-default-cache-hit-'));
+ try{
+  const current=processSnapshot().get(process.pid);
+  const createdAt=Date.now()-1000;
+  fs.writeFileSync(path.join(dir,'process-snapshot-cache.json'),JSON.stringify({schema:1,createdAt,processes:[{...current,ParentProcessId:current.ParentProcessId||1,WorkingSet64:current.WorkingSet64||1,PeakWorkingSet64:current.PeakWorkingSet64||1}]}));
+  fs.writeFileSync(path.join(dir,'run-owners.json'),JSON.stringify({same:{owner:missingProcessIdentity,token:'stale-token'}}));
+  const claim=claimRun(dir,'same');
+  assert.notEqual(claim.token,'stale-token');
+  assert.ok(JSON.parse(fs.readFileSync(path.join(dir,'process-snapshot-cache.json'),'utf8')).createdAt>createdAt,'the retry must publish a fresh complete process snapshot');
  }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('a fresh run-owner observation reclaims a stale owner only while its ledger is stable',()=>{

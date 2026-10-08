@@ -156,7 +156,7 @@ export function processSnapshot(timeoutMs=Number(process.env.ORCH_PROCESS_SNAPSH
   }
   return new Map(JSON.parse(result.stdout).map(p=>[p.ProcessId,p]));
 }
-function coordinatorProcessSnapshot(dir) {
+function coordinatorProcessSnapshot(dir,forceFresh=false) {
   if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
   const waitMs=Math.max(1000,Math.min(MAX_PROCESS_SNAPSHOT_TIMEOUT_MS,Math.ceil(Number(process.env.ORCH_PROCESS_SNAPSHOT_TIMEOUT_MS)||DEFAULT_PROCESS_SNAPSHOT_TIMEOUT_MS)));
   const cacheFile=assertNoReparsePoints(path.join(dir,'process-snapshot-cache.json'),'coordinator process snapshot cache');
@@ -164,7 +164,7 @@ function coordinatorProcessSnapshot(dir) {
   const cachePath=quote(cacheFile),maxBytes=MAX_CONTROLLER_ARTIFACT_BYTES,ttl=COORDINATOR_SNAPSHOT_CACHE_TTL_MS,caller=process.pid;
   const script=`
 $ErrorActionPreference='Stop';$OutputEncoding=[Text.UTF8Encoding]::new($false);[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
-$cachePath=${cachePath};$maxBytes=${maxBytes};$ttlMs=${ttl};$callerPid=${caller};$waitMs=${waitMs}
+$cachePath=${cachePath};$maxBytes=${maxBytes};$ttlMs=${ttl};$callerPid=${caller};$waitMs=${waitMs};$forceFresh=${forceFresh?'$true':'$false'}
 $m=[Threading.Mutex]::new($false,'Local\\CodexTuiOrchestrator.ProcessSnapshot');$held=$false
 function Get-ProcessRows([int]$pidValue){
   @(Get-CimInstance Win32_Process -Filter "ProcessId = $pidValue" | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
@@ -205,7 +205,7 @@ function Publish-Cache($rows){
 try {
   try{$held=$m.WaitOne($waitMs)}catch [Threading.AbandonedMutexException]{$held=$true}
   if(-not $held){throw 'Process snapshot mutex timeout'}
-  $rows=Read-Cache;$fresh=$false
+  $rows=if($forceFresh){$null}else{Read-Cache};$fresh=$false
   if($null -eq $rows){
     $rows=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
     if($rows.Count -le 0){throw 'Process snapshot returned no rows.'}
@@ -242,8 +242,8 @@ try {
   if(!owner||!sameProcess(owner,value.owner))throw new Error('Coordinator owner identity unavailable');
   return {processes,fresh:value.fresh};
 }
-function transactionObservation(dir,snapshot) {
-  if(snapshot===processSnapshot)return coordinatorProcessSnapshot(dir);
+function transactionObservation(dir,snapshot,forceFresh=false) {
+  if(snapshot===processSnapshot)return coordinatorProcessSnapshot(dir,forceFresh);
   const value=snapshot();
   if(value instanceof Map)return {processes:value,fresh:true};
   if(value&&value.processes instanceof Map&&typeof value.fresh==='boolean')return value;
@@ -306,7 +306,7 @@ export function atomicJson(file,value,guard){
     }
   }finally{fs.rmSync(tmp,{force:true});}
 }
-export function transaction(dir,fn,snapshot=processSnapshot) {
+export function transaction(dir,fn,snapshot=processSnapshot,{forceFresh=false}={}) {
   assertNoReparsePoints(dir,'coordinator directory');
   fs.mkdirSync(dir,{recursive:true});
   assertNoReparsePoints(dir,'coordinator directory');
@@ -321,7 +321,7 @@ export function transaction(dir,fn,snapshot=processSnapshot) {
   // negative evidence that can prune entries comes from this call's fresh
   // producer; cache hits retain valid identities until a producer sees them.
   const initialRevisions=new Map([[file,ledgerRevision(file)],[ownersFile,ledgerRevision(ownersFile)]]);
-  const {processes,fresh}=transactionObservation(physicalDir,snapshot),owner=processes.get(process.pid);
+  const {processes,fresh}=transactionObservation(physicalDir,snapshot,forceFresh),owner=processes.get(process.pid);
   if(!owner)throw new Error('Coordinator owner identity unavailable');
   // A kernel mutex is released by Windows on a crash. Unlike a stale lockfile,
   // it cannot be reclaimed by two contenders or strand an empty lock forever.
@@ -424,8 +424,9 @@ export function release(dir,id,snapshot){return transaction(dir,leases=>{const i
 
 export function prepare(dir,id,pidFile){return transaction(dir,leases=>{const l=leases.find(l=>l.id===id);if(!l)throw new Error("Reservation expired");l.pidFile=pidFile;});}
 
+const FRESH_RUN_OWNER_RECHECK=Symbol('fresh-run-owner-recheck');
 export function claimRun(dir,key,snapshot=processSnapshot) {
-  return transaction(dir,(_leases,owner,processes,observation)=>{
+  const attempt=forceFresh=>transaction(dir,(_leases,owner,processes,observation)=>{
     const file=path.join(dir,'run-owners.json');
     const owners=readState(file,value=>!!value&&typeof value==='object'&&!Array.isArray(value),'运行占用账本 '+file)||{};
     const ownersChanged=observation.changed(file);
@@ -434,9 +435,20 @@ export function claimRun(dir,key,snapshot=processSnapshot) {
       if(!r||typeof r!=='object'||!r.owner||typeof r.owner!=='object'){delete owners[id];continue;}
       if(!sameProcess(r.owner,processes.get(r.owner.ProcessId))&&!(validRunOwner(r)&&(!observation.fresh||ownersChanged)))delete owners[id];
     }
-    if(owners[key])throw new Error('Run already has a live controller');
+    const incumbent=owners[key];
+    if(incumbent){
+      // A cache hit is advisory: a dead controller may still be listed until a
+      // complete process snapshot proves otherwise. Recheck exactly once only
+      // for this same-key, valid-but-negative collision. Live owners, changed
+      // ledgers, and failed/indeterminate fresh observations stay fail-closed.
+      const live=sameProcess(incumbent.owner,processes.get(incumbent.owner?.ProcessId));
+      if(!live&&!observation.fresh&&!forceFresh&&validRunOwner(incumbent))return FRESH_RUN_OWNER_RECHECK;
+      throw new Error('Run already has a live controller');
+    }
     const claim={owner,token:crypto.randomUUID()};owners[key]=claim;atomicJson(file,owners);return claim;
-  },snapshot);
+  },snapshot,{forceFresh});
+  const initial=attempt(false);
+  return initial===FRESH_RUN_OWNER_RECHECK?attempt(true):initial;
 }
 export function releaseRun(dir,key,claim) {
   return transaction(dir,(_leases,_owner,processes)=>{
