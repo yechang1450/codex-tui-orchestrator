@@ -231,6 +231,21 @@ test('coordinator cache PowerShell script receives an extended remote UNC cache 
  const cacheAssignment=script.split('\n').find(line=>line.startsWith('$cachePath='))?.split(';')[0];
  assert.equal(cacheAssignment,"$cachePath='\\\\?\\UNC\\server\\share\\coordinator\\process-snapshot-cache.json'");
 });
+test('a cache-hit caller identity lookup runs after the snapshot producer mutex is released',()=>{
+ const script=leases.coordinatorProcessSnapshotScript('C:\\coordinator\\process-snapshot-cache.json',{caller:1234});
+ const cacheRead=script.indexOf('$rows=if($forceFresh){$null}else{Read-Cache}');
+ const release=script.indexOf('$m.ReleaseMutex()',cacheRead);
+ const cacheHit=script.indexOf('if(-not $fresh){',cacheRead);
+ const targetLookup=script.indexOf('$owner=@(Get-ProcessRows $callerPid)',cacheHit);
+ const fullEnumeration=script.indexOf('$rows=@(Get-CimInstance Win32_Process |',cacheRead);
+ assert.ok(cacheRead>=0,'the producer must read or bypass the cache while it holds the mutex');
+ assert.ok(fullEnumeration>cacheRead,'the producer must retain full enumeration inside its critical section');
+ assert.ok(release>fullEnumeration,'the producer must publish or retain its full snapshot before releasing the mutex');
+ assert.ok(cacheHit>release,'a cache-hit caller lookup must start only after the producer mutex is released');
+ assert.ok(targetLookup>cacheHit,'a cache-hit caller lookup must remain present for PID-reuse defense');
+ assert.equal((script.match(/\$m\.ReleaseMutex\(\)/g)||[]).length,1,'the generated command must release the mutex exactly once');
+ assert.match(script,/\$m\.ReleaseMutex\(\).*\$held=\$false/s,'the release path must clear ownership before final disposal');
+});
 test('coordinator snapshot cache survives Windows paths with spaces and Unicode',t=>{
  if(process.platform!=='win32')return t.skip('Windows PowerShell cache integration only');
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coordinator cache 中文 & #-'));

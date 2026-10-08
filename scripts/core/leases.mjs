@@ -214,14 +214,21 @@ function Publish-Cache($rows){
   } finally {if([IO.File]::Exists($temp)){[IO.File]::Delete($temp)}}
 }
 try {
-  try{$held=$m.WaitOne($waitMs)}catch [Threading.AbandonedMutexException]{$held=$true}
-  if(-not $held){throw 'Process snapshot mutex timeout'}
-  $rows=if($forceFresh){$null}else{Read-Cache};$fresh=$false
-  if($null -eq $rows){
-    $rows=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
-    if($rows.Count -le 0){throw 'Process snapshot returned no rows.'}
-    foreach($row in $rows){if(-not (Test-ProcessRow $row)){throw 'Process snapshot returned an invalid row.'}}
-    Publish-Cache $rows;$fresh=$true
+  try {
+    try{$held=$m.WaitOne($waitMs)}catch [Threading.AbandonedMutexException]{$held=$true}
+    if(-not $held){throw 'Process snapshot mutex timeout'}
+    $rows=if($forceFresh){$null}else{Read-Cache};$fresh=$false
+    if($null -eq $rows){
+      $rows=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='WorkingSet64';e={[long]$_.WorkingSetSize}},@{n='PeakWorkingSet64';e={[long]$_.PeakWorkingSetSize*1024}},@{n='Started';e={$_.CreationDate.ToUniversalTime().ToString('o')}})
+      if($rows.Count -le 0){throw 'Process snapshot returned no rows.'}
+      foreach($row in $rows){if(-not (Test-ProcessRow $row)){throw 'Process snapshot returned an invalid row.'}}
+      Publish-Cache $rows;$fresh=$true
+    }
+  } finally {
+    # The producer lock protects cache read/validation/full enumeration/publication.
+    # A cache-hit caller identity is a separate live read and must not convoy every
+    # independent coordinator behind the producer mutex.
+    if($held){try{$m.ReleaseMutex()}finally{$held=$false}}
   }
   if(-not $fresh){
     # Cache identity may be stale across PID reuse. Always replace the current
@@ -235,7 +242,7 @@ try {
   }
   $result=@{fresh=$fresh;processes=@($rows);owner=$owner}
   $result|ConvertTo-Json -Compress -Depth 6
-} finally {if($held){$m.ReleaseMutex()};$m.Dispose()}`;
+} finally {$m.Dispose()}`;
 }
 function coordinatorProcessSnapshot(dir,forceFresh=false) {
   if(process.platform!=='win32')throw new Error('Visible TUI runtime currently requires Windows');
