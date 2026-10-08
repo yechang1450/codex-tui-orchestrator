@@ -127,9 +127,10 @@ test('spawn-group status is a monotonic host-consumable projection of every exec
 });
 
 test('native Codex cards are never falsely claimed: host integration consumes the status contract explicitly',()=>{
-  const readme=fs.readFileSync(path.join(repo,'README.md'),'utf8');
-  assert.match(readme,/原生 TodoList\/spawn 卡片属于宿主界面/);
-  assert.match(readme,/状态事件/);
+  const english=fs.readFileSync(path.join(repo,'README.md'),'utf8');
+  const chinese=fs.readFileSync(path.join(repo,'README-zh.md'),'utf8');
+  assert.match(english,/Native TodoList\/spawn cards belong to the host UI; the plugin emits status events for the host to consume\./);
+  assert.match(chinese,/原生 TodoList\/spawn 卡片属于宿主 UI，插件输出状态事件供宿主消费。/);
   const source=fs.readFileSync(path.join(repo,'scripts','core','status-events.mjs'),'utf8');
   assert.match(source,/todoList:sum\.todoList/);
   assert.match(source,/executionStatus:sum\.executionStatus/);

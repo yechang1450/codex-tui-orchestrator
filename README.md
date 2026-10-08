@@ -20,6 +20,8 @@ Current sealed core: `1.4.4-rc.1`.
 
 The orchestrator keeps each task's original identity, groups dependent, conflicting, or uncertain work into serial blocks, and launches only independent blocks in parallel. It records execution state and checks each task against independent acceptance conditions; a worker report or window closure alone does not prove success.
 
+Native TodoList/spawn cards belong to the host UI; the plugin emits status events for the host to consume.
+
 Use `--plan` to inspect a proposed split. `--exec` runs headlessly, `--run-windows` opens visible Windows sessions, `--status` observes a run, and `--resume-run` or `--verify-run` works with a saved run.
 
 ## Quick start
