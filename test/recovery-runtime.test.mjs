@@ -97,12 +97,12 @@ test('run owner release requires the claiming process identity, not only a reada
   releaseRun(d,'run',claim);claim=null;
  }finally{if(claim)releaseRun(d,'run',claim);await pause(500);fs.rmSync(d,{recursive:true,force:true});}
 });
-function pidReadRecoveryFixture(root,readPid,identity,{spawnResult=true,pidText='4321'}={}){
- const artifacts={};let spawned=0,completed=0,attemptFile='';
+function pidReadRecoveryFixture(root,readPid,identity,{spawnResult=true,pidText='4321',writePid=true}={}){
+ const artifacts={};let spawned=0,completed=0,cleanups=0,attemptFile='';
  const acceptance=path.join(root,'acceptance.json');
  fs.writeFileSync(acceptance,JSON.stringify({T001:[{type:'json',path:'completed.json',equals:{count:1}}]}));
  return {
-  acceptance,coordinator:path.join(controllerRoot,'pid-'+path.basename(root)),artifacts,get spawned(){return spawned},get completed(){return completed},
+  acceptance,coordinator:path.join(controllerRoot,'pid-'+path.basename(root)),artifacts,get spawned(){return spawned},get completed(){return completed},get cleanups(){return cleanups},
   hooks:{
    plan:async()=>[{title:'PID recovery',type:'single',tasks:[{prompt:'complete once'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
    launcher:(key,prompt,suffix)=>{
@@ -111,10 +111,10 @@ function pidReadRecoveryFixture(root,readPid,identity,{spawnResult=true,pidText=
     const stem=key+'-'+suffix;Object.assign(artifacts,{pidf:path.join(launchDir,'window-'+stem+'.pid'),lp:path.join(launchDir,'win-launch-'+stem+'.ps1'),pf:path.join(launchDir,'agent-win-'+stem+'.md'),rf:path.join(launchDir,'win-'+stem+'.result.json')});
     fs.writeFileSync(artifacts.lp,'# launcher');fs.writeFileSync(artifacts.pf,prompt);return artifacts;
    },
-   spawn:async()=>{spawned++;fs.writeFileSync(artifacts.pidf,pidText);return spawnResult;},readPid,
+   spawn:async()=>{spawned++;if(writePid)fs.writeFileSync(artifacts.pidf,pidText);return spawnResult;},readPid,
    identity,session:async()=> 'controlled',
    wait:async()=>{completed++;recordCheckpoint(attemptFile,'T001','started');recordCheckpoint(attemptFile,'T001','completed');fs.writeFileSync(path.join(root,'completed.json'),JSON.stringify({count:completed}));return {done:true,exitCode:0};},
-   exitCode:()=>0,register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},close:async()=>{},waitForExit:async()=>true,
+   exitCode:()=>0,register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{cleanups++;},close:async()=>{},waitForExit:async()=>true,
   },
  };
 }
@@ -140,6 +140,14 @@ test('no-process spawn result plus permanent PID EBUSY retains the lease and nev
   const fixture=pidReadRecoveryFixture(d,()=>{const error=new Error('sharing lock');error.code='EBUSY';throw error;},()=>{throw new Error('identity must not run without a PID');},{spawnResult:{noProcess:true}});
   const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'no-process-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test'});
   assert.equal(sum.success,false);assert.equal(sum.results.B1.status,'needs-reconciliation');assert.equal(sum.results.B1.exitConfirmed,false);assert.equal(fixture.spawned,1);assert.equal(fixture.completed,0);assert.equal(sum.finalSweep.retained,1);for(const file of [fixture.artifacts.pidf,fixture.artifacts.lp,fixture.artifacts.pf])assert.ok(fs.existsSync(file),'retain '+file);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('no-process spawn result with an absent PID keeps the clean no-process cleanup path',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'pid-read-absent-'));
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>0,()=>{throw new Error('identity must not run without a PID');},{spawnResult:{noProcess:true},writePid:false});
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'absent-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1});
+  assert.equal(sum.success,false);assert.equal(sum.results.B1.status,'failed');assert.equal(sum.results.B1.exitConfirmed,true);assert.equal(fixture.spawned,1);assert.equal(fixture.completed,0);assert.equal(fixture.cleanups,1);assert.equal(sum.finalSweep.retained,0);
  }finally{fs.rmSync(d,{recursive:true,force:true});}
 });
 test('a malformed PID hidden as zero by the read hook fails closed without identity retry',async()=>{

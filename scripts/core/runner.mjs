@@ -134,12 +134,12 @@ function readPidFromFile(file){
 
 /** A PID file can be briefly locked while PowerShell closes its writer. */
 async function readLauncherPidWithRetry(readPid,pidFile,{attempts=3,pauseMs=ms=>pause(ms)}={}){
-  const limit=Math.max(1,Number(attempts)||1);let lastError;
+  const limit=Math.max(1,Number(attempts)||1);let lastError,state='startup';
   for(let i=0;i<limit;i++){
     try{
       const pid=Number(readPid(pidFile));
-      if(validLauncherPid(pid))return {pid,error:null};
-      if(pid!==0)return {pid:0,error:new Error('Launcher PID is invalid')};
+      if(validLauncherPid(pid))return {pid,error:null,state:'valid'};
+      if(pid!==0)return {pid:0,error:new Error('Launcher PID is invalid'),state:'invalid'};
       // Production hooks intentionally collapse unreadable and malformed PID
       // files to zero. Inspect the bounded artifact so a malformed value does
       // not borrow the short startup retry reserved for an actual zero.
@@ -148,18 +148,18 @@ async function readLauncherPidWithRetry(readPid,pidFile,{attempts=3,pauseMs=ms=>
         const text=String(raw).replace(/^\uFEFF/,'').trim();
         if(text&&text!=='0'){
           const filePid=Number(text);
-          if(validLauncherPid(filePid))return {pid:filePid,error:null};
-          return {pid:0,error:new Error('Launcher PID is invalid')};
+          if(validLauncherPid(filePid))return {pid:filePid,error:null,state:'valid'};
+          return {pid:0,error:new Error('Launcher PID is invalid'),state:'invalid'};
         }
       }
       lastError=new Error('Launcher PID is unavailable during startup');
     }catch(error){
-      if(!['EBUSY','EPERM','EACCES'].includes(error?.code))return {pid:0,error};
-      lastError=error;
+      if(!['EBUSY','EPERM','EACCES'].includes(error?.code))return {pid:0,error,state:'unreadable'};
+      lastError=error;state='unreadable';
     }
     if(i+1<limit)await pauseMs(100*(i+1));
   }
-  return {pid:0,error:lastError};
+  return {pid:0,error:lastError,state};
 }
 
 function validLauncherPid(value){
@@ -870,7 +870,7 @@ export async function runWindows(request,hooks,options={}) {
              const spawnRetries=Math.max(1,Math.min(5,Number(options.windowMaxRetry??3)||3));
              const spawnResult=await hooks.spawn(la.lp,r.title,la.pidf,spawnRetries,token);
              const observedPid=await readLauncherPidWithRetry(hooks.readPid,la.pidf);
-             if(observedPid.error){
+             if(observedPid.error&&observedPid.state!=='startup'){
                // A launcher adapter cannot prove a clean miss while its own
                // controller PID file is unreadable or malformed. Preserve the
                // lease and artifacts for reconciliation instead of trusting a
