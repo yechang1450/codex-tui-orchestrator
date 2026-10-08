@@ -10,6 +10,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scripts = path.resolve(__dirname, '..', 'scripts');
 const fixtureFamily=path.resolve(__dirname,'../temp');fs.mkdirSync(fixtureFamily,{recursive:true});
+const windowsFixtureWorkspace = 'C:\\orchestrator-fixtures\\workspace';
+const windowsFixtureWorkspaceSlash = 'C:/orchestrator-fixtures/workspace';
 
 // ---------- poll-windows: status sets + summary logic ----------
 const importUrl = (p) => pathToFileURL(p).href;
@@ -255,7 +257,7 @@ test('orchestrate-sdk classifyBlockComplexity', () => {
 });
 test('orchestrate-sdk conflictByKeys', () => {
   // 无活窗 -> 返回 null（无冲突）
-  assert.equal(conflictByKeys(['file:C:/workspace/build/81', 'port:8081']), null);
+  assert.equal(conflictByKeys([`file:${windowsFixtureWorkspaceSlash}/build/81`, 'port:8081']), null);
 });
 test('orchestrate-sdk structured initiating settings override stale environment values', () => {
   const prior = process.env.ORCH_MODEL;
@@ -298,11 +300,11 @@ test('orchestrate-sdk sessionDir honors ORCH_SESSION_DIR override (agent-generic
   assert.ok(sessionDir().endsWith(path.join('.codex', 'sessions')));
 });
 test('orchestrate-sdk trySingleBlock returns null for multi-project request', () => {
-  const r = trySingleBlock('修复 C:\\workspace\\build\\81 登录页、优化 C:\\workspace\\build\\82 UI');
+  const r = trySingleBlock(`修复 ${windowsFixtureWorkspace}\\build\\81 登录页、优化 ${windowsFixtureWorkspace}\\build\\82 UI`);
   assert.equal(r, null);
 });
 test('orchestrate-sdk trySingleBlock single project + single action -> block', () => {
-  const r = trySingleBlock('修复 C:\\workspace\\build\\81 登录页');
+  const r = trySingleBlock(`修复 ${windowsFixtureWorkspace}\\build\\81 登录页`);
   assert.ok(r && r.blocks.length === 1);
   assert.equal(r.blocks[0].title, 'proj-81');
   assert.deepEqual(r.blocks[0].conflictKeys, ['dir:proj-81']);
@@ -312,14 +314,14 @@ test('orchestrate-sdk trySingleBlock no action -> null', () => {
   assert.equal(trySingleBlock(''), null);
 });
 test('orchestrate-sdk genericProjectSplit splits multi-project sentences', () => {
-  const r = genericProjectSplit('修复 C:\\workspace\\build\\81 登录页；优化 C:\\workspace\\build\\82 UI');
+  const r = genericProjectSplit(`修复 ${windowsFixtureWorkspace}\\build\\81 登录页；优化 ${windowsFixtureWorkspace}\\build\\82 UI`);
   assert.ok(r && r.blocks.length >= 2);
   const titles = r.blocks.map((b) => b.title);
   assert.ok(titles.includes('proj-81'));
   assert.ok(titles.includes('proj-82'));
 });
 test('orchestrate-sdk genericProjectSplit returns null for single project', () => {
-  assert.equal(genericProjectSplit('修复 C:\\workspace\\build\\81 登录页'), null);
+  assert.equal(genericProjectSplit(`修复 ${windowsFixtureWorkspace}\\build\\81 登录页`), null);
 });
 test('orchestrate-sdk genericProjectSplit splits comma-separated bare projects -> parallel blocks', () => {
   const r = genericProjectSplit('修复81的空白，优化82的UI');
@@ -337,9 +339,9 @@ test('orchestrate-sdk genericProjectSplit recognizes project-100..103 and Chines
 
 test('orchestrate-sdk genericProjectSplit preserves named sibling projects when model planning is unavailable', () => {
   const request = [
-    '项目80 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
-    '项目game 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
-    '项目ai-drama 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"'
+    `项目80 执行 node "${windowsFixtureWorkspace}\\temp\\cleanup.mjs" --workspace "${windowsFixtureWorkspace}"`,
+    `项目game 执行 node "${windowsFixtureWorkspace}\\temp\\cleanup.mjs" --workspace "${windowsFixtureWorkspace}"`,
+    `项目ai-drama 执行 node "${windowsFixtureWorkspace}\\temp\\cleanup.mjs" --workspace "${windowsFixtureWorkspace}"`
   ].join('\n');
   const result = genericProjectSplit(request);
   assert.equal(result?.blocks.length, 3);
@@ -347,9 +349,9 @@ test('orchestrate-sdk genericProjectSplit preserves named sibling projects when 
 });
 test('normalizePlan does not serialize independent tasks that only share a read-only command script', () => {
   const request = [
-    '项目80 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
-    '项目game 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"',
-    '项目ai-drama 执行 node "C:\\Users\\fixture-user\\workspace\\temp\\cleanup.mjs" --workspace "C:\\Users\\fixture-user\\workspace"'
+    `项目80 执行 node "${windowsFixtureWorkspace}\\temp\\cleanup.mjs" --workspace "${windowsFixtureWorkspace}"`,
+    `项目game 执行 node "${windowsFixtureWorkspace}\\temp\\cleanup.mjs" --workspace "${windowsFixtureWorkspace}"`,
+    `项目ai-drama 执行 node "${windowsFixtureWorkspace}\\temp\\cleanup.mjs" --workspace "${windowsFixtureWorkspace}"`
   ].join('\n');
   const result = normalizePlan(genericProjectSplit(request).blocks);
   assert.equal(result.length, 3);
