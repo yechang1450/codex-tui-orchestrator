@@ -52,6 +52,47 @@ test('sealing refuses a stale dependency seal without replacing release.json',()
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
+test('distribution sealing requires explicit verified source provenance when dependencies are omitted',()=>{
+ const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-distribution-provenance-'));
+ const source=path.join(root,'source'),dist=path.join(root,'dist');
+ const sha256=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+ try{
+  for(const dir of ['scripts/core','scripts/node_modules/@openai/codex-sdk'])fs.mkdirSync(path.join(source,dir),{recursive:true});
+  for(const file of ['release-integrity.mjs','dependency-integrity.mjs'])fs.copyFileSync(fileURLToPath(new URL('../scripts/'+file,import.meta.url)),path.join(source,'scripts',file));
+  fs.writeFileSync(path.join(source,'scripts/core/contracts.mjs'),"export const CORE_VERSION='test';\n");
+  fs.writeFileSync(path.join(source,'scripts/core/orchestrate-sdk.mjs'),'// entry\n');
+  fs.writeFileSync(path.join(source,'scripts/package-lock.json'),'{"lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(source,'scripts/node_modules/@openai/codex-sdk/package.json'),'{"name":"@openai/codex-sdk"}\n');
+  fs.writeFileSync(path.join(source,'scripts/node_modules/@openai/codex-sdk/index.js'),'export const ready = true;\n');
+  const sourceDependency=spawnSync(process.execPath,[path.join(source,'scripts/dependency-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});assert.equal(sourceDependency.status,0,sourceDependency.stderr);
+  const sourceRelease=spawnSync(process.execPath,[path.join(source,'scripts/release-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});assert.equal(sourceRelease.status,0,sourceRelease.stderr);
+  fs.cpSync(source,dist,{recursive:true,filter:file=>path.basename(file)!=='node_modules'});
+  const previous='previous distribution seal\n';fs.writeFileSync(path.join(dist,'release.json'),previous);
+  const seal=args=>spawnSync(process.execPath,[path.join(dist,'scripts/release-integrity.mjs'),...args],{encoding:'utf8',windowsHide:true});
+  const missingProof=seal(['--seal','--distribution']);assert.notEqual(missingProof.status,0);assert.match(missingProof.stderr,/RELEASE_DISTRIBUTION_PROVENANCE.*distribution-provenance/i);
+  assert.equal(fs.readFileSync(path.join(dist,'release.json'),'utf8'),previous,'distribution mode must require explicit source provenance');
+  const sourceDependencyManifest=path.join(source,'scripts/dependency-integrity.json');
+  const dependency=JSON.parse(fs.readFileSync(sourceDependencyManifest,'utf8'));
+  fs.copyFileSync(path.join(source,'release.json'),path.join(dist,'scripts/distribution-source-release.json'));
+  fs.writeFileSync(path.join(dist,'scripts/distribution-provenance.json'),JSON.stringify({
+   schema:1,
+   sourceReleaseSha256:sha256(path.join(source,'release.json')),
+   sourceDependencyManifestSha256:sha256(sourceDependencyManifest),
+   packageLockSha256:dependency.packageLockSha256,
+   dependencyFiles:Object.keys(dependency.files).length,
+  },null,2)+'\n');
+  const strict=seal(['--seal']);assert.notEqual(strict.status,0);assert.match(strict.stderr,/RELEASE_DEPENDENCY_INTEGRITY.*node_modules/i);
+  assert.equal(fs.readFileSync(path.join(dist,'release.json'),'utf8'),previous,'ordinary sealing must not infer distribution mode from a missing tree');
+  const distribution=seal(['--seal','--distribution']);assert.equal(distribution.status,0,distribution.stderr);
+  assert.equal(verifyRelease(dist).schema,2);
+  const sealed=fs.readFileSync(path.join(dist,'release.json'),'utf8');
+  const malformed={...dependency,packageLockSha256:'0'.repeat(64)};
+  fs.writeFileSync(path.join(dist,'scripts/dependency-integrity.json'),JSON.stringify(malformed,null,2)+'\n');
+  const rejected=seal(['--seal','--distribution']);assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/RELEASE_DISTRIBUTION_PROVENANCE.*dependency-integrity/i);
+  assert.equal(fs.readFileSync(path.join(dist,'release.json'),'utf8'),sealed,'invalid provenance must not replace a valid distribution release');
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test('release verification rejects changed and injected core files',()=>{
  const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-test-'));
  try{const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});

@@ -16,12 +16,54 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {DIST_MARKETPLACE_NAME, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {assertNoReparsePoints} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+function sha256(value) { return crypto.createHash('sha256').update(value).digest('hex'); }
+
+function authenticateSourceForDistribution() {
+  const verification = spawnSync(process.execPath, [path.join(root, 'scripts', 'release-integrity.mjs'), '--verify-source'], {encoding: 'utf8', windowsHide: true, cwd: root});
+  if (verification.status !== 0) throw new Error('source release authentication failed: ' + (verification.stderr || verification.stdout || 'exit ' + verification.status));
+  const sourceRelease = fs.readFileSync(path.join(root, 'release.json'));
+  const dependencyManifest = fs.readFileSync(path.join(root, 'scripts', 'dependency-integrity.json'));
+  const packageLock = fs.readFileSync(path.join(root, 'scripts', 'package-lock.json'));
+  let dependency;
+  try { dependency = JSON.parse(dependencyManifest); } catch { throw new Error('source dependency integrity manifest changed after authentication'); }
+  if (dependency?.schema !== 1 || typeof dependency.packageLockSha256 !== 'string' || !dependency.files || Array.isArray(dependency.files) || dependency.packageLockSha256 !== sha256(packageLock)) {
+    throw new Error('source dependency integrity manifest changed after authentication');
+  }
+  return {
+    sourceRelease,
+    dependencyManifest,
+    packageLock,
+    provenance: {
+      schema: 1,
+      sourceReleaseSha256: sha256(sourceRelease),
+      sourceDependencyManifestSha256: sha256(dependencyManifest),
+      packageLockSha256: sha256(packageLock),
+      dependencyFiles: Object.keys(dependency.files).length,
+    },
+  };
+}
+
+function writeDistributionProvenance({dist, source}) {
+  const scripts = path.join(dist, 'scripts');
+  const copiedRelease = fs.readFileSync(path.join(dist, 'release.json'));
+  const copiedDependency = fs.readFileSync(path.join(scripts, 'dependency-integrity.json'));
+  const copiedLock = fs.readFileSync(path.join(scripts, 'package-lock.json'));
+  if (sha256(copiedRelease) !== source.provenance.sourceReleaseSha256
+    || sha256(copiedDependency) !== source.provenance.sourceDependencyManifestSha256
+    || sha256(copiedLock) !== source.provenance.packageLockSha256) {
+    throw new Error('source files changed while the distribution was being copied; authenticate and publish again');
+  }
+  fs.writeFileSync(path.join(scripts, 'distribution-source-release.json'), source.sourceRelease);
+  fs.writeFileSync(path.join(scripts, 'distribution-provenance.json'), `${JSON.stringify(source.provenance, null, 2)}\n`, 'utf8');
+}
 
 function parseArgs(argv) {
   const out = {target: null, quiet: false};
@@ -58,16 +100,21 @@ export function publishDist({target = null, quiet = false} = {}) {
       && relativeToSource !== '..'
       && !relativeToSource.startsWith('..' + path.sep));
   if (insideSource) throw new Error(`distribution target must be outside the source checkout: ${dist}`);
+  // The distribution intentionally omits node_modules. Authenticate the
+  // complete source tree before copying, then carry that exact proof into the
+  // explicit distribution-only sealing mode below.
+  const source = authenticateSourceForDistribution();
   fs.mkdirSync(resolvedTarget, {recursive: true});
   // repair.mjs 拒绝已存在的目标，正是为了避免新旧混合；这里先删旧分发再重建。
   fs.rmSync(dist, {recursive: true, force: true});
   const repair = spawnSync(process.execPath, [path.join(root, 'repair.mjs'), '--target', resolvedTarget, '--name', pluginName], {encoding: 'utf8', windowsHide: true, cwd: root});
   if (repair.status !== 0) throw new Error('repair.mjs failed: ' + (repair.stderr || repair.stdout || 'exit ' + repair.status));
+  writeDistributionProvenance({dist, source});
   const catalogPath = writeDistMarketplaceCatalog({dist, pluginName, category: manifest?.interface?.category});
   // repair.mjs correctly verifies the copied checkout, whose release seal names
   // the checkout catalog. Replacing that catalog is a release mutation, so seal
   // the dist copy itself and immediately verify the newly sealed bytes.
-  const seal = spawnSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs'), '--seal'], {encoding: 'utf8', windowsHide: true, cwd: dist});
+  const seal = spawnSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs'), '--seal', '--distribution'], {encoding: 'utf8', windowsHide: true, cwd: dist});
   if (seal.status !== 0) throw new Error('distribution sealing failed: ' + (seal.stderr || seal.stdout || 'exit ' + seal.status));
   const verify = spawnSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', windowsHide: true, cwd: dist});
   if (verify.status !== 0) throw new Error('distribution integrity failed: ' + (verify.stderr || verify.stdout || 'exit ' + verify.status));

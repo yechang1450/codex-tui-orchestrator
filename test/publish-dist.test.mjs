@@ -9,9 +9,15 @@ import {inspectRegistration} from '../scripts/repair-plugin-registration.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function copyCheckout(root) {
-  const checkout = path.join(root, 'codex-tui-orchestrator');
-  fs.cpSync(repo, checkout, {recursive: true, filter: source => !['.git', 'temp', 'node_modules', 'dist', '.plugin-eval'].includes(path.basename(source))});
+function copyCheckout(root, {name = 'codex-tui-orchestrator', withDependencies = false} = {}) {
+  const checkout = path.join(root, name);
+  fs.cpSync(repo, checkout, {recursive: true, filter: source => {
+    const relative = path.relative(repo, source).replaceAll('\\', '/');
+    if (!relative) return true;
+    const topLevel = relative.split('/')[0];
+    if (['.git', 'temp', 'dist', '.plugin-eval'].includes(topLevel)) return false;
+    return withDependencies || (relative !== 'scripts/node_modules' && !relative.startsWith('scripts/node_modules/'));
+  }});
   return checkout;
 }
 
@@ -44,8 +50,7 @@ test('publish-dist builds a sealed distribution with its own local marketplace c
   // Explicit external targets remain supported; fixtures are removed after the test.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-dist-'));
   try {
-    const checkout=path.basename(repo)==='codex-tui-orchestrator'?repo:path.join(root,'codex-tui-orchestrator');
-    if(checkout!==repo)fs.cpSync(repo,checkout,{recursive:true,filter:source=>!['.git','temp','node_modules'].includes(path.basename(source))});
+    const checkout=copyCheckout(root,{withDependencies:true});
     const target = path.join(root, 'dist');
     const output = execFileSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', target], {encoding: 'utf8', cwd: checkout});
     assert.ok(output.includes('codex plugin marketplace add ' + JSON.stringify(path.join(target, 'codex-tui-orchestrator'))));
@@ -57,6 +62,8 @@ test('publish-dist builds a sealed distribution with its own local marketplace c
     assert.equal(fs.existsSync(path.join(dist, '.github')), false, '分发不带 CI 元数据');
     assert.equal(fs.existsSync(path.join(dist, '.git')), false, '分发不带 git 元数据');
     assert.equal(fs.existsSync(path.join(dist, 'scripts', 'node_modules')), false, '分发不带依赖目录');
+    assert.ok(fs.existsSync(path.join(dist, 'scripts', 'distribution-provenance.json')), '分发必须显式携带已认证的源码依赖来源');
+    assert.ok(fs.existsSync(path.join(dist, 'scripts', 'distribution-source-release.json')), '分发必须携带认证后的源码发行封印');
     const verify = JSON.parse(execFileSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', cwd: dist}));
     assert.equal(verify.schema, 2);
     const catalogPath = path.join(dist, '.agents', 'plugins', 'marketplace.json');
@@ -80,13 +87,30 @@ test('publish-dist builds a sealed distribution with its own local marketplace c
 test('publish-dist uses the verified manifest name when the checkout directory has a recovery suffix', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-recovery-name-'));
   try {
-    const checkout = path.join(root, 'codex-tui-orchestrator-recovery');
-    fs.cpSync(repo, checkout, {recursive: true, filter: source => !['.git', 'temp', 'node_modules', 'dist', '.plugin-eval'].includes(path.basename(source))});
+    const checkout = copyCheckout(root, {name: 'codex-tui-orchestrator-recovery', withDependencies: true});
     const target = path.join(root, 'export');
     const result = spawnSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', target], {cwd: checkout, encoding: 'utf8', windowsHide: true});
     assert.equal(result.status, 0, result.stderr || result.stdout);
     assert.equal(fs.existsSync(path.join(target, 'codex-tui-orchestrator', '.codex-plugin', 'plugin.json')), true);
     assert.equal(fs.existsSync(path.join(target, 'codex-tui-orchestrator-recovery')), false);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
+test('publish-dist authenticates source dependencies before replacing an existing distribution', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-publish-source-auth-'));
+  try {
+    const checkout = copyCheckout(root, {withDependencies: true});
+    const target = path.join(root, 'export');
+    const existing = path.join(target, 'codex-tui-orchestrator');
+    fs.mkdirSync(existing, {recursive: true});
+    const marker = path.join(existing, 'must-survive.txt');
+    fs.writeFileSync(marker, 'source authentication happens first', 'utf8');
+    const dependency = path.join(checkout, 'scripts', 'node_modules', '@openai', 'codex-sdk', 'package.json');
+    fs.appendFileSync(dependency, '\n// corrupt after sealing\n');
+    const result = spawnSync(process.execPath, [path.join(checkout, 'scripts', 'publish-dist.mjs'), '--target', target], {cwd: checkout, encoding: 'utf8', windowsHide: true});
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /source release authentication failed.*RELEASE_DEPENDENCY_INTEGRITY/is);
+    assert.equal(fs.readFileSync(marker, 'utf8'), 'source authentication happens first');
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
 

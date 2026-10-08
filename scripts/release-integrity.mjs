@@ -3,6 +3,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const SHA256_HEX=/^[0-9a-f]{64}$/;
+const DISTRIBUTION_PROVENANCE='distribution-provenance.json';
+const DISTRIBUTION_SOURCE_RELEASE='distribution-source-release.json';
 export function coreInventory(pluginRoot){
  const core=path.join(pluginRoot,'scripts','core'),files={};
  function walk(dir){
@@ -50,6 +53,43 @@ async function assertSealedDependencies(pluginRoot){
  if(!result.ok)throw new Error(result.message);
  return result;
 }
+export async function verifySourceRelease(pluginRoot=root){
+ const release=verifyRelease(pluginRoot);
+ await assertSealedDependencies(pluginRoot);
+ return release;
+}
+function sha256File(file){return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');}
+function isPlainObject(value){return Boolean(value)&&typeof value==='object'&&!Array.isArray(value);}
+function isSha256(value){return typeof value==='string'&&SHA256_HEX.test(value);}
+function distributionFailure(message){throw new Error('RELEASE_DISTRIBUTION_PROVENANCE: '+message);}
+function readDistributionProvenance(pluginRoot){
+ const file=path.join(pluginRoot,'scripts',DISTRIBUTION_PROVENANCE);let provenance;
+ try{provenance=JSON.parse(fs.readFileSync(file,'utf8'));}catch{distributionFailure('distribution-provenance.json is missing or invalid');}
+ if(!isPlainObject(provenance)||provenance.schema!==1||!isSha256(provenance.sourceReleaseSha256)||!isSha256(provenance.sourceDependencyManifestSha256)||!isSha256(provenance.packageLockSha256)||!Number.isSafeInteger(provenance.dependencyFiles)||provenance.dependencyFiles<0){
+  distributionFailure('distribution-provenance.json has an unsupported schema or invalid hashes');
+ }
+ return provenance;
+}
+async function assertDistributionProvenance(pluginRoot){
+ const scripts=path.join(pluginRoot,'scripts');
+ if(fs.existsSync(path.join(scripts,'node_modules')))distributionFailure('distribution sealing requires scripts/node_modules to be omitted; use ordinary --seal for a source checkout');
+ const provenance=readDistributionProvenance(pluginRoot);
+ const {readDependencyIntegrityManifest}=await import('./dependency-integrity.mjs');
+ const dependency=readDependencyIntegrityManifest({dir:scripts});
+ if(!dependency.ok)distributionFailure('dependency-integrity.json is invalid: '+dependency.message);
+ const dependencyHash=sha256File(dependency.manifestPath);
+ if(dependencyHash!==provenance.sourceDependencyManifestSha256)distributionFailure('dependency-integrity.json does not match the verified source provenance');
+ const lockHash=sha256File(path.join(scripts,'package-lock.json'));
+ if(lockHash!==dependency.manifest.packageLockSha256||lockHash!==provenance.packageLockSha256)distributionFailure('dependency-integrity.json package-lock hash does not match the verified source provenance');
+ if(Object.keys(dependency.manifest.files).length!==provenance.dependencyFiles)distributionFailure('dependency-integrity.json file count does not match the verified source provenance');
+ const sourceReleasePath=path.join(scripts,DISTRIBUTION_SOURCE_RELEASE);let sourceRelease;
+ try{sourceRelease=JSON.parse(fs.readFileSync(sourceReleasePath,'utf8'));}catch{distributionFailure('distribution-source-release.json is missing or invalid');}
+ if(sha256File(sourceReleasePath)!==provenance.sourceReleaseSha256)distributionFailure('distribution-source-release.json does not match the verified source provenance');
+ if(!isPlainObject(sourceRelease)||sourceRelease.schema!==2||!isPlainObject(sourceRelease.files)||!isPlainObject(sourceRelease.runtimeFiles))distributionFailure('distribution-source-release.json has an unsupported release schema');
+ if(sourceRelease.runtimeFiles['scripts/dependency-integrity.json']!==dependencyHash)distributionFailure('dependency-integrity.json is not sealed by the verified source release');
+ if(sourceRelease.runtimeFiles['scripts/package-lock.json']!==lockHash)distributionFailure('package-lock.json is not sealed by the verified source release');
+ return provenance;
+}
 function assertCanonicalTextLineEndings(pluginRoot){
  const textExt=/\.(?:cjs|json|mjs|md|ps1|py|txt|yaml|yml)$/i;
  for(const rel of Object.keys(runtimeInventory(pluginRoot))){
@@ -58,13 +98,22 @@ function assertCanonicalTextLineEndings(pluginRoot){
   if(bytes.includes(13))throw new Error('RELEASE_NONCANONICAL_LINE_ENDINGS: '+rel+' contains CRLF; normalize to LF before sealing');
  }
 }
+function parseCliArgs(argv){
+ const known=new Set(['--seal','--distribution','--verify-source']);
+ for(const arg of argv)if(!known.has(arg))throw new Error('unknown option: '+arg);
+ const seal=argv.includes('--seal'),distribution=argv.includes('--distribution'),verifySource=argv.includes('--verify-source');
+ if(distribution&&!seal)throw new Error('--distribution requires --seal');
+ if(seal&&verifySource)throw new Error('--seal cannot be combined with --verify-source');
+ return {seal,distribution,verifySource};
+}
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- if(process.argv.includes('--seal')){
+ const options=parseCliArgs(process.argv.slice(2));
+ if(options.seal){
   assertCanonicalTextLineEndings(root);
-  await assertSealedDependencies(root);
+  if(options.distribution)await assertDistributionProvenance(root);else await assertSealedDependencies(root);
   const files=coreInventory(root),text=fs.readFileSync(path.join(root,'scripts','core','contracts.mjs'),'utf8');
   const coreVersion=/CORE_VERSION\s*=\s*'([^']+)'/.exec(text)?.[1];if(!coreVersion)throw new Error('Missing core version');
   fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion,files,runtimeFiles:runtimeInventory(root)},null,2)+'\n','utf8');
- }
+ }else if(options.verifySource)await verifySourceRelease(root);
  console.log(JSON.stringify(verifyRelease()));
 }

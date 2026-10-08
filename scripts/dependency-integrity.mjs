@@ -8,6 +8,7 @@ const MANIFEST_NAME = 'dependency-integrity.json';
 const MANIFEST_SCHEMA = 1;
 const DEFAULT_MAX_FILES = 20_000;
 const DEFAULT_MAX_BYTES = 400 * 1024 * 1024;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 // npm's cmd-shim version changes these generated launchers between Node/npm
 // releases. The orchestrator resolves the native CLI itself and never invokes
 // them; the published package files remain byte-sealed below.
@@ -64,13 +65,20 @@ function integrityFailure(message) {
   return {ok: false, code: 'RELEASE_DEPENDENCY_INTEGRITY', message: `RELEASE_DEPENDENCY_INTEGRITY: ${message}`};
 }
 
+function validRelativePath(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && !value.includes('\\')
+    && !value.includes('\0')
+    && !value.startsWith('/')
+    && !value.split('/').some(part => !part || part === '.' || part === '..');
+}
+
 export function dependencyIntegrityManifestPath(dir = scriptsDir) {
   return path.join(dir, MANIFEST_NAME);
 }
 
-export function verifyDependencyTree({dir = scriptsDir, maxFiles = DEFAULT_MAX_FILES, maxBytes = DEFAULT_MAX_BYTES} = {}) {
-  const lockPath = path.join(dir, 'package-lock.json');
-  const nodeModules = path.join(dir, 'node_modules');
+export function readDependencyIntegrityManifest({dir = scriptsDir} = {}) {
   const manifestPath = dependencyIntegrityManifestPath(dir);
   let manifest;
   try {
@@ -78,9 +86,23 @@ export function verifyDependencyTree({dir = scriptsDir, maxFiles = DEFAULT_MAX_F
   } catch {
     return integrityFailure('dependency-integrity.json is missing or invalid; restore with npm ci');
   }
-  if (manifest?.schema !== MANIFEST_SCHEMA || typeof manifest.packageLockSha256 !== 'string' || !manifest.files || Array.isArray(manifest.files)) {
+  if (manifest?.schema !== MANIFEST_SCHEMA || typeof manifest.packageLockSha256 !== 'string' || !SHA256_HEX.test(manifest.packageLockSha256) || !manifest.files || Array.isArray(manifest.files) || typeof manifest.files !== 'object') {
     return integrityFailure('dependency-integrity.json has an unsupported schema; restore with npm ci');
   }
+  for (const [name, digest] of Object.entries(manifest.files)) {
+    if (!validRelativePath(name) || typeof digest !== 'string' || !SHA256_HEX.test(digest)) {
+      return integrityFailure('dependency-integrity.json has invalid file hashes; restore with npm ci');
+    }
+  }
+  return {ok: true, code: null, message: null, manifest, manifestPath};
+}
+
+export function verifyDependencyTree({dir = scriptsDir, maxFiles = DEFAULT_MAX_FILES, maxBytes = DEFAULT_MAX_BYTES} = {}) {
+  const lockPath = path.join(dir, 'package-lock.json');
+  const nodeModules = path.join(dir, 'node_modules');
+  const parsed = readDependencyIntegrityManifest({dir});
+  if (!parsed.ok) return parsed;
+  const {manifest} = parsed;
   let lockHash;
   try {
     lockHash = sha256File(lockPath);
@@ -100,7 +122,7 @@ export function verifyDependencyTree({dir = scriptsDir, maxFiles = DEFAULT_MAX_F
     return integrityFailure('installed dependency files differ from the sealed tree; restore with npm ci');
   }
   for (const name of expectedNames) {
-    if (!/^[0-9a-f]{64}$/.test(String(manifest.files[name])) || files[name] !== manifest.files[name]) {
+    if (files[name] !== manifest.files[name]) {
       return integrityFailure(`installed dependency file differs from the sealed tree: ${name}; restore with npm ci`);
     }
   }
