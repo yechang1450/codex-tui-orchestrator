@@ -56,7 +56,15 @@ function inventoryNodeModules(root, {maxFiles = DEFAULT_MAX_FILES, maxBytes = DE
       if (rows.length > maxFiles) throw new Error('dependency tree exceeds the file limit');
     }
   };
-  if (!fs.statSync(root).isDirectory()) throw new Error('node_modules is missing');
+  let rootStat;
+  try {
+    rootStat = fs.lstatSync(root);
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error('node_modules is missing');
+    throw error;
+  }
+  if (rootStat.isSymbolicLink()) throw new Error('node_modules root is a symbolic link or junction');
+  if (!rootStat.isDirectory()) throw new Error('node_modules is not a directory');
   walk(root);
   return Object.fromEntries(rows);
 }

@@ -16,6 +16,14 @@ function fixture(t) {
   return {dir, packageDir};
 }
 
+function skipUnavailableDirectoryLink(t, error, label) {
+  if (process.platform === 'win32' && ['EACCES', 'EPERM'].includes(error?.code)) {
+    t.skip(`this Windows account cannot create a ${label}`);
+    return true;
+  }
+  return false;
+}
+
 test('locked dependency seal accepts the exact installed tree', t => {
   const {dir} = fixture(t);
   const seal = sealDependencyTree({dir});
@@ -71,3 +79,25 @@ test('locked dependency seal rejects a changed package lock and symbolic links',
   }
   assert.equal(verifyDependencyTree({dir}).code, 'RELEASE_DEPENDENCY_INTEGRITY');
 });
+
+for (const {label, type} of process.platform === 'win32'
+  ? [{label: 'junction', type: 'junction'}, {label: 'directory symbolic link', type: 'dir'}]
+  : [{label: 'directory symbolic link', type: 'dir'}]) {
+  test(`locked dependency verification rejects a root node_modules ${label}`, t => {
+    const {dir} = fixture(t);
+    sealDependencyTree({dir});
+    const nodeModules = path.join(dir, 'node_modules');
+    const target = path.join(dir, 'sealed-node_modules');
+    fs.renameSync(nodeModules, target);
+    try {
+      fs.symlinkSync(target, nodeModules, type);
+    } catch (error) {
+      if (skipUnavailableDirectoryLink(t, error, label)) return;
+      throw error;
+    }
+    assert.equal(fs.lstatSync(nodeModules).isSymbolicLink(), true, 'fixture must be a real reparse point');
+    const result = verifyDependencyTree({dir});
+    assert.equal(result.code, 'RELEASE_DEPENDENCY_INTEGRITY');
+    assert.match(result.message, /node_modules.*(?:symbolic link|junction)|(?:symbolic link|junction).*node_modules/i);
+  });
+}

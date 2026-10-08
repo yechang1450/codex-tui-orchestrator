@@ -52,7 +52,7 @@ test('sealing refuses a stale dependency seal without replacing release.json',()
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
-test('distribution sealing requires explicit verified source provenance when dependencies are omitted',()=>{
+test('distribution sealing requires explicit verified source provenance when dependencies are omitted',async t=>{
  const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-distribution-provenance-'));
  const source=path.join(root,'source'),dist=path.join(root,'dist');
  const sha256=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -86,6 +86,54 @@ test('distribution sealing requires explicit verified source provenance when dep
   const distribution=seal(['--seal','--distribution']);assert.equal(distribution.status,0,distribution.stderr);
   assert.equal(verifyRelease(dist).schema,2);
   const sealed=fs.readFileSync(path.join(dist,'release.json'),'utf8');
+  const nodeModules=path.join(dist,'scripts','node_modules');
+  const assertNodeModulesIsRejected=(label,create)=>{
+   try{
+    create(nodeModules);
+    const rejected=seal(['--seal','--distribution']);
+    assert.notEqual(rejected.status,0,`${label} must not be treated as omitted`);
+    assert.match(rejected.stderr,/RELEASE_DISTRIBUTION_PROVENANCE.*node_modules.*omitted/i);
+    assert.equal(fs.readFileSync(path.join(dist,'release.json'),'utf8'),sealed,`${label} must not replace the sealed distribution manifest`);
+   }finally{fs.rmSync(nodeModules,{recursive:true,force:true});}
+  };
+  await t.test('rejects an existing node_modules directory',()=>{
+   assertNodeModulesIsRejected('directory',file=>fs.mkdirSync(file));
+  });
+  await t.test('rejects an existing node_modules file',()=>{
+   assertNodeModulesIsRejected('file',file=>fs.writeFileSync(file,'not a dependency tree'));
+  });
+  await t.test('rejects an existing node_modules junction or directory symbolic link',child=>{
+   const target=path.join(root,'linked-node_modules');fs.mkdirSync(target);
+   const type=process.platform==='win32'?'junction':'dir';
+   try{fs.symlinkSync(target,nodeModules,type);}catch(error){
+    if(process.platform==='win32'&&['EACCES','EPERM'].includes(error?.code))return child.skip(`this Windows account cannot create a ${type}`);
+    throw error;
+   }
+   try{
+    assert.equal(fs.lstatSync(nodeModules).isSymbolicLink(),true,'fixture must be a real reparse point');
+    const rejected=seal(['--seal','--distribution']);
+    assert.notEqual(rejected.status,0,'junction or directory symbolic link must not be treated as omitted');
+    assert.match(rejected.stderr,/RELEASE_DISTRIBUTION_PROVENANCE.*node_modules.*omitted/i);
+    assert.equal(fs.readFileSync(path.join(dist,'release.json'),'utf8'),sealed);
+   }finally{fs.rmSync(nodeModules,{recursive:true,force:true});}
+  });
+  await t.test('rejects a dangling node_modules reparse point',child=>{
+   const target=path.join(root,'missing-node_modules-target');fs.mkdirSync(target);
+   const type=process.platform==='win32'?'junction':'dir';
+   try{fs.symlinkSync(target,nodeModules,type);}catch(error){
+    if(process.platform==='win32'&&['EACCES','EPERM'].includes(error?.code))return child.skip(`this Windows account cannot create a dangling ${type}`);
+    throw error;
+   }
+   try{
+    fs.rmSync(target,{recursive:true,force:true});
+    assert.equal(fs.existsSync(nodeModules),false,'the dangling link must reproduce the old existsSync blind spot');
+    assert.equal(fs.lstatSync(nodeModules).isSymbolicLink(),true,'fixture must be a dangling reparse point');
+    const rejected=seal(['--seal','--distribution']);
+    assert.notEqual(rejected.status,0,'a dangling link must not be treated as omitted');
+    assert.match(rejected.stderr,/RELEASE_DISTRIBUTION_PROVENANCE.*node_modules.*omitted/i);
+    assert.equal(fs.readFileSync(path.join(dist,'release.json'),'utf8'),sealed);
+   }finally{fs.rmSync(nodeModules,{recursive:true,force:true});}
+  });
   const malformed={...dependency,packageLockSha256:'0'.repeat(64)};
   fs.writeFileSync(path.join(dist,'scripts/dependency-integrity.json'),JSON.stringify(malformed,null,2)+'\n');
   const rejected=seal(['--seal','--distribution']);assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/RELEASE_DISTRIBUTION_PROVENANCE.*dependency-integrity/i);

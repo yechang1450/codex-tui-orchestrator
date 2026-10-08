@@ -62,6 +62,12 @@ function sha256File(file){return crypto.createHash('sha256').update(fs.readFileS
 function isPlainObject(value){return Boolean(value)&&typeof value==='object'&&!Array.isArray(value);}
 function isSha256(value){return typeof value==='string'&&SHA256_HEX.test(value);}
 function distributionFailure(message){throw new Error('RELEASE_DISTRIBUTION_PROVENANCE: '+message);}
+function lstatExists(file){
+ try{fs.lstatSync(file);return true;}catch(error){
+  if(error?.code==='ENOENT')return false;
+  throw error;
+ }
+}
 function readDistributionProvenance(pluginRoot){
  const file=path.join(pluginRoot,'scripts',DISTRIBUTION_PROVENANCE);let provenance;
  try{provenance=JSON.parse(fs.readFileSync(file,'utf8'));}catch{distributionFailure('distribution-provenance.json is missing or invalid');}
@@ -72,7 +78,7 @@ function readDistributionProvenance(pluginRoot){
 }
 async function assertDistributionProvenance(pluginRoot){
  const scripts=path.join(pluginRoot,'scripts');
- if(fs.existsSync(path.join(scripts,'node_modules')))distributionFailure('distribution sealing requires scripts/node_modules to be omitted; use ordinary --seal for a source checkout');
+ if(lstatExists(path.join(scripts,'node_modules')))distributionFailure('distribution sealing requires scripts/node_modules to be omitted; use ordinary --seal for a source checkout');
  const provenance=readDistributionProvenance(pluginRoot);
  const {readDependencyIntegrityManifest}=await import('./dependency-integrity.mjs');
  const dependency=readDependencyIntegrityManifest({dir:scripts});
