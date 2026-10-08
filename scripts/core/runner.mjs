@@ -144,8 +144,21 @@ export function readOwnedLauncherExitEvidence(files,attempt,pid){
   if(!files?.rf||!attempt?.token)return null;
   try{
     const raw=readUtf8Bounded(files.rf,'launcher result',1024*1024);
-    const first=String(raw||'').replace(/^\uFEFF/,'').split(/\r?\n/,1)[0];
-    const result=JSON.parse(first),expectedPid=Number(pid);
+    const text=String(raw||'').replace(/^\uFEFF/,''),expectedPid=Number(pid);
+    // Headless workers persist their controller-owned result as formatted JSON
+    // rather than the visible launcher's one-line PowerShell record.  Keep the
+    // two protocols separate: only the headless result's full, attempt-bound
+    // identity may stand in for a missing live process identity.
+    if(files.mode==='headless'){
+      const result=JSON.parse(text),resultPid=Number(result?.pid),exitCode=result?.exitCode;
+      if(typeof attempt.runId!=='string'||!attempt.runId||result?.runId!==attempt.runId||
+         result?.token!==attempt.token||!validLauncherPid(expectedPid)||
+         !validLauncherPid(resultPid)||resultPid!==expectedPid||typeof result?.done!=='boolean'||
+         !Number.isSafeInteger(exitCode)||(result.done===true&&exitCode!==0))return null;
+      return {...result,__DONE__:true,__TOKEN__:result.token,__LAUNCHER_PID__:resultPid,__EXIT__:exitCode};
+    }
+    const first=text.split(/\r?\n/,1)[0];
+    const result=JSON.parse(first);
     const resultPid=Number(result?.__LAUNCHER_PID__);
     if(result?.__DONE__!==true||result.__TOKEN__!==attempt.token||
        !validLauncherPid(expectedPid)||!validLauncherPid(resultPid)||resultPid!==expectedPid)return null;
@@ -233,7 +246,7 @@ export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExi
           !attempt.taskIds?.length||attempt.taskIds.some(id=>!block.taskIds.includes(id))||!entry.launcherFiles)
         throw new Error('Final cleanup ownership is not bound to this run attempt');
       validateSavedLauncherFiles(sum,block,entry,attempt);
-      let expected=entry.launcher,confirmedExitedByPidFile=false;
+      let expected=entry.launcher,confirmedExitedByPidFile=false,ownedExitEvidence=null;
       if(fs.existsSync(entry.launcherFiles.pidf)){
         const pid=Number((readUtf8Bounded(entry.launcherFiles.pidf,'launcher PID',128)||'').replace(/^\uFEFF/,''));
         if(!Number.isSafeInteger(pid)||pid<=0||pid>4194304)throw new Error('Final cleanup controller PID file is invalid');
@@ -247,7 +260,8 @@ export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExi
           const present=probePid(pid);
           if(present===true)throw new Error('Final cleanup cannot prove launcher exit from its controller PID file');
           if(present!==false)throw new Error('Final cleanup launcher presence is unavailable; exit remains unproven');
-          if(!readOwnedLauncherExitEvidence(entry.launcherFiles,attempt,pid))throw new Error('Final cleanup cannot prove launcher exit from its controller PID file and attempt result');
+          ownedExitEvidence=readOwnedLauncherExitEvidence(entry.launcherFiles,attempt,pid);
+          if(!ownedExitEvidence)throw new Error('Final cleanup cannot prove launcher exit from its controller PID file and attempt result');
           confirmedExitedByPidFile=true;
         }
       }
@@ -259,6 +273,10 @@ export async function sweepRunProcesses(sum,{close,waitForExit=waitForProcessExi
         if(typeof close!=='function')throw new Error('Final cleanup has no owned-process closer');
         await close(expected.ProcessId,expected);
         if(!(await waitForExit(expected)))throw new Error('Owned launcher still alive after final cleanup; lease retained');
+      }
+      if(confirmedExitedByPidFile&&entry.launcherFiles?.mode==='headless'){
+        const evidence={token:ownedExitEvidence.__TOKEN__,pid:Number(ownedExitEvidence.__LAUNCHER_PID__),exitCode:ownedExitEvidence.__EXIT__,at:Date.now()};
+        entry.exitEvidence=evidence;attempt.exitEvidence=evidence;
       }
       entry.exitConfirmed=true;
       if(!wasConfirmed)stats.closed++;

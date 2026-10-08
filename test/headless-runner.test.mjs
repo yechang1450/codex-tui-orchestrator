@@ -59,7 +59,10 @@ const hooks={...createHeadlessHooks({workspace:options.workspace,cli:process.exe
 const sum=await runWindows(process.argv[2]?'':'执行甲；执行乙',hooks,{...options,resume:!!process.argv[2]});process.exitCode=sum.success?0:1;`);
   const children=[];let first;
   const start=resume=>{const child=spawn(process.execPath,[controller,...(resume?['resume']:[])],{windowsHide:true,stdio:['ignore','pipe','pipe']});children.push(child);child.stdout.resume();child.stderr.resume();return child;};
-  const waitFor=async condition=>{const end=Date.now()+60000;while(Date.now()<end){try{if(condition())return;}catch{}await pause(100);}throw new Error('Controlled worker readiness timed out');};
+  // Windows CIM identity snapshots can queue behind unrelated controllers on a
+  // busy host. Keep the restart assertion bounded, while allowing the real
+  // hidden-worker fixture to reach its durable checkpoint.
+  const waitFor=async condition=>{const end=Date.now()+120000;while(Date.now()<end){try{if(condition())return;}catch{}await pause(100);}throw new Error('Controlled worker readiness timed out');};
   try{
     const parent=start(false);
     const cp=path.join(path.dirname(f.summary),'attempts','B1','1','checkpoints','T002.json');
@@ -72,6 +75,8 @@ const sum=await runWindows(process.argv[2]?'':'执行甲；执行乙',hooks,{...
     assert.equal(await finished,0);
     const final=JSON.parse(fs.readFileSync(f.summary));
     assert.equal(final.success,true);assert.equal(final.results.B1.attempts.length,1);
+    assert.equal(final.results.B1.exitConfirmed,true,'the resumed controller must bind the completed worker exit to its original attempt');
+    assert.equal(final.results.B1.exitEvidence.token,first.results.B1.attempts[0].token);
     assert.equal(final.results.B1.launcher.ProcessId,first.results.B1.launcher.ProcessId);
     assert.equal(JSON.parse(fs.readFileSync(path.join(f.workspace,'count.json'))).count,1);
   }finally{

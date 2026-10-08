@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {runWindows,readOwnedLauncherExitEvidence,waitForOwnedLauncherExit,sweepRunProcesses,classifySpawnResult} from '../scripts/core/runner.mjs';
-import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
+import {controllerWindowsDir,controllerHeadlessBase} from '../scripts/core/controller-state.mjs';
 
 const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
 fs.mkdirSync(family,{recursive:true});
@@ -39,6 +39,64 @@ test('owned launcher exit evidence binds the current token and PID',async()=>{
     assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>{throw new Error('transient pid read')},probePid:()=>false,timeoutMs:20}),null);
     assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>4242,probePid:()=>{throw new Error('transient presence probe')},timeoutMs:20}),null);
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('headless exit evidence binds a formatted result to the current run, token and PID',async()=>{
+  const dir=fs.mkdtempSync(path.join(family,'headless-launcher-evidence-'));
+  const files={mode:'headless',pidf:path.join(dir,'exec-B1.pid'),rf:path.join(dir,'exec-B1.result.json')};
+  const attempt={runId:'headless-run',token:'headless-run-B1-a1-token'};
+  const write=result=>fs.writeFileSync(files.rf,JSON.stringify(result,null,2),'utf8');
+  try{
+    fs.writeFileSync(files.pidf,'4242','utf8');
+    write({runId:attempt.runId,token:attempt.token,pid:4242,done:true,exitCode:0});
+    const evidence=readOwnedLauncherExitEvidence(files,attempt,4242);
+    assert.equal(evidence.__TOKEN__,attempt.token);
+    assert.equal(evidence.__LAUNCHER_PID__,4242);
+    assert.equal(evidence.__EXIT__,0);
+    const proved=await waitForOwnedLauncherExit(files,attempt,{readPid:()=>4242,probePid:()=>false,timeoutMs:20});
+    assert.equal(proved.__TOKEN__,attempt.token);
+    // A failed task can still prove that this owned worker exited. Success is
+    // decided by the normal task receipt checks, not by this ownership proof.
+    write({runId:attempt.runId,token:attempt.token,pid:4242,done:false,exitCode:1});
+    assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242).__EXIT__,1);
+    for(const change of [
+      {runId:'foreign-run'},
+      {token:'foreign-token'},
+      {pid:4243},
+      {done:'true'},
+      {exitCode:'0'},
+      {done:true,exitCode:1},
+    ]){
+      write({...{runId:attempt.runId,token:attempt.token,pid:4242,done:true,exitCode:0},...change});
+      assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242),null,JSON.stringify(change));
+    }
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('final sweep records a verified headless worker exit for a later resume',async()=>{
+  const workspace=fs.mkdtempSync(path.join(family,'headless-sweep-'));
+  const controllerRoot=fs.mkdtempSync(path.join(family,'headless-sweep-controller-'));
+  const previous=process.env.ORCH_CONTROLLER_ROOT;process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+  try{
+    const runId='headless-sweep',token='headless-sweep-B1-a1-token',attempt={
+      runId,token,number:1,taskIds:['T001'],file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json')
+    };
+    fs.mkdirSync(path.dirname(attempt.file),{recursive:true});fs.writeFileSync(attempt.file,JSON.stringify(attempt),'utf8');
+    const base=controllerHeadlessBase(workspace,attempt.file,'B1');fs.mkdirSync(path.dirname(base),{recursive:true});
+    const files={mode:'headless',lp:base+'.json',pf:base+'.prompt.txt',pidf:base+'.pid',rf:base+'.result.json',stdout:base+'.stdout.jsonl',stderr:base+'.stderr.log'};
+    fs.writeFileSync(files.lp,JSON.stringify({version:1,cli:process.execPath,args:[],workspace,runId,token,attemptFile:attempt.file,timeoutMs:1000,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'}),'utf8');
+    fs.writeFileSync(files.pidf,'4242','utf8');
+    fs.writeFileSync(files.rf,JSON.stringify({runId,token,pid:4242,done:true,exitCode:0},null,2),'utf8');
+    const entry={status:'verified',token,attempts:[attempt],launcherFiles:files,exitConfirmed:false};
+    const summary={runId,workspace,blocks:[{key:'B1',taskIds:['T001']}],results:{B1:entry}};
+    const stats=await sweepRunProcesses(summary,{identify:()=>null,probePid:()=>false,waitForExit:async()=>true,close:async()=>{throw new Error('closed worker must not be reopened');}});
+    assert.deepEqual(stats,{checked:1,closed:1,failed:0,retained:0});
+    assert.equal(entry.exitConfirmed,true);
+    assert.deepEqual(entry.exitEvidence&&{token:entry.exitEvidence.token,pid:entry.exitEvidence.pid,exitCode:entry.exitEvidence.exitCode},{token,pid:4242,exitCode:0});
+  }finally{
+    if(previous===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=previous;
+    fs.rmSync(workspace,{recursive:true,force:true});fs.rmSync(controllerRoot,{recursive:true,force:true});
+  }
 });
 
 test('spawn false is only cleanly absent when the adapter proves no process exists',()=>{
