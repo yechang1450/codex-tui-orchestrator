@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "packageLockSha256": "42a014c64002fe7f92a1bd4fad49900e9984b4fe592897aca5ac0e422aaa0351",
+  "packageLockSha256": "b96a56541a032eb83a1f427b003cc383333b16f39106ce91847fb0e13ceb1f6f",
   "files": {
     "@openai/codex/bin/codex.js": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
     "@openai/codex/package.json": "0580493a92b83d962b8fdc8585a66c963431c6ddb54fabe4b3797970095f000d",

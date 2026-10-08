@@ -44,6 +44,12 @@ export function runtimeInventory(pluginRoot){
  }
  return files;
 }
+async function assertSealedDependencies(pluginRoot){
+ const {verifyDependencyTree}=await import('./dependency-integrity.mjs');
+ const result=verifyDependencyTree({dir:path.join(pluginRoot,'scripts')});
+ if(!result.ok)throw new Error(result.message);
+ return result;
+}
 function assertCanonicalTextLineEndings(pluginRoot){
  const textExt=/\.(?:cjs|json|mjs|md|ps1|py|txt|yaml|yml)$/i;
  for(const rel of Object.keys(runtimeInventory(pluginRoot))){
@@ -55,6 +61,7 @@ function assertCanonicalTextLineEndings(pluginRoot){
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
  if(process.argv.includes('--seal')){
   assertCanonicalTextLineEndings(root);
+  await assertSealedDependencies(root);
   const files=coreInventory(root),text=fs.readFileSync(path.join(root,'scripts','core','contracts.mjs'),'utf8');
   const coreVersion=/CORE_VERSION\s*=\s*'([^']+)'/.exec(text)?.[1];if(!coreVersion)throw new Error('Missing core version');
   fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion,files,runtimeFiles:runtimeInventory(root)},null,2)+'\n','utf8');

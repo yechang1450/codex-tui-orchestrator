@@ -11,12 +11,17 @@ test('sealing rejects CRLF runtime text before replacing the release manifest',(
  const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-eol-'));
  try{
   for(const dir of ['.codex-plugin','scripts/core','skills'])fs.mkdirSync(path.join(root,dir),{recursive:true});
-  fs.copyFileSync(fileURLToPath(new URL('../scripts/release-integrity.mjs',import.meta.url)),path.join(root,'scripts/release-integrity.mjs'));
+  for(const file of ['release-integrity.mjs','dependency-integrity.mjs'])fs.copyFileSync(fileURLToPath(new URL('../scripts/'+file,import.meta.url)),path.join(root,'scripts',file));
+  fs.mkdirSync(path.join(root,'scripts','node_modules','@openai','codex-sdk'),{recursive:true});
+  fs.writeFileSync(path.join(root,'scripts/package-lock.json'),'{"lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(root,'scripts/node_modules','@openai','codex-sdk','package.json'),'{"name":"@openai/codex-sdk"}\n');
+  fs.writeFileSync(path.join(root,'scripts/node_modules','@openai','codex-sdk','index.js'),'export const ready = true;\n');
   fs.writeFileSync(path.join(root,'scripts/core/contracts.mjs'),"export const CORE_VERSION='test';\n");
   fs.writeFileSync(path.join(root,'scripts/core/orchestrate-sdk.mjs'),'// entry\n');
   fs.writeFileSync(path.join(root,'repair.mjs'),'// repair\n');
   const manifest=path.join(root,'.codex-plugin/plugin.json');fs.writeFileSync(manifest,'{\r\n  "name": "fixture"\r\n}\r\n');
   fs.writeFileSync(path.join(root,'release.json'),'previous seal');
+  const dependency=spawnSync(process.execPath,[path.join(root,'scripts/dependency-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});assert.equal(dependency.status,0,dependency.stderr);
   const seal=()=>spawnSync(process.execPath,[path.join(root,'scripts/release-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});
   const rejected=seal();assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/RELEASE_NONCANONICAL_LINE_ENDINGS.*plugin\.json/);
   assert.equal(fs.readFileSync(path.join(root,'release.json'),'utf8'),'previous seal');
@@ -24,6 +29,29 @@ test('sealing rejects CRLF runtime text before replacing the release manifest',(
   const accepted=seal();assert.equal(accepted.status,0,accepted.stderr);assert.equal(verifyRelease(root).schema,2);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+test('sealing refuses a stale dependency seal without replacing release.json',()=>{
+ const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-dependency-order-'));
+ try{
+  for(const dir of ['scripts/core','scripts/node_modules/@openai/codex-sdk'])fs.mkdirSync(path.join(root,dir),{recursive:true});
+  for(const file of ['release-integrity.mjs','dependency-integrity.mjs'])fs.copyFileSync(fileURLToPath(new URL('../scripts/'+file,import.meta.url)),path.join(root,'scripts',file));
+  fs.writeFileSync(path.join(root,'scripts/core/contracts.mjs'),"export const CORE_VERSION='test';\n");
+  fs.writeFileSync(path.join(root,'scripts/core/orchestrate-sdk.mjs'),'// entry\n');
+  fs.writeFileSync(path.join(root,'scripts/package-lock.json'),'{"lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(root,'scripts/node_modules/@openai/codex-sdk/package.json'),'{"name":"@openai/codex-sdk"}\n');
+  fs.writeFileSync(path.join(root,'scripts/node_modules/@openai/codex-sdk/index.js'),'export const ready = true;\n');
+  const dependencySeal=()=>spawnSync(process.execPath,[path.join(root,'scripts/dependency-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});
+  const releaseSeal=()=>spawnSync(process.execPath,[path.join(root,'scripts/release-integrity.mjs'),'--seal'],{encoding:'utf8',windowsHide:true});
+  const initial=dependencySeal();assert.equal(initial.status,0,initial.stderr);
+  fs.writeFileSync(path.join(root,'scripts/package-lock.json'),'{"lockfileVersion":4}\n');
+  const previous='previous outer seal\n';fs.writeFileSync(path.join(root,'release.json'),previous);
+  const rejected=releaseSeal();assert.notEqual(rejected.status,0);assert.match(rejected.stderr,/RELEASE_DEPENDENCY_INTEGRITY.*package-lock\.json/);
+  assert.equal(fs.readFileSync(path.join(root,'release.json'),'utf8'),previous);
+  const resealed=dependencySeal();assert.equal(resealed.status,0,resealed.stderr);
+  const accepted=releaseSeal();assert.equal(accepted.status,0,accepted.stderr);
+  assert.equal(verifyRelease(root).schema,2);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
 test('release verification rejects changed and injected core files',()=>{
  const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-test-'));
  try{const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});

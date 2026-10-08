@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url));
 const MANIFEST_NAME = 'dependency-integrity.json';
@@ -120,7 +120,8 @@ export function sealDependencyTree({dir = scriptsDir, maxFiles = DEFAULT_MAX_FIL
   return {ok: true, path: manifestPath, files: Object.keys(manifest.files).length, packageLockSha256: manifest.packageLockSha256};
 }
 
-if (process.argv[2] === '--seal') {
+const invokedPath = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href;
+if (invokedPath && import.meta.url === invokedPath && process.argv[2] === '--seal') {
   const result = sealDependencyTree();
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
