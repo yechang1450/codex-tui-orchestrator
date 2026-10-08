@@ -371,15 +371,20 @@ test('U10 验收检查里的超长路径/不存在目录必须给出可读真因
 
 // -------------------------------------------------------------- 账本读取入口
 test('E1 公开入口任何失败只回一行 FATAL（默认零 Node 栈帧），ORCH_DEBUG=1 才附栈', () => {
-  const failure = cli(['--nope'], {});
-  seen('entry.fatal', `status=${failure.status} stderr=${JSON.stringify(failure.stderr)}`);
-  assert.equal(failure.status, 1, '失败必须给出非 0 退出码');
-  assert.equal(String(failure.stderr).trim(), '[orchestrator] FATAL: Unknown mode: --nope', '默认必须只回一行可读真因');
-  assert.doesNotMatch(String(failure.stderr), /\n\s+at /, '默认不得把 Node 栈帧丢给调用方');
-  const debug = cli(['--nope'], {env: {ORCH_DEBUG: '1'}});
-  seen('entry.fatal.debug', `status=${debug.status} hasStack=${/\n\s+at /.test(String(debug.stderr))}`);
-  assert.equal(debug.status, 1);
-  assert.match(String(debug.stderr), /\n\s+at /, 'ORCH_DEBUG=1 时必须附栈，排障才不用改代码');
+  const workspace = newDir('entry-fatal');
+  try {
+    const failure = cli(['--nope'], {workspace, env: {ORCH_DEBUG: '0'}});
+    seen('entry.fatal', `status=${failure.status} stderr=${JSON.stringify(failure.stderr)}`);
+    assert.equal(failure.status, 1, '失败必须给出非 0 退出码');
+    assert.equal(String(failure.stderr).trim(), '[orchestrator] FATAL: Unknown mode: --nope', '默认必须只回一行可读真因');
+    assert.doesNotMatch(String(failure.stderr), /\n\s+at /, '默认不得把 Node 栈帧丢给调用方');
+    const debug = cli(['--nope'], {workspace, env: {ORCH_DEBUG: '1'}});
+    seen('entry.fatal.debug', `status=${debug.status} hasStack=${/\n\s+at /.test(String(debug.stderr))}`);
+    assert.equal(debug.status, 1);
+    assert.match(String(debug.stderr), /\n\s+at /, 'ORCH_DEBUG=1 时必须附栈，排障才不用改代码');
+  } finally {
+    fs.rmSync(workspace, {recursive: true, force: true});
+  }
 });
 
 test('S9 verifyRun 读被改坏的 summary.json 必须点名文件；缺文件仍保持 ENOENT 语义', () => {
