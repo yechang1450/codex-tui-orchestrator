@@ -587,8 +587,21 @@ test('runtime: interactive launcher template ships Get-LastReport + tolerant ext
     assert.match(body, /Get-LastReport/);
     assert.match(body, /\$report = \$msg/);
     assert.match(body, /__ORCH_DONE__/);
-    assert.match(body, /window-t-rt\.pid' \+ '\.tmp-/,'write the PID through a same-directory temporary file');
-    assert.match(body, /Move-Item[^\r\n]*-LiteralPath \$pidTemp[^\r\n]*-Destination/,'publish the closed temporary PID file atomically');
+    // The launcher's PID marker must never be published directly: readers either
+    // see the previous complete marker or the atomically moved complete marker.
+    // Construct literals as PowerShell does so the contract also holds when a
+    // workspace path contains an apostrophe.
+    const psSingleQuoted = (value) => "'" + String(value).replaceAll("'", "''") + "'";
+    const tempPid = `$pidTemp = ${psSingleQuoted(pidf + '.tmp-')} + $PID + '-' + [guid]::NewGuid().ToString('N')`;
+    const writePid = '$PID | Set-Content -LiteralPath $pidTemp -Encoding UTF8';
+    const publishPid = `Move-Item -LiteralPath $pidTemp -Destination ${psSingleQuoted(pidf)} -Force`;
+    const tempIndex = body.indexOf(tempPid);
+    const writeIndex = body.indexOf(writePid);
+    const publishIndex = body.indexOf(publishPid);
+    assert.notEqual(tempIndex, -1, 'temporary PID name must derive from the complete PID-file path and add process + GUID uniqueness');
+    assert.notEqual(writeIndex, -1, 'the PID must be written to the temporary file');
+    assert.notEqual(publishIndex, -1, "the atomic move must publish to this launcher's exact PID file");
+    assert.ok(tempIndex < writeIndex && writeIndex < publishIndex, 'write the complete temporary PID file before atomically publishing it');
     assert.match(body, /\$_\.content/);
     assert.match(body, /\$_\.value/);
     const parse = spawnSync('powershell.exe', ['-NoProfile', '-Command', '$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile($env:ORCH_PARSE_FILE,[ref]$t,[ref]$e)|Out-Null;if($e.Count){$e|ForEach-Object{$_.Message};exit 1}else{Write-Output PARSE_OK}'], { env: { ...process.env, ORCH_PARSE_FILE: lp }, encoding: 'utf8' });
