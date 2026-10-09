@@ -17,5 +17,6 @@ Thumbs.db
 .vscode/
 .idea/
 .plugin-eval/
+.superpowers/
 .agent-cache.json
 scripts/.agent-cache.json

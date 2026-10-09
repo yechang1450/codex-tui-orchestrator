@@ -171,7 +171,7 @@ Expected: zero failures; record intentional skips separately.
 
 Use a clean temporary `CODEX_HOME`, install only the packaged candidate, and run release-integrity verification without reusing an existing plugin cache.
 
-- [ ] **Step 3: Run real visible TUI execution from `C:\workspace`**
+- [ ] **Step 3: Run real visible TUI execution from the trusted initiating workspace**
 
 Use actual launched windows, task receipts, and the initiating workspace evidence. Close only test-owned windows after their confirmed exits.
 

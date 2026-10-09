@@ -43,5 +43,5 @@ The malformed-contract test explicitly supplies a clean sibling workspace and ex
 - The three focused regression groups pass with their new red-to-green coverage.
 - The full serial suite completes with no failures.
 - A fresh isolated distribution installation and release-integrity verification succeed after all source and documentation changes are sealed.
-- A real visible TUI execution from `C:\workspace` proves that launched windows inherit the initiating workspace and produces task receipts.
+- A real visible TUI execution from a trusted initiating workspace proves that launched windows inherit that workspace and produces task receipts.
 - The official deep security scan runs only after the code and release artifact are frozen.
