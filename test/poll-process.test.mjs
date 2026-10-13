@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,7 +10,7 @@ import {processSnapshot} from '../scripts/core/leases.mjs';
 import {createStatusPublisher} from '../scripts/core/status-events.mjs';
 const source=fileURLToPath(new URL('..',import.meta.url));
 test('public poll times out while a recorded real process lives, then succeeds after it exits',{skip:process.platform!=='win32'},async()=>{
- const family=path.join(source,'temp');fs.mkdirSync(family,{recursive:true});
+ const family=testTempFamily('poll-process');fs.mkdirSync(family,{recursive:true});
  const root=fs.mkdtempSync(path.join(family,'poll-process-'));
  const controllerRoot=fs.mkdtempSync(path.join(family,'poll-process-controller-'));
  const previousControllerRoot=process.env.ORCH_CONTROLLER_ROOT;

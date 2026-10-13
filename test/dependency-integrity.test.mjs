@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {sealDependencyTree, verifyDependencyTree} from '../scripts/dependency-integrity.mjs';
+
+const sourceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const dependencyCli = path.join(sourceRoot, 'scripts', 'dependency-integrity.mjs');
 
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orch-dep-integrity-'));
@@ -31,6 +36,28 @@ test('locked dependency seal accepts the exact installed tree', t => {
   const result = verifyDependencyTree({dir});
   assert.equal(result.ok, true);
   assert.equal(result.files, 2);
+});
+
+test('dependency integrity CLI verifies a sealed tree and rejects inert arguments', () => {
+  const verify = spawnSync(process.execPath, [dependencyCli, '--verify'], {
+    cwd: sourceRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  assert.equal(verify.status, 0, verify.stderr);
+  const report = JSON.parse(verify.stdout);
+  assert.equal(report.ok, true);
+  assert.ok(Number.isSafeInteger(report.files) && report.files > 0);
+
+  for (const args of [['--unknown'], ['--seal', '--verify']]) {
+    const rejected = spawnSync(process.execPath, [dependencyCli, ...args], {
+      cwd: sourceRoot,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    assert.notEqual(rejected.status, 0, `${args.join(' ')} must not silently succeed`);
+    assert.match(rejected.stderr, /unknown option|cannot be combined/i);
+  }
 });
 
 test('npm generated codex shims can vary while package bytes stay sealed', t => {

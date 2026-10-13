@@ -8,6 +8,7 @@ const VERSION_FILES = [
   'scripts/package.json',
   'scripts/package-lock.json'
 ];
+const VERSION_TEXT_FILES = ['docs/release-policy.md'];
 const RC_VERSION = /^(\d+)\.(\d+)\.(\d+)-rc\.(\d+)(?:\+[^+]+)?$/;
 
 function jsonPath(root, relativePath) {
@@ -71,7 +72,6 @@ export function readPluginVersion(root = REPO_ROOT) {
 export function writePluginVersion(root = REPO_ROOT, requestedVersion) {
   const current = readPluginVersion(root);
   const version = normalizeRcVersion(requestedVersion);
-  if (current === version) return {previous: current, version, changed: false};
 
   const updates = [];
   for (const relativePath of VERSION_FILES) {
@@ -92,12 +92,28 @@ export function writePluginVersion(root = REPO_ROOT, requestedVersion) {
     updates.push({file, updated});
   }
 
+  for (const relativePath of VERSION_TEXT_FILES) {
+    const file = jsonPath(root, relativePath);
+    const source = fs.readFileSync(file, 'utf8');
+    const pattern = new RegExp(`(Current candidate:\\s+core\\s+[^,\\n]+,\\s+plugin\\s+)${quoteForRegExp(current)}(\\.)`, 'g');
+    let replacements = 0;
+    const updated = source.replace(pattern, (_match, prefix, suffix) => {
+      replacements += 1;
+      return `${prefix}${version}${suffix}`;
+    });
+    if (replacements !== 1) {
+      throw new Error(`expected one current candidate version in ${relativePath}, found ${replacements}`);
+    }
+    updates.push({file, updated});
+  }
+
+  const changed = updates.some(({file, updated}) => fs.readFileSync(file, 'utf8') !== updated);
   for (const {file, updated} of updates) fs.writeFileSync(file, updated, 'utf8');
 
   if (readPluginVersion(root) !== version) {
     throw new Error('release manifest versions did not converge after update');
   }
-  return {previous: current, version, changed: true};
+  return {previous: current, version, changed};
 }
 
 function parseArguments(argv) {

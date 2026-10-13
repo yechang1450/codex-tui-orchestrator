@@ -5,9 +5,11 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {createHash} from 'node:crypto';
 import { assertTrustedNpm, pickNpmCli } from '../npm-cli.mjs';
-import {resolvePiHost,piArgs} from './pi-host.mjs';
 import {assertNoReparsePoints} from './runtime-context.mjs';
-import {trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from './leases.mjs';
+import {trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from './windows-system.mjs';
+import {runtimeCliPrefix} from './runtime-cli-prefix.mjs';
+import {assertPrivateWindowsRoot} from './private-root.mjs';
+import {constrainWorkerPolicy} from './worker-authorization.mjs';
 
 const WIN_TARGETS = Object.freeze([
   ['x86_64-pc-windows-msvc', 'codex.exe'],
@@ -73,7 +75,7 @@ function fileIdentity(file) {
   } catch { return null; }
 }
 
-// Desktop Codex and the pinned @openai/codex@0.160.0 Windows package use
+// Desktop Codex and the pinned @openai/codex@0.162.1 Windows package use
 // different valid OpenAI signing certificates. The latter can be external to
 // an installed cache even when bootstrap authenticated its package tree.
 const TRUSTED_CLI_CERTIFICATES = Object.freeze([
@@ -94,10 +96,10 @@ const TRUSTED_CLI_CERTIFICATES = Object.freeze([
 const TRUSTED_DESKTOP_CLI_SUBJECTS = Object.freeze([
   'CN="OpenAI OpCo, LLC", O="OpenAI OpCo, LLC", L=San Francisco, S=California, C=US',
 ]);
-const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine(([PSCustomObject]@{thumbprint=$s.SignerCertificate.Thumbprint;subject=$s.SignerCertificate.Subject}|ConvertTo-Json -Compress))';
+const AUTHENTICODE_SCRIPT = 'Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; $s=Get-AuthenticodeSignature -LiteralPath $env:ORCH_AUTHENTICODE_TARGET -ErrorAction Stop; if ([string]$s.Status -ne "Valid" -or $null -eq $s.SignerCertificate) { exit 2 }; [Console]::Out.WriteLine(([PSCustomObject]@{thumbprint=$s.SignerCertificate.Thumbprint;subject=$s.SignerCertificate.Subject;issuer=$s.SignerCertificate.Issuer}|ConvertTo-Json -Compress))';
 
-function readAuthenticodeSigner(file, env = process.env, spawn = spawnSync) {
-  if (process.platform !== 'win32') return {thumbprint: null, subject: null};
+export function readAuthenticodeSigner(file, env = process.env, spawn = spawnSync) {
+  if (process.platform !== 'win32') return {thumbprint: null, subject: null, issuer: null};
   try {
     if (!fs.statSync(file).isFile()) return null;
     // The verifier itself is security-sensitive.  Never let a caller-supplied
@@ -117,10 +119,14 @@ function readAuthenticodeSigner(file, env = process.env, spawn = spawnSync) {
     const output = String(result.stdout || '').trim();
     let parsed;
     try { parsed = JSON.parse(output); }
-    catch { parsed = {thumbprint: output, subject: null}; }
+    catch { parsed = {thumbprint: output, subject: null, issuer: null}; }
     const thumbprint = String(parsed?.thumbprint || '').replace(/\s+/g, '').toUpperCase();
     if (!/^[A-F0-9]{40}$/.test(thumbprint)) return null;
-    return {thumbprint, subject: typeof parsed?.subject === 'string' ? parsed.subject : null};
+    return {
+      thumbprint,
+      subject: typeof parsed?.subject === 'string' ? parsed.subject : null,
+      issuer: typeof parsed?.issuer === 'string' ? parsed.issuer : null,
+    };
   } catch {
     return null;
   }
@@ -157,11 +163,9 @@ export function verifyCodexCliPublisher(file, env = process.env, spawn = spawnSy
   return isOfficialDesktopCliPath(file, env) && TRUSTED_DESKTOP_CLI_SUBJECTS.includes(signer.subject);
 }
 
-// Adapter contract: resolve a real CLI before any planner/window is started.
-// Additional adapters must implement planning, interactive argv and completion
-// capture together; a CLI name alone is not proof of compatibility.
+// Codex contract: resolve a verified Codex CLI before any planner or window
+// starts. A CLI name alone is not proof of compatibility.
 export const adapters = Object.freeze({
-  pi: Object.freeze({id:'pi',label:'pi agent',native:false,completionMarker:'__ORCH_DONE__',verified:false}),
   codex: Object.freeze({ id: 'codex', label: 'Codex CLI', native: true,
     modelEnv: 'ORCH_MODEL', effortEnv: 'ORCH_EFFORT',
     completionMarker: '__ORCH_DONE__', verified: false }),
@@ -171,7 +175,7 @@ export function detectHostAgent(env = process.env) {
   const explicit = String(env.ORCH_AGENT || '').trim().toLowerCase();
   if (explicit) return explicit;
   if (env.CODEX_THREAD_ID || env.CODEX_SESSION_ID) return 'codex';
-  throw new Error('HOST_UNKNOWN: set ORCH_AGENT to the initiating agent; no Codex fallback.');
+  throw new Error('HOST_UNKNOWN: set ORCH_AGENT=codex or invoke from a Codex host context.');
 }
 
 function desktopNativeCandidates(env,platform){
@@ -183,36 +187,43 @@ function desktopNativeCandidates(env,platform){
   }).filter(Boolean).sort((a,b)=>b.time-a.time).map(e=>e.bin);}catch{return [];}
 }
 
-export function cliCandidates(env = process.env, platform = process.platform, {where = spawnSync, localRoots = defaultLocalModuleRoots(platform), desktopBins = desktopNativeCandidates(env,platform)} = {}) {
+export function cliCandidates(env = process.env, platform = process.platform, options = {}) {
+  const {where = spawnSync, localRoots = defaultLocalModuleRoots(platform), includeAmbient = true} = options;
+  const desktopBins = options.desktopBins === undefined
+    ? (includeAmbient ? desktopNativeCandidates(env,platform) : [])
+    : options.desktopBins;
   const p = pathApi(platform);
   const explicit = env.ORCH_CLI || env.CODEX_EXE;
   if (explicit) return [p.resolve(explicit)];
   const found = [];
-  for (const dir of String(env.PATH || env.Path || '').split(p.delimiter).filter(Boolean)) {
-    found.push(p.join(dir, platform === 'win32' ? 'codex.exe' : 'codex'));
-    // npm shims are not native executables; the SDK must receive the packaged binary.
-    found.push(...packageNativeCandidates(p.join(dir, 'node_modules'), platform));
+  if (includeAmbient) {
+    for (const dir of String(env.PATH || env.Path || '').split(p.delimiter).filter(Boolean)) {
+      found.push(p.join(dir, platform === 'win32' ? 'codex.exe' : 'codex'));
+      // npm shims are not native executables; the SDK must receive the packaged binary.
+      found.push(...packageNativeCandidates(p.join(dir, 'node_modules'), platform));
+    }
+    found.push(...desktopBins);
+    // Some desktop hosts expose neither PATH nor Path to a child process even
+    // though the native Codex installation is registered. Ask the Windows
+    // resolver for codex.exe in that case; this never installs or selects a shim.
+    if (platform === 'win32' && !found.some(file => { try { return fs.existsSync(file); } catch { return false; } })) {
+      try {
+        const runningWindows = process.platform === 'win32' && platform === 'win32';
+        const whereExe = runningWindows
+          ? trustedWindowsHelper('where')
+          : p.join(env.SystemRoot || env.WINDIR || 'C:\\Windows', 'System32', 'where.exe');
+        const result = where(whereExe, ['codex.exe'], {
+          encoding:'utf8', windowsHide:true, shell:false, timeout:8000,
+          ...(runningWindows ? {cwd: trustedWindowsRoot(), env: controllerEnvironment()} : {env}),
+        });
+        if (result?.status === 0) for (const line of String(result.stdout || '').split(/\r?\n/)) {
+          const candidate = line.trim();
+          if (candidate) found.push(candidate);
+        }
+      } catch { /* resolveHost reports CLI_MISSING if the native resolver is unavailable */ }
+    }
   }
-  found.push(...desktopBins,...localNativeCandidates(platform, localRoots));
-  // Some desktop hosts expose neither PATH nor Path to a child process even
-  // though the native Codex installation is registered. Ask the Windows
-  // resolver for codex.exe in that case; this never installs or selects a shim.
-  if (platform === 'win32' && !found.some(file => { try { return fs.existsSync(file); } catch { return false; } })) {
-    try {
-      const runningWindows = process.platform === 'win32' && platform === 'win32';
-      const whereExe = runningWindows
-        ? trustedWindowsHelper('where')
-        : p.join(env.SystemRoot || env.WINDIR || 'C:\\Windows', 'System32', 'where.exe');
-      const result = where(whereExe, ['codex.exe'], {
-        encoding:'utf8', windowsHide:true, shell:false, timeout:8000,
-        ...(runningWindows ? {cwd: trustedWindowsRoot(), env: controllerEnvironment()} : {env}),
-      });
-      if (result?.status === 0) for (const line of String(result.stdout || '').split(/\r?\n/)) {
-        const candidate = line.trim();
-        if (candidate) found.push(candidate);
-      }
-    } catch { /* resolveHost reports CLI_MISSING if the native resolver is unavailable */ }
-  }
+  found.push(...localNativeCandidates(platform, localRoots));
   return [...new Set(found)];
 }
 
@@ -234,20 +245,20 @@ function npmRoot({npm, env, platform, spawn}) {
   return '';
 }
 
-export const DEFAULT_CLI_INSTALL_SPEC = '@openai/codex@0.160.0';
-// SHA-256 of the native executables in the official 0.160.0 platform tarballs.
+export const DEFAULT_CLI_INSTALL_SPEC = '@openai/codex@0.162.1';
+// SHA-256 of the native executables in the official 0.162.1 platform tarballs.
 // Their archive SHA-512 values were cross-checked against npmjs and npmmirror
 // before sealing this release. Never execute npm-fetched bytes without this pin.
 const PINNED_CLI_SHA256=Object.freeze({
-  x64:'fdda5fa3cf3fb3d000b876720742857676293e4315e4b045fae6f8bd7e866d1d',
-  arm64:'1f090167e94ed25969c47381868c6ffb78be2a195e13891fcdc969531ca16eaf',
+  x64:'dd13bdb162a184fa04039488b234a8258ef9b76f84e926c505d5742b19249a6a',
+  arm64:'3afc6a5195ce3fc08ee69b99521773b1542f129ee5b68dd4f0bb10cf7930c6ef',
 });
 // SHA-256 of a canonical manifest of every regular file in the official
 // platform tarball. Checking the complete tree rejects DLL side-loading and
 // secondary executable substitution beside an otherwise genuine codex.exe.
 const PINNED_PLATFORM_TREE_SHA256=Object.freeze({
-  x64:'000baafdcbbe81e36b99853fe435604cabdc3b49a5cbe69a414d6ff05d159d7d',
-  arm64:'447196ac3efabc005235388a571dc61d62429503c948c01b1d5a4bde1285620c',
+  x64:'49d12f52a017c8dcbeeb80afe1ecc889b565813f052eaeaaa48fb87adc480515',
+  arm64:'107096b12a70cbe46496f47f31b99257a72d80b4d42a76d49c7257ff4387e84f',
 });
 
 function pinnedBinaryHash(file,expected) {
@@ -289,12 +300,13 @@ function platformTreeDigest(root,expected) {
 }
 
 function privateCliPath(env) {
-  const pluginRoot=fileURLToPath(new URL('../../',import.meta.url));
-  const runtimeHome=env.PLUGIN_DATA?path.resolve(env.PLUGIN_DATA,'runtime'):path.resolve(pluginRoot,'temp','runtime');
-  return path.join(runtimeHome,'cli');
+  return runtimeCliPrefix(env);
 }
 function privateCliPrefix(env) {
-  return assertNoReparsePoints(privateCliPath(env),'Codex CLI runtime');
+  const prefix=privateCliPath(env);
+  try{assertPrivateWindowsRoot(path.dirname(prefix),{powershell:trustedWindowsHelper('powershell')});}
+  catch{throw new Error('RUNTIME_ROOT_UNSAFE_ACL: runtime storage must be a local directory writable only by the current Windows user, SYSTEM, and Administrators');}
+  return assertNoReparsePoints(prefix,'Codex CLI runtime');
 }
 function isPrivateCliCandidate(file,env) {
   const prefix=privateCliPath(env),relative=path.relative(prefix,path.resolve(file));
@@ -323,11 +335,11 @@ function verifiedPrivateCodexCandidate(file,env,{verifyBinary=pinnedBinaryHash,v
 // boundary.  Resolution returns a path string, so this check closes the
 // verification-to-use gap as tightly as the platform API permits and fails
 // closed if the file or its authenticated package changed meanwhile.
-export function revalidateHostExecutable(config, env = process.env) {
+export function revalidateHostExecutable(config, env = process.env, {allowExplicitUnverified=true} = {}) {
   const file = config?.bin;
   if (!file || !fileIdentity(file)) throw new Error('CLI_UNTRUSTED: selected executable is missing or changed');
   const explicit=String(env.ORCH_CLI || env.CODEX_EXE || '').trim();
-  if(explicit && env.ORCH_ALLOW_UNVERIFIED_CLI==='1' && path.resolve(file).toLowerCase()===path.resolve(explicit).toLowerCase()){
+  if(allowExplicitUnverified&&explicit && env.ORCH_ALLOW_UNVERIFIED_CLI==='1' && path.resolve(file).toLowerCase()===path.resolve(explicit).toLowerCase()){
     assertNoReparsePoints(file,'explicit Codex CLI');
     if(!fs.statSync(file).isFile())throw new Error('CLI_UNTRUSTED: explicit executable is not a regular file');
     return file;
@@ -345,7 +357,10 @@ export function installCodexCli({env = process.env, platform = process.platform,
   const spec = String(env.ORCH_CLI_INSTALL_SPEC || DEFAULT_CLI_INSTALL_SPEC).trim();
   if (!/^@openai\/codex@\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(spec)) throw installerError('invalid_spec');
   if(spec!==DEFAULT_CLI_INSTALL_SPEC||platform!=='win32'||!PINNED_CLI_SHA256[process.arch])throw installerError('unpinned_package');
-  const timeout = Number(env.ORCH_CLI_INSTALL_TIMEOUT_MS || 120000);
+  // Native Codex packages can take more than two minutes on a cold but healthy
+  // connection. Keep a finite default while allowing the documented override
+  // to reduce it or extend it up to the existing ten-minute ceiling.
+  const timeout = Number(env.ORCH_CLI_INSTALL_TIMEOUT_MS || 300000);
   if(!Number.isSafeInteger(timeout)||timeout<1||timeout>600000)throw installerError('invalid_timeout');
   try { assertTrustedNpm(env); }
   catch { throw installerError('npm_untrusted'); }
@@ -356,7 +371,7 @@ export function installCodexCli({env = process.env, platform = process.platform,
   const npm=pickNpmCli({env:installEnv});
   let result;
   try {
-    result = spawn(npm.command, [...npm.args, 'install', '--global', '--ignore-scripts', '--no-audit', '--no-fund', spec], {
+    result = spawn(npm.command, [...npm.args, 'install', '--global', '--ignore-scripts', '--no-audit', '--no-fund', '--include=optional', spec], {
       cwd: process.cwd(), encoding: 'utf8', windowsHide: true, shell: npm.shell, timeout, env:installEnv,
     });
   } catch (error) {
@@ -376,7 +391,6 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
   probe = (file) => nativeProbe(file, env), verifyPrivate=file=>verifiedPrivateCodexCandidate(file,env),
   verifyExternal=file=>verifyCodexCliPublisher(file,env), install, autoInstall } = {}) {
   const id = agent || detectHostAgent(env);
-  if(id==='pi')return resolvePiHost(env,{verifyPublisher: verifyAuthenticodePublisher});
   const adapter = adapters[id];
   if (!adapter) throw new Error(`ADAPTER_UNSUPPORTED: ${id}; no CLI adapter implemented; no fallback or automatic install.`);
   // An explicit executable is an operator decision. If it is stale or invalid,
@@ -436,27 +450,19 @@ export function resolveHost({ env = process.env, agent, candidates = cliCandidat
 }
 
 export function launchArgs(config, options = {}) {
-  if(config?.id==='pi'){
-    if(options.sandbox!=='danger-full-access'||options.approval!=='never')throw new Error('PI_SANDBOX_UNSUPPORTED: pi cannot enforce the initiating authorization policy');
-    return piArgs(config,{model:process.env.ORCH_MODEL,effort:process.env.ORCH_EFFORT});
-  }
-  if (!adapters[config?.id]) throw new Error('ADAPTER_UNSUPPORTED: refusing Codex argv for another agent.');
+  if (!adapters[config?.id]) throw new Error('ADAPTER_UNSUPPORTED: refusing a non-Codex adapter.');
   const cwd = options.cwd || process.cwd();
-  const sandbox = options.sandbox || 'read-only';
-  const approval = options.approval || 'on-request';
-  if(!['read-only','workspace-write','danger-full-access'].includes(sandbox)||!['never','on-request'].includes(approval))throw new Error('INITIATOR_POLICY_UNAVAILABLE: unsupported child authorization');
-  // Codex treats --dangerously-bypass-approvals-and-sandbox as a complete
-  // authorization envelope and rejects it when -a/--ask-for-approval is also
-  // supplied. Keep the explicit no-approval flag only for restricted modes.
+  const requestedSandbox = options.sandbox || 'read-only';
+  const requestedApproval = options.approval || 'on-request';
+  const {sandbox,approval}=constrainWorkerPolicy(requestedSandbox,requestedApproval);
+  if(sandbox!==requestedSandbox||approval!==requestedApproval)
+    throw new Error('CHILD_AUTHORIZATION_UNAVAILABLE: privileged child policy requires a host-authenticated capability');
   const args = ['--cd', cwd];
-  const bypass=sandbox==='danger-full-access'&&approval==='never';
-  if (bypass) args.push('--sandbox', sandbox);
-  else args.push('-a', approval, '--sandbox', sandbox);
-  // The orchestrator has already received the initiating window's effective
-  // authorization and normalizes it to never + danger-full-access. Carry that
-  // envelope into Codex so project trust and command confirmations cannot stop
-  // an authorized TUI window at startup. Restricted callers keep their policy.
-  if (bypass)args.push('--dangerously-bypass-approvals-and-sandbox','-c',`projects.${JSON.stringify(cwd)}.trust_level="trusted"`);
+  args.push('-a', approval, '--sandbox', sandbox);
+  // Codex retains configured workspace-write extra roots even when a CLI
+  // sandbox flag selects workspace-write.  Clear them explicitly so a child
+  // can write only its initiating workspace and asks before any write.
+  args.push('-c','sandbox_workspace_write.writable_roots=[]');
   args.push(...networkArgs());
   // A worker starts after the host has already prepared the environment.
   // Fresh plugin SessionStart hooks trigger an interactive trust review in the

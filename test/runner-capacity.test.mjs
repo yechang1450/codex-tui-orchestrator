@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,7 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {runWindows} from '../scripts/core/runner.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
-const family=fileURLToPath(new URL('../temp/',import.meta.url));fs.mkdirSync(family,{recursive:true});
+const family=testTempFamily('runner-capacity');fs.mkdirSync(family,{recursive:true});
 const controllerRoot=fs.mkdtempSync(path.join(family,'capacity-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
@@ -24,7 +25,7 @@ for(const mixed of [false,true])test(mixed?'capacity recovery never disables the
   launcher:(key,_prompt,suffix)=>{++launches;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return {key,lp:path.join(dir,`win-launch-${stem}.ps1`),pf:path.join(dir,`agent-win-${stem}.md`),pidf:path.join(dir,`window-${stem}.pid`),rf:path.join(dir,`win-${stem}.result.json`)};},
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
   spawn:async(...args)=>{spawnRetries.push(args[3]);live=true;return true;},
-  readPid:()=>1,identity:()=>live?identity:null,waitForExit:async()=>true,
+  readPid:()=>9001,identity:()=>live?identity:null,waitForExit:async()=>true,
   close:async()=>{live=false;},session:async()=>true,
   wait:async()=>({done:true,exitCode:1,...(mixed&&launches>1?{text:'Unrecoverable CLI startup failure'}:{text:'Selected model is at capacity.',retryable:'capacity'})}),
   exitCode:()=>1,
@@ -55,7 +56,7 @@ test('terminal provider quota does not consume the ordinary failure budget',asyn
   plan:async()=>[{title:'quota',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],
   prompt:p=>p,launcher:(key,_prompt,suffix)=>{++launches;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return {key,lp:path.join(dir,`win-launch-${stem}.ps1`),pf:path.join(dir,`agent-win-${stem}.md`),pidf:path.join(dir,`window-${stem}.pid`),rf:path.join(dir,`win-${stem}.result.json`)};},
   register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},
-  spawn:async()=>true,readPid:()=>1,identity:()=>identity,waitForExit:async()=>true,
+  spawn:async()=>true,readPid:()=>9002,identity:()=>identity,waitForExit:async()=>true,
   close:async()=>{},session:async()=>true,
   wait:async()=>({done:true,exitCode:1,text:'usage_limit_exceeded',retryable:'quota',quotaError:'usage_limit_exceeded'}),
   exitCode:()=>1,

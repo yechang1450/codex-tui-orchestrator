@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -9,9 +10,47 @@ import {fileURLToPath} from 'node:url';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const windows = process.platform === 'win32';
 const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+function spawnDiagnostic(result) {
+  return [
+    `status=${result.status === null ? 'null' : result.status}`,
+    `signal=${result.signal || 'none'}`,
+    `error=${result.error ? `${result.error.code || 'unknown'}: ${result.error.message}` : 'none'}`,
+    `stdout=${JSON.stringify(result.stdout || '')}`,
+    `stderr=${JSON.stringify(result.stderr || '')}`,
+  ].join('\n');
+}
+
+function resolveFixtureGit() {
+  // Node's bare executable lookup can stop at an inaccessible earlier PATH
+  // entry.  The recovery collector deliberately resolves applications through
+  // PowerShell, so build the fixture with that same host-level resolution.
+  const resolved = spawnSync(ps, [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    "$ErrorActionPreference='Stop'; $git=Get-Command git -CommandType Application -ErrorAction Stop | Select-Object -First 1; [Console]::Out.Write($git.Source)",
+  ], {encoding: 'utf8', windowsHide: true, timeout: 30000});
+  assert.equal(resolved.status, 0, `Could not resolve Git through PowerShell:\n${spawnDiagnostic(resolved)}`);
+  const source = resolved.stdout.trim();
+  assert.ok(source, 'PowerShell resolved Git without an executable path');
+  assert.ok(path.isAbsolute(source), `PowerShell must resolve Git to an absolute path: ${source}`);
+  const git = fs.realpathSync.native(source);
+  assert.ok(fs.statSync(git).isFile(), `Resolved Git is not a file: ${git}`);
+  const probe = spawnSync(git, ['--version'], {encoding: 'utf8', windowsHide: true, timeout: 30000});
+  assert.equal(probe.status, 0, `Resolved Git is not executable:\n${spawnDiagnostic(probe)}`);
+  return git;
+}
+
+test('reboot fixture resolves an executable Git application through PowerShell', {skip: !windows}, () => {
+  const git = resolveFixtureGit();
+  assert.ok(path.isAbsolute(git));
+});
+
 function fixture(t) {
-  fs.mkdirSync(path.join(repo, 'temp'), {recursive: true});
-  const root = fs.mkdtempSync(path.join(repo, 'temp', 'reboot bridge '));
+  const git = resolveFixtureGit();
+  fs.mkdirSync(testTempFamily('reboot-bridge'), {recursive: true});
+  const root = fs.mkdtempSync(path.join(testTempFamily('reboot-bridge'), 'reboot bridge '));
   const id = 'unit-' + randomUUID().slice(0, 8);
   const name = 'CodexTuiOrchestrator-RebootValidation-' + id;
   const quote = value => "'" + value.replaceAll("'", "''") + "'";
@@ -31,8 +70,8 @@ function fixture(t) {
   fs.writeFileSync(path.join(root, 'test/live-reboot-recovery.mjs'), 'import fs from "node:fs";fs.writeFileSync("recovery-called",process.argv[3]);console.log(JSON.stringify({passed:true,runId:"reboot-"+process.argv[3]}));');
   fs.writeFileSync(path.join(root, 'release.json'), '{"schema":2}');
   for (const args of [['init', '-q'], ['add', '.'], ['-c', 'user.name=Reboot Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture']]) {
-    const r = spawnSync('git', args, {cwd: root, encoding: 'utf8', windowsHide: true});
-    assert.equal(r.status, 0, r.stderr);
+    const r = spawnSync(git, args, {cwd: root, encoding: 'utf8', windowsHide: true});
+    assert.equal(r.status, 0, spawnDiagnostic(r));
   }
   const state = path.join(root, 'temp', 'reboot-validation-' + id);
   const prePath = path.join(state, 'pre-reboot.json');
@@ -42,7 +81,7 @@ function fixture(t) {
   const prepare = () => { const r = run('prepare', ['-ManualOnly']); assert.equal(r.status, 0, r.stdout + r.stderr); return JSON.parse(fs.readFileSync(prePath, 'utf8')); };
   const earlierBoot = () => { const pre = JSON.parse(fs.readFileSync(prePath, 'utf8')); pre.bootBefore = '2000-01-01T00:00:00.0000000Z'; fs.writeFileSync(prePath, JSON.stringify(pre)); };
   const post = () => JSON.parse(fs.readFileSync(postPath, 'utf8'));
-  return {id,root, state, prePath, postPath, dispatchPath, run, prepare, earlierBoot, post, registryValue};
+  return {id,root, git, state, prePath, postPath, dispatchPath, run, prepare, earlierBoot, post, registryValue};
 }
 
 for(const rebooted of [false,true])test('task recovery collector starts only after a validated later boot: '+rebooted,{skip:!windows},t=>{
@@ -111,8 +150,8 @@ test('missing pinned runtime writes a failure receipt rather than silently losin
 
 test('changed commit cannot certify the old baseline and collection never overwrites an existing receipt', {skip: !windows}, t => {
   const f = fixture(t); f.prepare(); f.earlierBoot();
-  const r = spawnSync('git', ['-c', 'user.name=Reboot Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'changed'], {cwd:f.root, encoding:'utf8', windowsHide:true});
-  assert.equal(r.status, 0, r.stderr);
+  const r = spawnSync(f.git, ['-c', 'user.name=Reboot Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'changed'], {cwd:f.root, encoding:'utf8', windowsHide:true});
+  assert.equal(r.status, 0, spawnDiagnostic(r));
   assert.equal(f.run('collect').status, 1);
   assert.equal(f.post().commitMatches, false);
   assert.equal(f.post().passed, false);

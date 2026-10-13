@@ -4,7 +4,7 @@
  *
  * 为什么需要它：本地安装会把插件目录整体复制进安装缓存。工作树里有 .git、
  * temp/（本地运行状态与验收证据），复制进去既占空间又让静态评估失真；分发包
- * 只带运行时文件（约 190 个文件 / 2 MB）。
+ * 只带经封存验证的运行时文件。
  *
  * 用法：
  *   node scripts/publish-dist.mjs --target <分发根> [--quiet]
@@ -19,7 +19,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {DIST_MARKETPLACE_NAME, manifestNameProblem} from './repair-plugin-registration.mjs';
+import {DIST_MARKETPLACE_NAME, canonicalDistMarketplaceCatalog, manifestNameProblem} from './repair-plugin-registration.mjs';
 import {assertNoReparsePoints} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -158,16 +158,9 @@ export function writeDistMarketplaceCatalog({dist, pluginName, category = 'Produ
   // cannot redirect this catalog write outside the newly published package.
   assertNoReparsePoints(distRoot, 'distribution root before catalog sealing');
   assertNoReparsePoints(path.dirname(catalogPath), 'distribution catalog directory');
-  const catalog = {
-    name: DIST_MARKETPLACE_NAME,
-    interface: {displayName: 'Codex TUI Orchestrator (Distribution)'},
-    plugins: [{
-      name: pluginName,
-      source: {source: 'local', path: './'},
-      policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'},
-      category: category || 'Productivity',
-  }],
-  };
+  // Keep publication and registration authentication on one canonical catalog
+  // definition.  A distribution registration only trusts these exact bytes.
+  const catalog = canonicalDistMarketplaceCatalog({pluginName, category});
   fs.mkdirSync(path.dirname(catalogPath), {recursive: true});
   assertNoReparsePoints(distRoot, 'distribution root before catalog commit');
   assertNoReparsePoints(path.dirname(catalogPath), 'distribution catalog directory before catalog commit');

@@ -1,11 +1,12 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {SUCCESS,summaryComplete,keysOverlap,levelWaves,ledgerPlan,verifyTask} from '../scripts/core/contracts.mjs';
-import {reserve,release,sameProcess} from '../scripts/core/leases.mjs';
-const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+import {processIdentityBinding,reserve,release,sameProcess} from '../scripts/core/leases.mjs';
+const family=testTempFamily('reliability');
 fs.mkdirSync(family,{recursive:true});
 test('strict accounting rejects missing blocks, missing tasks, extra identities and unverified termination',()=>{
  const base={runId:'run',blocks:[{key:'B1'},{key:'B2'}],tasks:[{id:'T1'},{id:'T2'}],results:{B1:{status:'verified'}},taskResults:{T1:{status:'verified'}}};
@@ -13,6 +14,14 @@ test('strict accounting rejects missing blocks, missing tasks, extra identities 
  base.results.B2={status:'verified'};base.taskResults.T2={status:'verified'};assert.equal(summaryComplete(base),true);
  for(const status of ['done','locked','preflight-failed','awaiting-verification','failed']){base.results.B2.status=status;assert.equal(summaryComplete(base),false);assert.equal(SUCCESS.has(status),false);}
  base.results.B2.status='verified';base.taskResults.extra={status:'verified'};assert.equal(summaryComplete(base),false);
+});
+test('strict accounting refuses a verified result while post-exit cleanup remains pending',()=>{
+ const sum={runId:'run',blocks:[{key:'B1'}],tasks:[{id:'T1'}],results:{B1:{status:'verified'}},taskResults:{T1:{status:'verified'}}};
+ assert.equal(summaryComplete(sum),true);
+ sum.results.B1.cleanupPending={version:1};
+ assert.equal(summaryComplete(sum),false);
+ delete sum.results.B1.cleanupPending;
+ assert.equal(summaryComplete(sum),true);
 });
 test('cycles, self references and unknown dependency IDs are rejected',()=>{
  const rec=(key,deps)=>({key,title:key,b:{title:key},dependsOn:deps});
@@ -29,9 +38,11 @@ test('incomplete model plan retains every original task in a serial fallback',()
  assert.equal(tasks.length,2);assert.deepEqual(plan.flatMap(b=>b.tasks.flatMap(t=>t.sourceIds)),['T001','T002']);
 });
 test('process ID reuse never matches an old launcher identity',()=>{
- const a={ProcessId:42,Started:'first',Name:'powershell.exe',CommandLine:'launcher.ps1'};
- assert.equal(sameProcess(a,{...a}),true);assert.equal(sameProcess(a,{...a,Started:'second'}),false);
- assert.equal(sameProcess(a,{...a,CommandLine:'other.ps1'}),false);
+  const a={ProcessId:42,Started:'first',Name:'powershell.exe',CommandLine:'launcher.ps1'};
+  const saved=processIdentityBinding(a);
+  assert.equal(sameProcess(saved,{...a}),true);assert.equal(sameProcess(saved,{...a,Started:'second'}),false);
+  assert.equal(sameProcess(saved,{...a,CommandLine:'other.ps1'}),false);
+  assert.equal(sameProcess(a,{...a}),false,'legacy raw records fail closed');
 });
 test('global coordinator capacity counts all runs, not only resource conflicts',()=>{
  const dir=fs.mkdtempSync(path.join(family,'lease-test-'));

@@ -37,26 +37,36 @@ test('missing initiating turn policy fails closed before a child can inherit bro
   });
 });
 
-test('broad initiating turn requires the host permission binding',()=>{
+test('caller-controlled session and environment metadata cannot delegate broad child authority',()=>{
   withHome({cwd:path.resolve('trusted-workspace'),sandbox_policy:{type:'danger-full-access'},approval_policy:'never'},'',home=>{
-    assert.throws(()=>resolveInitiatorPolicy({CODEX_HOME:home,CODEX_THREAD_ID:id}),/broad policy host binding/);
+    assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home,CODEX_THREAD_ID:id}),
+      {sandbox:'workspace-write',approval:'on-request'});
     assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home,CODEX_THREAD_ID:id,
       CODEX_PERMISSION_PROFILE:':danger-full-access',CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY:'host-binding-opaque',WORKSPACE_DIR:path.resolve('trusted-workspace')}),
-      {sandbox:'danger-full-access',approval:'never'});
+      {sandbox:'workspace-write',approval:'on-request'});
   });
 });
 
-test('broad initiating turn rejects a host workspace binding that differs from the resolved workspace',()=>{
+test('a broad initiating turn remains bound to its recorded workspace after policy reduction',()=>{
   const workspace=path.resolve('trusted-workspace');
   withHome({cwd:workspace,sandbox_policy:{type:'danger-full-access'},approval_policy:'never'},'',home=>{
     const env={CODEX_HOME:home,CODEX_THREAD_ID:id,CODEX_PERMISSION_PROFILE:':danger-full-access',
       CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY:'host-binding-opaque',WORKSPACE_DIR:path.resolve('other-workspace')};
-    assert.throws(()=>assertInitiatorWorkspace(workspace,{sandbox:'danger-full-access',approval:'never'},env),/workspace differs from host-bound/);
+    const initiatorContext=Object.freeze({threadId:id,workspace});
+    assert.throws(()=>assertInitiatorWorkspace(path.resolve('other-workspace'),{sandbox:'workspace-write',approval:'on-request'},env,initiatorContext),/workspace differs/);
   });
 });
 
-test('direct CLI use can inherit explicit native policy without a GUI turn',()=>{
+test('direct CLI use reduces unattended workspace write to interactive approval',()=>{
   withHome(null,'sandbox_mode = "workspace-write"\napproval_policy = "never"\n',home=>{
-    assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home}),{sandbox:'workspace-write',approval:'never'});
+    assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home}),{sandbox:'workspace-write',approval:'on-request'});
+  });
+});
+
+test('direct environment and native config cannot request a danger-full-access worker',()=>{
+  withHome(null,'sandbox_mode = "danger-full-access"\napproval_policy = "never"\n',home=>{
+    assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home}),{sandbox:'workspace-write',approval:'on-request'});
+    assert.deepEqual(resolveInitiatorPolicy({CODEX_HOME:home,ORCH_SANDBOX:'danger-full-access',ORCH_APPROVAL:'never'}),
+      {sandbox:'workspace-write',approval:'on-request'});
   });
 });

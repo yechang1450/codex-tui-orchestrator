@@ -1,15 +1,18 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {validateRecoverySummary,validateSavedLauncherFiles} from '../scripts/core/recovery.mjs';
+import {validateRecoverySummary,validateSavedLauncherFiles,hasAuthenticatedExitProof,hasNoProcessProof} from '../scripts/core/recovery.mjs';
 import {runWindows,verifyRun,sweepRunProcesses} from '../scripts/core/runner.mjs';
 import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 import {buildTodoList} from '../scripts/core/contracts.mjs';
 import {recoveryTasks} from '../scripts/core/recovery.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
-const controllerRoot=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'ledger-controller-'));
+import {physicalPathIdentity} from '../scripts/core/runtime-context.mjs';
+const controllerRoot=fs.mkdtempSync(path.join(testTempFamily('recovery-ledger'),'ledger-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
 after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
@@ -21,6 +24,98 @@ function fixture(workspace) {
   blocks:[{key:'B1',taskIds:['T001','T002']}],results:{B1:{status:'pending',attempts:[]}},
   taskResults:{T001:{status:'pending'},T002:{status:'pending'}}};
 }
+
+const leaseInstance='11111111-2222-4333-8444-555555555555';
+function durableIdentity(overrides={}){
+ return {ProcessId:4242,Started:'2026-10-11T00:00:00.000Z',Name:'powershell.exe',commandLineSha256:'a'.repeat(64),...overrides};
+}
+function authenticatedExitRecords(){
+ const token='proof-token',identity=durableIdentity(),leaseId='ledger-B1';
+ return {
+   entry:{token,leaseId,leaseInstanceId:leaseInstance,launcher:identity,exitConfirmed:true,
+   exitEvidence:{token,pid:4242,authenticated:true,at:100}},
+   attempt:{runId:'ledger',token,number:1,leaseId,leaseInstanceId:leaseInstance,launcherPid:4242,launcherObserved:{...identity},exitConfirmed:true,
+   exitEvidence:{token,pid:4242,authenticated:true,at:101}},
+ };
+}
+function noProcessLedger(){
+ const sum=fixture(process.cwd()),token='no-process-token',leaseId='ledger-B1';
+ const proof={version:1,kind:'no-process',runId:'ledger',blockKey:'B1',attempt:1,token,
+  lease:{id:leaseId,instanceId:leaseInstance},recordedAt:100};
+ const attempt={runId:'ledger',token,number:1,file:'attempt.json',taskIds:['T001','T002'],leaseId,leaseInstanceId:leaseInstance,
+  exitConfirmed:true,noProcessProof:structuredClone(proof)};
+ const entry={status:'failed',token,leaseId,leaseInstanceId:leaseInstance,exitConfirmed:true,
+  noProcessProof:structuredClone(proof),attempts:[attempt]};
+ sum.results.B1=entry;
+ return {sum,block:sum.blocks[0],entry,attempt};
+}
+
+test('authenticated exit proof binds all saved launcher identities, not merely their shared PID',()=>{
+ const {entry,attempt}=authenticatedExitRecords();
+ assert.equal(hasAuthenticatedExitProof(entry,attempt),true);
+ for(const [field,value] of [
+  ['Started','2026-10-11T00:00:01.000Z'],
+  ['Name','pwsh.exe'],
+  ['commandLineSha256','b'.repeat(64)],
+ ]){
+  const altered=structuredClone(attempt);altered.launcherObserved[field]=value;
+  assert.equal(hasAuthenticatedExitProof(entry,altered),false,field+' mismatch must reject a PID-only alias');
+ }
+ const missing=structuredClone(attempt);delete missing.launcherObserved;
+ const noEntry=structuredClone(entry);delete noEntry.launcher;
+ assert.equal(hasAuthenticatedExitProof(noEntry,missing),false,'a PID receipt without a durable launcher identity is not proof of ownership');
+ const stringPid=structuredClone(attempt);stringPid.launcherPid='4242';
+ assert.equal(hasAuthenticatedExitProof(entry,stringPid),false,'a serialized PID cannot substitute for the bound integer identity');
+ const wrongLease=structuredClone(attempt);wrongLease.leaseId='foreign-lease';
+ assert.equal(hasAuthenticatedExitProof(entry,wrongLease),false,'an authenticated exit receipt cannot authorize a different lease');
+});
+
+test('no-process proof requires a mirrored lease-bound latest attempt receipt',()=>{
+ const valid=noProcessLedger();
+ assert.equal(hasNoProcessProof(valid.sum,valid.block,valid.entry,valid.attempt),true);
+ validateRecoverySummary(valid.sum);
+
+ const journaled=noProcessLedger();
+ const journal={version:1,kind:'post-exit-cleanup',runId:'ledger',blockKey:'B1',attempt:1,token:journaled.attempt.token,
+  lease:{id:journaled.entry.leaseId,instanceId:journaled.entry.leaseInstanceId},
+  phases:{lease:'pending',registry:'pending',artifacts:'pending'},recordedAt:100,updatedAt:100};
+ journaled.entry.status='cleanup-pending';journaled.entry.cleanupPending=journal;
+ journaled.attempt.cleanupPending=structuredClone(journal);
+ validateRecoverySummary(journaled.sum);
+
+ const cases=[
+  ['attempt run id does not bind the receipt',value=>{
+   value.attempt.runId='foreign-run';
+  }],
+  ['attempt token does not bind the receipt',value=>{
+   value.attempt.token='foreign-token';
+  }],
+  ['proof lease id does not bind the active lease',value=>{
+   value.entry.noProcessProof.lease.id='foreign-lease';value.attempt.noProcessProof.lease.id='foreign-lease';
+  }],
+  ['attempt lease instance does not bind the receipt',value=>{
+   value.attempt.leaseInstanceId='aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+  }],
+  ['proof block key does not bind the current block',value=>{
+   value.entry.noProcessProof.blockKey='B2';value.attempt.noProcessProof.blockKey='B2';
+  }],
+  ['proof attempt number does not bind the latest attempt',value=>{
+   value.entry.noProcessProof.attempt=2;value.attempt.noProcessProof.attempt=2;
+  }],
+  ['entry and attempt receipts are not mirrored',value=>{
+   value.attempt.noProcessProof.recordedAt=101;
+  }],
+  ['receipt omits the lease binding',value=>{
+   delete value.entry.noProcessProof.lease;delete value.attempt.noProcessProof.lease;
+  }],
+ ];
+ for(const [name,mutate] of cases){
+  const value=noProcessLedger();mutate(value);
+  assert.equal(hasNoProcessProof(value.sum,value.block,value.entry,value.attempt),false,name);
+  assert.throws(()=>validateRecoverySummary(value.sum),/Invalid recovery ledger/,name);
+ }
+});
+
 test('saved recovery ledger rejects inconsistent inventories without mutating input',()=>{
  const valid=fixture(process.cwd()),before=JSON.stringify(valid);
  validateRecoverySummary(valid);assert.equal(JSON.stringify(valid),before);
@@ -36,6 +131,12 @@ test('saved recovery ledger rejects inconsistent inventories without mutating in
  }
 });
 
+test('recovery rejects legacy raw command-line identities before they can authorize a resumed launcher',()=>{
+ const saved=fixture(process.cwd());
+ saved.results.B1={status:'failed',launcher:{ProcessId:42,Name:'powershell.exe',Started:'legacy',CommandLine:'powershell -File win-launch.ps1'},attempts:[{runId:'ledger',token:'attempt-token',file:'attempt.json',taskIds:['T001','T002']}]};
+ assert.throws(()=>validateRecoverySummary(saved),/legacy raw launcher identity/i);
+});
+
 test('saved recovery ledger rejects a stale TodoList status',()=>{
  const saved=fixture(process.cwd());
  saved.todoList=buildTodoList(saved.tasks,saved.blocks,saved.taskResults);
@@ -45,9 +146,9 @@ test('saved recovery ledger rejects a stale TodoList status',()=>{
 
 test('saved recovery checkpoints must belong to a recorded attempt before recovery can run',()=>{
  const saved=fixture(process.cwd());
- const attempt={runId:'ledger',token:'attempt-token',file:'attempt.json',taskIds:['T001']};
+ const attempt={runId:'ledger',token:'attempt-token',file:'attempt.json',taskIds:['T001'],leaseId:'ledger-B1',leaseInstanceId:leaseInstance};
  const checkpoint={id:'T001',runId:'ledger',token:'attempt-token',state:'completed'};
- saved.results.B1={status:'failed',endedAt:1,attempts:[attempt]};
+ saved.results.B1={status:'failed',token:attempt.token,leaseId:attempt.leaseId,leaseInstanceId:attempt.leaseInstanceId,endedAt:1,attempts:[attempt]};
  saved.taskResults.T001={status:'failed',checkpoint};
  validateRecoverySummary(saved);
  for(const change of [{id:'T002'},{runId:'foreign'},{token:'foreign'},{state:'unexpected'},{id:undefined},{token:undefined}]){
@@ -60,7 +161,7 @@ test('saved recovery checkpoints must belong to a recorded attempt before recove
  validateRecoverySummary(invalid);
 });
 test('visible launcher evidence is bound to the current run token before adoption',()=>{
- const root=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'launcher-binding-'));
+ const root=fs.mkdtempSync(path.join(testTempFamily('recovery-ledger'),'launcher-binding-'));
  try{
   const runId='ledger',workspace=root,attemptFile=path.join(root,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json');
   fs.mkdirSync(path.dirname(attemptFile),{recursive:true});
@@ -77,8 +178,22 @@ test('visible launcher evidence is bound to the current run token before adoptio
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 
+test('visible recovery carries its durable startup receipt descriptor to identity-bound verification',()=>{
+ const workspace=fs.mkdtempSync(path.join(testTempFamily('recovery-ledger'),'visible-receipt-ledger-'));
+ try{
+  const runId='ledger',token='ledger-B1-a1-token',attempt={runId,token,number:1,file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json'),taskIds:['T001']};
+  const dir=controllerWindowsDir(workspace),suffix='B1-'+runId+'-a1';fs.mkdirSync(dir,{recursive:true});fs.mkdirSync(path.dirname(attempt.file),{recursive:true});
+  const workspaceIdentity=physicalPathIdentity(workspace),digest=value=>crypto.createHash('sha256').update(String(value),'utf8').digest('hex');
+  const receipt={schema:1,kind:'launcher-start',file:path.join(controllerRoot,'acceptance-proofs',`startup-${runId}-B1-a1.json`),runId,blockKey:'B1',attempt:1,token,tokenSha256:digest(token),workspaceIdentity,workspaceKeySha256:digest(workspaceIdentity)};
+  const files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json'),startupReceipt:receipt};
+  const sum={runId,workspace},entry={token,launcherFiles:files};
+  validateSavedLauncherFiles(sum,{key:'B1'},entry,attempt);
+  assert.deepEqual(files.startupReceipt,receipt,'recovery must preserve the descriptor for the authenticated receipt verifier');
+ }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
 test('saved visible launcher cannot adopt a sibling block with the same run and attempt',()=>{
- const workspace=path.resolve('temp','sibling-ledger');
+ const workspace=path.join(testTempFamily('recovery-ledger'),'sibling-ledger');
  const runId='ledger',attempt={runId,token:'ledger-B1-a1-token',number:1,
   file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json'),taskIds:['T001']};
  const dir=controllerWindowsDir(workspace),suffix='B2-ledger-a1';
@@ -91,8 +206,8 @@ test('saved visible launcher cannot adopt a sibling block with the same run and 
   {token:attempt.token,launcherFiles:files},attempt),/bound to this run attempt/);
 });
 
-test('final sweep refuses a saved sibling launcher identity before closing any process',async()=>{
- const workspace=path.resolve('temp','sibling-sweep'),runId='ledger';
+test('final sweep retains a saved sibling launcher identity before closing any process',async()=>{
+ const workspace=path.join(testTempFamily('recovery-ledger'),'sibling-sweep'),runId='ledger';
  const attempt={runId,token:'ledger-B1-a1-token',number:1,
   file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json'),taskIds:['T001']};
  const dir=controllerWindowsDir(workspace),suffix='B2-ledger-a1';
@@ -105,31 +220,22 @@ test('final sweep refuses a saved sibling launcher identity before closing any p
  const result=await sweepRunProcesses(summary,{close:async()=>{closes++;},waitForExit:async()=>false,
   identify:()=>summary.results.B1.launcher});
  assert.equal(closes,0);
- assert.equal(result.failed,1);
- assert.match(summary.results.B1.reason,/bound to this run attempt/);
+ assert.equal(result.failed,0);
+ assert.equal(result.retained,1);
+ assert.equal(summary.results.B1.exitConfirmed,false);
+ assert.match(summary.results.B1.reason,/bound protocol 2 lease instance/);
 });
 
-test("visible recovery preserves the Pi launcher's distinct safe stem",()=>{
- const workspace=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'pi-ledger-')),runId='ledger';
- try{
- const attempt={runId,token:'pi-token',number:1,
-  file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B.1','1','attempt.json'),taskIds:['T001']};
- const dir=controllerWindowsDir(workspace),suffix='B-1-ledger-a1';
- const files={lp:path.join(dir,'win-launch-'+suffix+'.ps1'),pf:path.join(dir,'agent-win-'+suffix+'.md'),
-  pidf:path.join(dir,'window-'+suffix+'.pid'),rf:path.join(dir,'win-'+suffix+'.result.json')};
- fs.mkdirSync(dir,{recursive:true});
- fs.writeFileSync(files.lp,"$env:ORCH_PI_TOKEN = 'pi-token'",'utf8');
- fs.writeFileSync(files.pf,'__ORCH_DONE__ pi-token','utf8');
- fs.writeFileSync(files.pidf,'9001','utf8');
- validateSavedLauncherFiles({runId,workspace,agent:'pi'},{key:'B.1'},
-  {token:attempt.token,launcherFiles:files},attempt,{requireLiveFiles:true});
- assert.throws(()=>validateSavedLauncherFiles({runId,workspace,agent:'codex'},{key:'B.1'},
-  {token:attempt.token,launcherFiles:files},attempt),/bound to this run attempt/);
- }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+test('recovery fails closed for a legacy non-Codex ledger before reading its launcher paths',()=>{
+ const workspace=path.join(testTempFamily('recovery-ledger'),'legacy-ledger');
+ assert.throws(
+  ()=>validateSavedLauncherFiles({runId:'ledger',workspace,agent:'foreign-agent'},{key:'B.1'},{},{}),
+  /LEGACY_AGENT_UNSUPPORTED: recovery only accepts Codex ledgers/,
+ );
 });
 
 test('safe retry clears an old failed or verified task status before composing receipts',()=>{
- const dir=fs.mkdtempSync(path.join(fileURLToPath(new URL('../temp/',import.meta.url)),'retry-receipt-'));
+ const dir=fs.mkdtempSync(path.join(testTempFamily('recovery-ledger'),'retry-receipt-'));
  try {
   const result=recoveryTasks([{id:'T001',prompt:'retry'}],{T001:{state:'completed'}},{T001:{retrySafe:true,checks:[{type:'file',path:'missing'}]}},dir);
   assert.deepEqual(result.pending,['T001']);
@@ -139,7 +245,7 @@ test('safe retry clears an old failed or verified task status before composing r
  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 test('resume rejects damaged ledger before any hook or persisted state changes',async()=>{
- const family=fileURLToPath(new URL('../temp/',import.meta.url));fs.mkdirSync(family,{recursive:true});
+ const family=testTempFamily('recovery-ledger');fs.mkdirSync(family,{recursive:true});
  const root=fs.mkdtempSync(path.join(family,'ledger-corruption-'));
  try{
   const dir=path.join(root,'temp/orchestrator/runs/ledger');fs.mkdirSync(dir,{recursive:true});
@@ -154,17 +260,18 @@ test('resume rejects damaged ledger before any hook or persisted state changes',
 });
 
 test('verifyRun rebuilds the local goal mirror from verified task state',()=>{
- const family=fileURLToPath(new URL('../temp/',import.meta.url));fs.mkdirSync(family,{recursive:true});
+ const family=testTempFamily('recovery-ledger');fs.mkdirSync(family,{recursive:true});
  const root=fs.mkdtempSync(path.join(family,'goal-refresh-'));
  try{
   const dir=path.join(root,'temp/orchestrator/runs/goal-refresh');fs.mkdirSync(dir,{recursive:true});
   const attemptFile=path.join(dir,'attempts','B1','1','attempt.json');fs.mkdirSync(path.dirname(attemptFile),{recursive:true});
-  const attempt={runId:'goal-refresh',token:'token',taskIds:['T001']};fs.writeFileSync(attemptFile,JSON.stringify(attempt));
+  const leaseId='goal-refresh-B1';
+  const attempt={runId:'goal-refresh',token:'token',number:1,file:attemptFile,taskIds:['T001'],leaseId,leaseInstanceId:leaseInstance};fs.writeFileSync(attemptFile,JSON.stringify(attempt));
   recordCheckpoint(attemptFile,'T001','started');recordCheckpoint(attemptFile,'T001','completed');
   const tasks=[{id:'T001',prompt:'first'}],blocks=[{key:'B1',taskIds:['T001']}];
   const summary={protocol:2,runId:'goal-refresh',workspace:root,request:'first',capacity:8,generation:1,history:[],finishedAt:1,
    tasks,plan:[{key:'B1',title:'both',keys:[],dependsOn:[],b:{tasks:[{sourceIds:['T001']} ]}}],blocks,
-   results:{B1:{status:'awaiting-verification',endedAt:1,attempts:[{...attempt,file:attemptFile}]}},
+   results:{B1:{status:'awaiting-verification',token:attempt.token,leaseId,leaseInstanceId:leaseInstance,endedAt:1,attempts:[{...attempt,file:attemptFile}]}},
    taskResults:{T001:{status:'awaiting-verification'}},todoList:buildTodoList(tasks,blocks,{T001:{status:'awaiting-verification'}}),
    coordinator:path.join(controllerRoot,'coordinator')};
   fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify(summary));
@@ -182,7 +289,7 @@ test('verifyRun rebuilds the local goal mirror from verified task state',()=>{
 });
 
 test('resume rejects a goal mirror with a different run identity',async()=>{
- const family=fileURLToPath(new URL('../temp/',import.meta.url));fs.mkdirSync(family,{recursive:true});
+ const family=testTempFamily('recovery-ledger');fs.mkdirSync(family,{recursive:true});
  const root=fs.mkdtempSync(path.join(family,'goal-identity-'));
  try{
   const dir=path.join(root,'temp/orchestrator/runs/ledger');fs.mkdirSync(dir,{recursive:true});

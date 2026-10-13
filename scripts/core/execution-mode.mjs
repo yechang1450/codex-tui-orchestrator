@@ -1,3 +1,4 @@
+import {assertSafeWorkerArgs} from './worker-authorization.mjs';
 const EXECUTION_MODES=new Set(['headless','visible']);
 const TUI_MODES=new Set(['wt','conhost','inactive']);
 export function resolveTuiMode(value='wt') {
@@ -23,7 +24,14 @@ export function buildExecArgs(interactiveArgs) {
   for(let i=0;i<interactiveArgs.length;i++){
     if(['-a','--ask-for-approval'].includes(interactiveArgs[i])){
       if(interactiveArgs[++i]!=='never')throw new Error('Headless execution requires approval_policy=never');
+    }else if(String(interactiveArgs[i]).startsWith('--ignore-rules')){
+      throw new Error('Headless execution reserves --ignore-rules for its fixed read-only boundary');
     }else args.push(interactiveArgs[i]);
   }
-  return [...args,'-c','approval_policy="never"','--json','--color','never','--skip-git-repo-check'];
+  // `exec --ignore-rules` is the official mechanism to ignore user and
+  // project policy-rule layers. Keep it as one fixed bare argument so the
+  // final worker guard can distinguish it from caller-controlled overrides.
+  const execArgs=[args[0],'--ignore-rules',...args.slice(1),'-c','approval_policy="never"','--json','--color','never','--skip-git-repo-check'];
+  assertSafeWorkerArgs(execArgs);
+  return execArgs;
 }

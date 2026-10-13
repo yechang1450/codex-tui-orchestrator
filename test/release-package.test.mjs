@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,7 +12,7 @@ const explicitCli=process.env.ORCH_CLI || (process.platform==='win32'
   : '');
 
 test('clean published package runs doctor and guards its public polling entry',()=>{
- const family=path.join(source,'temp');fs.mkdirSync(family,{recursive:true});
+ const family=testTempFamily('release-package');fs.mkdirSync(family,{recursive:true});
  const root=fs.mkdtempSync(path.join(family,'package-acceptance-'));
  try{
   // A sibling of the copied fixture source avoids publishing into a source tree.
@@ -26,8 +27,17 @@ test('clean published package runs doctor and guards its public polling entry',(
    const from=path.join(source,rel),to=path.join(fixture,rel);
    fs.mkdirSync(path.dirname(to),{recursive:true});fs.copyFileSync(from,to);
   }
+  // The publisher itself is a source-only maintenance tool. It is available
+  // to this source fixture but must not leak into the published package.
+  fs.copyFileSync(path.join(source,'repair.mjs'),path.join(fixture,'repair.mjs'));
   fs.copyFileSync(path.join(source,'release.json'),path.join(fixture,'release.json'));
   const run=(file,args=[])=>spawnSync(process.execPath,[file,...args],{cwd:root,env:{...process.env,ORCH_AUTO_INSTALL_DEPS:'0',ORCH_ALLOW_UNVERIFIED_CLI:'1',...(explicitCli?{ORCH_CLI:explicitCli}: {})},encoding:'utf8',windowsHide:true,timeout:30000});
+  const privateStore=path.join(fixture,'secrets');fs.mkdirSync(privateStore,{recursive:true});fs.writeFileSync(path.join(privateStore,'token.txt'),'fixture-only');
+  const unsafe=run(path.join(fixture,'repair.mjs'),['--target',path.join(root,'unsafe-publication')]);
+  assert.equal(unsafe.status,2,'a credential directory must abort publication');
+  assert.match(unsafe.stderr,/PUBLICATION_SENSITIVE_FILE/);
+  assert.deepEqual(fs.readdirSync(path.join(root,'unsafe-publication')),[],'a rejected sensitive source must not leave a package behind');
+  fs.rmSync(privateStore,{recursive:true,force:true});
   const fault='import fs from "node:fs";const copy=fs.copyFileSync;let n=0;fs.copyFileSync=(...args)=>{if(++n===2)throw new Error("TEST_COPY_FAILURE");return copy(...args)};';
   const failed=spawnSync(process.execPath,['--import','data:text/javascript,'+encodeURIComponent(fault),path.join(fixture,'repair.mjs'),'--target',path.join(root,'failed-publication')],{cwd:root,encoding:'utf8',windowsHide:true,timeout:30000});
   assert.equal(failed.status,2);assert.match(failed.stderr,/TEST_COPY_FAILURE/);
@@ -36,6 +46,8 @@ test('clean published package runs doctor and guards its public polling entry',(
   assert.equal(publication.status,0,publication.stderr);
   const pkg=path.join(root,'published','candidate');
   assert.deepEqual(verifyRelease(pkg),verifyRelease(source));
+  const installerHelp=run(path.join(pkg,'scripts','install-plugin.mjs'),['--help']);
+  assert.equal(installerHelp.status,0,installerHelp.stderr+'\n'+installerHelp.stdout);
   const previousManifest=fs.readFileSync(path.join(pkg,'release.json'));
   for(const required of ['README.md','LICENSE']){
    const omit='import fs from "node:fs";import path from "node:path";const copy=fs.copyFileSync;fs.copyFileSync=(...args)=>{if(path.basename(args[0])==='+JSON.stringify(required)+')return;return copy(...args)};';
@@ -58,11 +70,9 @@ test('clean published package runs doctor and guards its public polling entry',(
   }
   const next=run(path.join(fixture,'repair.mjs'),['--target',path.join(root,'next-version')]);
   assert.equal(next.status,0,next.stderr);assert.deepEqual(verifyRelease(path.join(root,'next-version','candidate')),verifyRelease(pkg));
-  for(const name of ['.git','temp','.plugin-eval','node_modules'])assert.equal(fs.existsSync(path.join(pkg,name)),false);
+  for(const name of ['.git','temp','.plugin-eval','node_modules','repair.mjs'])assert.equal(fs.existsSync(path.join(pkg,name)),false);
   const missing=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
   assert.notEqual(missing.status,0);assert.match(missing.stderr,/RELEASE_DEPENDENCY_MISSING.*npm ci/);
-  const missingSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-  assert.notEqual(missingSupervisor.status,0);assert.match(missingSupervisor.stderr,/RELEASE_DEPENDENCY_MISSING.*npm ci/);
   const noSdkPoll=run(path.join(pkg,'scripts','poll-windows.mjs'),['--run-id','no-sdk-test','--timeoutMs','0']);
   assert.equal(noSdkPoll.status,1);assert.match(noSdkPoll.stderr,/timeout runId=no-sdk-test/);
   // The current release seals the complete dependency tree, so restore the
@@ -73,8 +83,6 @@ test('clean published package runs doctor and guards its public polling entry',(
   fs.writeFileSync(sdkManifest,JSON.stringify({...JSON.parse(original),version:'0.0.0-test'}));
   const mismatch=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
   assert.notEqual(mismatch.status,0);assert.match(mismatch.stderr,/RELEASE_DEPENDENCY_INTEGRITY/);
-  const mismatchSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-  assert.notEqual(mismatchSupervisor.status,0);assert.match(mismatchSupervisor.stderr,/RELEASE_DEPENDENCY_INTEGRITY/);
   fs.writeFileSync(sdkManifest,original);
   const sdkEntry=path.join(path.dirname(sdkManifest),'dist','index.js');
   const entryBytes=fs.readFileSync(sdkEntry);fs.unlinkSync(sdkEntry);
@@ -85,8 +93,6 @@ test('clean published package runs doctor and guards its public polling entry',(
    fs.writeFileSync(sdkEntry,damaged);
    const unusable=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
    assert.notEqual(unusable.status,0);assert.match(unusable.stderr,/RELEASE_DEPENDENCY_INTEGRITY.*npm ci/);
-   const unusableSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-   assert.notEqual(unusableSupervisor.status,0);assert.match(unusableSupervisor.stderr,/RELEASE_DEPENDENCY_INTEGRITY.*npm ci/);
   }
   fs.writeFileSync(sdkEntry,entryBytes);
   fs.writeFileSync(sdkManifest,'{');
@@ -95,12 +101,8 @@ test('clean published package runs doctor and guards its public polling entry',(
   fs.writeFileSync(sdkManifest,original);
   const doctor=run(path.join(pkg,'scripts','orchestrate-sdk.mjs'),['--doctor']);
   assert.equal(doctor.status,0,doctor.stderr+'\n'+doctor.stdout);
-  const supervisorHelp=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-  assert.equal(supervisorHelp.status,0,supervisorHelp.stderr);
   fs.appendFileSync(path.join(pkg,'scripts','host-cli.mjs'),'\n// test drift');
   const poll=run(path.join(pkg,'scripts','poll-windows.mjs'),['--status','--readonly']);
   assert.notEqual(poll.status,0);assert.match(poll.stderr,/RELEASE_INTEGRITY_FAILED/);
-  const changedSupervisor=run(path.join(pkg,'scripts','supervise.mjs'),['--help']);
-  assert.notEqual(changedSupervisor.status,0);assert.match(changedSupervisor.stderr,/RELEASE_INTEGRITY_FAILED/);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });

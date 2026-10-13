@@ -12,10 +12,10 @@
  * 以及条目还指向旧克隆或别的机器时用 `--set-source` 重新指向本机 checkout。
  *
  * 用法：
- *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install # 安装/更新（幂等）
+ *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install # 在同一 checkout 或干净 dist 源内安装/更新（幂等）
  *   node scripts/install-plugin.mjs --check         # 只读校验：注册、可选分发新鲜度、缓存依赖、宿主启用状态（跟随 CODEX_HOME）
- *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install -Arguments @('--pull')
- *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install -Arguments @('--set-source','--verify-skills')
+ *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install --pull
+ *   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install --set-source --verify-skills
  *   # --pull、--set-source、--verify-skills、--strict-skills 均由可信引导入口转交。
  *   node scripts/install-plugin.mjs --json          # 机器可读输出
  *   node scripts/install-plugin.mjs --source checkout|dist --timeout-ms <ms> --marketplace <path> --marketplace-root <path> --dist-root <path>
@@ -26,14 +26,17 @@ import path from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {ensureRegistration, inspectRegistration, setRegistrationSource, defaultDistRoot, defaultMarketplacePath, defaultMarketplaceRoot, CHECKOUT_MARKETPLACE_NAME, DIST_MARKETPLACE_NAME, manifestNameProblem} from './repair-plugin-registration.mjs';
-import {publishDist} from './publish-dist.mjs';
-import {cliCandidates, resolveHost, verifyAuthenticodePublisher} from './core/host-cli.mjs';
-import {assertTrustedNpm} from './npm-cli.mjs';
+import {cliCandidates, resolveHost} from './core/host-cli.mjs';
+import {assertTrustedNpm, pickNpmCli, quoteShellArg} from './npm-cli.mjs';
 import {runtimeInventory} from './release-integrity.mjs';
 import {assertNoReparsePoints,physicallySameOrChild} from './core/runtime-context.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PLATFORM_WARNING = "this plugin's execution core is Windows-only; a non-Windows host can hold the install but runs are out of contract";
+
+// Preserve the installer module's tested public helpers without maintaining a
+// second implementation of the Windows npm invocation rules.
+export {pickNpmCli, quoteShellArg};
 
 export function parseArgs(argv) {
   const out = {
@@ -59,7 +62,7 @@ export function parseArgs(argv) {
     if (arg === '--check') out.mode = 'check';
     else if (arg === '--install') out.mode = 'install';
     else if (arg === '--pull') out.pull = true;
-    else if (arg === '--skip-dist') out.skipDist = true;
+    else if (arg === '--skip-dist' || arg.startsWith('--skip-dist=')) throw new Error('SKIP_DIST_UNSUPPORTED: prebuilt distribution reuse is not supported; remove --skip-dist so the installer can rebuild and verify the distribution');
     else if (arg === '--verify-skills') out.verifySkills = true;
     else if (arg === '--strict-skills') { out.verifySkills = true; out.strictSkills = true; }
     else if (arg === '--local-development') out.localDevelopment = true;
@@ -86,6 +89,15 @@ export function parseArgs(argv) {
   return out;
 }
 
+// Git pull is deliberately owned by bootstrap.ps1.  A direct Node process
+// inherits caller-controlled SystemRoot and GIT_* state, neither of which is
+// a suitable trust boundary for executing an updater.
+export function rejectDirectPull({pull = false} = {}) {
+  if (pull === true) {
+    throw new Error('PULL_REQUIRES_BOOTSTRAP: run powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install --pull so the trusted bootstrap can validate and sanitize Git.');
+  }
+}
+
 function requireValue(argv, index, flag) {
   const value = argv[index];
   if (value === undefined || value.startsWith('-')) throw new Error(flag + ' requires a value');
@@ -107,19 +119,89 @@ function requireTrustedInstallRuntime(env = process.env) {
   catch (error) { throw new Error('INSTALL_RUNTIME_UNTRUSTED: ' + (error?.message || error)); }
 }
 
+function isManagedPluginCachePath({pluginPath, codexHome, homeDir = os.homedir()} = {}) {
+  const resolvedHome = path.resolve(codexHome || path.join(homeDir, '.codex'));
+  return physicallySameOrChild(path.join(resolvedHome, 'plugins', 'cache'), path.resolve(pluginPath));
+}
+
+// Codex CLI deliberately fails closed when CODEX_HOME names a directory that
+// does not exist. Create a caller-selected fresh home only after checking each
+// existing ancestor for a link or junction, then check it again before a host
+// process can consume it.
+export function ensureCodexHomeDirectory(value) {
+  const codexHome = assertNoReparsePoints(value, 'CODEX_HOME');
+  try {
+    fs.mkdirSync(codexHome, {recursive: true});
+  } catch (error) {
+    throw new Error(`CODEX_HOME_CREATE_FAILED: cannot create ${codexHome}: ${error?.message || error}`);
+  }
+  try {
+    assertNoReparsePoints(codexHome, 'CODEX_HOME');
+    const stat = fs.lstatSync(codexHome);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('not a regular directory');
+  } catch (error) {
+    throw new Error(`CODEX_HOME_INVALID: ${codexHome}: ${error?.message || error}`);
+  }
+  return codexHome;
+}
+
+// Windows environment names are case-insensitive. Build one frozen child
+// environment with exactly one CODEX_HOME entry so a caller-provided install
+// target is also the directory seen by CLI probes and later host commands.
+export function hostEnvironmentForCodexHome(env = process.env, codexHome) {
+  const result = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (key.toUpperCase() !== 'CODEX_HOME') result[key] = value;
+  }
+  result.CODEX_HOME = path.resolve(codexHome);
+  return Object.freeze(result);
+}
+
+// `--doctor` initializes the same controller-state guards as a real run, but
+// an installation is not a user task.  In particular, a clean test install
+// may intentionally put CODEX_HOME below the caller's workspace.  Do not
+// weaken the runtime guard for real workspaces; instead, give this one
+// post-install diagnostic a sibling workspace below its controlled home and
+// remove any caller-owned run/state identity before it loads the runtime.
+const CACHE_DOCTOR_CONTEXT_KEYS = new Set([
+  'WORKSPACE_DIR',
+  'ORCH_STATE_DIR',
+  'ORCH_CONTROLLER_ROOT',
+  'ORCH_COORDINATOR_DIR',
+  'ORCH_RUN_ID',
+  'ORCH_ACCEPTANCE_FILE',
+  'ORCH_ACCEPTANCE_OVERRIDE',
+  'ORCH_SESSION_DIR',
+  'ORCH_ISOLATED_ACCEPTANCE',
+  'ORCH_ISOLATED_ABORT_TOKEN',
+  // These Desktop host bindings authorize the calling conversation.  A cache
+  // health probe has no calling conversation, so it must never repoint them
+  // at the diagnostic workspace created above.
+  'CODEX_THREAD_ID',
+  'CODEX_SESSION_ID',
+  'CODEX_PERMISSION_PROFILE',
+  'CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY',
+  'CODEX_APP_TOOLS_PIPE_PATH',
+]);
+
+export function cacheDoctorEnvironmentForCodexHome(env = process.env, codexHome) {
+  const home = assertNoReparsePoints(path.resolve(codexHome), 'CODEX_HOME');
+  const result = {...hostEnvironmentForCodexHome(env, home)};
+  for (const key of Object.keys(result)) {
+    const normalized = key.toUpperCase();
+    if (CACHE_DOCTOR_CONTEXT_KEYS.has(normalized) || normalized === 'ORCH_AGENT') delete result[key];
+  }
+  result.WORKSPACE_DIR = assertNoReparsePoints(path.join(home, '.tmp', 'install-doctor-workspace'), 'install doctor workspace');
+  // This is a Codex-plugin installation probe. Do not let a caller-supplied
+  // non-Codex value change the authenticated cache-doctor startup path.
+  result.ORCH_AGENT = 'codex';
+  return Object.freeze(result);
+}
+
 export function resolveInstallCli({candidate = null, env = process.env, hostOptions = {}} = {}) {
   const explicit = candidate || env.CODEX_CLI_PATH || env.CODEX_CLI;
   const selectedEnv = explicit ? {...env, ORCH_CLI: explicit} : env;
   return resolveHost({...hostOptions, env: selectedEnv, agent: 'codex', autoInstall: false}).config.bin;
-}
-
-const TRUSTED_GIT_CERTIFICATES = Object.freeze(['3E9627155B7A6F29856321EE56D7FC25CF808407']);
-function trustedGitPath(env = process.env) {
-  const candidate = String(env.ORCH_GIT_PATH || '').trim();
-  if (!path.isAbsolute(candidate) || !verifyAuthenticodePublisher(candidate, env, spawnSync, TRUSTED_GIT_CERTIFICATES)) {
-    throw new Error('GIT_UNTRUSTED: --pull requires a verified Git for Windows executable prepared by bootstrap.ps1; run git pull manually to use another Git build.');
-  }
-  return candidate;
 }
 
 /** `codex plugin add --json` 可能夹带日志行：取最后一段可解析的 JSON 对象。 */
@@ -168,16 +250,16 @@ export function marketplaceNameConflict(marketplaces, {name, root} = {}) {
   return conflicting ? normalizeMarketplaceRoot(conflicting.root) || String(conflicting.root || '') : null;
 }
 
-function readConfiguredMarketplaces(codexCli, timeoutMs) {
-  const result = run(codexCli, ['plugin', 'marketplace', 'list', '--json'], {timeoutMs});
+function readConfiguredMarketplaces(codexCli, timeoutMs, env) {
+  const result = run(codexCli, ['plugin', 'marketplace', 'list', '--json'], {timeoutMs, env});
   const parsed = parseCliJson(result.stdout || result.stderr);
   if (!Array.isArray(parsed.marketplaces)) throw new Error('host CLI did not return a marketplace list');
   return parsed.marketplaces;
 }
 
 /** Register the checkout root through the host CLI, then read it back exactly. */
-function ensureMarketplaceConfigured({codexCli, marketplaceRoot, marketplaceName, timeoutMs}) {
-  const before = readConfiguredMarketplaces(codexCli, timeoutMs);
+function ensureMarketplaceConfigured({codexCli, marketplaceRoot, marketplaceName, timeoutMs, env}) {
+  const before = readConfiguredMarketplaces(codexCli, timeoutMs, env);
   if (marketplaceIsConfigured(before, {name: marketplaceName, root: marketplaceRoot})) {
     return {changed: false, marketplaces: before};
   }
@@ -185,8 +267,8 @@ function ensureMarketplaceConfigured({codexCli, marketplaceRoot, marketplaceName
   if (conflictRoot) {
     throw new Error(`MARKETPLACE_NAME_CONFLICT: ${marketplaceName} is already registered at ${conflictRoot}; refusing to replace it. Confirm the old checkout is unused, then run: codex plugin marketplace remove ${marketplaceName}`);
   }
-  run(codexCli, ['plugin', 'marketplace', 'add', marketplaceRoot, '--json'], {timeoutMs});
-  const after = readConfiguredMarketplaces(codexCli, timeoutMs);
+  run(codexCli, ['plugin', 'marketplace', 'add', marketplaceRoot, '--json'], {timeoutMs, env});
+  const after = readConfiguredMarketplaces(codexCli, timeoutMs, env);
   if (!marketplaceIsConfigured(after, {name: marketplaceName, root: marketplaceRoot})) {
     throw new Error(`marketplace registration did not resolve ${marketplaceName} at ${marketplaceRoot}`);
   }
@@ -215,27 +297,16 @@ export function pluginEnabledInConfig(configText, pluginId) {
   return Boolean(section && /^\s*enabled\s*=\s*true\s*$/im.test(section[1]));
 }
 
-/** 走 shell 时必须自己加引号：Node 只把参数用空格拼起来，含空格/中文的路径会被拆开。 */
-export function quoteShellArg(value) {
-  const text = String(value);
-  // cmd.exe expands percent variables (and delayed-expansion bangs) before it
-  // honors quoting. Reject these bytes instead of allowing a path or argument
-  // supplied by a caller to change the shell command structure.
-  if (/[%!\r\n]/.test(text)) throw new Error('UNSAFE_SHELL_ARGUMENT: percent, exclamation, or newline is not allowed');
-  if (!/[\s"^&|<>()]/.test(text)) return text;
-  return '"' + text.replace(/"/g, '""') + '"';
+/** 默认单目录安装不生成发布副本；显式选择 --source dist 时始终重新导出并验证干净包。 */
+export function shouldPublishDistribution({source = 'checkout'} = {}) {
+  return source === 'dist';
 }
 
-/** 默认单目录安装不生成发布副本；只有显式选择 --source dist 才会导出干净包。 */
-export function shouldPublishDistribution({source = 'checkout', skipDist = false} = {}) {
-  return !skipDist && source === 'dist';
-}
-
-function run(command, args, {cwd = root, allowFailure = false, timeoutMs = 15 * 60 * 1000, shell = null} = {}) {
+function run(command, args, {cwd = root, allowFailure = false, timeoutMs = 15 * 60 * 1000, shell = null, env = process.env} = {}) {
   const needsShell = shell === null ? process.platform === 'win32' && /\.(cmd|bat)$/i.test(command) : shell;
   const file = needsShell ? [command, ...args].map(quoteShellArg).join(' ') : command;
   const argv = needsShell ? [] : args;
-  const result = spawnSync(file, argv, {cwd, encoding: 'utf8', windowsHide: true, shell: needsShell, timeout: timeoutMs});
+  const result = spawnSync(file, argv, {cwd, encoding: 'utf8', windowsHide: true, shell: needsShell, timeout: timeoutMs, env});
   if (result.error) {
     if (result.error.code === 'ENOENT') throw new Error(`command not found: ${command} (install the native Codex CLI or point CODEX_CLI_PATH at it)`);
     if (result.error.code === 'ETIMEDOUT') throw new Error(`${command} timed out after ${Math.round(timeoutMs / 1000)}s`);
@@ -247,45 +318,55 @@ function run(command, args, {cwd = root, allowFailure = false, timeoutMs = 15 * 
   return result;
 }
 
-/**
- * npm 解析：优先 npm_execpath（npm 脚本里的真实入口），其次 npm.cmd 同级的 npm-cli.js，
- * 最后才退回 npm.cmd + shell。走 JS 入口能彻底绕开 Windows 命令行引号问题
- * （本机实测：路径含空格时 `npm.cmd ci --prefix <path>` 会失败，`node npm-cli.js ci` 正常）。
- */
-export function pickNpmCli({env = process.env, nodePath = process.execPath} = {}) {
-  const execPath = env.npm_execpath;
-  if (execPath && /\.(c?js|mjs)$/i.test(execPath) && fs.existsSync(execPath)) {
-    return {command: nodePath, args: [execPath], shell: false, source: 'npm_execpath'};
+// `publish-dist.mjs` deliberately remains a source-checkout maintenance tool.
+// Do not statically import it: installed artifacts omit that file and must be
+// able to load ordinary installer commands such as `--help` and `--check`.
+export function publishSourceDistribution({target, timeoutMs = 15 * 60 * 1000, env = process.env, sourceRoot = root} = {}) {
+  if (!target) throw new Error('--source dist requires --dist-root <directory>; the default install layout has no dist folder');
+  const checkout = path.resolve(sourceRoot);
+  const exporter = path.join(checkout, 'scripts', 'publish-dist.mjs');
+  let exporterStat;
+  try { exporterStat = fs.lstatSync(exporter); }
+  catch { throw new Error('SOURCE_EXPORT_UNAVAILABLE: --source dist requires a source checkout containing scripts/publish-dist.mjs'); }
+  if (!exporterStat.isFile() || exporterStat.isSymbolicLink()) {
+    throw new Error('SOURCE_EXPORT_UNAVAILABLE: --source dist requires a regular source-checkout scripts/publish-dist.mjs');
   }
-  const entries = String(env.PATH || env.Path || '').split(path.delimiter).filter(Boolean);
-  const names = process.platform === 'win32' ? ['npm.cmd', 'npm'] : ['npm'];
-  for (const name of names) {
-    for (const dir of entries) {
-      const shim = path.join(dir, name);
-      if (!fs.existsSync(shim)) continue;
-      if (process.platform === 'win32') {
-        const cli = path.join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js');
-        if (fs.existsSync(cli)) return {command: nodePath, args: [cli], shell: false, source: 'npm-cli.js'};
-        return {command: shim, args: [], shell: true, source: 'npm-shim'};
-      }
-      return {command: shim, args: [], shell: false, source: 'npm'};
-    }
-  }
-  return {command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: [], shell: process.platform === 'win32', source: 'fallback'};
+  run(process.execPath, [exporter, '--target', path.resolve(target), '--quiet'], {cwd: checkout, timeoutMs, env});
+  const manifest = readManifest(checkout);
+  const dist = path.resolve(target, manifest.name);
+  let distStat;
+  try { distStat = fs.lstatSync(dist); }
+  catch { throw new Error('SOURCE_EXPORT_INVALID: source export did not create its declared distribution'); }
+  if (!distStat.isDirectory() || distStat.isSymbolicLink()) throw new Error('SOURCE_EXPORT_INVALID: source export did not create a regular distribution directory');
+  return {dist, files: Object.keys(runtimeInventory(dist)).length};
 }
 
 /** npm 执行：一律带上解析出来的入口前缀。 */
-function runNpm(args, {cwd = root, timeoutMs = 15 * 60 * 1000} = {}) {
-  const npm = pickNpmCli();
-  return run(npm.command, [...npm.args, ...args], {cwd, timeoutMs, shell: npm.shell});
+function runNpm(args, {cwd = root, timeoutMs = 15 * 60 * 1000, env = process.env} = {}) {
+  const npm = pickNpmCli({env});
+  return run(npm.command, [...npm.args, ...args], {cwd, timeoutMs, shell: npm.shell, env});
 }
 
 function readManifest(pluginPath) {
   return JSON.parse(fs.readFileSync(path.join(pluginPath, '.codex-plugin', 'plugin.json'), 'utf8'));
 }
 
+function skippedSkillVisibility({registrationStatus, skillNames}) {
+  const prerequisite = registrationStatus !== 'matched'
+    ? `registration is ${registrationStatus}`
+    : 'the installed cache did not authenticate';
+  return {
+    ok: false,
+    status: 'skipped',
+    skipped: true,
+    missing: skillNames,
+    reason: `SKILLS_VISIBLE_SKIPPED_UNTRUSTED_CONTEXT: ${prerequisite}; host CLI verification requires a matched registration and a successfully authenticated installed cache`,
+  };
+}
+
 /** 只读校验：注册匹配、分发新鲜、缓存依赖齐全、宿主已启用。 */
 export function checkInstall(options = {}) {
+  const baseEnv = options.env || process.env;
   const pluginPath = path.resolve(options.pluginPath || root);
   const manifest = readManifest(pluginPath);
   const pluginName = manifest.name;
@@ -296,7 +377,8 @@ export function checkInstall(options = {}) {
   const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath, marketplaceDefaults));
   const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath, marketplaceDefaults));
   const homeDir = options.homeDir || os.homedir();
-  const codexHome = options.codexHome || process.env.CODEX_HOME || path.join(homeDir, '.codex');
+  const codexHome = options.codexHome || baseEnv.CODEX_HOME || path.join(homeDir, '.codex');
+  const hostEnv = hostEnvironmentForCodexHome(baseEnv, codexHome);
   const problems = [];
   const warnings = [];
   const nameProblem = manifestNameProblem(pluginName);
@@ -305,6 +387,13 @@ export function checkInstall(options = {}) {
   // A path traversal-shaped name can otherwise influence path.join before the
   // later registration check notices the invalid component.
   if (nameProblem) {
+    const skills = options.verifySkills
+      ? skippedSkillVisibility({registrationStatus: 'invalid', skillNames: skillNamesOf(pluginPath)})
+      : null;
+    if (skills) {
+      const entry = {step: 'skills_visible', status: 'skipped', reason: skills.reason};
+      if (options.strictSkills) problems.push(entry); else warnings.push(entry);
+    }
     return {
       ok: false,
       status: 'incomplete',
@@ -317,7 +406,7 @@ export function checkInstall(options = {}) {
       environment: {platform: process.platform, node: process.version, hostCli: options.codexCli || null},
       registration: {status: 'invalid', sourceKind: null},
       cache: null,
-      skills: null,
+      skills,
       problems,
       warnings,
     };
@@ -335,6 +424,7 @@ export function checkInstall(options = {}) {
   // cache path and the manifest version authenticates the actual plugin.
   const cache = caches.find((entry) => entry.version === manifest.version || entry.version === 'local') || caches[caches.length - 1] || null;
   let validatedCache = null;
+  let cacheAuthenticated = false;
   if (!cache) {
     problems.push({step: 'cache', status: 'missing', reason: `no installed cache under ${path.join(codexHome, 'plugins', 'cache', marketplaceName, pluginName)}`});
   } else {
@@ -358,6 +448,7 @@ export function checkInstall(options = {}) {
     } else if (validatedCache && cacheVersionMatches && registration.status === 'matched' && registration.sourceReal) {
       try {
         authenticateInstalledCache({sourcePath: registration.sourceReal, installedPath: cacheDir});
+        cacheAuthenticated = true;
       } catch (error) {
         problems.push({step: 'cache_authentication', status: 'failed', reason: error?.message || String(error)});
       }
@@ -385,9 +476,16 @@ export function checkInstall(options = {}) {
   }
   let skills = null;
   if (options.verifySkills) {
-    skills = verifySkillsVisible({codexCli: options.codexCli, pluginName, skillNames: skillNamesOf(pluginPath)});
+    const skillNames = skillNamesOf(pluginPath);
+    skills = registration.status === 'matched' && cacheAuthenticated
+      ? verifySkillsVisible({codexCli: options.codexCli, pluginName, skillNames, env: hostEnv})
+      : skippedSkillVisibility({registrationStatus: registration.status, skillNames});
     if (!skills.ok) {
-      const entry = {step: 'skills_visible', status: 'unverified', reason: skills.reason || `host prompt context does not list: ${skills.missing.join(', ')}`};
+      const entry = {
+        step: 'skills_visible',
+        status: skills.skipped ? 'skipped' : 'unverified',
+        reason: skills.reason || `host prompt context does not list: ${skills.missing.join(', ')}`,
+      };
       if (options.strictSkills) problems.push(entry); else warnings.push(entry);
     }
   }
@@ -406,7 +504,7 @@ export function checkInstall(options = {}) {
     // null means the single-checkout layout is active; a path is shown only
     // when the caller explicitly selected a clean distribution root.
     distRoot: configuredDistRoot,
-    environment: {platform: process.platform, node: process.version, hostCli: options.codexCli || pickCodexCli()},
+    environment: {platform: process.platform, node: process.version, hostCli: options.codexCli || pickCodexCli({env: baseEnv})},
     registration: {status: registration.status, sourceKind: registration.sourceKind || null},
     cache: validatedCache?.installedPath || (cache ? cache.dir : null),
     skills,
@@ -416,8 +514,8 @@ export function checkInstall(options = {}) {
 }
 
 /** 用宿主渲染一次新会话上下文，确认技能已进入可见清单（技能只在**新对话**里加载）。 */
-export function verifySkillsVisible({codexCli = null, pluginName, skillNames, cwd = root, timeoutMs = 60000} = {}) {
-  try { codexCli = resolveInstallCli({candidate: codexCli}); }
+export function verifySkillsVisible({codexCli = null, pluginName, skillNames, cwd = root, timeoutMs = 60000, env = process.env} = {}) {
+  try { codexCli = resolveInstallCli({candidate: codexCli, env}); }
   catch (error) { return {ok: false, missing: skillNames || [], reason: String(error?.message || error)}; }
   const result = spawnSync(codexCli, ['debug', 'prompt-input', 'install-plugin-verification'], {
     cwd,
@@ -425,6 +523,7 @@ export function verifySkillsVisible({codexCli = null, pluginName, skillNames, cw
     windowsHide: true,
     shell: process.platform === 'win32' && /\.(cmd|bat)$/i.test(codexCli),
     timeout: timeoutMs,
+    env,
   });
   if (result.error) {
     const reason = result.error.code === 'ENOENT' ? `host CLI not found: ${codexCli}` : `host CLI verification failed to start: ${result.error.message}`;
@@ -489,12 +588,12 @@ export function authenticateInstalledCache({sourcePath, installedPath} = {}) {
 // cache can be replaced after the first inventory, so a successful child
 // process is not enough evidence that the authenticated bytes were the ones
 // that actually ran.
-function runAuthenticatedCacheScript({sourcePath, installedPath, scriptPath, args = [], cwd, timeoutMs, allowFailure = false}) {
+function runAuthenticatedCacheScript({sourcePath, installedPath, scriptPath, args = [], cwd, timeoutMs, allowFailure = false, env = process.env}) {
   authenticateInstalledCache({sourcePath, installedPath});
   let result;
   let executionError;
   try {
-    result = run(process.execPath, [scriptPath, ...args], {cwd, timeoutMs, allowFailure});
+    result = run(process.execPath, [scriptPath, ...args], {cwd, timeoutMs, allowFailure, env});
   } catch (error) {
     executionError = error;
   }
@@ -559,8 +658,18 @@ export function validateInstalledPath({installedPath, codexHome, marketplaceName
 }
 
 export function installPlugin(options = {}) {
-  requireTrustedInstallRuntime();
+  if (options.skipDist === true) {
+    throw new Error('SKIP_DIST_UNSUPPORTED: prebuilt distribution reuse is not supported; omit skipDist so the installer can rebuild and verify the distribution');
+  }
+  rejectDirectPull(options);
+  const baseEnv = options.env || process.env;
   const pluginPath = path.resolve(options.pluginPath || root);
+  const homeDir = options.homeDir || os.homedir();
+  const codexHome = options.codexHome || baseEnv.CODEX_HOME || path.join(homeDir, '.codex');
+  if (isManagedPluginCachePath({pluginPath, codexHome, homeDir})) {
+    throw new Error('MANAGED_CACHE_INSTALL_FORBIDDEN: a Codex-managed plugin cache is not an installation source. Run -Action install from a checkout or clean dist; from an installed cache use -Action prepare, -Action doctor, or run.');
+  }
+  requireTrustedInstallRuntime(baseEnv);
   const manifest = readManifest(pluginPath);
   const pluginName = manifest.name;
   // 清单名在**任何文件系统动作之前**校验：publish-dist 会按这个名字递归删除分发目录，
@@ -572,7 +681,6 @@ export function installPlugin(options = {}) {
   const marketplaceDefaults = {source, distRoot};
   const marketplacePath = path.resolve(options.marketplacePath || defaultMarketplacePath(pluginPath, marketplaceDefaults));
   const marketplaceRoot = path.resolve(options.marketplaceRoot || defaultMarketplaceRoot(pluginPath, marketplaceDefaults));
-  const homeDir = options.homeDir || os.homedir();
   // A live checkout can contain .git/temp/test receipts and is not a public
   // publication source. Keep checkout installs available for an explicitly
   // local development invocation only; release installs must use clean dist.
@@ -580,43 +688,37 @@ export function installPlugin(options = {}) {
   if (source === 'checkout' && !checkoutDev) {
     throw new Error('CHECKOUT_INSTALL_REQUIRES_LOCAL_DEVELOPMENT: use --source dist for a clean package, or pass --local-development for an explicit local-only install');
   }
-  const codexCli = resolveInstallCli({candidate: options.codexCli});
   const steps = [];
 
-  if (options.pull) {
-    const git = trustedGitPath();
-    const dirty = run(git, ['-C', pluginPath, 'status', '--porcelain']).stdout.trim();
-    if (dirty) throw new Error('refusing to pull: the working tree has local changes');
-    if (!verifyAuthenticodePublisher(git, process.env, spawnSync, TRUSTED_GIT_CERTIFICATES)) throw new Error('GIT_UNTRUSTED: Git changed after the initial check.');
-    run(git, ['-C', pluginPath, 'pull', '--ff-only']);
-    steps.push({step: 'pull', status: 'ok'});
-  }
-  if (shouldPublishDistribution({source, skipDist: options.skipDist})) {
-    if (!distRoot) throw new Error('--source dist requires --dist-root <directory>; the default install layout has no dist folder');
-    const published = publishDist({target: distRoot, quiet: true});
+  if (shouldPublishDistribution({source})) {
+    const published = publishSourceDistribution({target: distRoot, timeoutMs: options.timeoutMs, env: baseEnv});
     steps.push({step: 'publish-dist', status: 'ok', dist: published.dist, files: published.files});
   }
   const registrationOptions = {pluginPath, marketplacePath, marketplaceRoot, distRoot, source, homeDir};
   const registration = options.setSource ? setRegistrationSource(registrationOptions) : ensureRegistration(registrationOptions);
   if (!registration.ok) throw new Error(`registration failed (${registration.status}): ${registration.reason}`);
   steps.push({step: 'registration', status: registration.status, sourceKind: registration.sourceKind || null, entryCount: registration.entryCount, changed: registration.changed === true});
+  const preparedCodexHome = ensureCodexHomeDirectory(codexHome);
+  const hostEnv = hostEnvironmentForCodexHome(baseEnv, preparedCodexHome);
+  const codexCli = resolveInstallCli({candidate: options.codexCli, env: hostEnv});
 
   const marketplace = ensureMarketplaceConfigured({
     codexCli,
     marketplaceRoot,
     marketplaceName: registration.marketplaceName,
     timeoutMs: options.timeoutMs,
+    env: hostEnv,
   });
   steps.push({step: 'marketplace-add', status: 'ok', changed: marketplace.changed, root: marketplaceRoot});
 
-  const added = run(codexCli, ['plugin', 'add', `${pluginName}@${registration.marketplaceName}`, '--json'], {timeoutMs: options.timeoutMs});
+  const added = run(codexCli, ['plugin', 'add', `${pluginName}@${registration.marketplaceName}`, '--json'], {timeoutMs: options.timeoutMs, env: hostEnv});
   const parsed = parseCliJson(added.stdout || added.stderr);
   const installedPath = parsed.installedPath;
   if (!installedPath || !fs.existsSync(installedPath)) throw new Error('host CLI did not report an installed path: ' + JSON.stringify(parsed).slice(0, 300));
   const installedCacheVersion = parsed.version || manifest.version;
   const validatedInstall = validateInstalledPath({
     installedPath,
-    codexHome: process.env.CODEX_HOME || path.join(homeDir, '.codex'),
+    codexHome: preparedCodexHome,
     marketplaceName: registration.marketplaceName,
     pluginName,
     version: installedCacheVersion,
@@ -626,7 +728,7 @@ export function installPlugin(options = {}) {
   steps.push({step: 'plugin-add', status: 'ok', version: manifest.version, cacheVersion: installedCacheVersion, installedPath: validatedInstall.installedPath});
 
   const cacheScripts = validatedInstall.scriptsPath;
-  runNpm(['ci', '--prefix', cacheScripts, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], {timeoutMs: options.timeoutMs});
+  runNpm(['ci', '--prefix', cacheScripts, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], {timeoutMs: options.timeoutMs, env: hostEnv});
   steps.push({step: 'cache-deps', status: 'ok'});
   // npm ci is intentionally script-free. Authenticate on both sides of each
   // cache script so a changed cache is detected even if it races finalization.
@@ -636,6 +738,7 @@ export function installPlugin(options = {}) {
     scriptPath: path.join(cacheScripts, 'release-integrity.mjs'),
     cwd: validatedInstall.installedPath,
     timeoutMs: options.timeoutMs,
+    env: hostEnv,
   });
   steps.push({step: 'cache-integrity', status: 'ok'});
   runAuthenticatedCacheScript({
@@ -645,6 +748,7 @@ export function installPlugin(options = {}) {
     args: ['--doctor'],
     cwd: validatedInstall.installedPath,
     timeoutMs: options.timeoutMs,
+    env: cacheDoctorEnvironmentForCodexHome(hostEnv, preparedCodexHome),
   });
   steps.push({step: 'cache-doctor', status: 'ok'});
 
@@ -656,7 +760,7 @@ export function installPlugin(options = {}) {
     cacheVersion: installedCacheVersion,
     marketplaceName: registration.marketplaceName,
     installedPath: validatedInstall.installedPath,
-    codexHome: process.env.CODEX_HOME || path.join(homeDir, '.codex'),
+    codexHome: preparedCodexHome,
     environment: {platform: process.platform, node: process.version, hostCli: codexCli},
     steps,
     warnings: [],
@@ -665,7 +769,7 @@ export function installPlugin(options = {}) {
   const skillNames = skillNamesOf(pluginPath);
   summary.skills = skillNames;
   if (options.verifySkills) {
-    const visibility = verifySkillsVisible({codexCli, pluginName, skillNames});
+    const visibility = verifySkillsVisible({codexCli, pluginName, skillNames, env: hostEnv});
     const reason = visibility.reason || `host prompt context does not list: ${visibility.missing.join(', ')}`;
     if (visibility.ok) {
       summary.skillsVisible = true;
@@ -695,10 +799,11 @@ export function installPlugin(options = {}) {
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url))) {
   try {
     const options = parseArgs(process.argv.slice(2));
+    rejectDirectPull(options);
     if (options.help) {
       console.log('Usage: install-plugin.mjs [--check] [--install] [--pull] [--set-source] [--verify-skills] [--strict-skills] [--local-development] [--json] [--quiet]');
       console.log('       [--source checkout|dist] [--timeout-ms ms] [--plugin path] [--marketplace path] [--marketplace-root path] [--dist-root path] [--home path]');
-      console.log('On Windows use powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install -Arguments @(...) for installs; direct --check is read-only.');
+      console.log('On Windows append installer flags directly after powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap.ps1 -Action install; direct --check is read-only.');
       process.exit(0);
     }
     const result = options.mode === 'check' ? checkInstall(options) : installPlugin(options);

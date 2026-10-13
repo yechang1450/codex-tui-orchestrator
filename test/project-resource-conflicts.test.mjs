@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,7 +8,7 @@ import {spawnSync} from 'node:child_process';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
-fs.mkdirSync(path.join(repo, 'temp'), {recursive: true});
+fs.mkdirSync(testTempFamily('project-resource-conflicts'), {recursive: true});
 
 function findLocalCodexCli() {
   const roots = [
@@ -30,7 +31,7 @@ function findLocalCodexCli() {
 }
 
 function planRequest(request) {
-  const workspace = fs.mkdtempSync(path.join(repo, 'temp', 'project-resource-'));
+  const workspace = fs.mkdtempSync(path.join(testTempFamily('project-resource-conflicts'), 'project-resource-'));
   try {
     const env = {...process.env, ORCH_CLI: findLocalCodexCli(), ORCH_ALLOW_UNVERIFIED_CLI: '1', ORCH_SANDBOX: 'danger-full-access', ORCH_APPROVAL: 'never', ORCH_STATE_DIR: 'state'};
     for (const name of ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'ORCH_RUN_ID', 'ORCH_ACCEPTANCE_FILE']) delete env[name];

@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -16,14 +17,14 @@ const quote=s=>`'${String(s).replaceAll("'","''")}'`;
 // production extraction budget.
 const longPathFixtureTimeoutMs=120000;
 const hashArchive=archive=>`$sha=[Security.Cryptography.SHA256]::Create(); try { $hash=[BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes(${quote(archive)}))).Replace('-','') } finally { $sha.Dispose() }`;
-function run(code,{timeout=30000}={}){
+function run(code,{timeout=30000,env={}}={}){
   const script=`$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8; . ${quote(lib)}; ${code}`;
-  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{encoding:'utf8',timeout,windowsHide:true,maxBuffer:1024*1024});
+  const r=spawnSync(ps,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',Buffer.from(script,'utf16le').toString('base64')],{env:{...process.env,...env},encoding:'utf8',timeout,windowsHide:true,maxBuffer:1024*1024});
   assert.equal(r.status,0,`${r.error||''}\n${r.stdout}\n${r.stderr}`);
   return r.stdout.trim();
 }
 function fixture(t){
-  const base=path.join(process.env.USERPROFILE||os.homedir(),'workspace','temp');
+  const base=testTempFamily('bootstrap-runtime');
   fs.mkdirSync(base,{recursive:true});
   const dir=fs.mkdtempSync(path.join(base,'orch-bootstrap-test-中文 '));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
@@ -59,6 +60,13 @@ winTest('runtime home stays with plugin data or plugin temp, never global instal
   const result=JSON.parse(run(`@((Get-OrchRuntimeHome -PluginRoot ${quote(dir)} -DataRoot ${quote(data)}),(Get-OrchRuntimeHome -PluginRoot ${quote(dir)} -DataRoot '')) | ConvertTo-Json -Compress`));
   assert.deepEqual(result,[path.join(data,'runtime'),path.join(dir,'temp','runtime')]);
 });
+winTest('runtime authority refuses a root writable by Authenticated Users before setup begins',t=>{
+  const dir=fixture(t),home=path.join(dir,'shared-runtime');
+  fs.mkdirSync(home,{recursive:true});
+  const out=run(`$acl=[IO.Directory]::GetAccessControl(${quote(home)}); $acl.SetAccessRuleProtection($true,$false); $current=[Security.Principal.WindowsIdentity]::GetCurrent().User; $full=New-Object Security.AccessControl.FileSystemAccessRule($current,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow); $acl.SetAccessRule($full); $sharedSid=New-Object Security.Principal.SecurityIdentifier('S-1-5-11'); $shared=New-Object Security.AccessControl.FileSystemAccessRule($sharedSid,[Security.AccessControl.FileSystemRights]::Modify,[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow); $acl.AddAccessRule($shared); [IO.Directory]::SetAccessControl(${quote(home)},$acl); try { Assert-OrchPrivateRuntimeHome ${quote(home)}; throw 'unexpected success' } catch { $_.Exception.Message }`);
+  assert.match(out,/RUNTIME_ROOT_UNSAFE_ACL/);
+  assert.equal(fs.existsSync(path.join(home,'.bootstrap.lock')),false);
+});
 winTest('an explicitly trusted paired Node/npm runtime is verified without downloading or creating runtime state',t=>{
   const dir=fixture(t),runtime=pairedNodeRuntime(dir);
   const result=JSON.parse(run(`${trustedRuntimeOverrides(runtime)}; Resolve-OrchNode -Candidates @(${quote(runtime.node)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload | ConvertTo-Json -Compress`));
@@ -68,6 +76,52 @@ winTest('an explicitly trusted paired Node/npm runtime is verified without downl
   assert.ok(Number(result.Version.split('.')[0])>=22);
   assert.equal(result.NpmTrusted,true);
   assert.equal(fs.existsSync(path.join(dir,'runtime')),false);
+});
+winTest('Node and npm runtime probes ignore ambient loaders, npm config, proxy, and caller working directory',t=>{
+  const dir=fixture(t),runtime=pairedNodeRuntime(dir),marker=path.join(dir,'ambient-loader-ran.txt'),report=path.join(dir,'npm-probe-observation.json');
+  const preload=path.join(dir,'ambient-loader.cjs'),hostileConfig=path.join(dir,'hostile.npmrc'),hostileHome=path.join(dir,'hostile-home');
+  fs.mkdirSync(hostileHome,{recursive:true});
+  fs.writeFileSync(preload,`require('node:fs').writeFileSync(${JSON.stringify(marker)},'loaded');`,'utf8');
+  fs.writeFileSync(path.join(hostileHome,'.npmrc'),'registry=https://hostile-user.example.invalid/\n//hostile-user.example.invalid/:_authToken=not-a-real-token\n','utf8');
+  fs.writeFileSync(hostileConfig,'registry=https://hostile.example.invalid/\n','utf8');
+  fs.writeFileSync(runtime.npm,`const fs=require('node:fs'); const get=name=>{const key=Object.keys(process.env).find(key=>key.toLowerCase()===name.toLowerCase());return key?process.env[key]:null}; fs.writeFileSync(${JSON.stringify(report)},JSON.stringify({cwd:process.cwd(),userprofile:get('USERPROFILE'),appdata:get('APPDATA'),nodeOptions:get('NODE_OPTIONS'),nodePath:get('NODE_PATH'),httpProxy:get('HTTP_PROXY'),httpsProxy:get('HTTPS_PROXY'),allProxy:get('ALL_PROXY'),userconfig:get('NPM_CONFIG_USERCONFIG'),globalconfig:get('NPM_CONFIG_GLOBALCONFIG'),offline:get('NPM_CONFIG_OFFLINE'),ignoreScripts:get('NPM_CONFIG_IGNORE_SCRIPTS'),registry:get('NPM_CONFIG_REGISTRY'),proxy:get('NPM_CONFIG_PROXY')})); process.stdout.write('10.0.0\\n');`,'utf8');
+  const observation=JSON.parse(run(`${trustedRuntimeOverrides(runtime)}; $before=@{user=$env:USERPROFILE; config=$env:NPM_CONFIG_USERCONFIG; proxy=$env:HTTPS_PROXY; nodeOptions=$env:NODE_OPTIONS}; $result=Resolve-OrchNode -Candidates @(${quote(runtime.node)}) -RuntimeHome ${quote(path.join(dir,'runtime'))} -NoDownload; $after=@{user=$env:USERPROFILE; config=$env:NPM_CONFIG_USERCONFIG; proxy=$env:HTTPS_PROXY; nodeOptions=$env:NODE_OPTIONS}; [pscustomobject]@{result=$result;before=$before;after=$after}|ConvertTo-Json -Compress`,{env:{
+    USERPROFILE:hostileHome,APPDATA:path.join(dir,'hostile-appdata'),NODE_PATH:path.join(dir,'hostile-node-path'),NODE_OPTIONS:`--require ${JSON.stringify(preload)}`,
+    HTTP_PROXY:'http://proxy.example.invalid:8080',HTTPS_PROXY:'http://proxy.example.invalid:8080',ALL_PROXY:'socks5://proxy.example.invalid:1080',
+    NPM_CONFIG_USERCONFIG:hostileConfig,NPM_CONFIG_GLOBALCONFIG:hostileConfig,NPM_CONFIG_REGISTRY:'https://hostile.example.invalid/',
+  }}));
+  assert.equal(observation.result.NpmTrusted,true);
+  assert.deepEqual(observation.after,observation.before,'probe isolation must not mutate the caller environment');
+  assert.equal(fs.existsSync(marker),false,'ambient NODE_OPTIONS must not execute during runtime verification');
+  const npmObservation=JSON.parse(fs.readFileSync(report,'utf8'));
+  const system32=path.join(process.env.SystemRoot,'System32');
+  assert.equal(path.resolve(npmObservation.cwd).toLowerCase(),path.resolve(system32).toLowerCase());
+  assert.equal(npmObservation.userprofile,null);
+  assert.equal(npmObservation.appdata,null);
+  assert.equal(npmObservation.nodeOptions,null);
+  assert.equal(npmObservation.nodePath,null);
+  assert.equal(npmObservation.httpProxy,null);
+  assert.equal(npmObservation.httpsProxy,null);
+  assert.equal(npmObservation.allProxy,null);
+  assert.equal(path.dirname(npmObservation.userconfig).toLowerCase(),path.resolve(system32).toLowerCase());
+  assert.equal(path.dirname(npmObservation.globalconfig).toLowerCase(),path.resolve(system32).toLowerCase());
+  assert.notEqual(npmObservation.userconfig,npmObservation.globalconfig,'npm 11 rejects one config path loaded as both user and global');
+  assert.equal(fs.existsSync(npmObservation.userconfig),false,'probe config path is never materialized');
+  assert.equal(fs.existsSync(npmObservation.globalconfig),false,'probe config path is never materialized');
+  assert.equal(npmObservation.offline,'true');
+  assert.equal(npmObservation.ignoreScripts,'true');
+  assert.equal(npmObservation.registry,'https://registry.npmjs.org/');
+  assert.equal(npmObservation.proxy,'false');
+});
+winTest('preparation environment forwards an explicit npm override and derives the desktop CLI root',t=>{
+  const dir=fixture(t),runtime=pairedNodeRuntime(dir),home=path.join(dir,'runtime'),cache=path.join(home,'cache'),userConfig=path.join(cache,'user.npmrc'),globalConfig=path.join(cache,'global.npmrc'),hostileLocalAppData=path.join(dir,'hostile-local-appdata');
+  fs.mkdirSync(cache,{recursive:true});fs.writeFileSync(userConfig,'');fs.writeFileSync(globalConfig,'');
+  const output=run(`$allowed=Get-OrchTrustedNpmPreparationEnvironment -NodePath ${quote(runtime.node)} -NpmPath ${quote(runtime.npm)} -RuntimeHome ${quote(home)} -NpmCache ${quote(cache)} -UserConfigPath ${quote(userConfig)} -GlobalConfigPath ${quote(globalConfig)} -NpmTrusted $false -AllowUnverifiedNpm -PluginData ${quote(path.join(dir,'plugin-data'))}; $blocked=Get-OrchTrustedNpmPreparationEnvironment -NodePath ${quote(runtime.node)} -NpmPath ${quote(runtime.npm)} -RuntimeHome ${quote(home)} -NpmCache ${quote(cache)} -UserConfigPath ${quote(userConfig)} -GlobalConfigPath ${quote(globalConfig)} -NpmTrusted $false -PluginData ${quote(path.join(dir,'plugin-data'))}; [pscustomobject]@{allowed=$allowed;blocked=$blocked}|ConvertTo-Json -Compress`,{env:{ORCH_ALLOW_UNVERIFIED_NPM:'1',LOCALAPPDATA:hostileLocalAppData,USERPROFILE:path.join(dir,'hostile-user-profile')}});
+  const result=JSON.parse(output);
+  assert.equal(result.allowed.ORCH_ALLOW_UNVERIFIED_NPM,'1');
+  assert.equal(result.blocked.ORCH_ALLOW_UNVERIFIED_NPM,undefined,'ambient override must not cross the boundary without the bootstrap gate');
+  assert.equal(path.resolve(result.allowed.LOCALAPPDATA),path.resolve(process.env.LOCALAPPDATA));
+  assert.notEqual(path.resolve(result.allowed.LOCALAPPDATA),path.resolve(hostileLocalAppData));
 });
 winTest('missing runtime produces actionable refusal when network installation is disabled',t=>{
   const dir=fixture(t);

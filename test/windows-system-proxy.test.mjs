@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import * as network from '../scripts/network-policy.mjs';
+import * as network from '../scripts/core/network-policy.mjs';
+import {trustedWindowsRoot} from '../scripts/core/windows-system.mjs';
 
 const registry = (enabled, server) => `HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\r\n    ProxyEnable    REG_DWORD    0x${enabled ? 1 : 0}\r\n    ProxyServer    REG_SZ    ${server}\r\n`;
 
@@ -39,5 +40,5 @@ test('default registry lookup uses the trusted SystemRoot helper contract', () =
   assert.match(call.file,/System32[\\/]reg\.exe$/i);
   assert.deepEqual(call.args,['query','HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings']);
   assert.equal(call.options.shell,false);
-  assert.equal(call.options.cwd,process.env.SystemRoot||'C:\\Windows');
+  assert.equal(call.options.cwd,trustedWindowsRoot());
 });

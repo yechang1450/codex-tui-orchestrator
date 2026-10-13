@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import {fileURLToPath} from 'node:url';
 import {runWindows} from '../scripts/core/runner.mjs';
 import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
-const family=fileURLToPath(new URL('../temp/',import.meta.url));fs.mkdirSync(family,{recursive:true});
+const family=testTempFamily('runner-self-close');fs.mkdirSync(family,{recursive:true});
 const controllerRoot=fs.mkdtempSync(path.join(family,'self-close-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
@@ -21,7 +22,7 @@ for (const {capacityError,validReceipt,withChecks,terminalFailure=false} of case
   let attempt,files,live=false;
   const hooks={
     plan:async()=>[{title:'close',tasks:[{prompt:'执行任务'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,
-    launcher:(key,prompt,suffix,options)=>{attempt=options.attemptFile;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;return files={lp:path.join(dir,'win-launch-'+stem+'.ps1'),pf:path.join(dir,'agent-win-'+stem+'.md'),pidf:path.join(dir,'window-'+stem+'.pid'),rf:path.join(dir,'win-'+stem+'.result.json')};},
+    launcher:(key,prompt,suffix,options)=>{attempt=options.attemptFile;const dir=controllerWindowsDir(workspace),stem=key+'-'+suffix;fs.mkdirSync(dir,{recursive:true});files={lp:path.join(dir,'win-launch-'+stem+'.ps1'),pf:path.join(dir,'agent-win-'+stem+'.md'),pidf:path.join(dir,'window-'+stem+'.pid'),rf:path.join(dir,'win-'+stem+'.result.json')};const token=String(options.token).replaceAll("'","''");fs.writeFileSync(files.lp,"$token = '"+token+"'",'utf8');fs.writeFileSync(files.pf,'__ORCH_DONE__ '+options.token,'utf8');fs.writeFileSync(files.pidf,'9001','utf8');return files;},
     spawn:async()=>{live=true;return true;},readPid:()=>9001,
     identity:()=>live?({ProcessId:9001,Name:'powershell.exe',Started:'fixture',CommandLine:'fixture'}):null,
     register:()=>{},commit:()=>{},unregister:()=>{},cleanup:()=>{},close:async()=>{live=false;},waitForExit:async()=>true,

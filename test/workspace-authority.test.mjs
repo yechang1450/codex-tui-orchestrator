@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -8,7 +9,7 @@ import {controllerStateDir} from '../scripts/core/controller-state.mjs';
 import {coordinatorDir} from '../scripts/core/leases.mjs';
 import {runWindows,runDirectory} from '../scripts/core/runner.mjs';
 
-const family=fileURLToPath(new URL('../temp/',import.meta.url));
+const family=testTempFamily('workspace-authority');
 
 test('an explicit direct-API coordinator cannot be controlled by a workspace child',async()=>{
   fs.mkdirSync(family,{recursive:true});
@@ -22,7 +23,7 @@ test('an explicit direct-API coordinator cannot be controlled by a workspace chi
   }finally{fs.rmSync(workspace,{recursive:true,force:true});}
 });
 
-test('a nonexistent workspace rejects its physical UNC alias as controller and coordinator',t=>{
+test('a nonexistent workspace rejects its physical UNC alias and rejects an external UNC controller root',t=>{
   if(process.platform!=='win32')return t.skip('Windows UNC path alias only');
   fs.mkdirSync(family,{recursive:true});
   const drive=path.parse(family).root.slice(0,2);
@@ -43,8 +44,8 @@ test('a nonexistent workspace rejects its physical UNC alias as controller and c
   assert.throws(()=>controllerStateDir(workspace,{ORCH_CONTROLLER_ROOT:candidate}),/inside the initiating workspace/i);
   assert.throws(()=>coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:candidate}),/inside the initiating workspace/i);
   const external=path.join(uncParent,`other-${name}`);
-  assert.equal(controllerStateDir(workspace,{ORCH_CONTROLLER_ROOT:external}),external);
-  assert.equal(coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:external}),external);
+  assert.throws(()=>controllerStateDir(workspace,{ORCH_CONTROLLER_ROOT:external}),/CONTROLLER_ROOT_UNSAFE_ACL/);
+  assert.throws(()=>coordinatorDir(workspace,{ORCH_COORDINATOR_DIR:external}),/CONTROLLER_ROOT_UNSAFE_ACL/);
 });
 
 test('a workspace containing CODEX_HOME fails closed unless controller state is moved outside it',()=>{

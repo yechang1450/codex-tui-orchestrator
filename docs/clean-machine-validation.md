@@ -4,7 +4,7 @@
 
 ## 选择干净环境
 
-- GitHub Actions 的 Windows 托管作业适合重复运行离线回归、完整性校验和无凭据安装脚本检查。预装开发工具的镜像不能证明从缺少 Node、npm 和 Codex CLI 的环境可自动准备，也不能替代可见 TUI 或登录验证。
+- GitHub Actions 的 Windows 托管作业使用 Node 22.x、固定的 Codex CLI `0.162.1`，并以 `test/host-context-isolation.mjs` 预加载后运行离线回归。它适合重复运行离线回归、完整性校验和无凭据安装脚本检查；预装开发工具的镜像不能证明从缺少 Node、npm 和 Codex CLI 的环境可自动准备，也不能替代 GUI 登录、可见 TUI 或真实模型执行。
 - 本地 Windows 虚拟机适合首次安装、GUI 登录、可见窗口和失败后的快照恢复。建立只含 Windows 与 Git 的快照，再依次执行下面的引导、离线回归和真实验收。不要把登录凭据放入可分享镜像或提交到仓库。
 - 独立实体机器可用于确认虚拟化环境没有掩盖终端、驱动或内存问题。分别记录每个环境的结果，不要相互替代。
 
@@ -13,28 +13,45 @@
 ## 前置条件
 
 - Windows 11（记录版本号）和 Git（`git --version` 能在 PATH 中解析）。
-- 不要求预先安装 Node、npm 或原生 Codex CLI；PowerShell 引导入口负责检测和准备。已有 Node 必须为 Windows 原生 22+。
+- 不要求预先安装 Node、npm 或原生 Codex CLI；PowerShell 引导入口负责检测和准备，并验证固定的 Codex CLI `0.162.1`。已有 Node 必须为 Windows 原生 22+。
 - 真正执行模型任务前需要登录 Codex；插件继承发起窗口设置，不保存任何凭据。
 - 可选：Windows Terminal（可见窗模式 `ORCH_TUI=wt` 需要）。
 
-## 一、克隆与完整性校验
+## 一、checkout 安装与完整性校验
 
-使用仓库的规范 HTTPS 地址；下面的 URL 是占位示例，执行前替换为待验证仓库的实际地址。已有源码归档时可以跳过克隆并直接运行 bootstrap，但仍应在独立环境完成完整实测。
+使用规范 HTTPS 地址克隆 `yechang1450/codex-tui-orchestrator`。已有源码归档时可以跳过克隆并直接运行 bootstrap，但仍应在独立环境完成完整实测。
 
 ```powershell
-$repositoryUrl = 'https://github.com/<owner>/<repository>.git'
+$repositoryUrl = 'https://github.com/yechang1450/codex-tui-orchestrator.git'
+$ref = '<final-release-tag>'
 $pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
-git clone $repositoryUrl $pluginRoot
+git clone --branch $ref --depth 1 $repositoryUrl $pluginRoot
 if ($LASTEXITCODE -ne 0) { throw '克隆失败。' }
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action install -Arguments @('--verify-skills')
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action install --verify-skills
 if ($LASTEXITCODE -ne 0) { throw '准备或安装失败。' }
 ```
 
 若要验证匿名 HTTPS 克隆，请在未登录 GitHub 的环境中重复本节并单独记录结果。需要认证的开发副本不构成匿名克隆证据。
 
-期望：运行时准备、单一 checkout 注册、安装缓存完整性和 doctor 都成功。计数随发布变化，以当前 `release.json` 为准。宿主 hook 需单独信任，详见[环境准备](environment-setup.md)。
+期望：运行时准备、单一 checkout 注册、安装缓存完整性和 doctor 都成功。计数随发布变化，以当前 `release.json` 为准。宿主 hook 只在自动 SessionStart 准备时需要单独信任；上述直接 bootstrap 安装不依赖该信任，且安装成功不表示已经登录或完成真实模型验收。详见[环境准备](environment-setup.md)。
 
-## 二、手工诊断路径（已有 Node/npm）
+## 二、远程 GitHub marketplace catalog 验收
+
+此路径与 checkout 安装独立：Codex 从 GitHub 获取 catalog，再安装其中的插件。使用新的 `CODEX_HOME`，并且不要让同一环境遗留 checkout catalog 或已安装的同名插件；否则不能证明远程路径实际被使用。
+
+```powershell
+$ref = '<final-commit-or-tag>'
+codex plugin marketplace add yechang1450/codex-tui-orchestrator --ref $ref
+if ($LASTEXITCODE -ne 0) { throw 'GitHub marketplace catalog 添加失败。' }
+codex plugin add codex-tui-orchestrator@yechang1450-codex-tui-orchestrator
+if ($LASTEXITCODE -ne 0) { throw 'GitHub marketplace catalog 插件安装失败。' }
+codex plugin marketplace list --json
+codex plugin list --json
+```
+
+记录 CLI 版本、commit/tag、两个列表输出、安装缓存中的 manifest 版本、依赖完整性、doctor 与严格 skill 检查。当前候选的 remote GitHub marketplace acceptance remains an open gate：在这组实际记录出现前，不得把 checkout 安装或离线回归写成远程 GitHub 安装已通过。GitHub marketplace catalog 不是官方公共插件目录；当前包含有 lifecycle hook，不能提交到官方公共插件目录。公开目录需要单独的无 hook 提交包和相应审核。
+
+## 三、手工诊断路径（已有 Node/npm）
 
 第一节的 Bootstrap 是正式安装入口。它会标记本地 checkout 开发安装，注册仓库内的 `.agents/plugins/marketplace.json`，调用宿主 marketplace 命令安装插件，再验证安装副本。直接调用安装脚本时，checkout 安装必须显式带 `--local-development`，以免把开发树误当成公开分发包。
 
@@ -45,7 +62,7 @@ Set-Location $pluginRoot
 node scripts\install-plugin.mjs --check
 ```
 
-期望：默认安装和注册都指向单一 checkout，不创建 `dist` 目录；检查会确认安装缓存、依赖和宿主启用状态。需要审查干净包时另行运行 `node scripts\publish-dist.mjs --target <导出根目录>`，不要把导出目录放回 checkout 内。若 CLI 探测超时导致 `CLI_MISSING`，可用 `$env:ORCH_CLI = '<codex.exe 绝对路径>'` 明确指定。
+期望：默认安装和注册都指向单一 checkout，不创建 `dist` 目录；检查会确认安装缓存、依赖和宿主启用状态。需要审查干净包时，只能从源码 checkout 运行 `node scripts\publish-dist.mjs --target <导出根目录>`，不要把导出目录放回 checkout 内。若 CLI 探测超时导致 `CLI_MISSING`，可用 `$env:ORCH_CLI = '<codex.exe 绝对路径>'` 明确指定。
 
 核对宿主的本地 marketplace 与已安装插件：
 
@@ -55,20 +72,20 @@ codex plugin marketplace list --json
 codex plugin list --json
 ```
 
-期望：marketplace 列表中有根目录为当前 checkout 的 `codex-tui-orchestrator-local`；`codex plugin list` 中有 `codex-tui-orchestrator@codex-tui-orchestrator-local`。宿主可能把本地安装缓存目录标记为 `local`，安装副本的 manifest 版本仍须等于当前发布版本。只有显式注册分发源时才会检查 `stale_dist`，此时重新运行带 `--target` 的 `publish-dist` 再安装。
+期望：marketplace 列表中有根目录为当前 checkout 的 `yechang1450-codex-tui-orchestrator`；`codex plugin list` 中有 `codex-tui-orchestrator@yechang1450-codex-tui-orchestrator`。宿主可能把本地安装缓存目录标记为 `local`，安装副本的 manifest 版本仍须等于当前发布版本。无论分发是显式选择还是由现有 catalog 发现，都必须带有与源码 release 逐字节绑定的来源证明；出现 `dist_unverified` 时，从已验证的源码 checkout 重新运行带 `--target` 的 `publish-dist`，再安装。
 
-## 三、离线回归（源码目录内）
+## 四、离线回归（源码目录内）
 
 测试文件不进入发布分发；在克隆源码目录执行。不要在分发目录声称测试通过。
 
 ```powershell
 Set-Location $pluginRoot
-node --test --test-concurrency=1 test/*.test.mjs
+node --import ./test/host-context-isolation.mjs --test --test-concurrency=1 test/*.test.mjs
 ```
 
-期望：零失败；需显式启用的真实模型用例会跳过，再单独运行真实验收。最新计数见 [RC 记录](rc-validation.md)，不得拿历史计数认证当前源码。任何失败都应保留原始诊断，查明根因后重跑对应测试和完整回归。
+`host-context-isolation.mjs` 只移除桌面宿主注入到离线夹具的会话身份；它保留工作区和 `CODEX_HOME`，也不用于下面的真实模型验收。这个命令与 Windows CI 使用的预加载方式一致。期望：零失败；需显式启用的真实模型用例会跳过，再单独运行真实验收。历史计数不能认证当前源码；记录本次运行的原始诊断，查明根因后重跑对应测试和完整回归。
 
-## 四、真实执行验收（headless）
+## 五、真实执行验收（可见 TUI）
 
 两个任务才能进编排（单任务请求按设计直接判 out-of-scope）。验收文件示例 `checks.json`：
 
@@ -80,12 +97,12 @@ node --test --test-concurrency=1 test/*.test.mjs
 ```
 
 ```powershell
-node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acceptance-file <checks.json 绝对路径> --exec "在 <工作区> 创建 temp/one.json（id=one、answer=42）；在 <工作区> 创建 temp/two.json（id=two、answer=42）。"
+node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acceptance-file <checks.json 绝对路径> --run-windows "在 <工作区> 创建 temp/one.json（id=one、answer=42）；在 <工作区> 创建 temp/two.json（id=two、answer=42）。"
 ```
 
 期望：退出码 0，`<工作区>\temp\orchestrator\runs\<ID>\summary.json` 里 `success=true`、两个任务 `verified`。同一目录下 `manifest.json` 与 `summary.json` 都应出现 `acceptance.sha256`。
 
-## 五、验收契约绑定（回归检查）
+## 六、验收契约绑定（回归检查）
 
 执行窗能改写工作区，所以验收契约与账本绑定：改写 `<run>\acceptance.json` 后再次验收必须被拒绝。
 
@@ -94,7 +111,7 @@ node scripts\orchestrate-sdk.mjs --verify-run <ID>                           # �
 node scripts\orchestrate-sdk.mjs --verify-run <ID> --allow-acceptance-change # 显式接管：告警 + 重新绑定 + 账本 history 记 acceptanceRebound
 ```
 
-## 六、可见 TUI 验收（可选但建议）
+## 七、可见 TUI 行为补充验收
 
 ```powershell
 $env:ORCH_TUI = 'wt'
@@ -103,7 +120,7 @@ node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acce
 
 观察点：双通道面板（TodoList + Execution）刷新；块结束后窗口自动关闭；编排结束屏幕上不残留“代码 1”错误窗；`status.mjs --watch` 能只读跟随状态。
 
-## 七、要记录的证据
+## 八、要记录的证据
 
 | 项目 | 采集方式 |
 | --- | --- |
@@ -114,7 +131,7 @@ node scripts\orchestrate-sdk.mjs --workspace <工作区> --run-id <新ID> --acce
 | 真实执行 | `summary.json` 的 `success`、任务状态、`acceptance.sha256`、耗时 |
 | 契约绑定 | `--verify-run` 的拒绝输出与 override 后的 history 记录 |
 
-证据先保存在工作区 `temp/` 与本机插件目录；稳定后再把可公开的摘要 JSON 提交到 `test/`，保持账实一致。
+原始生成证据不得提交到仓库。它们先保存在工作区 `temp/` 与本机插件目录；如确有必要保留公开记录，只能提交手写或严格 allow-list 校验的中性摘要，且不得包含路径、主机名、用户名、commit、远程 URL、run ID、token、prompt、输出、provider 观察或其他可关联运行的数据。
 
 ## 已知限制与诊断提示
 

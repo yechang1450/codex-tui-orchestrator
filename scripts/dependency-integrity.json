@@ -1,15 +1,15 @@
 {
   "schema": 1,
-  "packageLockSha256": "b96a56541a032eb83a1f427b003cc383333b16f39106ce91847fb0e13ceb1f6f",
+  "packageLockSha256": "f61ce4ed70d646028687407e3286ec113c32ad4f69afc03865d4c02a4b6582f4",
   "files": {
-    "@openai/codex/bin/codex.js": "134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477",
-    "@openai/codex/package.json": "0580493a92b83d962b8fdc8585a66c963431c6ddb54fabe4b3797970095f000d",
+    "@openai/codex/bin/codex.js": "61b0194f3bb6534439c8d26a3ed57d0805f84b884588b761795323eeb92fcf70",
+    "@openai/codex/package.json": "41088ff13de24389cad54ee52ba03c1e01cf39c934928314d002e5120f884216",
     "@openai/codex/README.md": "ba4e1f69ff48386e72a9c5e1edaf76aad64a475c2d51af79ccba6d1128261ba7",
-    "@openai/codex-sdk/dist/index.d.ts": "b71d10f21031ec084c433127777ff419b15a67b52a35412cd4e679a8f42f30b7",
-    "@openai/codex-sdk/dist/index.js": "7edc65d67e470c9e63ca722bd48725612e2908ef7208c8371cf008de594ab1ef",
-    "@openai/codex-sdk/dist/index.js.map": "57555f545307e38c9e099993001fe307707157f94f95a78ee0b6e8097e871076",
+    "@openai/codex-sdk/dist/index.d.ts": "5b57ce417b5f6e608c8e52707761384be220ff27e0206e93e4c253e83f206a8f",
+    "@openai/codex-sdk/dist/index.js": "340f42940ffd5c7b31e6e11a159517339c048d30577d88cafeac976cd620f6a4",
+    "@openai/codex-sdk/dist/index.js.map": "40bad72fc396c58785e0177db3df956ffed7d5482e8ffc286fa19e8b5a7400bd",
     "@openai/codex-sdk/LICENSE": "d17f227e4df5da1600391338865ce0f3055211760a36688f816941d58232d8dc",
-    "@openai/codex-sdk/package.json": "3cb8d0e8c7ae7dc76c080aad3d062390c930cc10ffa1e6502f49e764441b595b",
+    "@openai/codex-sdk/package.json": "884e44de3f21880f39074bbea0d0d77a2b385b6595ef05ddd5f8e60cf6c26fbb",
     "@openai/codex-sdk/README.md": "bc454b26a6920efb1826912be6b6ba96348ab39d9f4e70078465deb586dbbfe7"
   }
 }

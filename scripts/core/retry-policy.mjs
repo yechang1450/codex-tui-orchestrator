@@ -6,7 +6,6 @@ function errorText(value) {
   if (value instanceof Error) return `${value.message}\n${value.stack || ""}`;
   try { return JSON.stringify(value); } catch { return String(value); }
 }
-
 /** Return true only for provider capacity/overload responses. */
 export function isCapacityError(value) {
   const text = errorText(value).toLowerCase();
@@ -81,8 +80,4 @@ export function capacityRetryPolicy(error, attempt = 1, env = process.env) {
   const hinted = retryAfterMs(error);
   const delayMs = Math.min(cap, hinted == null ? base * (2 ** (n - 1)) : hinted);
   return { retry: true, attempt: n, maxRetries, delayMs };
-}
-
-export function capacityErrorText(value) {
-  return isCapacityError(value) ? errorText(value) : "";
 }

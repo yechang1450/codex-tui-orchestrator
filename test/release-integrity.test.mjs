@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,8 +8,30 @@ import {coreInventory,verifyRelease,runtimeInventory} from '../scripts/release-i
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 
+test('runtime inventory excludes source-only release-maintenance files',()=>{
+ const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+ const inventory=runtimeInventory(repo);
+ for(const rel of [
+  'scripts/bump-version.mjs',
+  'scripts/coverage.mjs',
+  'scripts/publish-dist.mjs',
+  'repair.mjs',
+  'docs/clean-machine-validation.md',
+  'docs/release-policy.md',
+  '.gitattributes',
+  '.gitignore',
+  'CHANGELOG.md',
+  'CODE_OF_CONDUCT.md',
+  'CONTRIBUTING.md',
+  'SECURITY.md',
+  'docs/compatibility.md',
+  'agents/openai.yaml',
+ ]) assert.equal(Object.hasOwn(inventory,rel),false,`${rel} is a source-maintenance file and must not be shipped`);
+ assert.equal(Object.hasOwn(inventory,'docs/security-boundaries.md'),true,'installed execution guidance links to the security boundary document');
+});
+
 test('sealing rejects CRLF runtime text before replacing the release manifest',()=>{
- const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-eol-'));
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-eol-'));
  try{
   for(const dir of ['.codex-plugin','scripts/core','skills'])fs.mkdirSync(path.join(root,dir),{recursive:true});
   for(const file of ['release-integrity.mjs','dependency-integrity.mjs'])fs.copyFileSync(fileURLToPath(new URL('../scripts/'+file,import.meta.url)),path.join(root,'scripts',file));
@@ -30,7 +53,7 @@ test('sealing rejects CRLF runtime text before replacing the release manifest',(
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 test('sealing refuses a stale dependency seal without replacing release.json',()=>{
- const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-dependency-order-'));
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-dependency-order-'));
  try{
   for(const dir of ['scripts/core','scripts/node_modules/@openai/codex-sdk'])fs.mkdirSync(path.join(root,dir),{recursive:true});
   for(const file of ['release-integrity.mjs','dependency-integrity.mjs'])fs.copyFileSync(fileURLToPath(new URL('../scripts/'+file,import.meta.url)),path.join(root,'scripts',file));
@@ -53,7 +76,7 @@ test('sealing refuses a stale dependency seal without replacing release.json',()
 });
 
 test('distribution sealing requires explicit verified source provenance when dependencies are omitted',async t=>{
- const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-distribution-provenance-'));
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-distribution-provenance-'));
  const source=path.join(root,'source'),dist=path.join(root,'dist');
  const sha256=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
  try{
@@ -142,7 +165,7 @@ test('distribution sealing requires explicit verified source provenance when dep
 });
 
 test('release verification rejects changed and injected core files',()=>{
- const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-test-'));
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-test-'));
  try{const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});
  fs.writeFileSync(path.join(core,'contracts.mjs'),'original');fs.writeFileSync(path.join(core,'orchestrate-sdk.mjs'),'entry');
  fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion:'test',files:coreInventory(root),runtimeFiles:runtimeInventory(root)}));
@@ -151,7 +174,7 @@ test('release verification rejects changed and injected core files',()=>{
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
 test('runtime seal rejects a changed local marketplace catalog',()=>{
- const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'marketplace-seal-'));
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'marketplace-seal-'));
  try{
   const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});
   fs.mkdirSync(path.join(root,'.agents','plugins'),{recursive:true});
@@ -166,8 +189,33 @@ test('runtime seal rejects a changed local marketplace catalog',()=>{
   assert.throws(()=>verifyRelease(root),/RELEASE_INTEGRITY_FAILED/);
  }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+test('release verification rejects missing declared plugin and skill icon files',()=>{
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'release-metadata-assets-'));
+ try{
+  const core=path.join(root,'scripts','core');fs.mkdirSync(core,{recursive:true});
+  fs.mkdirSync(path.join(root,'.codex-plugin'),{recursive:true});
+  fs.mkdirSync(path.join(root,'skills','fixture','agents'),{recursive:true});
+  fs.mkdirSync(path.join(root,'skills','fixture','assets'),{recursive:true});
+  fs.writeFileSync(path.join(core,'contracts.mjs'),'original');fs.writeFileSync(path.join(core,'orchestrate-sdk.mjs'),'entry');
+  fs.writeFileSync(path.join(root,'.codex-plugin','plugin.json'),JSON.stringify({interface:{composerIcon:'./assets/missing.png'}}));
+  fs.writeFileSync(path.join(root,'skills','fixture','agents','openai.yaml'),'interface:\n  icon_small: "./assets/icon.png"\n');
+  fs.writeFileSync(path.join(root,'skills','fixture','assets','icon.png'),'skill icon');
+  const seal=()=>fs.writeFileSync(path.join(root,'release.json'),JSON.stringify({schema:2,coreVersion:'test',files:coreInventory(root),runtimeFiles:runtimeInventory(root)}));
+  seal();
+  assert.throws(()=>verifyRelease(root),/RELEASE_METADATA_REFERENCE_INVALID.*composerIcon/);
+  fs.mkdirSync(path.join(root,'assets'));fs.writeFileSync(path.join(root,'assets','icon.png'),'plugin icon');
+  fs.writeFileSync(path.join(root,'.codex-plugin','plugin.json'),JSON.stringify({interface:{composerIcon:'./assets/icon.png'}}));
+  fs.writeFileSync(path.join(root,'skills','fixture','agents','openai.yaml'),'interface:\n  icon_small: "./assets/missing.png"\n');
+  seal();
+  assert.throws(()=>verifyRelease(root),/RELEASE_METADATA_REFERENCE_INVALID.*icon_small/);
+  fs.writeFileSync(path.join(root,'skills','fixture','agents','openai.yaml'),'interface:\n  icon_small: "./assets/icon.png"\n');
+  seal();
+  assert.equal(verifyRelease(root).schema,2);
+ }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
 test('publisher excludes git and runtime debris and refuses an existing release',()=>{
- const base=path.join(process.cwd(),'temp');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'publish-test-'));
+ const base=testTempFamily('release-integrity');fs.mkdirSync(base,{recursive:true});const root=fs.mkdtempSync(path.join(base,'publish-test-'));
  try{
   const source=path.join(root,'source'),target=path.join(root,'published');
   fs.mkdirSync(path.join(source,'scripts','core'),{recursive:true});fs.mkdirSync(path.join(source,'.git'));fs.mkdirSync(path.join(source,'temp'));

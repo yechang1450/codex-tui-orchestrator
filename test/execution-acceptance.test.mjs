@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +11,8 @@ import {createHeadlessHooks} from '../scripts/core/headless-executor.mjs';
 import {createStatusPublisher,readEvents,readRunStatus} from '../scripts/core/status-events.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const family=path.join(repo,'temp','execution-acceptance');
+const testWorker=fileURLToPath(new URL('./headless-worker-fixture.mjs',import.meta.url));
+const family=testTempFamily('execution-acceptance');
 fs.mkdirSync(family,{recursive:true});
 // Controller authority must remain outside the workspace a child can write.
 const controllerRoot=fs.mkdtempSync(path.join(os.tmpdir(),'codex-orch-controller-'));
@@ -22,8 +24,10 @@ function doctor(mode,model,effort){
   const entry=path.join(repo,'scripts','core','orchestrate-sdk.mjs');
   const home=fs.mkdtempSync(path.join(family,'doctor-'));
   try{
-    fs.writeFileSync(path.join(home,'config.toml'),`model = "${model}"\nmodel_reasoning_effort = "${effort}"\nservice_tier = "priority"\nsandbox_mode = "workspace-write"\napproval_policy = "never"\n`,'utf8');
-    const env={...process.env,CODEX_HOME:home,ORCH_AGENT:'codex',ORCH_EXEC_MODE:mode,ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};
+    // A headless worker is deliberately read-only: workspace-write children
+    // must retain an approval path and therefore select the visible mode.
+    fs.writeFileSync(path.join(home,'config.toml'),`model = "${model}"\nmodel_reasoning_effort = "${effort}"\nservice_tier = "priority"\nsandbox_mode = "read-only"\napproval_policy = "never"\n`,'utf8');
+    const env={...process.env,CODEX_HOME:home,WORKSPACE_DIR:repo,ORCH_AGENT:'codex',ORCH_EXEC_MODE:mode,ORCH_MODEL:'wrong-model',ORCH_EFFORT:'low',ORCH_SERVICE_TIER:'flex'};
     delete env.CODEX_THREAD_ID;delete env.CODEX_SESSION_ID;
     const result=spawnSync(process.execPath,[entry,'--doctor'],{encoding:'utf8',windowsHide:true,env});
     assert.equal(result.status,0,result.stderr||result.stdout);
@@ -99,7 +103,7 @@ test('headless runner sends the initiating model and effort to the worker and pu
   // Codex workers on a busy host. Keep the acceptance window above that
   // admission overhead so the test observes the normal awaiting-verification
   // event instead of turning host contention into a false timeout.
-  const executor=createHeadlessHooks({workspace,cli:process.execPath,args:[cli,'-m','initiator-worker-model','-c','model_reasoning_effort=high'],timeoutMs:120000});
+  const executor=createHeadlessHooks({workspace,cli:process.execPath,args:[cli,'-m','initiator-worker-model','-c','model_reasoning_effort=high'],timeoutMs:120000,workerEntry:testWorker});
   const hooks={...executor,plan:async()=>[{title:'acceptance',tasks:[{prompt:'执行验收'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,register:()=>{},commit:()=>{},unregister:()=>{}};
   const events=[];
   try{
@@ -112,7 +116,14 @@ test('headless runner sends the initiating model and effort to the worker and pu
     assert.ok(events.some(e=>e.todoList?.[0]?.status==='running'));
     assert.ok(events.some(e=>e.executionStatus?.[0]?.status==='running'));
     assert.ok(events.some(e=>e.todoList?.[0]?.status==='awaiting-verification'));
-  }finally{if(oldCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=oldCodexHome;fs.rmSync(workspace,{recursive:true,force:true});}
+  }finally{
+    if(oldCodexHome===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=oldCodexHome;
+    // Windows can retain a just-exited worker's current-directory handle for a
+    // short interval after its exit is observed. This is test-fixture cleanup,
+    // so retry the documented transient EPERM path rather than masking a run
+    // result with a filesystem timing race.
+    fs.rmSync(workspace,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
 });
 
 test('spawn-group status is a monotonic host-consumable projection of every execution block',()=>{
@@ -132,8 +143,12 @@ test('native Codex cards are never falsely claimed: host integration consumes th
   assert.match(english,/Native TodoList\/spawn cards belong to the host UI; the plugin emits status events for the host to consume\./);
   assert.match(chinese,/原生 TodoList\/spawn 卡片属于宿主 UI，插件输出状态事件供宿主消费。/);
   const source=fs.readFileSync(path.join(repo,'scripts','core','status-events.mjs'),'utf8');
-  assert.match(source,/todoList:sum\.todoList/);
-  assert.match(source,/executionStatus:sum\.executionStatus/);
+  // The status bridge must expose the two host-facing fields from the public
+  // projection.  Reading directly from `sum` would bypass credential and
+  // process-identity redaction before the plugin crosses its file boundary.
+  assert.match(source,/const publicSum=publicStatusValue\(sum\)/);
+  assert.match(source,/todoList:publicSum\.todoList/);
+  assert.match(source,/executionStatus:publicSum\.executionStatus/);
   // No host tool is available to a plugin subprocess; the test requires the
   // durable interface to be present while rejecting a false native-card claim.
   assert.doesNotMatch(source,/update_plan\s*\(|spawn_agent\s*\(/);

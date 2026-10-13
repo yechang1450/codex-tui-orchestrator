@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,26 +7,27 @@ import {fileURLToPath} from 'node:url';
 import {runWindows,readOwnedLauncherExitEvidence,waitForOwnedLauncherExit,sweepRunProcesses,classifySpawnResult} from '../scripts/core/runner.mjs';
 import {controllerWindowsDir,controllerHeadlessBase} from '../scripts/core/controller-state.mjs';
 
-const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+const family=testTempFamily('launcher-identity-recovery');
 fs.mkdirSync(family,{recursive:true});
 
 test('owned launcher exit evidence binds the current token and PID',async()=>{
   const dir=fs.mkdtempSync(path.join(family,'launcher-evidence-'));
   const files={pidf:path.join(dir,'window.pid'),rf:path.join(dir,'window.result.json')};
-  const attempt={token:'run-B1-a1-token'};
+  const attempt={runId:'visible-run',blockKey:'B1',number:1,token:'visible-run-B1-a1-token'};
   try{
     fs.writeFileSync(files.pidf,'4242','utf8');
-    fs.writeFileSync(files.rf,JSON.stringify({__DONE__:true,__TOKEN__:attempt.token,__LAUNCHER_PID__:4242,__EXIT__:0})+'\n__EXIT__=0','utf8');
+    const owned={__DONE__:true,__TOKEN__:attempt.token,__LAUNCHER_PID__:4242,__EXIT__:0,__RUN_ID__:attempt.runId,__BLOCK_KEY__:attempt.blockKey,__ATTEMPT__:attempt.number};
+    fs.writeFileSync(files.rf,JSON.stringify(owned)+'\n__EXIT__=0','utf8');
     assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242).__TOKEN__,attempt.token);
     const proved=await waitForOwnedLauncherExit(files,attempt,{readPid:()=>4242,probePid:()=>false,timeoutMs:20});
     assert.equal(proved.__TOKEN__,attempt.token);
-    fs.writeFileSync(files.rf,JSON.stringify({__DONE__:true,__TOKEN__:'foreign',__LAUNCHER_PID__:4242})+'\n','utf8');
+    fs.writeFileSync(files.rf,JSON.stringify({...owned,__TOKEN__:'foreign'})+'\n','utf8');
     assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242),null);
     assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>4242,probePid:()=>false,timeoutMs:20}),null);
-    fs.writeFileSync(files.rf,JSON.stringify({__DONE__:true,__TOKEN__:attempt.token,__LAUNCHER_PID__:4243})+'\n','utf8');
+    fs.writeFileSync(files.rf,JSON.stringify({...owned,__LAUNCHER_PID__:4243})+'\n','utf8');
     assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242),null);
     for(const forgedPid of [0,-1,4194305]){
-      fs.writeFileSync(files.rf,JSON.stringify({__DONE__:true,__TOKEN__:attempt.token,__LAUNCHER_PID__:forgedPid})+'\n','utf8');
+      fs.writeFileSync(files.rf,JSON.stringify({...owned,__LAUNCHER_PID__:forgedPid})+'\n','utf8');
       fs.writeFileSync(files.pidf,String(forgedPid),'utf8');
       assert.equal(readOwnedLauncherExitEvidence(files,attempt,forgedPid),null);
       assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>forgedPid,probePid:()=>false,timeoutMs:20}),null);
@@ -33,7 +35,17 @@ test('owned launcher exit evidence binds the current token and PID',async()=>{
     fs.writeFileSync(files.pidf,'4242','utf8');
     fs.writeFileSync(files.rf,'not-json\n','utf8');
     assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242),null);
-    fs.writeFileSync(files.rf,JSON.stringify({__DONE__:true,__TOKEN__:attempt.token,__LAUNCHER_PID__:4242})+'\n','utf8');
+    fs.writeFileSync(files.rf,JSON.stringify({...owned,__EXIT__:undefined})+'\n','utf8');
+    assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242),null,'a result without an exit code cannot prove an owned launcher exit');
+    for(const forged of [
+      {...owned,__RUN_ID__:'foreign-run'},
+      {...owned,__BLOCK_KEY__:'B2'},
+      {...owned,__ATTEMPT__:2},
+    ]){
+      fs.writeFileSync(files.rf,JSON.stringify(forged)+'\n','utf8');
+      assert.equal(readOwnedLauncherExitEvidence(files,attempt,4242),null,'result identity must bind the current run, block and attempt');
+    }
+    fs.writeFileSync(files.rf,JSON.stringify(owned)+'\n','utf8');
     assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>4242,probePid:()=>true,timeoutMs:20}),null);
     assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>0,probePid:()=>false,timeoutMs:20}),null);
     assert.equal(await waitForOwnedLauncherExit(files,attempt,{readPid:()=>{throw new Error('transient pid read')},probePid:()=>false,timeoutMs:20}),null);
@@ -78,8 +90,11 @@ test('final sweep records a verified headless worker exit for a later resume',as
   const controllerRoot=fs.mkdtempSync(path.join(family,'headless-sweep-controller-'));
   const previous=process.env.ORCH_CONTROLLER_ROOT;process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
   try{
-    const runId='headless-sweep',token='headless-sweep-B1-a1-token',attempt={
-      runId,token,number:1,taskIds:['T001'],file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json')
+    const runId='headless-sweep',token='headless-sweep-B1-a1-token',leaseId='headless-sweep-B1',leaseInstanceId='11111111-1111-4111-8111-111111111111';
+    const launcher={ProcessId:4242,Name:'node.exe',Started:'2026-01-01T00:00:00.000Z',commandLineSha256:'a'.repeat(64)};
+    const attempt={
+      runId,blockKey:'B1',token,number:1,taskIds:['T001'],leaseId,leaseInstanceId,launcherObserved:launcher,
+      file:path.join(workspace,'temp','orchestrator','runs',runId,'attempts','B1','1','attempt.json')
     };
     fs.mkdirSync(path.dirname(attempt.file),{recursive:true});fs.writeFileSync(attempt.file,JSON.stringify(attempt),'utf8');
     const base=controllerHeadlessBase(workspace,attempt.file,'B1');fs.mkdirSync(path.dirname(base),{recursive:true});
@@ -87,7 +102,7 @@ test('final sweep records a verified headless worker exit for a later resume',as
     fs.writeFileSync(files.lp,JSON.stringify({version:1,cli:process.execPath,args:[],workspace,runId,token,attemptFile:attempt.file,timeoutMs:1000,files,ready:base+'.go',cancel:base+'.cancel',runtime:base+'.runtime.json'}),'utf8');
     fs.writeFileSync(files.pidf,'4242','utf8');
     fs.writeFileSync(files.rf,JSON.stringify({runId,token,pid:4242,done:true,exitCode:0},null,2),'utf8');
-    const entry={status:'verified',token,attempts:[attempt],launcherFiles:files,exitConfirmed:false};
+    const entry={status:'verified',token,attempts:[attempt],leaseId,leaseInstanceId,launcher,launcherFiles:files,exitConfirmed:false};
     const summary={runId,workspace,blocks:[{key:'B1',taskIds:['T001']}],results:{B1:entry}};
     const stats=await sweepRunProcesses(summary,{identify:()=>null,probePid:()=>false,waitForExit:async()=>true,close:async()=>{throw new Error('closed worker must not be reopened');}});
     assert.deepEqual(stats,{checked:1,closed:1,failed:0,retained:0});
@@ -118,9 +133,12 @@ test('final sweep retains an unresolved launcher lease without attempting cleanu
 
 test('final sweep does not reopen a launcher with current owned exit evidence',async()=>{
   let closes=0;
-  const attempt={runId:'closed-run',token:'closed-token',taskIds:['T001'],exitEvidence:{token:'closed-token',pid:4242}};
+  const leaseId='closed-run-B1',leaseInstanceId='22222222-2222-4222-8222-222222222222';
+  const launcher={ProcessId:4242,Name:'node.exe',Started:'2026-01-01T00:00:00.000Z',commandLineSha256:'b'.repeat(64)};
+  const exitEvidence={token:'closed-token',pid:4242,authenticated:true,at:1};
+  const attempt={runId:'closed-run',blockKey:'B1',number:1,token:'closed-token',taskIds:['T001'],leaseId,leaseInstanceId,launcherObserved:launcher,exitConfirmed:true,exitEvidence};
   const summary={runId:'closed-run',blocks:[{key:'B1',taskIds:['T001']}],results:{B1:{
-    status:'awaiting-verification',token:'closed-token',exitConfirmed:true,attempts:[attempt]
+    status:'awaiting-verification',token:'closed-token',leaseId,leaseInstanceId,launcher,exitConfirmed:true,exitEvidence,attempts:[attempt]
   }}};
   const stats=await sweepRunProcesses(summary,{close:async()=>{closes++;}});
   assert.deepEqual(stats,{checked:0,closed:0,failed:0,retained:0});

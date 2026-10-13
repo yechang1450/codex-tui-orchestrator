@@ -1,17 +1,18 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {transaction, atomicJson, reserve, release, claimRun, releaseRun} from '../scripts/core/leases.mjs';
+import {transaction, atomicJson, reserve, release, claimRun, releaseRun, processIdentityBinding} from '../scripts/core/leases.mjs';
 import {readRunStatus, readEvents, createStatusPublisher} from '../scripts/core/status-events.mjs';
 import {keysOverlap} from '../scripts/core/contracts.mjs';
 
 // 审计线 C 的畸形输入判据（状态文件 / 路径 fuzz）。
 // 基线：绝不把裸 Node 栈帧/内部措辞抛给调用方；绝不静默成功；绝不留下锁死的租约、孤儿进程或一次性残留。
 // 每个用例都把实测值打进日志（[fuzz] 前缀），便于 report.md 逐条引用三联证据。
-const family = fileURLToPath(new URL('../temp/', import.meta.url));
+const family = testTempFamily('malformed-state-fuzz');
 fs.mkdirSync(family, {recursive: true});
 const newDir = (label) => fs.mkdtempSync(path.join(family, `fuzz-${label}-`));
 const seen = (name, value) => console.log(`[fuzz] ${name} :: ${value}`);
@@ -22,6 +23,8 @@ const runDirOf = (workspace, runId) => path.join(workspace, 'temp', 'orchestrato
 // 几十次就能把整机的 CIM/WMI 拖到超时。只关心状态文件语义的用例显式注入固定进程表，
 // 需要覆盖真实互斥握手（长路径/短名/UNC/只读/被独占）的用例仍走真路径。
 const liveSelf = () => new Map([[process.pid, {ProcessId: process.pid, ParentProcessId: 0, Name: 'node.exe', CommandLine: 'fuzz-runner', Started: 'fuzz'}]]);
+const liveBinding = () => processIdentityBinding(liveSelf().get(process.pid));
+const deadBinding = () => processIdentityBinding({ProcessId:424242,Started:'dead',Name:'node.exe',CommandLine:'dead'});
 // 机器繁忙时真握手可能被 WMI 拖垮（"Cannot verify process identities"）：有界重试一次，
 // 并把两次实测都记进日志；真缺陷（握手本身坏）会确定性失败，重试救不回来。
 async function attempt(label, times, fn) {
@@ -59,9 +62,9 @@ test('L1-L6 畸形 leases.json（截断/非数组/null/空文件）隔离 + 一�
     assert.equal(fs.readFileSync(path.join(dir, quarantined[0]), 'utf8'), text, '隔离件必须原样保留原始字节，不销毁证据');
     // 第二次事务：坏文件已被摘走，工作区必须自愈，不能被一条毒记录永久锁死。
     let ran = false;
-    transaction(dir, (leases) => {
+    transaction(dir, (leases, owner) => {
       ran = true;
-      leases.push({id: 'probe', owner: {ProcessId: process.pid}, reservedAt: Date.now()});
+      leases.push({id: 'probe', owner, reservedAt: Date.now()});
     }, liveSelf);
     const after = JSON.parse(fs.readFileSync(file, 'utf8'));
     seen(`leases.${label}.recover`, `ran=${ran} after=${JSON.stringify(after.map((l) => l.id))}`);
@@ -76,7 +79,7 @@ test('L1-L6 畸形 leases.json（截断/非数组/null/空文件）隔离 + 一�
   ]) {
     const dir = newDir(`leases-${label}`);
     const file = path.join(dir, 'leases.json');
-    fs.writeFileSync(file, write(JSON.stringify([{id: 'live', keys: ['dir:a'], owner: {ProcessId: process.pid}, reservedAt: Date.now()}], null, 2)), 'utf8');
+    fs.writeFileSync(file, write(JSON.stringify([{id: 'live', keys: ['dir:a'], owner: liveBinding(), reservedAt: Date.now()}], null, 2)), 'utf8');
     let ids = null;
     transaction(dir, (leases) => { ids = leases.map((l) => l.id); }, liveSelf);
     seen(`leases.${label}`, `kept=${JSON.stringify(ids)} quarantine=${fs.readdirSync(dir).filter((n) => n.includes('corrupt')).length}`);
@@ -95,9 +98,10 @@ test('L7 无 owner / reservedAt 为字符串或负数 / 非对象条目：新鲜
     'not-an-object',
     {id: 'fresh-no-owner', keys: ['dir:a'], reservedAt: now},
     {id: 'stale-no-owner', keys: ['dir:b'], reservedAt: now - 120000},
-    {id: 'string-reserved', keys: ['dir:c'], owner: {ProcessId: 1}, reservedAt: 'not-a-number'},
-    {id: 'negative-reserved', keys: ['dir:d'], owner: {ProcessId: 1}, reservedAt: -1},
-    {id: 'live', keys: ['dir:e'], owner: {ProcessId: process.pid}, reservedAt: now},
+    {id: 'string-reserved', keys: ['dir:c'], owner: deadBinding(), reservedAt: 'not-a-number'},
+    {id: 'negative-reserved', keys: ['dir:d'], owner: deadBinding(), reservedAt: -1},
+    {id: 'legacy-partial-owner', keys: ['dir:legacy'], owner: {ProcessId: process.pid}, reservedAt: now},
+    {id: 'live', keys: ['dir:e'], owner: liveBinding(), reservedAt: now},
   ]), 'utf8');
   let ids = null;
   transaction(dir, (leases) => { ids = leases.map((l) => l && l.id); }, liveSelf);
@@ -110,8 +114,8 @@ test('L8 重复 id 的租约条目必须去重：容量不得被重复计数、�
   const dir = newDir('leases-dup');
   const now = Date.now();
   fs.writeFileSync(path.join(dir, 'leases.json'), JSON.stringify([
-    {id: 'dup', keys: ['dir:a'], owner: {ProcessId: process.pid}, reservedAt: now - 5000, capacity: 2},
-    {id: 'dup', keys: ['dir:a'], owner: {ProcessId: process.pid}, reservedAt: now, capacity: 2},
+    {id: 'dup', keys: ['dir:a'], owner: liveBinding(), reservedAt: now - 5000, capacity: 2},
+    {id: 'dup', keys: ['dir:a'], owner: liveBinding(), reservedAt: now, capacity: 2},
   ]), 'utf8');
   const result = reserve(dir, {id: 'other', keys: ['dir:b']}, 2, liveSelf);
   const after = JSON.parse(fs.readFileSync(path.join(dir, 'leases.json'), 'utf8'));
@@ -360,7 +364,7 @@ test('F3 状态目录末尾带点：协调器事务仍然可用', async () => {
   let error = null;
   let entries = null;
   const outcome = await attempt('paths.trailing-dot', 2, () => {
-    transaction(dir, (leases) => { leases.push({id: 'dot', owner: {ProcessId: process.pid}, reservedAt: Date.now()}); entries = leases.length; });
+    transaction(dir, (leases, owner) => { leases.push({id: 'dot', owner, reservedAt: Date.now()}); entries = leases.length; });
     return true;
   });
   if (!outcome.ok) error = outcome.error;
@@ -382,7 +386,7 @@ test('F4 8.3 短名与长名必须归一到同一个冲突键，且短名状态�
   }
   let error = null;
   const outcome = await attempt('paths.8.3', 2, () => {
-    transaction(short, (leases) => leases.push({id: 'short', owner: {ProcessId: process.pid}, reservedAt: Date.now()}));
+    transaction(short, (leases, owner) => leases.push({id: 'short', owner, reservedAt: Date.now()}));
     return true;
   });
   if (!outcome.ok) error = outcome.error;
@@ -407,7 +411,7 @@ test('F5 UNC 路径（\\\\localhost\\C$\\…）作为状态目录：事务与原
   let error = null;
   const outcome = await attempt('paths.unc', 2, () => {
     atomicJson(path.join(unc, 'leases.json'), []);
-    transaction(unc, (leases) => leases.push({id: 'unc', owner: {ProcessId: process.pid}, reservedAt: Date.now()}));
+    transaction(unc, (leases, owner) => leases.push({id: 'unc', owner, reservedAt: Date.now()}));
     return true;
   });
   if (!outcome.ok) error = outcome.error;

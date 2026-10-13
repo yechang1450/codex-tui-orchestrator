@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -27,7 +28,7 @@ test('a failed inspection does not stop the following inspection',async()=>{
 });
 
 test('parent proves exited work without a child checkpoint and recovery never repeats proven work',()=>{
-  const id='T1', dir=fs.mkdtempSync(path.join(process.cwd(),'temp','verification-proof-'));
+  const id='T1', dir=fs.mkdtempSync(path.join(testTempFamily('verification-queue'),'verification-proof-'));
   const file=path.join(dir,'attempt.json'), attempt={runId:'r',token:'t',taskIds:[id],file};
   fs.writeFileSync(file,JSON.stringify(attempt));
   try {

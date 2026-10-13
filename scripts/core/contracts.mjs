@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import {isDeepStrictEqual} from 'node:util';
 import crypto from 'node:crypto';
 import {blockCostMB as budgetBlockCostMB, DEFAULT_WINDOW_COST_MB} from './memory-budget.mjs';
-import {assertNoReparsePoints,physicalPathIdentity} from './runtime-context.mjs';
+import {physicalPathIdentity} from './runtime-context.mjs';
+import {assertWorkspaceAbsent,bindWorkspaceRoot,readWorkspaceFile,WORKSPACE_READ_LIMITS} from './safe-workspace-read.mjs';
 
 /**
  * 动态内存预算（dynamic capacity）：
@@ -56,11 +57,8 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
   const costOf = block => budgetBlockCostMB(block, windowCostMB, taskCosts);
   // 预估口径 = "同一时刻最多能并发运行的块"成本之和（最宽的一层），而不是所有块之和：
   // 串行链（p1->p2->p3）天然只能跑一个块，不该被当成三块同时占内存。
-  const totalCost = () => projectedPeakCostMB(blocks, costOf, block => block.memoryKey);
   // headroom：首轮余量系数（样本不足时 >1），把预估峰值放大后再判断放不放得下。
   const reserve = Number(headroom) > 1 ? Number(headroom) : 1;
-  const projectedCost = () => Math.ceil(totalCost() * reserve);
-  const fits = () => Number(floorMB) <= 0 || (Number(availableMB) - projectedCost() >= Number(floorMB));
   const requiredMB = Math.ceil(projectedPeakCostMB(blocks, costOf, block => block.memoryKey) * reserve);
   const floor = Number(floorMB) || 0;
   return {plan, merges: [], requiredMB, headroom: reserve, availableMB: Number(availableMB), floorMB: floor,
@@ -69,7 +67,11 @@ export function budgetMergePlan(input, {availableMB, floorMB = 0, windowCostMB =
 
 export const CORE_VERSION = '1.4.4-rc.1';
 export const SUCCESS = new Set(['verified']);
-export const TERMINAL = new Set(['verified','failed','blocked','cancelled','awaiting-verification','preflight-failed','popup-failed','timeout','needs-reconciliation']);
+// `cleanup-pending` means the owned launcher has an authenticated exit proof,
+// but its controller resources still need a recovery-only cleanup pass.  It is
+// terminal for scheduling so a resumed controller never replays work merely to
+// retry deletion, while it deliberately remains outside SUCCESS.
+export const TERMINAL = new Set(['verified','failed','blocked','cancelled','awaiting-verification','preflight-failed','popup-failed','timeout','needs-reconciliation','cleanup-pending']);
 
 // 校验 acceptance 契约 key 与 task id 的一致性：unknown key（拼错/多余）= 直接报错；task 无 check = 告警（将停在 awaiting-verification）。
 export function acceptanceKeyDiff(checks,tasks) {
@@ -93,6 +95,11 @@ export function summaryComplete(sum, strict = true) {
   const exact = (ids, obj) => ids.length === new Set(ids).size && Object.keys(obj || {}).length === ids.length && ids.every(id => Object.hasOwn(obj || {}, id));
   if (!exact(sum.blocks.map(b=>b.key),sum.results) || !exact(sum.tasks.map(t=>t.id),sum.taskResults)) return false;
   const statuses = strict ? SUCCESS : TERMINAL;
+  // A verified task result is not enough while a post-exit cleanup journal is
+  // still durable.  Keeping this explicit prevents future status changes from
+  // accidentally publishing a successful run with a retained lease, registry
+  // reservation, or private launcher artifact.
+  if(Object.values(sum.results).some(result=>result?.cleanupPending!==undefined))return false;
   return [...Object.values(sum.results),...Object.values(sum.taskResults)].every(r=>statuses.has(r?.status));
 }
 
@@ -204,7 +211,11 @@ export function ledgerPlan(request, candidate, capacity, compact) {
   return {plan,tasks};
 }
 
-export function sha256(file) {return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');}
+export function sha256(file) {
+  const hash=crypto.createHash('sha256'),buffer=Buffer.allocUnsafe(64*1024);let fd;
+  try { fd=fs.openSync(file,'r');let count;while((count=fs.readSync(fd,buffer,0,buffer.length,null))>0)hash.update(buffer.subarray(0,count));return hash.digest('hex'); }
+  finally { if(fd!==undefined)fs.closeSync(fd); }
+}
 // Acceptance contracts are compared by content, not by formatting: key order and
 // indentation must not matter, while any real change must change the digest.
 // The encoding is type-tagged and explicit about -0/Infinity because JSON itself is
@@ -241,6 +252,7 @@ export function verifyChecks(checks,workspace) {
   if(!Array.isArray(checks)||!checks.length)return {status:'awaiting-verification',reason:'No parent-defined acceptance checks; window report is not proof of success'};
   const evidence=[];
   try {
+    const binding=bindWorkspaceRoot(workspace);
     for(const [index,check] of checks.entries()) {
       // 检查项本身的类型错误必须在执行前就点名，而不是让 path.resolve 抛 Node 内部措辞。
       if(!check||typeof check!=='object'||Array.isArray(check))throw new Error('Acceptance check #'+index+' must be an object (实测 '+describeShape(check)+')');
@@ -260,19 +272,37 @@ export function verifyChecks(checks,workspace) {
       };
       const relative=path.relative(localEquivalent(path.resolve(workspace)),localEquivalent(file));
       if(relative==='..'||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative))throw new Error('Acceptance path escapes the initiating workspace: '+file);
-      assertNoReparsePoints(file,'Acceptance path');
+      const read=(mode,maxBytes)=>{
+        try{return readWorkspaceFile({root:workspace,binding,target:file,maxBytes,mode});}
+        catch(error){
+          if(String(error?.message||'').startsWith('SAFE_WORKSPACE_READ_OPEN:'))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));
+          throw error;
+        }
+      };
       if(check.type==='file') {
-        if(!fs.existsSync(file))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));
-        if(!fs.statSync(file).isFile())throw new Error('Not a file: '+file);if(check.sha256&&sha256(file)!==check.sha256)throw new Error('Hash mismatch: '+file);}
+        const observed=read('hash',WORKSPACE_READ_LIMITS.acceptanceFile);
+        if(check.sha256&&observed.sha256!==check.sha256)throw new Error('Hash mismatch: '+file);
+        evidence.push({type:check.type,path:file,sha256:observed.sha256});
+      }
       else if(check.type==='json') {
-        if(!fs.existsSync(file))throw new Error('Acceptance file missing: '+file+(String(check.path)!==file?' (check.path="'+check.path+'")':''));
-        let value;try{value=JSON.parse(fs.readFileSync(file,'utf8'));}catch(e){throw new Error('Acceptance JSON parse failed: '+file+': '+e.message);}
+        const observed=read('text',WORKSPACE_READ_LIMITS.acceptanceJson);
+        let value;try{value=JSON.parse(observed.text.replace(/^\uFEFF/,''));}catch(e){throw new Error('Acceptance JSON parse failed: '+file+': '+e.message);}
         for(const [key,expected] of Object.entries(check.equals||{})){
-          if(!(key in value))throw new Error('JSON field missing: '+file+' key="'+key+'" expected='+JSON.stringify(expected));
-          if(!isDeepStrictEqual(value[key],expected))throw new Error('JSON mismatch: '+file+' key="'+key+'" expected='+JSON.stringify(expected)+' actual='+JSON.stringify(value[key]));}}
-      else if(check.type==='absent') {if(fs.existsSync(file))throw new Error('Unexpected path: '+file);}
+          if(!(key in value))throw new Error('JSON field missing: '+file+' key="'+key+'" (expected '+describeShape(expected)+')');
+          if(!isDeepStrictEqual(value[key],expected))throw new Error('JSON mismatch: '+file+' key="'+key+'" (expected '+describeShape(expected)+', actual '+describeShape(value[key])+')');}
+        evidence.push({type:check.type,path:file,sha256:observed.sha256});
+      }
+      else if(check.type==='absent') {
+        try{assertWorkspaceAbsent({root:workspace,binding,target:file});}
+        catch(error){
+          // The raw reader code does not name the offending path; an absent
+          // check that fails because the file exists must stay readable.
+          if(String(error?.message||'').startsWith('SAFE_WORKSPACE_READ_EXISTS'))throw new Error('Acceptance absent check failed: '+file+' still exists');
+          throw error;
+        }
+      }
       else throw new Error('Unsupported acceptance check: '+check.type);
-      evidence.push({type:check.type,path:file,sha256:check.type==='absent'?undefined:sha256(file)});
+      if(check.type==='absent')evidence.push({type:check.type,path:file,sha256:undefined});
     }
     return {status:'verified',evidence};
   } catch(e){return {status:'failed',reason:e.message};}

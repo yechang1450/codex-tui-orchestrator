@@ -1,7 +1,7 @@
 {
-  "name": "codex-tui-orchestrator-local",
+  "name": "yechang1450-codex-tui-orchestrator",
   "interface": {
-    "displayName": "Codex TUI Orchestrator (Local)"
+    "displayName": "Codex TUI Orchestrator"
   },
   "plugins": [
     {

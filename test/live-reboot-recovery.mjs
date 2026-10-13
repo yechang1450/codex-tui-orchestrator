@@ -6,11 +6,13 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import {spawn,spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {testTempFamily} from './test-temp-root.mjs';
 import {verifyRelease} from '../scripts/release-integrity.mjs';
 import {processSnapshot,sameProcess} from '../scripts/core/leases.mjs';
 import {CORE_VERSION} from '../scripts/core/contracts.mjs';
+import {DECOMPOSE_CACHE_SCHEMA} from '../scripts/core/orchestrate-sdk.mjs';
 // 与 scripts/core/orchestrate-sdk.mjs 的 decomposeHash 同式（sha1(CORE_VERSION|request|hintsKey)）。
-// 这里刻意不复用 SDK 的导出：SDK 在 import 时就要解析 Codex CLI，会让本文件的离线测试也依赖真实 CLI。
+// schema 是缓存格式的导出契约；哈希仍在这里保持本地实现，避免让这个离线复原探针依赖规划器行为。
 const decomposeKey=(request,hints)=>crypto.createHash('sha1').update(CORE_VERSION+'|'+String(request||'')+'|'+JSON.stringify({moduleToProj:hints?.moduleToProj||{},foldRules:hints?.foldRules||{},tailKeywords:Array.isArray(hints?.tailKeywords)?hints.tailKeywords:[]})).digest('hex');
 
 const repo=path.resolve(fileURLToPath(new URL('../',import.meta.url)));
@@ -47,7 +49,7 @@ function environment(){
 
 function locations(id){
   if(!/^[A-Za-z0-9][A-Za-z0-9_-]{0,40}$/.test(id))throw new Error('Invalid recovery Id');
-  const runId='reboot-'+id,root=path.join(repo,'temp','reboot-recovery-'+id);
+  const runId='reboot-'+id,root=path.join(testTempFamily('live-reboot-recovery'),'reboot-recovery-'+id);
   // 执行工作区独立于编排器仓库：编排器拒绝"改自己"的请求（自引用守卫），
   // 而仓库路径出现在任务文本里会命中该守卫，所以这里用一个中立的 ws 目录承载这次运行。
   const runWorkspace=path.join(root,'ws');
@@ -99,7 +101,7 @@ assert.deepEqual(JSON.parse(fs.readFileSync(file,'utf8')),receipt);console.log(J
     {type:'independent',title:'recovery-step-1',dependsOn:[],conflictKeys:['file:'+path.join(state.root,'one.json')],tasks:[{id:'t1',title:'one',prompt:sentences.one}]},
     {type:'independent',title:'recovery-step-2',dependsOn:['recovery-step-1'],conflictKeys:['file:'+path.join(state.root,'two.json')],tasks:[{id:'t2',title:'two',prompt:sentences.two}]},
   ];
-  fs.writeFileSync(path.join(stateDir,'orchestrator-decompose-cache.json'),JSON.stringify({version:CORE_VERSION,entries:{[decomposeKey(request,hints)]:{createdAt:Date.now(),blocks}}},null,2)+'\n');
+  fs.writeFileSync(path.join(stateDir,'orchestrator-decompose-cache.json'),JSON.stringify({schema:DECOMPOSE_CACHE_SCHEMA,version:CORE_VERSION,entries:{[decomposeKey(request,hints)]:{createdAt:Date.now(),blocks}}},null,2)+'\n');
   const out=fs.openSync(path.join(state.root,'prepare.stdout.log'),'wx'),err=fs.openSync(path.join(state.root,'prepare.stderr.log'),'wx');
   const child=spawn(process.execPath,[state.entry,'--exec',request],{cwd:repo,env,detached:true,windowsHide:true,stdio:['ignore',out,err]});
   fs.closeSync(out);fs.closeSync(err);let launchError;child.on('error',error=>{launchError=error;});

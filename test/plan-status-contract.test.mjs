@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -47,7 +48,7 @@ function cliEnv(workspace) {
 }
 
 test('empty --plan fails closed instead of creating an executable empty task', () => {
-  const workspace = fs.mkdtempSync(path.join(repo, 'temp', 'empty-plan-'));
+  const workspace = fs.mkdtempSync(path.join(testTempFamily('plan-status-contract'), 'empty-plan-'));
   try {
     const result = spawnSync(process.execPath, [entry, '--workspace', workspace, '--plan', ''], {
       cwd: workspace,
@@ -65,7 +66,7 @@ test('empty --plan fails closed instead of creating an executable empty task', (
 });
 
 test('public --status --json stays machine-readable when no run id exists', () => {
-  const workspace = fs.mkdtempSync(path.join(repo, 'temp', 'empty-status-'));
+  const workspace = fs.mkdtempSync(path.join(testTempFamily('plan-status-contract'), 'empty-status-'));
   try {
     const result = spawnSync(process.execPath, [entry, '--workspace', workspace, '--status', '--json', '--readonly'], {
       cwd: workspace,

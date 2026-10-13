@@ -31,4 +31,9 @@ test('published bootstrap commands use a process-scoped execution-policy overrid
 
   const publicText = publicCommandSources.map(read).join('\n');
   assert.doesNotMatch(publicText, /Set-ExecutionPolicy\b/i, 'bootstrap guidance must not persistently modify an execution policy');
+  assert.doesNotMatch(
+    read('skills/codex-tui-orchestrator/SKILL.md'),
+    /-Arguments\s+@\(/i,
+    'PowerShell -File guidance must forward runner flags directly instead of using an array expression',
+  );
 });

@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -15,7 +16,7 @@ import {spawnSync} from 'node:child_process';
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
 const explicitCli = process.env.ORCH_CLI || (process.platform === 'win32' ? String(spawnSync(`${process.env.SystemRoot || 'C:\\Windows'}\\System32\\where.exe`, ['codex.exe'], {encoding:'utf8',windowsHide:true}).stdout || '').split(/\r?\n/).map(s=>s.trim()).find(Boolean) || '' : '');
-const testWorkspaceRoot = process.env.ORCH_TEST_WORKSPACE_ROOT || (process.platform === 'win32' ? path.join(os.homedir(), 'workspace', 'temp') : os.tmpdir());
+const testWorkspaceRoot = process.env.ORCH_TEST_WORKSPACE_ROOT || testTempFamily('entry-surface-contract');
 fs.mkdirSync(testWorkspaceRoot, {recursive: true});
 
 function invoke(script, args, {cwd = repo, extra = {}, timeout = 120000} = {}) {

@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,7 +13,7 @@ import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 import {runDirectory,runWindows,verifyRun} from '../scripts/core/runner.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const family=path.join(repo,'temp','acceptance-status-authority-override');
+const family=testTempFamily('acceptance-status-authority-override');
 fs.mkdirSync(family,{recursive:true});
 
 const readJson=file=>JSON.parse(fs.readFileSync(file,'utf8'));

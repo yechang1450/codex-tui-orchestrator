@@ -8,45 +8,75 @@
 >
 > I am an independent developer with two years of development experience during university. I have never worked at a large technology company and have rarely had a conventional job. I do this because it feels like the key to my life. While directing agents to develop, I watch videos on Douyin to learn and understand things; I can stay immersed in this activity for more than ten hours a day without feeling tired. AI-agent development has become the most interesting part of my daily life. It makes every day feel full and happy, and I hope to create more and find my own path in the future.
 
-The listed agents reflect the author's personal testing experience. They do not promise compatibility with other CLIs.
+**Repository scope.** This repository contains only the Codex plugin. The multi-agent compatibility described in the statement above belongs to the separate `open-tui-orchestrator` project.
 
 # codex-tui-orchestrator
 
-A Windows-focused Codex plugin for running a long, unrelated task list concurrently when dependencies, conflicts, and available resources permit it.
+A Windows-focused Codex plugin that concurrently runs task blocks only when they are confirmed independent and resources allow it.
 
-Current sealed core: `1.4.4-rc.1`.
+This is a Codex-only plugin.
 
-## The model
+It is distributed from GitHub through checkout install or a GitHub marketplace
+catalog. It is not published to npm.
 
-The orchestrator keeps each task's original identity, groups dependent, conflicting, or uncertain work into serial blocks, and launches only independent blocks in parallel. It records execution state and checks each task against independent acceptance conditions; a worker report or window closure alone does not prove success.
+## How it works
+
+The orchestrator preserves task identity, groups dependent, conflicting, or
+uncertain work into serial blocks, and launches only confirmed-independent
+blocks in parallel. A task remains awaiting verification until it meets
+parent-defined acceptance conditions; a worker report or window closure alone
+does not prove success.
 
 Native TodoList/spawn cards belong to the host UI; the plugin emits status events for the host to consume.
 
-Use `--plan` to inspect a proposed split. `--exec` runs headlessly, `--run-windows` opens visible Windows sessions, `--status` observes a run, and `--resume-run` or `--verify-run` works with a saved run.
+Use `--plan` to inspect a proposed split without executing it. Use `--status`,
+`--resume-run`, or `--verify-run` for a saved run.
 
-## Quick start
+## Checkout install
 
-Clone and install the checkout:
+Install a reviewed release tag:
 
 ```powershell
 $pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
-git clone https://github.com/yechang1450/codex-tui-orchestrator.git $pluginRoot
+$ref = '<release-tag>'
+git clone --branch $ref --depth 1 https://github.com/yechang1450/codex-tui-orchestrator.git $pluginRoot
 Set-Location $pluginRoot
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action install
 ```
 
-From the workspace that owns the task, inspect a plan through the bootstrap entry point:
+Use a release tag rather than a moving default branch before executing the
+bootstrap script. A checkout of the default branch is for development.
+
+## GitHub marketplace catalog
+
+This is an alternative to checkout install. After a public commit or tag is
+available, Codex can fetch this repository's catalog directly from GitHub:
+
+```powershell
+$ref = '<final-commit-or-tag>'
+codex plugin marketplace add yechang1450/codex-tui-orchestrator --ref $ref
+codex plugin add codex-tui-orchestrator@yechang1450-codex-tui-orchestrator
+```
+
+A GitHub marketplace catalog is distinct from the official public plugin
+directory. This plugin uses lifecycle hooks, so install it through this
+repository route.
+
+## Plan a task
+
+From the workspace that owns the task, inspect a plan through the bootstrap
+entry point:
 
 ```powershell
 $pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run -Arguments @('--plan', 'Project 1: update the documentation; Project 2: review the tests')
+$workspace = 'C:\path\to\workspace'
+Set-Location -LiteralPath $workspace
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run --workspace $workspace --plan 'Project 1: update the documentation; Project 2: review the tests'
 ```
 
-`-ExecutionPolicy Bypass` applies only to that child PowerShell process. Installation and execution still require a logged-in Codex CLI and a trusted SessionStart hook.
-
-## Related project
-
-[open-tui-orchestrator](https://github.com/yechang1450/open-tui-orchestrator) is the separate npm implementation of the same general orchestration idea.
+Read the [execution contract](docs/execution-contract.md) before executing a
+plan, and keep secrets out of task prompts. See the [privacy policy](docs/privacy.md)
+for the redaction and storage boundary.
 
 ## Privacy and legal
 

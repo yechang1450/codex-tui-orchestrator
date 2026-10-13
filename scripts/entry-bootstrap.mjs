@@ -4,6 +4,8 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {assertTrustedNpm, pickNpmCli, quoteShellArg} from './npm-cli.mjs';
 import {verifyLockedSdk} from './sdk-dependency-verify.mjs';
+import {verifyRelease} from './release-integrity.mjs';
+import {trustedWindowsHelper,trustedWindowsRoot,controllerEnvironment} from './core/leases.mjs';
 
 // 引擎加载**之前**就要能跑完的命令。
 //
@@ -25,10 +27,13 @@ export const USAGE = [
   '  node orchestrate-sdk.mjs --plan "<request>"',
   '  node orchestrate-sdk.mjs --plan-file <path>         (same as --plan, request read from a file)',
   '  node orchestrate-sdk.mjs --run  "<request>"',
-  '  node orchestrate-sdk.mjs --exec "<request>"         (default: headless)',
+  '  node orchestrate-sdk.mjs --exec "<request>"         (read-only, noninteractive only)',
   '  node orchestrate-sdk.mjs --run-windows "<request>"',
+  '  node orchestrate-sdk.mjs --resume-run <id>',
+  '  node orchestrate-sdk.mjs --verify-run <id> [--allow-acceptance-change]',
   '  node orchestrate-sdk.mjs --status [--run-id <id>] [--watch] [--json]',
   '  node orchestrate-sdk.mjs --clear-cache',
+  '  node orchestrate-sdk.mjs --selftest-close',
   '  node orchestrate-sdk.mjs --spawn <title> "<prompt or .md>"',
 ].join('\n');
 
@@ -76,14 +81,14 @@ export function versionReport() {
  * 幂等恢复锁定依赖：已经满足就报 already-present，绝不做多余安装。
  * 判据 test/entry-surface-audit.test.mjs（二次调用必须是 already-present）。
  */
-export async function installLockedDependencies({timeoutMs = 15 * 60 * 1000, env = process.env, verify = verifyLockedSdk, spawn = spawnSync} = {}) {
+export async function installLockedDependencies({timeoutMs = 15 * 60 * 1000, env = process.env, verify = verifyLockedSdk, spawn = spawnSync, pickNpm = pickNpmCli} = {}) {
   const before = await verify();
   if (before.ok) {
     return {ok: true, status: 'already-present', dependency: '@openai/codex-sdk', version: before.version,
       expected: before.expected, scriptsDir, reason: 'locked SDK dependency already satisfies scripts/package.json'};
   }
   assertTrustedNpm(env);
-  const invocation = resolveInvocation(['ci', '--prefix', scriptsDir, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], env);
+  const invocation = resolveInvocation(['ci', '--prefix', scriptsDir, '--omit=optional', '--ignore-scripts', '--no-audit', '--no-fund'], env, pickNpm);
   const started = Date.now();
   const result = spawn(invocation.command, invocation.args, {
     cwd: scriptsDir, encoding: 'utf8', windowsHide: true, shell: invocation.shell, timeout: timeoutMs,
@@ -100,8 +105,60 @@ export async function installLockedDependencies({timeoutMs = 15 * 60 * 1000, env
     expected: after.expected, scriptsDir, ms: Date.now() - started};
 }
 
-function resolveInvocation(args, env = process.env) {
-  const npm = pickNpmCli({env});
+function bootstrapFailureCode(result) {
+  const text=String(result?.stderr||result?.stdout||'');
+  return /\b([A-Z][A-Z0-9_]{2,}):/.exec(text)?.[1] || 'BOOTSTRAP_FAILED';
+}
+
+// The Desktop's bundled Node intentionally has no npm binary.  An explicit
+// repair may bridge into the already-audited PowerShell bootstrap, but only
+// after the release itself is sealed.  Normal runtime startup must keep its
+// stricter npm-attestation behaviour and never gain this network-capable path.
+export function bootstrapExplicitDependencyRepair({timeoutMs=15*60*1000,env=process.env,spawn=spawnSync,
+  releaseVerify=verifyRelease,powershell=trustedWindowsHelper,windowsRoot=trustedWindowsRoot,
+  safeEnvironment=controllerEnvironment}={}) {
+  if(process.platform!=='win32')throw new Error('NPM_UNTRUSTED: a verified npm runtime is unavailable');
+  releaseVerify(repoRoot);
+  const seconds=Math.max(1,Math.min(1800,Math.ceil((Number(timeoutMs)||0)/1000)));
+  const childEnv=safeEnvironment({
+    ...(typeof env.PLUGIN_DATA==='string'&&env.PLUGIN_DATA?{PLUGIN_DATA:env.PLUGIN_DATA}:{}),
+    ORCH_DEP_REPAIR_BOOTSTRAP:'1',
+  });
+  const result=spawn(powershell(),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',
+    path.join(scriptsDir,'bootstrap.ps1'),'-Action','repair-deps','-Json','-TimeoutSeconds',String(seconds)],{
+    cwd:windowsRoot(),encoding:'utf8',windowsHide:true,shell:false,timeout:timeoutMs+15000,maxBuffer:64*1024,env:childEnv,
+  });
+  if(result?.error||result?.status!==0)throw new Error('NPM_RUNTIME_BOOTSTRAP_FAILED: '+bootstrapFailureCode(result));
+  const output=String(result.stdout||'');
+  if(Buffer.byteLength(output,'utf8')>64*1024)throw new Error('NPM_RUNTIME_BOOTSTRAP_FAILED: invalid_output');
+  let parsed;
+  try{parsed=JSON.parse(output);}catch{throw new Error('NPM_RUNTIME_BOOTSTRAP_FAILED: invalid_output');}
+  if(!parsed||typeof parsed!=='object'||Array.isArray(parsed)||parsed.ok!==true)throw new Error('NPM_RUNTIME_BOOTSTRAP_FAILED: invalid_output');
+  return parsed;
+}
+
+export async function repairExplicitDependencyInstall({timeoutMs=15*60*1000,env=process.env,verify=verifyLockedSdk,
+  install=installLockedDependencies,bridge=bootstrapExplicitDependencyRepair,platform=process.platform}={}) {
+  let before;
+  try{before=await verify();}catch(error){throw error;}
+  try{return await install({timeoutMs,env,verify});}
+  catch(error){
+    const marker=String(env.ORCH_DEP_REPAIR_BOOTSTRAP||'');
+    const canBridge=platform==='win32'&&before?.code==='RELEASE_DEPENDENCY_MISSING'&&
+      marker!=='1'&&String(error?.message||'').startsWith('NPM_UNTRUSTED:');
+    if(!canBridge)throw error;
+    const repaired=await bridge({timeoutMs,env});
+    const after=await verify();
+    if(!after?.ok)throw new Error('NPM_RUNTIME_BOOTSTRAP_FAILED: dependency_verification');
+    return repaired;
+  }
+}
+
+function resolveInvocation(args, env = process.env, pickNpm = pickNpmCli) {
+  const npm = pickNpm({env});
+  if (!npm || npm.source === 'fallback' || typeof npm.command !== 'string' || !Array.isArray(npm.args) || typeof npm.shell !== 'boolean') {
+    throw new Error('NPM_UNTRUSTED: a verified npm runtime is unavailable');
+  }
   const argv = [...npm.args, ...args];
   // 走 shell 时参数要自己加引号，否则含空格的工作路径会被拆开。
   return {command: npm.command, args: npm.shell ? argv.map(quoteShellArg) : argv, shell: npm.shell, source: npm.source};
@@ -122,6 +179,6 @@ export async function runBootstrapCommand(argv = process.argv.slice(2)) {
     emit(JSON.stringify(versionReport(), null, 2));
     return true;
   }
-  emit(JSON.stringify(await installLockedDependencies(), null, 2));
+  emit(JSON.stringify(await repairExplicitDependencyInstall(), null, 2));
   return true;
 }

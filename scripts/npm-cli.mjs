@@ -6,7 +6,8 @@ import crypto from 'node:crypto';
 export function assertTrustedNpm(env = process.env) {
   if (process.platform !== 'win32' || env.ORCH_ALLOW_UNVERIFIED_NPM === '1') return;
   const entry = String(env.npm_execpath || '');
-  let regular = false, realEntry = '', digest = '';
+  const attestedPath = String(env.ORCH_NPM_TRUSTED_PATH || '');
+  let regular = false, realEntry = '', realAttestedPath = '', digest = '';
   try {
     regular = path.isAbsolute(entry) && /\.(?:c?js|mjs)$/i.test(entry) && fs.lstatSync(entry).isFile() && !fs.lstatSync(entry).isSymbolicLink();
     if (regular) {
@@ -15,15 +16,18 @@ export function assertTrustedNpm(env = process.env) {
     }
   }
   catch { /* missing or linked npm entry is not a verified runtime */ }
-  const attestedPath = String(env.ORCH_NPM_TRUSTED_PATH || '');
+  try {
+    const stat = path.isAbsolute(attestedPath) && /\.(?:c?js|mjs)$/i.test(attestedPath) ? fs.lstatSync(attestedPath) : null;
+    if (stat?.isFile() && !stat.isSymbolicLink()) realAttestedPath = fs.realpathSync.native(attestedPath);
+  }
+  catch { /* an attestation must name a regular npm entry */ }
   const attestedDigest = String(env.ORCH_NPM_TRUSTED_SHA256 || '').toLowerCase();
-  if (env.ORCH_NPM_TRUSTED !== '1' || !regular || !attestedPath || !attestedDigest ||
-      path.resolve(attestedPath).toLowerCase() !== path.resolve(realEntry).toLowerCase() ||
+  if (env.ORCH_NPM_TRUSTED !== '1' || !regular || !realAttestedPath || !attestedDigest ||
+      path.resolve(realAttestedPath).toLowerCase() !== path.resolve(realEntry).toLowerCase() ||
       !/^[a-f0-9]{64}$/.test(attestedDigest) || attestedDigest !== digest) {
     throw new Error('NPM_UNTRUSTED: bootstrap must attest the exact npm entry path and SHA-256 before installation, or explicitly set ORCH_ALLOW_UNVERIFIED_NPM=1 for repair.');
   }
 }
-
 /** 走 shell 时必须自己加引号：Node 只把参数用空格拼起来，含空格/中文的路径会被拆开。 */
 export function quoteShellArg(value) {
   const text = String(value);
@@ -60,10 +64,4 @@ export function pickNpmCli({env = process.env, nodePath = process.execPath} = {}
     }
   }
   return {command: process.platform === 'win32' ? 'npm.cmd' : 'npm', args: [], shell: process.platform === 'win32', source: 'fallback'};
-}
-
-/** `npm <args>` 的完整调用；调用方自己决定用 spawnSync 还是自己的 run 包装。 */
-export function resolveNpmInvocation(args, options = {}) {
-  const npm = pickNpmCli(options);
-  return {command: npm.command, args: [...npm.args, ...args], shell: npm.shell, source: npm.source};
 }

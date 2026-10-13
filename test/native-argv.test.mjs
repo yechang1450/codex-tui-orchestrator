@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {nativeArgumentLines} from '../scripts/core/native-argv.mjs';
 test('real PowerShell preserves JSON, Chinese, embedded quotes and trailing path separators',()=>{
- const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');fs.mkdirSync(family,{recursive:true});
+ const family=testTempFamily('native-argv');fs.mkdirSync(family,{recursive:true});
  const dir=fs.mkdtempSync(path.join(family,'argv-'));
  try{
   const js=path.join(dir,'argv.mjs'),ps=path.join(dir,'argv.ps1');

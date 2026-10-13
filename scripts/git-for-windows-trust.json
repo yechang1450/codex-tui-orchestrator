@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "registryPath": "HKLM:\\SOFTWARE\\GitForWindows",
+  "registryValue": "InstallPath",
+  "executableRelativePath": "cmd\\git.exe",
+  "signers": [
+    {
+      "thumbprint": "3E9627155B7A6F29856321EE56D7FC25CF808407"
+    },
+    {
+      "thumbprint": "2A1E97CBF0DFCDA15B0DA0AC9745014F989D4AD0",
+      "subject": "CN=Johannes Schindelin, O=Johannes Schindelin, L=Bruehl, C=DE",
+      "issuer": "CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,7 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {runtimeInventory, verifyRelease, coreInventory} from '../scripts/release-integrity.mjs';
 
 test('runtime seal rejects a changed executable session hook', () => {
-  const parent=fileURLToPath(new URL('../temp/',import.meta.url));
+  const parent=testTempFamily('hook-integrity');
   fs.mkdirSync(parent,{recursive:true});
   const root=fs.mkdtempSync(path.join(parent,'hook-seal-'));
   try {

@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,7 +6,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawnSync} from 'node:child_process';
 const runner=await import('../scripts/core/runner.mjs');
-const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+const family=testTempFamily('recovery');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 test('a dependent starts after its own prerequisite, while unrelated work remains running',async()=>{
  assert.equal(typeof runner.scheduleReady,'function');
@@ -34,7 +35,7 @@ test('an unknown saved checkpoint state cannot verify work or enable a safe retr
 });
 test('a started task needs explicit reconciliation even when its acceptance already passes',()=>{
  const checkpoint={id:'T1',runId:'r',token:'attempt',state:'started'};
- const tasks=[{id:'T1'}],checks={T1:{retrySafe:true,checks:[{type:'file',path:'package.json'}]}},workspace=path.resolve(family,'../scripts');
+ const tasks=[{id:'T1'}],checks={T1:{retrySafe:true,checks:[{type:'file',path:'package.json'}]}},workspace=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..','scripts');
  const result=runner.recoveryTasks(tasks,{T1:checkpoint},checks,workspace);
  assert.deepEqual(result.verified,[]);assert.deepEqual(result.pending,[]);assert.deepEqual(result.uncertain,['T1']);
  const prior={T1:{status:'verified',reconciled:true,checkpoint}};

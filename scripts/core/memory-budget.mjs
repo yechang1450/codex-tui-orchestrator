@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import {sameProcess} from './leases.mjs';
 
 export const DEFAULT_MIN_AVAILABLE_MB = 1000;
 export const DEFAULT_WINDOW_COST_MB = 400;
@@ -93,7 +94,11 @@ export function unconsumedReservationMB(leases, snapshot = new Map()) {
     if (!Number.isFinite(peak) || peak < 0) return Infinity;
     const expected = lease.launcher, actual = snapshot.get(Number(expected?.ProcessId));
     let consumed = 0;
-    if (expected && actual && ['ProcessId','Started','Name','CommandLine'].every(key => expected[key] === actual[key])) {
+    // Lease identities are durable bindings, while a live snapshot supplies
+    // the transient raw command line for the hash comparison. A legacy raw
+    // lease deliberately gets no consumed-memory credit, preserving a safe
+    // admission floor rather than trusting a retained command line.
+    if (expected && actual && sameProcess(expected,actual)) {
       const queue = [Number(actual.ProcessId)], seen = new Set();
       for (let i = 0; i < queue.length; i++) {
         const pid = queue[i];

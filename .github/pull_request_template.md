@@ -5,8 +5,10 @@
 ## Verification
 
 - [ ] `git diff --check`
-- [ ] `node scripts/release-integrity.mjs --json`
-- [ ] Relevant Node test files pass on Windows
+- [ ] Relevant focused Node test files passed before sealing
+- [ ] For a sealed-surface change, review completed before `node scripts/release-integrity.mjs --seal`
+- [ ] `node scripts/release-integrity.mjs --json` passed before and after the final Windows regression run
+- [ ] The final Windows regression suite passed on the sealed tree
 - [ ] No real credentials or machine-specific paths are included
 
 ## Release impact

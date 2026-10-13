@@ -25,7 +25,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {verifyRelease} from './scripts/release-integrity.mjs';
+import {isSourceOnlyRuntimePath,verifyRelease} from './scripts/release-integrity.mjs';
 import {assertNoReparsePoints} from './scripts/core/runtime-context.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,10 +67,10 @@ const DEBRIS_RE = /\.(part|tmp|pyc|pyo|crdownload|partial|swp)$/i;
 // Publication is a sealed, reviewed inventory.  Ignore rules alone are not a
 // publication boundary: an untracked .env or receipt can still be copied.
 const SENSITIVE_PUBLIC_NAME = /^(?:\.env(?:\..*)?|\.npmrc|\.pypirc|id_[a-z0-9_-]+|credentials?(?:\..*)?|secrets?(?:\..*)?|.*\.(?:pem|key|p12|pfx|log))$/i;
-// Historical validation and policy pages are public documentation.  Only
-// machine-readable receipts and explicitly private artifacts are barred here;
-// a broad filename rule would make legitimate docs such as rc-validation.md
-// impossible to publish.
+const SENSITIVE_PUBLIC_DIR = /^(?:\.?secrets?|\.?credentials?|\.?private[-_]?keys?)$/i;
+// Public documentation is allowed here.  Only machine-readable receipts and
+// explicitly private artifacts are barred; a broad filename rule would make
+// legitimate documentation impossible to publish.
 const PRIVATE_EVIDENCE_NAME = /^(?:.*(?:receipt|report|evidence|full-audit|readiness)[^/]*\.(?:json|jsonl|log|txt)|(?:private[-_].*)\.(?:json|jsonl|log|txt))$/i;
 
 // Development-only suites and CI metadata stay in the source checkout. They
@@ -137,20 +137,26 @@ function publicationManifest(root = __dirname) {
 }
 
 function assertPublicPath(rel) {
-  const base = path.basename(rel);
-  if (SENSITIVE_PUBLIC_NAME.test(base) || PRIVATE_EVIDENCE_NAME.test(base)) {
+  const parts = String(rel).split(/[\\/]/);
+  const base = parts.at(-1);
+  if (parts.slice(0, -1).some(part => SENSITIVE_PUBLIC_DIR.test(part))
+    || SENSITIVE_PUBLIC_NAME.test(base) || PRIVATE_EVIDENCE_NAME.test(base)) {
     throw new Error(`PUBLICATION_SENSITIVE_FILE: refusing to publish ${rel}`);
   }
 }
 
 function publicationFiles(root = __dirname) {
   const expected = publicationManifest(root);
-  const files = listFiles(root).filter(rel => !isDebrisRel(rel));
+  // Keep the publisher's traversal aligned with the sealed runtime inventory:
+  // source-only release tooling lives in a checkout but is deliberately absent
+  // from release.json and therefore must neither trigger an unlisted-file
+  // failure nor be copied into an installed artifact.
+  const files = listFiles(root).filter(rel => !isDebrisRel(rel) && !isSourceOnlyRuntimePath(rel));
+  for (const rel of files) assertPublicPath(rel);
   const unexpected = files.filter(rel => !expected.has(rel.replaceAll(path.sep, '/')) && !expected.has(rel));
   if (unexpected.length) {
     throw new Error(`PUBLICATION_UNLISTED_FILE: release manifest does not authorize ${unexpected.slice(0, 12).join(', ')}${unexpected.length > 12 ? ` (+${unexpected.length - 12} more)` : ''}`);
   }
-  for (const rel of files) assertPublicPath(rel);
   return files;
 }
 

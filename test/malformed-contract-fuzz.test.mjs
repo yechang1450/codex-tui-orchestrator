@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,13 +8,13 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {verifyChecks, buildTodoList, canonicalDigest, CORE_VERSION} from '../scripts/core/contracts.mjs';
 import {verifyRun as coreVerifyRun} from '../scripts/core/runner.mjs';
-import {decomposeHash, resolveHints} from '../scripts/core/orchestrate-sdk.mjs';
+import {DECOMPOSE_CACHE_SCHEMA, decomposeHash, resolveHints} from '../scripts/core/orchestrate-sdk.mjs';
 
 // 审计线 C：计划文件 / 验收契约 / 单元命令三块契约面的畸形输入判据。
 // 基线同 malformed-state-fuzz.test.mjs：不抛裸 Node 栈帧、不静默成功、失败必须给出可读真因。
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const entry = path.join(repo, 'scripts', 'orchestrate-sdk.mjs');
-const family = path.join(repo, 'temp');
+const family = testTempFamily('malformed-contract-fuzz');
 fs.mkdirSync(family, {recursive: true});
 const controllerRoot=fs.mkdtempSync(path.join(family,'fuzz-controller-'));
 after(()=>fs.rmSync(controllerRoot,{recursive:true,force:true}));
@@ -30,7 +31,10 @@ const firstLine = (text) => String(text || '').trim().split('\n')[0].slice(0, 22
 const BARE_NODE = /^(Cannot read properties|Cannot use 'in' operator|Unexpected token|Unexpected end of JSON input|The "[^"]+" argument must be of type|Received type)|is not a function/;
 
 function cli(args, {workspace, env = {}, timeout = 60000} = {}) {
-  const clean = {...process.env, ORCH_CONTROLLER_ROOT: controllerRoot, ...env};
+  // Cache and recovery-ledger validation are offline operations.  Force host
+  // resolution to fail deterministically if an accidental eager startup reaches
+  // it, instead of making these contract tests depend on the machine's CLI.
+  const clean = {...process.env, ORCH_CONTROLLER_ROOT: controllerRoot, ORCH_CLI: path.join(controllerRoot, 'missing-codex.exe'), ORCH_AUTO_INSTALL_CLI: '0', ORCH_AUTO_INSTALL_DEPS: '0', ...env};
   for (const key of ['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'ORCH_TASK_HINTS', 'ORCH_TASK_FOLD', 'ORCH_TASK_TAIL', 'ORCH_RUN_ID', 'ORCH_STATE_DIR']) delete clean[key];
   clean.ORCH_AGENT = 'codex';
   if (workspace) clean.WORKSPACE_DIR = workspace;
@@ -39,13 +43,14 @@ function cli(args, {workspace, env = {}, timeout = 60000} = {}) {
   return {status: result.status, stdout: result.stdout || '', stderr: result.stderr || '', result};
 }
 
-function seedPlanCache(workspace, request, blocks, version) {
+function seedPlanCache(workspace, request, blocks, version, {entry} = {}) {
   const workspaceId=crypto.createHash('sha256').update(fs.realpathSync(workspace).toLowerCase()).digest('hex');
   const stateDir = path.join(controllerRoot, 'decompose', workspaceId);
   fs.mkdirSync(stateDir, {recursive: true});
   const cacheFile = path.join(stateDir, 'orchestrator-decompose-cache.json');
   const hash = decomposeHash(request, resolveHints());
-  fs.writeFileSync(cacheFile, JSON.stringify({version, entries: {[hash]: {createdAt: Date.now(), blocks}}}), 'utf8');
+  const cachedEntry = entry === undefined ? {createdAt: Date.now(), blocks} : entry;
+  fs.writeFileSync(cacheFile, JSON.stringify({schema:DECOMPOSE_CACHE_SCHEMA, version, entries: {[hash]: cachedEntry}}), 'utf8');
   return {cacheFile, hash};
 }
 
@@ -56,11 +61,16 @@ test('P1-P4 拆块缓存里的畸形计划必须被隔离掉，不得以裸 Node
     ['non-object-block', [42]],
     ['tasks-not-array', [{title: 'x', tasks: 'nope'}]],
     ['null-block', [null]],
+    ['null-blocks', null],
+    ['empty-blocks', []],
+    ['non-array-blocks', {title: 'x'}],
+    ['empty-task-list', [{title: 'x', tasks: []}]],
+    ['null-entry', null, null],
   ];
-  for (const [label, blocks] of cases) {
+  for (const [label, blocks, entry] of cases) {
     const workspace = newDir(`plan-${label}`);
     const request = '修复 README 排版';
-    const {cacheFile, hash} = seedPlanCache(workspace, request, blocks, CORE_VERSION);
+    const {cacheFile, hash} = seedPlanCache(workspace, request, blocks, CORE_VERSION, {entry});
     const {status, stdout, stderr} = cli(['--plan', request], {workspace});
     const after = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
     const entryAfter = after.entries[hash];
@@ -99,6 +109,19 @@ test('P5 拆块缓存里的超长 prompt 与带 ; | & 换行 引号的 prompt �
   assert.deepEqual(prompts, [nasty, long], 'prompt 必须逐字节原样透传（不得被 shell 转义、截断或改写）');
   assert.equal(fs.existsSync(marker), false, '计划/拆块链路不得执行 prompt 里嵌入的命令');
   fs.rmSync(workspace, {recursive: true, force: true});
+});
+
+test('P5a 无缓存且需要模型分类的 --plan 仍必须在调用模型前检查宿主 CLI，再安全回退', () => {
+  const workspace = newDir('plan-needs-host');
+  try {
+    const {status, stdout, stderr} = cli(['--plan', '比较模块甲与模块乙的依赖并给出执行顺序'], {workspace});
+    seen('plan.needs-host', `status=${status} stderr=${JSON.stringify(firstLine(stderr))}`);
+    assert.equal(status, 0);
+    assert.match(stderr, /CLI_MISSING/);
+    assert.match(stdout, /"blocks"/);
+  } finally {
+    fs.rmSync(workspace, {recursive: true, force: true});
+  }
 });
 
 test('P6-P9 拆块缓存里的依赖错误（未知依赖/自依赖/环/重复块身份）必须 fail-closed 且真因可读（不给计划、不给栈帧）', () => {
@@ -140,6 +163,7 @@ function ledgerFixture(workspace, runId, mutate = () => {}) {
   const taskResults = {T001: {status: 'pending'}, T002: {status: 'pending'}};
   const sum = {
     protocol: 2, version: CORE_VERSION, agent: 'codex', executionMode: 'headless', runId, workspace,
+    coordinator:path.join(controllerRoot,'codex-coordinator'),
     request, capacity: 2, generation: 1, history: [], startedAt: Date.now(),
     tasks, plan, blocks, results, taskResults, todoList: buildTodoList(tasks, blocks, taskResults),
   };
@@ -339,7 +363,7 @@ test('U1-U9 单元命令/验收检查的畸形输入：命令类必须 fail-clos
     ['missing-file', [{type: 'file', path: 'nope.txt'}], /Acceptance file missing/],
     ['bad-json', [{type: 'json', path: 'plain.mjs', equals: {a: 1}}], /Acceptance JSON parse failed/],
     ['unsupported-type', [{type: 'wat', path: 'shape.json'}], /Unsupported acceptance check/],
-    ['absent-violated', [{type: 'absent', path: 'shape.json'}], /Unexpected path/],
+    ['absent-violated', [{type: 'absent', path: 'shape.json'}], /Acceptance absent check failed: .*still exists/],
     ['path-escape', [{type: 'file', path: path.join(workspace, '..', 'outside.txt')}], /escapes the initiating workspace/],
   ];
   for (const [label, checks, expected] of negatives) {

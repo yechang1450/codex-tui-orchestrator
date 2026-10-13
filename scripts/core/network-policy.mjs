@@ -33,6 +33,40 @@ function proxyEndpoint(value) {
   return url.origin;
 }
 
+function noProxyList(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 4096 || /[\s@/]/.test(raw)) return undefined;
+  const entries = raw.split(',');
+  if (!entries.length || entries.some(entry => !/^[A-Za-z0-9.*:_\-\[\]]+$/.test(entry))) return undefined;
+  return entries.join(',');
+}
+
+const WORKER_PROXY_KEYS = Object.freeze([
+  ['HTTPS_PROXY', 'https_proxy'],
+  ['HTTP_PROXY', 'http_proxy'],
+  ['ALL_PROXY', 'all_proxy'],
+]);
+
+// Worker launches need the network route selected for this process, but helper
+// processes must retain their narrower environment. Normalize only safe proxy
+// endpoints so credentials and URL payloads never cross the process boundary.
+export function workerEnvironment(extra = {}) {
+  const out = controllerEnvironment();
+  delete out.NO_PROXY;
+  delete out.no_proxy;
+  for (const [canonical, alternate] of WORKER_PROXY_KEYS) {
+    const endpoint = proxyEndpoint(process.env[canonical] || process.env[alternate]);
+    if (endpoint) out[canonical] = endpoint;
+  }
+  const noProxy = noProxyList(process.env.NO_PROXY || process.env.no_proxy);
+  if (noProxy) out.NO_PROXY = noProxy;
+  for (const [key, value] of Object.entries(extra)) {
+    if (WORKER_PROXY_KEYS.some(([canonical, alternate]) => key === canonical || key === alternate) || key === 'NO_PROXY' || key === 'no_proxy') continue;
+    if (typeof value === 'string' && value.length <= 4096) out[key] = value;
+  }
+  return out;
+}
+
 // Copy only a safe, enabled Windows user proxy into this process. Codex children
 // inherit it; the host's registry and global environment are never changed.
 export function applyWindowsProxyEnv(env = process.env, {platform = process.platform, query = systemProxyRegistry} = {}) {

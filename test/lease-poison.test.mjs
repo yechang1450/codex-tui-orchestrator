@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {transaction} from '../scripts/core/leases.mjs';
+import {processIdentityBinding,transaction} from '../scripts/core/leases.mjs';
 
 // 回归（2026-09-22 并发探针实测抓到）：leases.json 里只要有一条**没有 owner 的畸形条目**，
 // transaction() 就会在过滤阶段解引用 l.owner.ProcessId 抛裸 TypeError —— 该工作区的协调器
@@ -12,6 +12,8 @@ import {transaction} from '../scripts/core/leases.mjs';
 // 过期的直接剪掉），事务必须照常跑完。
 test('a lease entry without an owner can never poison the coordinator transaction', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lease-poison-'));
+  const runtime={ProcessId:process.pid,Started:'lease-poison',Name:'node.exe',CommandLine:'lease-poison'};
+  const snapshot=()=>new Map([[process.pid,runtime]]);
   try {
     fs.writeFileSync(
       path.join(dir, 'leases.json'),
@@ -20,16 +22,16 @@ test('a lease entry without an owner can never poison the coordinator transactio
         null,
         'not-an-object',
         {id: 'junk-stale', keys: ['dir:y'], reservedAt: 1},
-        {id: 'live-owner', keys: ['dir:z'], owner: {ProcessId: process.pid}, reservedAt: Date.now()}
+        {id: 'live-owner', keys: ['dir:z'], owner: processIdentityBinding(runtime), reservedAt: Date.now()}
       ]),
       'utf8'
     );
 
     let ran = false;
-    transaction(dir, (leases) => {
+    transaction(dir, (leases, owner) => {
       ran = true;
-      leases.push({id: 'probe', keys: ['dir:p'], owner: {ProcessId: process.pid}, reservedAt: Date.now()});
-    });
+      leases.push({id: 'probe', keys: ['dir:p'], owner, reservedAt: Date.now()});
+    }, snapshot);
 
     assert.equal(ran, true, '事务体必须被执行（畸形条目不得让事务整体抛错）');
     const after = JSON.parse(fs.readFileSync(path.join(dir, 'leases.json'), 'utf8'));

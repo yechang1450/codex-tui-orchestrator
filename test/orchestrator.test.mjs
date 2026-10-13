@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 process.env.ORCH_AGENT = 'codex';
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -9,9 +10,16 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const scripts = path.resolve(__dirname, '..', 'scripts');
-const fixtureFamily=path.resolve(__dirname,'../temp');fs.mkdirSync(fixtureFamily,{recursive:true});
+const fixtureFamily=testTempFamily('orchestrator');fs.mkdirSync(fixtureFamily,{recursive:true});
 const windowsFixtureWorkspace = 'C:\\orchestrator-fixtures\\workspace';
 const windowsFixtureWorkspaceSlash = 'C:/orchestrator-fixtures/workspace';
+// These integration fixtures launch Windows PowerShell jobs and verify a real
+// descendant tree.  Process creation and CIM enumeration are condition-based
+// operations, so their bounds are intentionally wider than the watchdog's
+// normal polling cadence while still making a stuck process fail the suite.
+const WATCHDOG_PROCESS_START_TIMEOUT_MS = 45_000;
+const WATCHDOG_COMPLETION_MARKER_TIMEOUT_MS = 30_000;
+const WATCHDOG_LAUNCHER_EXIT_TIMEOUT_MS = 45_000;
 
 // ---------- poll-windows: status sets + summary logic ----------
 const importUrl = (p) => pathToFileURL(p).href;
@@ -24,7 +32,6 @@ const runNode = (file, args, opts = {}) => {
   }
 };
 const { TERMINAL, SUCCESS, summaryComplete, summaryTerminal, failures } = await import(importUrl(path.join(scripts, 'poll-windows.mjs')));
-const { controllerWindowsDir } = await import(importUrl(path.join(scripts, 'core', 'controller-state.mjs')));
 const summaryFixture=(status='verified')=>({runId:'test-run',blocks:[{key:'B1'}],tasks:[{id:'T1'}],results:{B1:{status}},taskResults:{T1:{status}}});
 test('poll-windows requires verified status and complete run inventory',()=>{
  assert.equal(TERMINAL.has('failed'),true);assert.equal(TERMINAL.has('pending'),false);
@@ -41,8 +48,8 @@ test('poll-windows terminal aggregation preserves unsuccessful task IDs',()=>{
  assert.equal(SUCCESS.has('done-on-disk'),false);
 });
 
-// ---------- force.mjs: armed/liveWindows/pidOf on temp registry ----------
-// force.mjs reads WORKSPACE_DIR at import; we set it before import and test helpers.
+// ---------- isolated SDK/controller fixture ----------
+// The SDK reads these locations at import, so keep every artifact outside the checkout.
 const wsDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-test-'));
 process.env.WORKSPACE_DIR = wsDir;
 fs.mkdirSync(path.join(wsDir, 'temp'), { recursive: true });
@@ -51,76 +58,6 @@ process.env.ORCH_STATE_DIR = stDir;
 const originalControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 const controllerRoot=fs.mkdtempSync(path.join(fixtureFamily,'orch-controller-'));
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
-const { armed, liveWindows, pidOf, pidAlive, WINDOWS_REG, TMP, FLAG, STATE_DIR } = await import(importUrl(path.join(scripts, 'codex-TUI-orchestrator-force.mjs')));
-test('force.mjs armed/liveWindows/pidOf/pidAlive', () => {
-  // fresh workspace -> not armed, no windows
-  assert.equal(armed(), false);
-  assert.deepEqual(liveWindows(), []);
-  // pidOf returns 0 for missing/unreadable pidFile
-  assert.equal(pidOf({ pidFile: path.join(wsDir, 'no-such.pid') }), 0);
-  // write a valid pidFile pointing to current process -> pidOf returns it
-  const pidFile = path.join(wsDir, 'w.pid');
-  fs.writeFileSync(pidFile, String(process.pid), 'utf8');
-  assert.equal(pidOf({ pidFile }), process.pid);
-  // pidAlive: a normal node process (not an orchestrator launcher) is NOT a sanctioned window -> false.
-  // (The win32 gate requires the command line to reference orchestrate-sdk.mjs / --run-windows.)
-  assert.equal(pidAlive(process.pid), false);
-  assert.equal(pidAlive(99999999), false);
-  // armed becomes true once the flag file exists with a numeric payload
-  fs.mkdirSync(stDir, { recursive: true });
-  const flag = FLAG;
-  fs.mkdirSync(path.dirname(flag), {recursive:true});
-  fs.writeFileSync(flag, String(Date.now()), 'utf8');
-  assert.equal(armed(), true);
-  // WINDOWS_REG/TMP point under the temp workspace
-  assert.equal(TMP, path.join(wsDir, 'temp'));
-  assert.ok(WINDOWS_REG.startsWith(controllerWindowsDir(wsDir)));
-  assert.equal(FLAG, path.join(controllerWindowsDir(wsDir), '.orchestrator-enabled'));
-});
-
-test('force.mjs CLI --status/--assert read/--assert write', () => {
-  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-cli-'));
-  try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'temp', 'state') };
-    // 测试模拟“非窗/窗外观”语境：剥离宿主（已授权编排窗）遗留的 ORCH_WINDOW，
-    // 否则子进程会误判为“已授权窗活窗=0”，让本应 read-only ok 的 --assert read 变成 REFUSED。
-    delete env.ORCH_WINDOW;
-    // --status on empty workspace: armed=false, 0 windows
-    const st = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--status'], { env });
-    assert.equal(st.code, 0);
-    assert.match(st.out, /armed|ARMED|enabled/);
-    // --assert read on not-armed -> exit 0 (ok)
-    const ar = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'read'], { env });
-    assert.equal(ar.code, 0);
-    // --assert write on not-armed -> "ok: orchestrator not armed" exit 0
-    const aw = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'write'], { env });
-    assert.equal(aw.code, 0);
-    // --verify on not-armed -> exit 0 (verification not applicable)
-    const v = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--verify', path.join(cliDir, 'nope.txt')], { env });
-    assert.equal(v.code, 0);
-  } finally {
-    fs.rmSync(cliDir, { recursive: true, force: true });
-  }
-});
-
-test('force.mjs refuses an active legacy workspace registry during migration', () => {
-  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-legacy-'));
-  try {
-    const state = path.join(cliDir, 'temp', 'state');
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: state };
-    const legacy = path.join(state, 'orchestrator-windows.json');
-    fs.mkdirSync(state, { recursive: true });
-    fs.writeFileSync(legacy, JSON.stringify([{ id: 'old-window' }]), 'utf8');
-    const blocked = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--status'], { env });
-    assert.equal(blocked.code, 2);
-    assert.match(blocked.out, /legacy workspace window registry/i);
-    fs.writeFileSync(legacy, '[]', 'utf8');
-    const drained = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--status'], { env });
-    assert.equal(drained.code, 0);
-  } finally {
-    fs.rmSync(cliDir, { recursive: true, force: true });
-  }
-});
 
 test('orchestrator entry refuses malformed legacy workspace registry', () => {
   const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-sdk-legacy-malformed-'));
@@ -142,50 +79,8 @@ test('orchestrator entry refuses malformed legacy workspace registry', () => {
   }
 });
 
-test('force.mjs CLI --assert real kind refuses outside window; --verify VIOLATION when armed', () => {
-  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-cli2-'));
-  try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'temp', 'state') };
-    // 同上：模拟非窗语境，剥离宿主 ORCH_WINDOW，避免 --assert read 被误判为已授权窗。
-    delete env.ORCH_WINDOW;
-    const tmpDir = path.join(cliDir, 'temp', 'state');
-    const controllerDir = controllerWindowsDir(cliDir);fs.mkdirSync(controllerDir, { recursive: true });
-    // arm enforcement
-    fs.writeFileSync(path.join(controllerDir, '.orchestrator-enabled'), String(Date.now()), 'utf8');
-    // --assert read when armed + no window -> read-only ok (exit 0)
-    const ar = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'read'], { env });
-    assert.equal(ar.code, 0);
-    // --assert exec when armed + no window -> REFUSED (exit 1)
-    const ae = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--assert', 'exec'], { env });
-    assert.equal(ae.code, 1);
-    assert.match(ae.out, /REFUSED/i);
-    // --verify a file when armed + no window -> VIOLATION (exit 1)
-    const target = path.join(cliDir, 'file.txt');
-    fs.writeFileSync(target, 'x', 'utf8');
-    const v = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--verify', target], { env });
-    assert.equal(v.code, 1);
-    assert.match(v.out, /VIOLATION/i);
-  } finally {
-    fs.rmSync(cliDir, { recursive: true, force: true });
-  }
-});
-
-test('force.mjs CLI --enable arms enforcement', () => {
-  const cliDir = fs.mkdtempSync(path.join(fixtureFamily, 'orch-force-enable-'));
-  try {
-    const env = { ...process.env, WORKSPACE_DIR: cliDir, ORCH_STATE_DIR: path.join(cliDir, 'temp', 'state') };
-    delete env.ORCH_WINDOW;
-    const en = runNode(path.join(scripts, 'codex-TUI-orchestrator-force.mjs'), ['--enable'], { env });
-    assert.equal(en.code, 0);
-    const flag = path.join(controllerWindowsDir(cliDir), '.orchestrator-enabled');
-    assert.equal(fs.existsSync(flag), true);
-  } finally {
-    fs.rmSync(cliDir, { recursive: true, force: true });
-  }
-});
-
 // ---------- orchestrate-sdk: pure decompose/conflict helpers ----------
-const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, normalizePlan, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
+const { classifyBlockComplexity, classifyExecutionMode, appendModelEffortArgs, conflictByKeys, trySingleBlock, genericProjectSplit, normalizePlan, loadCachedDecompose, buildBlockPrompt, levelWaves, decomposeHash, checkDiskSpace, readPidFile, pidAliveCheck, closeWindowByPid, windowGenuinelyPopped, extractResult, extractUsage, readReportFromResult, sessionDir, writeInteractiveLauncher, psRolloutReaderLines, pidFileOfTransient, staleTransientFiles, computeMaxWindows, applyAuthPromptPolicy, tryReserveWindow, commitReservation, cancelReservation, withRegistryLock, __setOrchHooks, isOrchestratorSelfMod, resolveCodexHome } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildBlocksFromTasks, resolveHints, extractTasks, classifyPrompt } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { buildPsArrayLit } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
 const { blockKeys, keysOverlap } = await import(importUrl(path.join(scripts, 'orchestrate-sdk.mjs')));
@@ -210,12 +105,11 @@ test('rollout ownership rejects parent tools, copied messages and token prefixes
     assert.deepEqual(findOwnedTurn(raw, token), {matched:f.matched,turnId:f.turn});
     assert.deepEqual(scanTaskComplete(raw, token), {done:f.done,ownerTurnId:f.turn});
   }
-  const {lp,pidf,pf} = writeInteractiveLauncher('ownership','【本块唯一标识】'+token,'parser');
-  const fixture = path.join(path.dirname(lp),'ownership-fixtures.json');
-  const harness = path.join(path.dirname(lp),'ownership-parser.ps1');
+  const dir = fs.mkdtempSync(path.join(fixtureFamily,'ownership-parser-'));
+  const fixture = path.join(dir,'ownership-fixtures.json');
+  const harness = path.join(dir,'ownership-parser.ps1');
   try {
-    const body = fs.readFileSync(lp,'utf8');
-    const helper = body.slice(body.indexOf('function Get-EventTurnId('),body.indexOf('function Get-LastReport {'));
+    const helper = psRolloutReaderLines().join('\n');
     fs.writeFileSync(fixture,JSON.stringify(fixtures.map(f=>({raw:f.events.map(JSON.stringify).join('\n'),token}))), 'utf8');
     fs.writeFileSync(harness,'\uFEFF[Console]::OutputEncoding = [System.Text.Encoding]::UTF8\n'+helper+`\n$data=Get-Content -LiteralPath '${fixture.replace(/'/g,"''")}' -Raw -Encoding UTF8 | ConvertFrom-Json\n@($data | ForEach-Object { Read-OwnedRollout $_.raw $_.token }) | ConvertTo-Json -Depth 5 -Compress`, 'utf8');
     const out=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',harness],{windowsHide:true,encoding:'utf8'});
@@ -227,7 +121,7 @@ test('rollout ownership rejects parent tools, copied messages and token prefixes
       assert.equal(results[i].turnId,f.turn);
       if(f.report) assert.equal(results[i].report,f.report);
     });
-  } finally { for(const f of [lp,pidf,pf,fixture,harness]) fs.rmSync(f,{force:true}); }
+  } finally { fs.rmSync(dir,{recursive:true,force:true}); }
 });
 
 test('scanTaskComplete: 只接受当前 turn 的结构化 task_complete', () => {
@@ -272,27 +166,17 @@ test('orchestrate-sdk rejects whitespace in model and effort values', () => {
   const out=appendModelEffortArgs(['--cd','W'],{id:'codex'},{model:'bad model',effort:'bad effort',serviceTier:'bad tier'});
   assert.deepEqual(out,['--cd','W']);
 });
-test('通用化: appendModelEffortArgs 对非 codex 走其 modelEnv/effortEnv、绝不注入 codex -m/-c', () => {
-  const prevM = process.env.ANTHROPIC_MODEL, prevE = process.env.ORCH_CLAUD_EFFORT;
-  process.env.ANTHROPIC_MODEL = 'claude-3-7-sonnet';
-  process.env.ORCH_CLAUD_EFFORT = 'high';
-  const claudeOut = appendModelEffortArgs(['--cwd', 'W'], { id: 'claude', modelEnv: 'ANTHROPIC_MODEL', effortEnv: 'ORCH_CLAUD_EFFORT' });
-  assert.ok(!claudeOut.includes('-m') && !claudeOut.includes('model_reasoning_effort='), '非 codex 不注入 codex 专属 argv');
-  assert.equal(process.env.ANTHROPIC_MODEL, 'claude-3-7-sonnet', '非 codex 模型经 env 就绪');
-  if (prevM === undefined) delete process.env.ANTHROPIC_MODEL; else process.env.ANTHROPIC_MODEL = prevM;
-  if (prevE === undefined) delete process.env.ORCH_CLAUD_EFFORT; else process.env.ORCH_CLAUD_EFFORT = prevE;
-});
 test('orchestrate-sdk classifyExecutionMode: read-only -> inline, real -> execute', async () => {
   // 只读词（分析，无真实动作词）-> inline（命中确定性快判，不触发 LLM）
   assert.equal(await classifyExecutionMode('分析一下布局是否有问题'), 'inline');
   // 真实动作词（修复）-> execute（命中确定性快判，不触发 LLM）
   assert.equal(await classifyExecutionMode('修复 80 的空白区域'), 'execute');
 });
-test('orchestrate-sdk sessionDir honors ORCH_SESSION_DIR override (agent-generic)', () => {
+test('orchestrate-sdk sessionDir honors the explicit Codex session-root override', () => {
   const prev = process.env.ORCH_SESSION_DIR;
   try {
-    process.env.ORCH_SESSION_DIR = 'D:\\other-agent\\sessions';
-    assert.equal(sessionDir(), 'D:\\other-agent\\sessions');
+    process.env.ORCH_SESSION_DIR = 'D:\\codex-session-override\\sessions';
+    assert.equal(sessionDir(), 'D:\\codex-session-override\\sessions');
   } finally {
     if (prev === undefined) delete process.env.ORCH_SESSION_DIR; else process.env.ORCH_SESSION_DIR = prev;
   }
@@ -445,8 +329,7 @@ test('orchestrate-sdk checkDiskSpace: returns true on a disk with space (thresho
   }
 });
 
-// 全部测试完成后统一清理顶层临时工作区（wsDir 与 stDir 都是测试专用一次性目录），
-// 避免像原先那样只清理 wsDir、导致每次运行都在 %TEMP% 遗留 orch-force-state-* 目录。
+// 全部测试完成后统一清理 SDK/controller 隔离目录。
 after(() => {
   if(originalControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=originalControllerRoot;
   fs.rmSync(controllerRoot,{recursive:true,force:true});
@@ -471,7 +354,7 @@ test('runtime: readPidFile parses pid file', () => {
     assert.equal(readPidFile(path.join(d, 'missing.pid')), 0);
     fs.writeFileSync(pf, 'abc', 'utf8');
     assert.equal(readPidFile(pf), 0);
-    // 上限校验（与 force.mjs pidOf 对齐）：超大/负/0 都视为无效 0, 仅 1..4194304 合法。
+    // PID 上限校验：超大/负/0 都视为无效 0, 仅 1..4194304 合法。
     fs.writeFileSync(pf, '999999999', 'utf8');
     assert.equal(readPidFile(pf), 0, '超大 pid -> 0');
     fs.writeFileSync(pf, '-5', 'utf8');
@@ -542,7 +425,11 @@ test('runtime: task_complete without own assistant evidence is not verified', as
     const owner = JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', turn_id: 'turn-owner', content: [{ text: token }] } });
     const complete = JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-owner' } });
     fs.writeFileSync(f, owner + '\n' + complete + '\n', 'utf8');
-    const result = await waitTaskComplete(f, 100, '', token, undefined);
+    // The initial durable rollout read runs before the polling loop.  Under a
+    // saturated process table it can exceed an arbitrary 100 ms unit-test
+    // budget even though the completed event is already on disk.  This only
+    // bounds test observation; production callers retain their own deadlines.
+    const result = await waitTaskComplete(f, 5_000, '', token, undefined);
     assert.equal(result.done, true);
     assert.equal(result.verified, false);
     assert.equal(result.text, '');
@@ -617,13 +504,16 @@ test('runtime: visible launcher detaches inherited Codex Desktop session and too
       'CODEX_APP_TOOLS_PIPE_PATH',
       'CODEX_THREAD_ID',
       'CODEX_SESSION_ID',
+      'ORCH_ISOLATED_ABORT_TOKEN',
     ]) {
       assert.match(body, new RegExp(`['\\"]${name}['\\"]`), `launcher must name inherited ${name}`);
     }
     assert.match(body, /foreach \(\$name in @\(/, 'launcher must iterate the inherited session variables');
     assert.match(body, /Remove-Item -LiteralPath/, 'launcher must clear the inherited session variables');
-    assert.doesNotMatch(body, /CODEX_PERMISSION_PROFILE|CODEX_SANDBOX_NETWORK_DISABLED|CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY/,
-      'launcher must retain the host policy and workspace-verification environment');
+    for (const name of ['CODEX_PERMISSION_PROFILE','CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY'])
+      assert.match(body, new RegExp(`['\"]${name}['\"]`), `launcher must clear inherited ${name}`);
+    assert.doesNotMatch(body, /CODEX_SANDBOX_NETWORK_DISABLED/,
+      'launcher must not invent unrelated host-policy environment handling');
     assert.match(body, /CODEX_HOME/, 'launcher must retain the selected Codex home');
   } finally {
     fs.rmSync(lp, { force: true });
@@ -658,7 +548,7 @@ test('runtime: launcher extracts the REAL ASCII block token even when boilerplat
   // 「【本块唯一标识】…完成」开头 BEFORE the injected unique token. The old regex matched that
   // boilerplate first and stripped it to an empty $token => watchdog auto-close never fired.
   const body = '1. 修复TUI窗任务成功后仍报「已退出进程代码为1」且无法自动关窗的问题。\n上面任务之间互相独立：并行执行。\n\n【执行纪律·禁止只计划不干活】本窗是授权真实执行窗，必须**在本窗内真正动手修改/执行**，逐项完成并自验，最后才输出以「【本块唯一标识】…完成」开头的汇报。**禁止**只输出“已定位/先读配置/先看日志/先确认归属/继续核查”这类计划、定位、核查性文字就当作完成；禁止停在“先…”。若确需先核查，也必须在同一窗内继续把改动做完、验证到位，不要只规划不落地。\n\n【本块唯一标识】B1-abc123-4f2g9z\n（最终汇报请以「【本块唯一标识】B1-abc123-4f2g9z 完成」开头，并说明本块完成情况）';
-  const auth = '\n\n（已获授权推进并执行。本窗为 open-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
+  const auth = '\n\n（已获授权推进并执行。本窗为 codex-tui-orchestrator 授权的真实执行窗：直接在本窗内用自己的工具干活，不要再发起 --run-windows、不要另开新窗、不要以「需要授权/要我修吗」等由暂停或询问。做完即结束并汇报：最终汇报必须以本窗 body 中标明的完整「【本块唯一标识】<token> 完成」开头，说明做了什么、每项自验（读回/回归/编码）与确凿落盘证据；任一步骤失败请如实说明现场，最终汇报的**最后一行**必须单独输出结束标记：`__ORCH_DONE__ <本窗token>`（token 为 body 中「【本块唯一标识】」后那串唯一 ASCII，不可省略、不可置于中间；此标记是本窗自动关闭的唯一依据）。禁止虚报成功。）';
   const { lp, pidf, pf } = writeInteractiveLauncher('t', body + auth, 'x');
   try {
     const ps = fs.readFileSync(lp, 'utf8');
@@ -714,11 +604,25 @@ test('runtime: completion exits 0 and never force-kills the launcher (regression
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch {} } }
   // 4) closeWindowByPid 对 launcher 的 force-kill 只是兜底：必须在抛错/轮询超时之后，绝不作为正常完成路径
   const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
-  const idxGrace = src.search(/const closeGrace = [\s\S]*?const deadline = Date\.now\(\) \+/);
-  const idxFinalize = src.indexOf('const closed=terminateOwnedLauncher(expected)');
-  assert.ok(idxGrace > -1, 'closeWindowByPid must poll/grace before giving up on a launcher');
-  assert.ok(idxFinalize > idxGrace, 'a stuck owned launcher gets an identity-checked exit-zero fallback only after its grace period');
+  const idxGrace = src.indexOf('const closeGrace = Number(process.env.ORCH_CLOSE_GRACE_MS || 15000);');
+  const idxDeadline = src.indexOf('const deadline = bounded?deadlineAt:Date.now() +', idxGrace);
+  const idxPoll = src.indexOf('while (Date.now() < deadline)', idxDeadline);
+  const idxFinalize = src.indexOf('const closed=terminateOwnedLauncher(expected,bounded?{tempDir,deadlineAt}:{tempDir});', idxPoll);
+  assert.ok(idxGrace > -1 && idxDeadline > idxGrace && idxPoll > idxDeadline,
+    'closeWindowByPid must poll through either the inherited deadline or its local grace period before giving up on a launcher');
+  assert.ok(idxFinalize > idxPoll, 'a stuck owned launcher gets an identity-checked exit-zero fallback only after its grace period');
   assert.doesNotMatch(src, /spawnSync\("taskkill", \["\/PID", String\(p\), "\/T", "\/F"\]/, 'closeWindowByPid must never force-kill the launcher (would cause a code-1 pane)');
+});
+
+test('runtime: watchdog performs one verified process snapshot per cleanup pass', () => {
+  const { lp, pidf, pf, rf } = writeInteractiveLauncher('bounded-cleanup', 'task\n\n【本块唯一标识】BC1-abc-000 完成', 'x');
+  try {
+    const body = fs.readFileSync(lp, 'utf8');
+    assert.match(body, /for\(\$pass=0;\$pass -lt 1;\$pass\+\+\)/, 'one outer retry must not trigger multiple full process-table snapshots');
+    assert.match(body, /for \(\$k = 0; \$k -lt 10; \$k\+\+\)/, 'cleanup must retain bounded retries for descendants that appear after the first verified snapshot');
+  } finally {
+    for (const file of [lp, pidf, pf, rf, rf + '.self-closed']) fs.rmSync(file, {force: true});
+  }
 });
 
 test('runtime: spawnWindowWithRetry warms up after popup so the parent never races the session rollout (cold-start regression)', () => {
@@ -730,20 +634,27 @@ test('runtime: spawnWindowWithRetry warms up after popup so the parent never rac
   // 1) warmupWindow must be defined
   assert.match(src, /async function warmupWindow/, 'warmupWindow must exist');
   // 2) spawnWindowWithRetry must invoke warmupWindow after confirming popup
-  const idxConfirmed = src.indexOf('windowGenuinelyPopped(pidf, token, lp)) { ok = true; break; }');
-  const idxWarmup = src.indexOf('await warmupWindow(pidf, token);');
+  const retryStart = src.indexOf('async function spawnWindowWithRetry');
+  const retryEnd = src.indexOf('\nfunction releaseAuxiliaryWindow', retryStart);
+  assert.ok(retryStart >= 0 && retryEnd > retryStart, 'spawnWindowWithRetry source must remain locally inspectable');
+  const retrySource = src.slice(retryStart, retryEnd);
+  const idxConfirmed = retrySource.indexOf('windowGenuinelyPopped(pidf, token, lp, context)');
+  const idxWarmup = retrySource.indexOf('await warmupWindow(pidf, token, context)');
   assert.ok(idxConfirmed > -1 && idxWarmup > -1, 'spawnWindowWithRetry must confirm popup then warm up');
   assert.ok(idxWarmup > idxConfirmed, 'warmup must run AFTER the popup is confirmed');
   // 3) agentDescendantAlive helper must exist (the durable child detection used by warmup)
-  assert.match(src, /function agentDescendantAlive/, 'agentDescendantAlive must exist');
-  assert.match(src, /windowGenuinelyPopped\(pidf, token, lp\)/, 'popup confirmation must recover a late pid by unique launcher path');
+  assert.match(src, /function agentDescendantAlive\(pidf, context = \{\}\)/, 'agentDescendantAlive must receive the deadline context');
+  assert.match(src, /async function warmupWindow\(pidf, token, context = \{\}\)/, 'warmupWindow must receive the deadline context');
+  assert.match(src, /windowGenuinelyPopped\(pidf, token, lp, context\)/, 'popup confirmation must recover a late pid by unique launcher path and stop polling when its execution context expires');
   const runnerSrc = fs.readFileSync(path.join(scripts, 'core', 'runner.mjs'), 'utf8');
   assert.match(runnerSrc, /runId\+'-a'\+number/, 'retries must use unique launcher/result paths');
 });
 test('runner does not abort healthy visible windows during a 90-second session cold start', () => {
   const src = fs.readFileSync(path.join(scripts, 'core', 'runner.mjs'), 'utf8');
   assert.doesNotMatch(src, /hooks\.session\([^\n]*Math\.min\(90000/, 'session discovery must not use a fixed 90-second cutoff');
-  assert.match(src, /hooks\.session\([^\n]*Math\.max\(0,deadline-Date\.now\(\)\)/, 'session discovery must use the remaining run deadline');
+  assert.match(src,
+    /executionHookWithDeadline\(hooks\.session,[\s\S]*?remainingBeforeDeadline\(executionDeadlineAt,'execution session discovery',now\)[\s\S]*?executionDeadlineAt,'execution session discovery'/,
+    'session discovery must receive the remaining run deadline and a controller-side deadline guard');
 });
 test('CLI hardening covers arbitrary spawn files and every mutually exclusive mode', () => {
   const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
@@ -781,12 +692,12 @@ test('orchestrate-sdk: 无子代理共享文件载体（SUBTASK_DIR/ORCH_SUBTASK
   const src = fs.readFileSync(path.join(scripts, 'core', 'orchestrate-sdk.mjs'), 'utf8');
   // 已删除子代理共享文件载体：源码不应再有 SUBTASK_DIR / ORCH_SUBTASK_DIR。
   assert.doesNotMatch(src, /SUBTASK_DIR|ORCH_SUBTASK_DIR/, 'shared-file sub-agent carrier must be removed');
-  const authTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
+  const authTpl = fs.readFileSync(path.join(scripts, 'core', 'agent-auth-prompt.txt'), 'utf8');
   assert.match(authTpl, /不使用子代理|不再使用子代理/, 'TUI prompt must state NO sub-agent usage');
   assert.doesNotMatch(authTpl, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'TUI prompt must NOT instruct sub-agent usage');
 });
 test('orchestrate-sdk: 窗内不使用子代理（shared-file/sub-agent 不再作为 prompt 指令）', () => {
-  const srcTpl = fs.readFileSync(path.join(scripts, 'agent-auth-prompt.txt'), 'utf8');
+  const srcTpl = fs.readFileSync(path.join(scripts, 'core', 'agent-auth-prompt.txt'), 'utf8');
   // prompt 里不再教窗用子代理/共享文件/SUBAGENTS_DONE
   assert.match(srcTpl, /不使用子代理|不再使用子代理/, 'prompt must state NO sub-agent usage');
   assert.doesNotMatch(srcTpl, /子代理任务正文走共享文件|等子代理返回|必须先 spawn|TUI 窗管好自己的子代理/, 'prompt must NOT instruct sub-agent usage');
@@ -839,10 +750,10 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0, grandPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => readPidFile(agentPidFile) > 0 && readPidFile(grandPidFile) > 0, 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0 && readPidFile(grandPidFile) > 0, WATCHDOG_PROCESS_START_TIMEOUT_MS);
     agentPid = readPidFile(agentPidFile); grandPid = readPidFile(grandPidFile);
     assert.ok(agentPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
-    const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
+    const exitCode = await Promise.race([launcherExit, sleep(WATCHDOG_LAUNCHER_EXIT_TIMEOUT_MS).then(() => 'timeout')]);
     assert.notEqual(exitCode, 'timeout', 'launcher must exit on its own (no permanently-alive codex window)');
     assert.equal(exitCode, 0, 'launcher must end with exit 0 even when its result dir was wiped mid-run');
     assert.equal(pidAliveCheck(agentPid), false, 'codex process must be reaped');
@@ -891,12 +802,13 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => readPidFile(agentPidFile) > 0, 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0, WATCHDOG_PROCESS_START_TIMEOUT_MS);
     agentPid = readPidFile(agentPidFile);
     assert.ok(agentPid > 0, 'fake codex PID must be written');
     // Give the watchdog time to (incorrectly) detect the user-message __ORCH_DONE__ line.
     const earlyExit = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(6000).then(() => 'still-running')]);
     assert.equal(earlyExit, 'still-running', 'watchdog must NOT self-close just because the injected user prompt contains __ORCH_DONE__ <token>');
+    assert.equal(fs.existsSync(rf + '.self-closed'), false, 'an injected user prompt must not publish a completion marker');
     // The window must still be alive (agent didn't do work, so it must not be closed yet).
     assert.equal(pidAliveCheck(agentPid), true, 'codex must still be alive because the task was NOT completed');
   } finally {
@@ -938,14 +850,17 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => readPidFile(agentPidFile) > 0, 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0, WATCHDOG_PROCESS_START_TIMEOUT_MS);
     agentPid = readPidFile(agentPidFile);
     assert.ok(agentPid > 0, 'fake codex PID must be written');
     const earlyExit = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(3000).then(() => 'still-running')]);
     assert.equal(earlyExit, 'still-running', 'watchdog must ignore untyped and foreign-turn task_complete signals');
+    assert.equal(fs.existsSync(rf + '.self-closed'), false, 'foreign completion must not publish a completion marker');
     assert.equal(pidAliveCheck(agentPid), true, 'codex must still be alive because the completion event belongs to another turn');
     fs.appendFileSync(rolloutFile, JSON.stringify({ type: 'event_msg', payload: { type: 'task_complete', turn_id: 'turn-owner' } }) + '\n', 'utf8');
-    const completed = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(10000).then(() => 'timeout')]);
+    await waitFor(() => fs.existsSync(rf + '.self-closed'), WATCHDOG_COMPLETION_MARKER_TIMEOUT_MS);
+    assert.equal(fs.existsSync(rf + '.self-closed'), true, 'watchdog must publish completion after the current turn emits a typed task_complete event');
+    const completed = await Promise.race([launcherExit.then((c) => c).catch(() => null), sleep(WATCHDOG_LAUNCHER_EXIT_TIMEOUT_MS).then(() => 'timeout')]);
     assert.notEqual(completed, 'timeout', 'watchdog must close after the current turn emits a typed task_complete event');
     assert.equal(completed, 0, 'launcher must exit cleanly after typed completion');
     assert.equal(fs.existsSync(rf + '.self-closed'), true, 'typed completion must write the self-closed marker');
@@ -1015,9 +930,12 @@ exit 0`);
     assert.equal(pidAliveCheck(launcherPid), true, 'fake launcher must be alive before graceful close');
     assert.equal(pidAliveCheck(agentPid), true, 'fake codex must be alive before graceful close');
     assert.equal(pidAliveCheck(grandPid), true, 'grandchild must be alive before graceful close');
-    const {processSnapshot}=await import('../scripts/core/leases.mjs');
+    const {processIdentityBinding,processSnapshot}=await import('../scripts/core/leases.mjs');
     assert.equal(await closeWindowByPid(launcherPid),false,'unidentified process must not be closed');
-    const closed = await closeWindowByPid(launcherPid,processSnapshot().get(launcherPid));
+    const rawIdentity=processSnapshot().get(launcherPid);
+    assert.equal(await closeWindowByPid(launcherPid,rawIdentity),false,'a raw CommandLine identity must never authorize cleanup or be reported as closed');
+    assert.equal(pidAliveCheck(launcherPid),true,'rejecting a raw identity must not touch the launcher');
+    const closed = await closeWindowByPid(launcherPid,processIdentityBinding(rawIdentity));
     assert.equal(closed, true, 'closeWindowByPid must report the launcher closed gracefully');
     const exitRes = await Promise.race([
       launcherExit,
@@ -1084,11 +1002,13 @@ while($true){Start-Sleep -Seconds 600}`);
   let agentPid = 0, grandPid = 0;
   const waitFor = async (what, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (what()) return; await sleep(100); } };
   try {
-    await waitFor(() => readPidFile(agentPidFile) > 0 && readPidFile(grandPidFile) > 0, 15000);
+    await waitFor(() => readPidFile(agentPidFile) > 0 && readPidFile(grandPidFile) > 0, WATCHDOG_PROCESS_START_TIMEOUT_MS);
     agentPid = readPidFile(agentPidFile); grandPid = readPidFile(grandPidFile);
     assert.ok(agentPid > 0 && grandPid > 0, 'fake codex + grandchild PIDs must be written');
     // Watchdog must fire even with a stale result file -> kill codex -> launcher exits 0.
-    const exitCode = await Promise.race([launcherExit, sleep(20000).then(() => 'timeout')]);
+    await waitFor(() => fs.existsSync(rf + '.self-closed'), WATCHDOG_COMPLETION_MARKER_TIMEOUT_MS);
+    assert.equal(fs.existsSync(rf + '.self-closed'), true, 'watchdog must publish completion before launcher tree cleanup');
+    const exitCode = await Promise.race([launcherExit, sleep(WATCHDOG_LAUNCHER_EXIT_TIMEOUT_MS).then(() => 'timeout')]);
     assert.notEqual(exitCode, 'timeout', 'launcher must exit on its own (no permanently-alive codex window)');
     assert.equal(exitCode, 0, 'launcher must end with exit 0 so the Windows Terminal pane auto-closes');
     assert.equal(pidAliveCheck(agentPid), false, 'codex process must be killed even when a stale result pre-exists');
@@ -1245,7 +1165,7 @@ test('keysOverlap: 键有重叠返回 true, 无重叠 false, 空数组安全', (
     assert.ok(body.includes('$agentArgs = @('), 'launcher must build agentArgs as a PowerShell array literal');
     assert.doesNotMatch(body, /AGENT_ARGS\.split\(" "\)/, 'launcher must NOT split AGENT_ARGS by space (would split space-containing values)');
     assert.ok(body.includes("@('--cd'"), 'launcher must start agentArgs with @(--cd...) array literal');
-    assert.ok(body.includes('--dangerously-bypass-approvals-and-sandbox'), 'authorized Codex TUI must carry the inherited no-prompt permission envelope');
+    assert.equal(body.includes('--dangerously-bypass-approvals-and-sandbox'), false, 'a visible child must not carry an unverified no-prompt permission envelope');
     assert.ok(body.includes('"__TOKEN__"'), 'result marker must self-describe its block token');
   } finally { for (const f of [lp, pidf, pf]) { try { if (fs.existsSync(f)) fs.rmSync(f, { force: true }); } catch { /* ignore */ } } }
 });
@@ -1287,19 +1207,6 @@ test('computeMaxWindows: machine memory MB floor boundaries', () => {
   assert.equal(computeMaxWindows(64_999), 32, '64999 MB -> 32');
   assert.equal(computeMaxWindows(0), 0, '0 MB -> 0');
 });
-test('Codex entry rejects unsupported hosts without fallback', async () => {
-  const { resolveAgent } = await import(importUrl(path.join(scripts, 'agent.mjs')));
-  const prev = process.env.ORCH_AGENT;
-  try {
-    process.env.ORCH_AGENT = 'unknown';
-    assert.throws(() => resolveAgent(), /Codex plugin only supports codex/);
-    process.env.ORCH_AGENT = 'codex';
-    assert.equal(resolveAgent().agent, 'codex');
-  } finally {
-    if (prev === undefined) delete process.env.ORCH_AGENT; else process.env.ORCH_AGENT = prev;
-  }
-});
-
 test('levelWaves: 循环依赖/无依赖/空输入', () => {
   const cyc = [
     { key: 'B1', title: 'B1', b: {}, dependsOn: ['B3'] },
@@ -1548,6 +1455,8 @@ test('resolveCodexHome: 环境变量优先，未设回退 homedir/.codex（跨�
   try {
     process.env.CODEX_HOME = 'D:\\custom-codex';
     assert.equal(resolveCodexHome(), 'D:\\custom-codex', 'CODEX_HOME takes precedence');
+    process.env.CODEX_HOME = 'relative-codex-home';
+    assert.equal(resolveCodexHome('C:\\workspace\\fixture'), 'C:\\workspace\\fixture\\relative-codex-home', 'relative CODEX_HOME resolves from the child workspace');
     delete process.env.CODEX_HOME;
     const h = resolveCodexHome();
     assert.ok(h.endsWith('\\.codex') || h.endsWith('/.codex'), 'falls back to home/.codex when unset');
@@ -1558,7 +1467,7 @@ test('resolveCodexHome: 环境变量优先，未设回退 homedir/.codex（跨�
 
 test('isOrchestratorSelfMod: 通用化识别自引用(编排/调度/TUI窗/源码, 中英文)，不误判普通页面修复', () => {
   // 自引用命中：中英文均可
-  assert.equal(isOrchestratorSelfMod('修复 open-tui-orchestrator 的编排逻辑'), true, 'en self-ref');
+  assert.equal(isOrchestratorSelfMod('修复 codex-tui-orchestrator 的编排逻辑'), true, 'en self-ref');
   assert.equal(isOrchestratorSelfMod('优化调度窗的关窗逻辑'), true, 'zh 调度窗 self-ref');
   assert.equal(isOrchestratorSelfMod('改 orchestrate-sdk.mjs 的源码'), true, 'sdk path self-ref');
   assert.equal(isOrchestratorSelfMod('加固 orchestrator 的并发稳定性'), true, 'orchestrator hardening');

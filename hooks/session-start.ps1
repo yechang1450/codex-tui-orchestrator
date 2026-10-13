@@ -81,7 +81,12 @@ function Invoke-OrchSessionStart {
         [IO.File]::WriteAllText($statePath, ($state | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
         $code = 'PREPARE_FAILED'
         try {
-            $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            # The hook may inherit an arbitrary environment.  Derive the
+            # interpreter from Windows itself instead of trusting SystemRoot.
+            $system32 = [Environment]::SystemDirectory
+            if ([string]::IsNullOrWhiteSpace($system32)) { throw 'system directory unavailable' }
+            $powershell = Join-Path ([IO.Path]::GetFullPath($system32)) 'WindowsPowerShell\v1.0\powershell.exe'
+            if (-not (Test-Path -LiteralPath $powershell -PathType Leaf)) { throw 'trusted PowerShell unavailable' }
             $previousPreparing = $env:ORCH_HOOK_PREPARING
             $previousPluginData = $env:PLUGIN_DATA
             try {

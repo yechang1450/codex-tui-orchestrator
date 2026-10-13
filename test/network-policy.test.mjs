@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {networkConfig, networkArgs, resolveOpenAIBaseUrl, resolveProviderMode, OPENAI_HTTPS_PROVIDER} from '../scripts/network-policy.mjs';
-import {launchArgs} from '../scripts/host-cli.mjs';
+import {networkConfig, networkArgs, resolveOpenAIBaseUrl, resolveProviderMode, OPENAI_HTTPS_PROVIDER} from '../scripts/core/network-policy.mjs';
+import {launchArgs} from '../scripts/core/host-cli.mjs';
 const providerKeys=['ORCH_PROVIDER','ORCH_OPENAI_BASE_URL','ORCH_STEADY_RELAY_BASE_URL'];
 function withoutProviderEnv(fn){
   const saved=Object.fromEntries(providerKeys.map(k=>[k,process.env[k]]));

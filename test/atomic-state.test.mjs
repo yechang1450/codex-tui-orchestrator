@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -6,7 +7,7 @@ import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {atomicJson} from '../scripts/core/leases.mjs';
 
-const family=fileURLToPath(new URL('../temp/',import.meta.url));
+const family=testTempFamily('atomic-state');
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 test('atomic state replacement survives a real transient Windows reader lock',{skip:process.platform!=='win32'},async()=>{
  fs.mkdirSync(family,{recursive:true});const root=fs.mkdtempSync(path.join(family,'atomic-lock-'));

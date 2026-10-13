@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -5,17 +6,38 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import http from 'node:http';
 import {fileURLToPath} from 'node:url';
-import {runWindows,collectVerification,verifyRun,waitForProcessExit} from '../scripts/core/runner.mjs';
+import {runWindows,collectVerification,verifyRun,waitForProcessExit,runDirectory,preflightResumeLedger} from '../scripts/core/runner.mjs';
 import {recordCheckpoint,readCheckpoints} from '../scripts/core/checkpoint.mjs';
 import {claimRun,releaseRun} from '../scripts/core/leases.mjs';
+import {isProcessIdentityBinding} from '../scripts/core/leases.mjs';
+import {validateRecoverySummary} from '../scripts/core/recovery.mjs';
 import {controllerWindowsDir} from '../scripts/core/controller-state.mjs';
-const family=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../temp');
+import {cleanupTransactionMarkerFile,readCleanupTransactionMarkerForRecovery} from '../scripts/core/cleanup-transaction.mjs';
+const family=testTempFamily('recovery-runtime');
 fs.mkdirSync(family,{recursive:true});
 const controllerRoot=fs.mkdtempSync(path.join(family,'runtime-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
 after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
+function cleanupRecoveryBinding(runId,coordinator,entry,attempt){
+ return {runId,blockKey:'B1',attempt:attempt.number,token:attempt.token,
+  attemptFile:path.resolve(attempt.file),coordinator:path.resolve(coordinator),
+  lease:{id:entry.leaseId,instanceId:entry.leaseInstanceId}};
+}
+// A fixture-only reconstruction of the durable boundary after the controller
+// marker and both workspace mirrors were published, but before the next phase
+// was fenced.  A hook failure leaves a real in-flight fence and must not be
+// reused to simulate that earlier, safely retryable crash boundary.
+function restorePendingCleanupMarker(workspace,binding,journal){
+ const current=readCleanupTransactionMarkerForRecovery({workspace,binding});
+ assert.ok(current,'the fixture must retain a controller cleanup marker');
+ const file=cleanupTransactionMarkerFile({workspace,binding:{...binding,status:current.status}});
+ const raw=JSON.parse(fs.readFileSync(file,'utf8'));
+ raw.journal=structuredClone(journal);raw.updatedAt=journal.updatedAt;raw.state='active';
+ fs.writeFileSync(file,JSON.stringify(raw));
+ return {file,marker:readCleanupTransactionMarkerForRecovery({workspace,binding})};
+}
 test('launcher exit verification tolerates a short process teardown race',async()=>{
  const expected={ProcessId:7,Name:'powershell.exe',Started:'s',CommandLine:'win-launch-test.ps1'};let calls=0;
  const gone=await waitForProcessExit(expected,{timeoutMs:200,intervalMs:10,snapshot:()=>calls++===0?new Map([[7,expected]]):new Map()});
@@ -124,6 +146,30 @@ test('PID reader retries transient EBUSY before authenticating one launcher and 
   const fixture=pidReadRecoveryFixture(d,()=>{reads++;if(reads<=2){const error=new Error('sharing lock');error.code='EBUSY';throw error;}return 4321;},pid=>pid===4321?{ProcessId:4321,Name:'powershell.exe',Started:'s',CommandLine:'win-launch-B1.ps1'}:null);
   const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'transient-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test'});
   assert.equal(sum.success,true,JSON.stringify(sum.results));assert.equal(fixture.spawned,1);assert.equal(fixture.completed,1);assert.ok(reads>=3);
+  const attemptFile=path.join(runDirectory(d,'transient-pid'),'attempts','B1','1','attempt.json');
+  const saved=JSON.parse(fs.readFileSync(path.join(runDirectory(d,'transient-pid'),'summary.json'),'utf8'));
+  const attempt=JSON.parse(fs.readFileSync(attemptFile,'utf8'));
+  assert.equal(isProcessIdentityBinding(sum.results.B1.launcher),true);
+  assert.equal(isProcessIdentityBinding(sum.results.B1.attempts.at(-1).launcherObserved),true);
+  assert.equal(isProcessIdentityBinding(saved.results.B1.launcher),true);
+  assert.equal(isProcessIdentityBinding(attempt.launcherObserved),true);
+  assert.equal(JSON.stringify({saved,attempt}).includes('CommandLine'),false,'durable recovery records must not persist a raw command line');
+  validateRecoverySummary(saved);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('a malformed runtime launcher identity is rejected without writing a legacy recovery identity',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'pid-read-malformed-identity-'));
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>4321,()=>({ProcessId:4321,Name:'powershell.exe',Started:'missing-command-line'}));
+  const runId='malformed-runtime-identity';
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId,acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1});
+  assert.equal(sum.success,false);
+  const saved=JSON.parse(fs.readFileSync(path.join(runDirectory(d,runId),'summary.json'),'utf8'));
+  const attempt=JSON.parse(fs.readFileSync(path.join(runDirectory(d,runId),'attempts','B1','1','attempt.json'),'utf8'));
+  assert.equal(saved.results.B1.launcher,undefined);
+  assert.equal(attempt.launcherObserved,undefined);
+  assert.equal(JSON.stringify({saved,attempt}).includes('CommandLine'),false,'a malformed live identity must not become durable recovery state');
+  validateRecoverySummary(saved);
  }finally{fs.rmSync(d,{recursive:true,force:true});}
 });
 test('permanent PID EBUSY retains recovery artifacts and never opens a replacement',async()=>{
@@ -146,8 +192,82 @@ test('no-process spawn result with an absent PID keeps the clean no-process clea
  const d=fs.mkdtempSync(path.join(family,'pid-read-absent-'));
  try{
   const fixture=pidReadRecoveryFixture(d,()=>0,()=>{throw new Error('identity must not run without a PID');},{spawnResult:{noProcess:true},writePid:false});
+  let unregisterOptions;
+  fixture.hooks.unregister=(_id,_coordinator,options)=>{unregisterOptions=options;};
   const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId:'absent-pid',acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1});
   assert.equal(sum.success,false);assert.equal(sum.results.B1.status,'failed');assert.equal(sum.results.B1.exitConfirmed,true);assert.equal(fixture.spawned,1);assert.equal(fixture.completed,0);assert.equal(fixture.cleanups,1);assert.equal(sum.finalSweep.retained,0);
+  const attemptFile=path.join(runDirectory(d,'absent-pid'),'attempts','B1','1','attempt.json');
+  const persisted=JSON.parse(fs.readFileSync(attemptFile,'utf8'));
+  const saved=JSON.parse(fs.readFileSync(path.join(runDirectory(d,'absent-pid'),'summary.json'),'utf8'));
+  const proof=sum.results.B1.noProcessProof;
+  assert.deepEqual(proof,{...persisted.noProcessProof});
+  assert.deepEqual(proof.lease,{id:sum.results.B1.leaseId,instanceId:sum.results.B1.leaseInstanceId});
+  assert.equal(persisted.blockKey,'B1');assert.equal(persisted.leaseId,sum.results.B1.leaseId);
+  assert.deepEqual(unregisterOptions,{deadlineAt:unregisterOptions.deadlineAt,runId:'absent-pid',leaseInstanceId:sum.results.B1.leaseInstanceId});
+  assert.equal(readCleanupTransactionMarkerForRecovery({workspace:d,binding:{runId:'absent-pid',blockKey:'B1',attempt:persisted.number,token:persisted.token,attemptFile,coordinator:fixture.coordinator,lease:proof.lease}}),null,'the controller marker must be removed only after both durable cleanup mirrors were cleared');
+  validateRecoverySummary(saved);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('no-process cleanup failure after the in-flight fence fails closed without replay',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'no-process-journal-'));
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>0,()=>{throw new Error('identity must not run without a PID');},{spawnResult:{noProcess:true},writePid:false});
+  let cleanupCalls=0,unregisterCalls=0,unregisterOptions;
+  fixture.hooks.unregister=(_id,_coordinator,options)=>{unregisterCalls++;unregisterOptions=options;};
+  fixture.hooks.cleanup=()=>{cleanupCalls++;throw new Error('synthetic artifact retention');};
+  const runId='no-process-journal';
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId,acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1});
+  const entry=sum.results.B1,attempt=entry.attempts.at(-1),attemptFile=attempt.file;
+  const persisted=JSON.parse(fs.readFileSync(attemptFile,'utf8'));
+  const summaryFile=path.join(runDirectory(d,runId),'summary.json');
+  const saved=JSON.parse(fs.readFileSync(summaryFile,'utf8'));
+  assert.equal(entry.status,'cleanup-pending');assert.equal(cleanupCalls,1);assert.equal(fixture.spawned,1);
+  assert.deepEqual(entry.cleanupPending.phases,{lease:'done',registry:'done',artifacts:'pending'});
+  assert.deepEqual(persisted.cleanupPending,entry.cleanupPending);
+  assert.deepEqual(entry.noProcessProof,persisted.noProcessProof);
+  assert.deepEqual(unregisterOptions,{deadlineAt:unregisterOptions.deadlineAt,runId,leaseInstanceId:entry.leaseInstanceId});
+  assert.equal(unregisterCalls,1);
+  const binding=cleanupRecoveryBinding(runId,fixture.coordinator,entry,attempt);
+  const marker=readCleanupTransactionMarkerForRecovery({workspace:d,binding});
+  assert.deepEqual(marker?.journal.phases,{lease:'done',registry:'done',artifacts:'inflight'});
+  validateRecoverySummary(saved);
+  assert.throws(()=>verifyRun(d,runId,fixture.acceptance,{coordinator:fixture.coordinator}),/cleanup remains pending/i);
+  const markerFile=cleanupTransactionMarkerFile({workspace:d,binding:{...binding,status:marker.status}});
+  const snapshot={summary:fs.readFileSync(summaryFile,'utf8'),attempt:fs.readFileSync(attemptFile,'utf8'),marker:fs.readFileSync(markerFile,'utf8')};
+  assert.throws(()=>preflightResumeLedger(d,runId),/may have executed.*reconciliation/i);
+  fixture.hooks.cleanup=()=>{cleanupCalls++;};
+  const spawnedBeforeResume=fixture.spawned;
+  await assert.rejects(()=>runWindows('',fixture.hooks,{workspace:d,capacity:1,runId,acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1,resume:true}),/may have executed.*reconciliation/i);
+  assert.equal(fixture.spawned,spawnedBeforeResume,'an in-flight cleanup fence must reject before launcher scheduling');
+  assert.equal(cleanupCalls,1,'an in-flight artifact cleanup must never be replayed automatically');
+  assert.equal(unregisterCalls,1,'a rejected resume must not repeat an earlier cleanup phase');
+  assert.equal(fs.readFileSync(summaryFile,'utf8'),snapshot.summary);
+  assert.equal(fs.readFileSync(attemptFile,'utf8'),snapshot.attempt);
+  assert.equal(fs.readFileSync(markerFile,'utf8'),snapshot.marker);
+ }finally{fs.rmSync(d,{recursive:true,force:true});}
+});
+test('controller cleanup marker repairs an attempt-only journal gap before cleanup-only resume',async()=>{
+ const d=fs.mkdtempSync(path.join(family,'no-process-marker-prefix-'));
+ try{
+  const fixture=pidReadRecoveryFixture(d,()=>0,()=>{throw new Error('identity must not run without a PID');},{spawnResult:{noProcess:true},writePid:false});
+  let cleanupCalls=0;
+  fixture.hooks.cleanup=()=>{cleanupCalls++;throw new Error('synthetic artifact retention');};
+  const runId='no-process-marker-prefix';
+  const sum=await runWindows('complete once',fixture.hooks,{workspace:d,capacity:1,runId,acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1});
+  const entry=sum.results.B1,attempt=entry.attempts.at(-1),attemptFile=attempt.file;
+  const binding=cleanupRecoveryBinding(runId,fixture.coordinator,entry,attempt);
+  const restored=restorePendingCleanupMarker(d,binding,entry.cleanupPending);
+  assert.deepEqual(restored.marker?.journal.phases,{lease:'done',registry:'done',artifacts:'pending'});
+  const damaged=JSON.parse(fs.readFileSync(attemptFile,'utf8'));delete damaged.cleanupPending;fs.writeFileSync(attemptFile,JSON.stringify(damaged));
+  assert.equal(preflightResumeLedger(d,runId).cleanupPublicationRecovery,true,'preflight may identify a controller-authorized prefix but must not repair it');
+  const spawnedBeforeResume=fixture.spawned;
+  fixture.hooks.cleanup=()=>{cleanupCalls++;};
+  const resumed=await runWindows('',fixture.hooks,{workspace:d,capacity:1,runId,acceptanceFile:fixture.acceptance,coordinator:fixture.coordinator,auth:'test',maxAttempts:1,resume:true});
+  assert.equal(fixture.spawned,spawnedBeforeResume,'marker prefix repair must run before any replay');
+  assert.equal(cleanupCalls,2,'only the retained artifact phase should run after mirror repair');
+  assert.notEqual(resumed.results.B1.status,'cleanup-pending');
+  const repaired=JSON.parse(fs.readFileSync(attemptFile,'utf8'));
+  assert.equal(repaired.cleanupPending,undefined,'the resumed cleanup completes and removes its mirrored journal');
  }finally{fs.rmSync(d,{recursive:true,force:true});}
 });
 test('a malformed PID hidden as zero by the read hook fails closed without identity retry',async()=>{

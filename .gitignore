@@ -12,6 +12,30 @@ __pycache__/
 !.env.example
 !.env.sample
 !.env.template
+.npmrc
+# Local credential stores and private key containers.
+.envrc
+.direnv/
+.netrc
+_netrc
+.pypirc
+secrets/
+.secrets/
+credentials/
+.credentials/
+private-keys/
+.private-keys/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+# Written by PowerShell when its cache path resolves under the current project.
+# It records local module paths and must never be part of a plugin release.
+/Microsoft/Windows/PowerShell/ModuleAnalysisCache
 .DS_Store
 Thumbs.db
 .vscode/
@@ -20,3 +44,4 @@ Thumbs.db
 .superpowers/
 .agent-cache.json
 scripts/.agent-cache.json
+/test/*.json

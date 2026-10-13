@@ -33,13 +33,25 @@ function resolveStateOverride(temp, override) {
   return candidate;
 }
 
+function inspectionPath(value) {
+  let raw = String(value);
+  if (process.platform === 'win32') {
+    const extendedUnc = /^\\\\\?\\UNC\\([^\\]+\\[^\\]+(?:\\.*)?)$/i.exec(raw);
+    const extendedLocal = /^\\\\\?\\([A-Za-z]:\\.*)$/i.exec(raw);
+    if (extendedUnc) raw = `\\\\${extendedUnc[1]}`;
+    else if (extendedLocal) raw = extendedLocal[1];
+    else if (/^\\\\\?\\/i.test(raw)) throw new Error(`Unsupported extended Windows path: ${raw}`);
+  }
+  return path.resolve(raw);
+}
+
 // A lexical path check does not stop a pre-existing symlink/junction/reparse
 // point from redirecting runtime state outside the workspace. Walk every
 // existing component before any mkdir/write call and fail closed when one is a
 // link. Missing tail components are safe to create only after their existing
 // ancestors have passed this check.
 export function assertNoReparsePoints(target, label = 'path') {
-  const absolute = path.resolve(String(target));
+  const absolute = inspectionPath(target);
   let current = absolute;
   while (true) {
     try {

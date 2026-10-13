@@ -3,10 +3,11 @@
 // 监督入口都从这里出口，避免各处自写 `console.error(e.stack)` 把栈帧和
 // "Node.js v…" 横幅泄漏给用户（回归：test/public-fatal-contract.test.mjs）。
 import fs from 'node:fs';
+import {redactSensitiveText} from './redaction.mjs';
 
 export function fatalMessage(error) {
   const raw = error && typeof error === 'object' && error.message ? error.message : error;
-  const text = String(raw ?? '').trim();
+  const text = redactSensitiveText(String(raw ?? '').trim());
   return '[orchestrator] FATAL: ' + (text || 'unknown failure');
 }
 
@@ -15,7 +16,7 @@ export function reportFatal(error) {
   try { fs.writeSync(2, fatalMessage(error) + '\n'); } catch { /* stderr is gone; the exit code still fails closed */ }
   // 排障出口：默认绝不附栈（契约），只有显式 ORCH_DEBUG=1 才允许把栈跟在这一行后面。
   if (process.env.ORCH_DEBUG === '1' && error && error.stack) {
-    try { fs.writeSync(2, String(error.stack) + '\n'); } catch { /* ignore */ }
+    try { fs.writeSync(2, redactSensitiveText(String(error.stack)) + '\n'); } catch { /* ignore */ }
   }
   process.exitCode = 1;
 }
@@ -32,7 +33,7 @@ export function exitFatal(error) {
 // 也不在被 try/catch 包住的那一段里，Node 默认会把源码行、栈帧和 "Node.js v…" 横幅一起打出来
 // （穷举审计实测：`--workspace <文件> --doctor`、过期封印、缺依赖都命中过）。
 // 只在"确实被当成 CLI 入口跑"时安装兜底；被当库 import 时不劫持宿主语义（测试运行器依赖这一点）。
-const CLI_ENTRY = /(?:^|[\\/])(?:orchestrate-sdk|codex-entry|supervise|poll-windows|status)\.mjs$/i;
+const CLI_ENTRY = /(?:^|[\\/])(?:orchestrate-sdk|codex-entry|poll-windows|status)\.mjs$/i;
 export function installFatalGuard({argv = process.argv[1], env = process.env, proc = process} = {}) {
   if (env.ORCH_FATAL_GUARD === '0') return false;
   if (!argv || !CLI_ENTRY.test(argv)) return false;

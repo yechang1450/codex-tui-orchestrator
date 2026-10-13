@@ -1,135 +1,15 @@
 # Changelog
 
-## 0.9.29-rc.2
+## 0.9.29-rc.10
 
-- Recovery and reliability updates now preserve bounded worker refusal, controller and workspace identity validation, malformed-state rejection, and retry-safe run recovery.
-- Documentation now describes the current recovery, execution, and release-sealing contracts for this candidate.
-- Plugin/package version is now standard `0.9.29-rc.2`; the execution core remains sealed at `1.4.4-rc.1`.
+- Tighten public-release hygiene: reject local credential stores and private-key containers during source review and distribution export.
+- Clarify the boundary between host-owned TodoList/spawn cards and plugin-emitted status events.
+- Keep Windows helper validation independent of caller-controlled environment paths.
+- Bind distribution registration to the sealed source release: an unverified distribution cannot register itself, rewrite a catalog, or have install checks execute its verifier.
+- Skip host skill-visibility probes whenever registration or cache authentication has not succeeded; strict skills verification then fails closed instead.
+- Keep live inactive-window probe receipts and reports in controller-owned storage instead of the initiating workspace.
+- Keep distribution GitHub-only; this Codex plugin is not published to npm.
 
-## 0.9.29-rc.1
+## Earlier release candidates
 
-- Public-readiness hardening: headless identity-snapshot failures now publish a bounded refusal instead of hanging a worker and lease; controller file stems and attempt ledgers are revalidated before execution; malformed legacy workspace registries fail closed; runner and supervisor authority records use physical workspace identity; local UNC normalization no longer trusts the caller's `COMPUTERNAME`; and supervisor relay mode inherits the initiating Codex model and effort.
-- Plugin/package version is now standard `0.9.29-rc.1`; the execution core remains sealed at `1.4.4-rc.1`.
-- Added `npm --prefix scripts run version:next` (`node scripts/bump-version.mjs --next-rc`) so later candidates advance `rc.1` to `rc.2`, `rc.3`, and so on while keeping all three release manifests synchronized.
-- Carried forward the 1000 MB dynamic admission floor and its current source/package verification scope.
-- Updated the pinned native Codex installer to official `@openai/codex@0.160.0` with freshly reviewed x64/arm64 executable and 47-file package digests; the platform-tree pins now match the npm tarballs' canonical manifest.
-- Made the Windows validation workflow deterministic: it invokes the production `runtime-prepare.mjs` installer inside an isolated `PLUGIN_DATA` runtime, verifies the executable and complete platform tree, then exposes only that private runtime through `PATH` while leaving explicit-CLI test branches independent.
-- Hardened plugin installation by containing the host-reported cache path, checking its canonical manifest/scripts before `npm ci`, and rejecting `%`, `!`, or newline bytes in Windows shell fallbacks.
-- Hardened the optional pi adapter: PATH discovery now requires a verified Windows executable; an unverified binary requires an explicit local-development opt-in.
-- Hardened runner checkpoint commands: use the verified `process.execPath`, PowerShell literal quoting, and control-character rejection; special-character path and acceptance-binding regressions pass.
-- Hardened headless launch from deep controller paths by keeping the child working directory at the initiating workspace; capacity retries now publish no premature reconciliation state; linked blocks expose only their current task as running; command acceptance rejects separated `node -e/-p/-r` and loader arguments, while local administrative UNC aliases stay accepted for containment checks.
-- Visible Windows Terminal launches now resolve the packaged executable instead of the per-user App Execution Alias, pass `-d <initiating workspace>`, and retain the same workspace for every popup and EXEC window. Deterministic project splitting exposes concrete Windows file conflicts even before normalization; admission always unions inferred keys for raw or fallback plans, while proven read-only command operands stay parallel. HTTP 429 overload responses are retryable, but typed account quota responses remain terminal.
-- Dynamic launch ordering now tries higher predicted-memory blocks before lower-cost blocks, keeps the planner order for equal estimates, and leaves dependency, conflict, and live memory admission as the final safety gates. This front-loads heavier windows without changing the durable plan or merging independent work.
-- Current local evidence for this candidate: the real six-window cleanup run for projects 80, 81, 82, 83, game and ai-drama reached peak concurrency 6 and ended with six independently verified receipts using the initiating workspace as both `cwd` and `workspace`; project 81 was safely retried once after a missing first receipt. The previously recorded quiet-host full matrix was **556 tests: 553 passed, 0 failed, 3 skipped**; this change adds three focused launch-order regressions.
-- Window registries, registry locks, and the arming marker now live in controller-owned state keyed by the physical workspace identity. A non-empty registry from the pre-migration workspace location fails closed until its windows are drained or reconciled.
-
-## Unreleased (1000 MB admission floor)
-
-- Core `1.4.4-rc.1`, cachebuster `0.5.0-rc.1+codex.20260929103036`: lower the dynamic memory admission reserve from 4000 MB to 1000 MB across the runner, auxiliary windows, low-level visible probes and SessionStart. Keep strict predicted-peak admission and allow `ORCH_MIN_AVAILABLE_MB` only to raise the floor. Add boundary coverage for the new default and higher override.
-
-## Unreleased (local comprehensive-test fixes)
-
-- Core `1.4.3-rc.1`, cachebuster `0.5.0-rc.1+codex.20260928200041`: make the documented `--tasks` command read the selected or latest run, avoid treating numeric result values as project directories, allow a bounded 30-second Windows signature check, and preserve structured diagnostics for a launcher that exits before its session is found. An untrusted existing CLI now reports the trust failure without invoking the automatic installer. The real-model smoke fixture allows ten minutes by default for Max-effort turns.
-
-## Unreleased (public readiness candidate)
-
-- Core `1.4.2-rc.1`, cachebuster `0.5.0-rc.1+codex.20260928152733`: authenticate native CLI and Node executables before use, verify the downloaded npm tree and sealed SDK dependency files, and require a trusted npm tree for automatic repair. Keep the 1.4.1 semantic task scoping and proxy behavior.
-- Load Windows PowerShell's system security and utility modules by absolute path when Node passes in a PowerShell 7 module path. Add regression checks for executable trust and dependency byte integrity. Public release remains gated on current-version live concurrency and package validation.
-- Make the documented `--plan-file` option read a bounded UTF-8 request file and invoke the read-only planner; reject missing, empty, oversized, or non-regular inputs with a clear diagnostic.
-
-## Unreleased (semantic planning and local proxy)
-
-- Core `1.4.1-rc.1`, cachebuster `0.5.0-rc.1+codex.20260927090557`: keep independently scoped file/directory work separate when the model supplies complete hints grounded in the original task; keep unknown or incomplete scope serial. Conflicting paths and dependencies still join serial blocks.
-- On Windows, inherit an enabled user system proxy into the orchestrator process tree only when no explicit proxy environment is set. This restores model planning through a local proxy without changing host-wide settings. The plan cache version changes with the core.
-
-## Unreleased (controller-state boundary)
-
-- Cachebuster for the isolated candidate is `0.5.0-rc.1+codex.20260927035411`; the active installed plugin remains on the earlier version until a separately reviewed installation.
-- Move coordinator, worker launch files, acceptance authority, and supervisor authority to Codex-owned state outside the initiating workspace. Recovery validates derived paths; explicit acceptance adoption records a rebind even when workspace digests were both rewritten. Successfully finalized headless runs remove their launch artifacts; failed runs retain evidence. Add focused regressions and clarify the clean Windows test matrix. This branch remains a release candidate until current-patch live window and clean-machine checks pass.
-- Bind the immutable run plan in controller-owned state before execution, reject changed or unbound plans on resume, require exact visible launcher block identity, and recheck controller PID files before final cleanup accepts a saved process identity. Restore Pi live launcher token validation. Regressions cover cross-block adoption, plan rewriting and false exit confirmation.
-- Reject physical Windows path aliases that put controller or coordinator state under a writable workspace, including an uncreated workspace reached through an alternate UNC spelling. Apply the same boundary to direct API coordinator arguments and saved run coordinators. Document the fail-closed home-directory case and the need to drain old HKCU-coordinator runs before upgrading.
-- Recognize a project task immediately after a Chinese or ASCII semicolon during deterministic splitting. This keeps plainly independent project tasks on the multi-block path when the model planner is unavailable.
-
-## 0.5.0-rc.1+codex.20260926211700
-
-- 可见 Codex 子窗启动时禁用会话钩子，避免新安装钩子的宿主信任审查卡住并发任务；不绕过钩子信任，环境准备仍由发起会话的已信任钩子或显式 bootstrap 完成。四窗 headless 与修复后的四窗可见 TUI 实测通过，父级验收保持串行。
-
-## 0.5.0-rc.1+codex.20260926104800
-
-- 新增 Windows PowerShell 环境引导：缺少 Node/npm 时验证固定版本下载，复用或准备锁定 SDK 和原生 CLI；下载暂存与私有 npm 缓存用后清理，不改变全局 PATH。
-- 新增受宿主信任控制的 SessionStart 环境准备；子任务与低内存会话跳过，重复启动互斥，失败有冷却。Hook 文件纳入发布完整性封存。
-- 修正真实多窗验收脚本：独立任务不因内存容量合并，排队时释放屏障，分别核对真实进程和回执重叠、发起设置一致性与最终退出。
-- 准备超时只限制环境准备，执行阶段实时转发输出并使用任务自身期限。
-- 收尾按本次 run/attempt 的持久身份再次检查自有进程；确认创建时间与命令行后用退出码 0 结束异常启动器，回收成功后进入父控串行验收。最终规范计划只有一个块时直接留在发起对话。内存刚好 4000 MB 时也回到单窗执行。
-
-## 0.5.0-rc.1
-- cachebuster 升到 `+codex.20260926092400`。安全审查发现并修复两条完整性边界：验收摘要冲突或只剩一份绑定时默认拒绝，显式接管才会同时重绑两份账本；运行占用释放同时校验当前控制器的进程身份，只有可读 token 的任务进程不能释放活跃控制器。
-
-## 0.5.0-rc.1
-- cachebuster 升到 `+codex.20260925184023`。同步最终技能契约、发布清单与安装缓存版本，保证本轮完整回归、插件评估和安全审查对应同一个可追溯快照。
-- cachebuster 升到 `+codex.20260925135007`。按安全审查收紧中继 URL：非回环 HTTP 被拒绝，URL 用户信息、查询参数和片段被拒绝且不会回显；Codex CLI 自动安装改为固定官方精确版本并使用 `--ignore-scripts`，CI 锁定依赖安装同样禁用生命周期脚本；同步补充信任边界与安装约束文档。
-- cachebuster 升到 `+codex.20260925132635`。安全收紧中继 URL：拒绝 URL 用户信息、查询参数和片段，且错误信息不回显原始 URL，避免凭据进入 CLI 命令行或诊断日志；新增网络策略回归覆盖。
-- cachebuster 升到 `+codex.20260925125201`。收紧父级退出验收证明：只有存在真实 acceptance 检查时才允许缺少子窗口检查点的独立验收；无检查点且无验收契约的容量、启动和终止失败继续保持 failed。容量重试与普通失败预算回归全绿。
-- cachebuster 升到 `+codex.20260925041943`。修复内存预留不得重复扣除当前进程集、父级退出后独立验收可在缺少子窗口检查点时形成证明、started 检查点仍需显式 reconciliation，以及残留终端清理的 PID 读取与失败 taskkill 边界。
-- cachebuster 升到 `+codex.20260925034321`。完成独立任务块的依赖/冲突分组、按实时可用内存与 4000MB 预留动态排队、headless/可见 TUI 的发起方设置继承、退出后的 FIFO 串行独立验收、残留窗口归属加固，以及发布包排除测试与 CI 文件。通过原生 Windows 全量回归、Plugin Eval 技能评估和 Codex Security 标准扫描闭环。
-- The orchestrator now partitions only independent blocks, admits each block from live memory with a 4000MB reserve, inherits the initiating model and reasoning settings, verifies exited workers serially in the parent, hardens orphan-terminal ownership checks, and keeps published packages free of test and CI files.
-
-## 0.5.0-rc.1
-- cachebuster 升到 `+codex.20260924145450`（三处版本清单同步）。补齐发起对话结构化设置继承、桌面原生 CLI 优先探测、自动安装超时边界，以及真实并发验收脚本的满容量边界。
-- Inherit initiating thread settings and prefer a desktop native CLI before the SDK fallback; bound auto-install timeouts. Repair live acceptance receipt parsing, configurable timing, and per-block ordering without overflow tasks.
-
-- cachebuster 升到 `+codex.20260924131421`（三处版本清单同步）。修复初始环境检测中“找不到 Codex CLI 就自动安装”实际不可达的问题：现在优先检查 PATH、桌面安装与插件自身的原生依赖，找不到已验证的 `codex.exe` 时只执行一次有界的 `npm install --global @openai/codex`，安装后重新探测并验证 `codex-cli --version`。显式 `ORCH_CLI`/`CODEX_EXE` 路径保持权威，路径失效时 fail-closed，不会偷偷换用其它二进制；`ORCH_AUTO_INSTALL_CLI=0` 可关闭自动安装。新增原生路径、自动安装成功/失败、敏感输出不泄漏和模型/力度边界测试；已在隔离 npm prefix 中实测真实安装成功。
-- cachebuster 升到 `+codex.20260923040000`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"B 线真机编排审计（27 次真实调用 → 31 条 run）查实的两条高危项"一起发布。① **协调器互斥体不再在临界区里查 WMI**：`scripts/core/lease-lock.ps1` 的存活探测此前每 100ms 跑一次 `Get-CimInstance Win32_Process`，而这段循环**持有全局协调器互斥体**——本机在并发负载下实测单次 CIM 查询 **55,839ms**、进程创建 **123,048ms**，毫秒级事务被放大到分钟级，也是身份枚举偶发超时的放大器。改为 .NET `Process.GetProcessById` 的进程内探测（**完全不查 WMI**）；关键细节：**启动时间按毫秒前缀比较**，因为期望值来自 CIM 的 `CreationDate`、探测值来自 .NET 的 `StartTime`，二者在最末一位（100ns）上可能有差（实测 `…068120Z` vs `…068128Z`）——直接字符串相等会恒假、导致锁被提前释放，这一条是合并时实测抓到的（首版照搬补丁后 `test/runner.test.mjs` 稳定红灯，改成毫秒前缀后 3/3 转绿）。② **身份枚举失败不再从 finally 抛出**：`scripts/core/runner.mjs` 的收尾路径此前会把一次 CIM/互斥体抖动升级成任务级终态失败（`reason="Cannot verify process identities"`），实测 4 块全 failed、任务全 failed（s4c），甚至让 `--resume-run` 在 claimRun 阶段直接 exit 1、连规划都没开始（s7a）；现在捕获它、保留租约（交给 `--resume-run` 接管）、写可读真因 `Process identity enumeration failed: …` 并持久化。判据：`test/runner.test.mjs` + `test/concurrency.test.mjs` + `test/atomic-state.test.mjs` + `test/process-identity.test.mjs` + `test/malformed-state-fuzz.test.mjs` + `test/lease-poison.test.mjs` 共 24 项合并后实测全绿；封印 verify exit 0（26 核心 + 60 运行时）。B 线报的第三条（公开入口失败打 Node 栈）已由 `6d5995d` 修复，本轮跳过；B1/B2/B4（单任务边界只在 dynamic 模式生效、计划期忽略块级 `memoryMB` 声明、每窗成本默认值的文档/代码漂移）属设计取舍或文档一致性，未改。
-- cachebuster 升到 `+codex.20260923032000`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"A 线入口面穷举审计（104 条矩阵 / 18 条判据）里唯一尚未落地的部分"一起发布：新增 `scripts/entry-bootstrap.mjs` —— `--help`／`--version`／`--install-deps` 三条命令改在**引擎加载之前**处理。理由不是风格而是可用性：引擎静态依赖锁定的 SDK，而 `--install-deps` 的用途恰恰是"依赖坏了把它修回来"、`--version` 是排障时最先要问的两个数字；放在引擎里就等于"依赖一坏，连版本号和修法都问不出来"（旧版实测：缺依赖时 `--help` 会甩出 `RELEASE_DEPENDENCY_*` 栈）。`--version` 从 `.codex-plugin/plugin.json` + `release.json` 直读（release 缺失时回退 `contracts.mjs` 的 `CORE_VERSION` 常量），**零落状态**（判据断言工作区仍为空目录）；`--install-deps` 先跑无副作用的锁定依赖校验，已满足直接回 `already-present`，不满足才 `npm ci` 并复查（判据断言二次调用必须是 `already-present`）。配套新增 `scripts/sdk-dependency-verify.mjs`（**永不抛错**、只回结论的依赖自检器，与既有的抛错版 `sdk-dependency-check.mjs` 并存：前者供入口决策，后者保 gate 语义）与 `scripts/npm-cli.mjs`（npm 入口解析 + shell 引号的公共实现）。公开入口改为"先装失败兜底 → 跑 bootstrap → 再加载 codex-entry／依赖自检／引擎"，用顶层 await 固定求值顺序。判据 `test/entry-surface-contract.test.mjs` 扩到 5 条（新增 `--version` 零状态纯 JSON、`--install-deps` 幂等两条）；聚焦 22/22 全绿；封印 verify exit 0（26 核心 + 60 运行时）。审计线 A 报的另两条命令（`--tasks`／`--plan-file`）与既有 `--status`／`--plan` 功能重叠、且需要改引擎内核，**未采纳**，在最终报告里单列说明。
-- cachebuster 升到 `+codex.20260923014000`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"C 线畸形状态／契约 fuzz（94 条输入 → 28 组判据）查实的 14 条缺陷"一起发布。① `runWindows` 抛错后进程被 30 秒清扫定时器永久吊住：`clearInterval(runSweepTimer)` 写在 `await runWindows(...)` **之后**，任何抛出都会跳过它，公开入口于是既不退出也不报完（实测 `spawnSync` 60 秒超时被杀，`status=null`）——改为 `try { … } finally { clearInterval(...) }`。② 畸形协调器状态毒死整个工作区：`leases.json`（截断／顶层对象／`null`／空文件）与 `run-owners.json`（中途被删／半截 JSON／`null`）此前用裸 `SyntaxError`／`TypeError` 炸在事务里，且此后**每一次**事务都死在同一处——新增 `readState()`：解析或形状错先把原文件**原样隔离**成 `<file>.corrupt-<epochMs>`（保留证据 + stderr 点名文件），默认 fail-closed 抛错一次、`release` 路径用 `broken:'empty'` 保幂等；id 重复的租约按 `reservedAt` 收敛（重复条目不再重复占用名额）。③ 计划／账本读取：形状坏的拆块缓存条目就地摘除（`dropCachedDecompose` + `cachedPlanIssue`，走 registry 锁）后按"没有缓存"重新规划，依赖图违例（未知依赖／自依赖／环／重复块身份）仍 fail-closed 但先摘毒再抛；`savedMode`、`verifyRun`、`--resume-run` 统一走 `readLedgerJson`（点名文件而不是裸 SyntaxError）。④ 验收契约与检查项：`loadChecks` 分层校验（文件可读／JSON 可解析／顶层必须是对象／每项是数组或 `{checks:[…]}`），BOM 统一剥离，空文件与半截文件直接点明；`verifyChecks` 在执行前逐项校验类型（`command` 非空字符串、`args` 全字符串、`timeoutMs` 非负有限数、`equals` 必须是对象），错误带 `check #N` 与实测类型——此前 `command:123` 会回 Node 内部措辞、`{}` 会被静默当成"无检查"、顶层数组会报出误导性的"契约已变更"。⑤ 协调器互斥票据改放 `%TEMP%\codex-tui-orchestrator-locks\<sha256(dir) 前 16 位>\lock-<uuid>`：状态目录超 260 字符或带尾随点时，Windows PowerShell 5.1 写不了那种路径，父进程空等 21–22 秒后只回一句 `Coordinator mutex acquisition failed`（无路径、无原因）——现在失败信息带 `dir`／`ticket`／子进程退出码，正常路径下事务 2–3 秒完成。⑥ `status`／`events.jsonl` 的坏行错误带 `<file>:<line>`；进程表取不到时错误带 PowerShell 退出码与 stderr 首行。判据 `test/malformed-state-fuzz.test.mjs` ＋ `test/malformed-contract-fuzz.test.mjs`（修前 15 红／12 绿，修后 28 组全绿；合并到本仓库后实测 29/29 含 `public-fatal-contract`）；`scripts/core/fatal.mjs` 的 `reportFatal` 补上 `ORCH_DEBUG=1` 才附栈的行为（默认契约不变：只回一行 FATAL）。注：本轮并发压力下（三条 headless 审计线 + 三套全量同时在跑）负载敏感用例超时属环境现象，全量回归在审计线收线后补跑。
-- cachebuster 升到 `+codex.20260923004500`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"入口面穷举审计（103 条矩阵 / 18 条判据）查实的第二批缺陷"一起发布。① 机器可读面被诊断行污染：`--plan` 的 `disk:`／`decompose cache HIT`／`generic project split`／`single-block fast path`／`priority=` 与 `install-plugin --json` 的三行进度此前都写 stdout，于是 `JSON.parse(stdout)` 在**成功路径**上就失败（审计 A11/D02 与安装器组实测）；现在这八行一律走 stderr，人类模式输出不变。② `--source` 此前不校验枚举，垃圾值被静默当成 `dist`，装出一份"来源错但报告成功"的结果（install-plugin 与 repair-plugin-registration 同一条纪律：只接受 `dist`｜`checkout`，否则拒绝）。③ `--workspace` 指向"存在但不是目录"的路径时此前 exit 0，把文件当工作区回给调用方，失败被推迟到 statfs/mkdir/子进程 cwd 以互不相同的形态炸开；现在 `resolveRuntimeContext` fail-closed，报 `WORKSPACE_NOT_A_DIRECTORY`（不存在的路径仍按需创建，行为不变）。④ 模块求值期与动态 import 期的失败补兜底：`scripts/core/fatal.mjs` 新增 `installFatalGuard()`，只在"确实被当 CLI 入口跑"时安装 uncaughtException／unhandledRejection 处理器并折成一行 FATAL，被当库 import 时不劫持宿主语义（测试运行器依赖这一点）；`verifyRelease()` 同时纳入同一出口——此前封印过期会把 `release-integrity.mjs` 的源码行、Node 帧与 `Node.js v…` 横幅直接甩到用户面前。判据 `test/entry-surface-contract.test.mjs`（4 条，修前必红：`--plan` 纯 JSON／`--source` 拒绝非法枚举／文件当工作区必须拒绝且单行 FATAL）；聚焦回归 66 项 65 pass / 0 fail / 1 skip（需额度的可见窗自检）。
-- 同一 cachebuster（`+codex.20260922234300`）内另修一条**路径越界删除**（本轮安全扫描发现）：`scripts/publish-dist.mjs` 此前把清单里的 `name` 直接 `path.join` 到分发根、紧接着 `fs.rmSync(dist, {recursive:true, force:true})`，而名字校验只在后面的注册检查里做——清单写 `"name": "..\\victim"` 时 `path.join("<target>", "..\\victim")` 会抬到分发根之外，**先递归删掉别人的同名目录**再报错（本轮独立复核：把 HEAD 版脚本放进同一夹具，分发根之外的 `victim/` 连 `marker.txt` 一起消失；工作区版改为拒绝且目标目录原样存活）。根因与修法：在 `scripts/repair-plugin-registration.mjs` 提取清单名的**唯一判据** `manifestNameProblem()`（单段小写连字符、≤64 字符，install/publish/注册检查共用），`publish-dist.mjs` 新增 `resolveDistDir()` 在**任何文件系统动作之前**拒绝畸形名、并校验解析结果仍是分发根的直接子目录（顺带把"检出目录名 ≠ 清单名"从看不懂的 ENOENT 改成原地报错），`install-plugin.mjs` 同样在动文件系统之前校验。判据 `test/publish-dist.test.mjs` 的"清单名越界不得删除分发根之外目录"。
-- cachebuster 升到 `+codex.20260922234300`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"公开入口失败面回归契约"一起发布：公开包装层 `scripts/orchestrate-sdk.mjs` 与 `scripts/poll-windows.mjs` 此前都用 `console.error(e.stack||e.message)` 收尾，`scripts/supervise.mjs` 打 `[supervise] ${error.stack}`，而 `scripts/codex-entry.mjs` 的选项解析、镜像校验、宿主适配全都在**模块求值期**抛出（没有上层 catch 可兜）——于是 `--nope`、`--agent` 缺值、`--workspace` 重复、`--run-id` 非法、`ORCH_AGENT=pi` 这类拒绝，一律把 2–5 层 Node 栈帧、ESM 载入器前言和 `Node.js v…` 横幅直接甩到用户面前，与本文件已立的"公开入口失败只回一行 FATAL、无 Node 栈帧"契约自相矛盾（内核入口 `scripts/core/orchestrate-sdk.mjs` 反而是合规的，只有外壳在漏）。修法：新增 `scripts/core/fatal.mjs` 作为该契约的**唯一定义处**——`reportFatal` 用 `fs.writeSync(2,…)` 同步写一行再置退出码（`console.error` 接管道时是异步的，随后 `process.exit` 会把它截断），`exitFatal` 专供模块求值期使用；公开包装层、poll、status、supervise 四个入口与内核入口全部改为从这一个出口失败。判据 `test/public-fatal-contract.test.mjs`：8 条拒绝路径 × {退出码非 0、stderr 恰好一行 FATAL、零栈帧、无 Node 横幅、stdout 全空}，修前必红。实测修前 `--nope` = 0 行 FATAL / 2 层栈帧，修后 = 1 行 FATAL / 0 层栈帧；聚焦回归 31/31 通过；发行封印 verify exit 0（schema 2 / core 1.4.0-rc.1 / 26 核心 + 57 运行时）。
-- cachebuster 升到 `+codex.20260922221218`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"协调器租约毒丸治本"一起发布：`scripts/core/leases.mjs` 的租约过滤此前会对**没有 `owner` 的条目**解引用 `l.owner.ProcessId` → 抛裸 `TypeError`，后果是 `leases.json` 里只要有一条畸形/外来条目，**该工作区的协调器从此每次事务都崩**（2026-09-22 并发探针实测：8 进程 × 20 事务共 160 次，**159 次死在这一行**），并违反"公开入口失败只回一行 FATAL、无 Node 栈帧"的契约。修法：非对象条目直接剪掉；没有 `owner` 的条目按新鲜度兜底（90s 内视为可能正在写入而保留，过后自愈剪掉），过滤阶段绝不再解引用 undefined。判据 `test/lease-poison.test.mjs`（修前必红：同一夹具直接抛 TypeError）；修后同一并发探针 **40/40 事务全成功**。
-- cachebuster 升到 `+codex.20260922202100`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"覆盖度入口 + 审计快照留痕"一起发布。新增 `scripts/coverage.mjs`：用 Node 自带测试覆盖跑同一套串行离线回归，把 lcov 写到 `.plugin-eval/coverage/lcov.info`（被 git 忽略、也不进分发包），补上此前完全没有的覆盖度产物；`test/plugin-eval-current.md` 与 `test/plugin-eval-skill-current.md` 两份评审快照补上出处（生成日期、提交、评估目标、历史证据声明），避免把 2026-09-14 审计当时的分数误读成当前分数。两条判据 `test/coverage-script.test.mjs`、`test/plugin-eval-evidence.test.mjs` 守住这两处。
-- cachebuster 升到 `+codex.20260922113000`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 三处同步），随"未受信任工作区的可见窗 fail-closed"（提交 `5a12bb5`）一起发布。本次起由判据 `test/changelog-cachebuster.test.mjs` 守住两条发布纪律：**当前 cachebuster 必须在 CHANGELOG 留痕**、**三处清单版本必须一致**（此前 11:30 那次升版漏记，排障时会把在跑版本误判成 09:45 那版）。
-- 可见窗（`--run-windows`）不再在未受信任工作区上无限等待：新增只读预检 `workspaceTrustState()`/`trustConfigPath()`，读 `CODEX_HOME/config.toml` 的 `[projects.'<路径>'] trust_level`，未受信任就在启动前 fail-closed，并给出三条出路（先在 Codex CLI 里信任一次 / 手写 trust_level / 改用 `--exec` 走 headless，headless 会注入本次运行的信任覆盖）。**修正上一轮的判断**：可见模式之前在临时工作区"卡住"是 Codex 的"是否信任此文件夹"提示所致（在新窗口里没人应答），不是启动器引号问题——启动链 `spawnInactiveWindow → inactive-window.ps1 → CreateProcessW("\"file\" parameters")` 的引号经复核是正确的；在**已受信任**工作区实测可见双任务跑通（两块 visible 均 verified，约 1.5 分钟）。
-- 修正上一版的安装缓存问题：同一版本号重复 `codex plugin add` **不会刷新**已存在的缓存目录（本机实测：缓存里仍是旧文件），因此本次把 cachebuster 升到 `+codex.20260922094500`，让含 npm 引号修复的版本落进新缓存；README 的更新流程也按"改内容必须升 cachebuster"执行。
-- 按"第二台新机器"实测补上泛化边界（沙箱：全新 HOME + 全新 CODEX_HOME）：`--check` 与安装缓存发现改为**跟随 `CODEX_HOME`**，不再假设 `~/.codex`（此前 CODEX_HOME 在别处时会把另一份缓存当成已安装，甚至报 `ok`）；新增 `repair-plugin-registration.mjs --set-source` 与 `install-plugin.mjs --set-source`，把唯一条目的安装源改写到本机分发（保留其它条目、策略与分类，重复/远端/无匹配仍然停下），用于换机器或换克隆目录后条目仍指向旧路径的情况。
-- 技能可见性验证改为**可降级**：`--verify-skills` 在宿主不提供该调试入口或返回非零时记为 `warnings`（`steps` 里是 `warning`），只有显式 `--strict-skills` 才当作安装失败；所有子进程加超时（`--timeout-ms`，默认 15 分钟），宿主 CLI 缺失时给出可执行提示而不是 ENOENT 堆栈。
-- 输出与诊断面向非作者机器：`install`/`check` 的 JSON 增加 `codexHome`、`environment`（platform / node / hostCli）与 `warnings`；非 Windows 主机给出明确告警（执行核心仅 Windows），命令行提示改为中英双语。
-- 本机安装补上"首次安装"这一段并提供一键入口：新增 `scripts/install-plugin.mjs`（重建干净分发 → 补齐个人 marketplace 条目 → `codex plugin add` → 对**当次安装返回的缓存路径**恢复依赖 → integrity + doctor；`--check` 只读复核注册、分发新鲜度、缓存依赖与宿主启用，`--verify-skills` 再用宿主渲染一次新会话上下文确认技能可见）。`repair-plugin-registration.mjs` 增加 `--ensure`：个人 marketplace 文件或本插件条目缺失时按规范补上，新建整份文件只允许发生在 `<home>/.agents/plugins/marketplace.json`，既有条目、其它插件与顶层元数据原样保留；重复、指向别处或远端仍然停下报错。
-- 实测背景（2026-09-21，Windows）：从零安装时个人 marketplace 文件并不存在，`--check` 只报 `missing_entry`/`invalid_marketplace` 且不会创建；插件管理器建立的缓存里没有 `scripts/node_modules`，漏掉依赖恢复会得到"技能可见、运行时缺依赖"的半成品。README（中/英）据此把一键流程放到安装章节最前，手工步骤仍保留并标注每一步的作用。
-- 版本 cachebuster 升到 `+codex.20260921125337`（`.codex-plugin/plugin.json`、`scripts/package.json`、`scripts/package-lock.json` 同步），保证重装会建立新缓存而不是复用旧目录。
-- 本地安装改用**干净分发**：新增 `scripts/publish-dist.mjs`（删除旧分发 → 从封存工作树重建 → 分发自校验 → 打印安装命令），个人 marketplace 条目指向 `<工作树父目录>/dist/codex-tui-orchestrator`。此前安装源是开发工作树，管理器会把 `.git/` 和 `temp/`（本地运行状态与验收证据）一起复制进安装缓存（本机实测 20 MB / 1473 文件），运行时不受影响但安装体积与静态评估失真（Plugin Eval 评分 81/C，改分发后 95/A）。`repair-plugin-registration.mjs --check` 现在同时认识 checkout 与 dist 两种安装源，并要求分发的 core 清单与工作树一致，否则报 `stale_dist`（先重建再安装），因此重启健康检查里的 marketplace 校验仍然有效。
-- 修掉真实验收入口的漂移：`test/live-execution-mode.mjs` 过去只发一个任务，而单任务请求按设计直接判 `out-of-scope`，导致这条"真实可见/headless 验收"实际跑不起来。现在发两个独立任务、各自独立验收，并在当前提交上从**已安装缓存入口**重跑通过（可见 + headless 双模式，证据见 `test/live-mode-validation-1.4.0-rc.1.json`）。
-- 重启自动收集基线换成绑当前提交的一份：旧基线 `reboot-check-20260919`（`8ceae8c`）在冻结后又被多次提交改写，`release.json` 哈希已从 `76c4161…` 变为 `45413c1…`，收集器必然判 `releaseMatches=false`；已删掉该基线与对应启动项，重新 `prepare` 出 `reboot-check-20260919c`（绑 `8e16b41`，哈希与当前 `release.json` 一致）。之后只要不再有改动 `release.json` 的提交，下一次重启/注销登录就会自动留下三合一的 `collectionTrigger=StartupFolder` 回执。
-- 私有源下的升级/回滚补上真实证据：仓库保持 private，"公网 GitHub 抓取"这条门槛按私有分发源重新定义——指向更高 cachebuster 的分发后 `codex plugin add` 完成升级（`+codex.20260919230000`），指回当前分发后再次 `add` 完成回滚（`+codex.20260919211020`），每次安装后 `release-integrity` 与 `--doctor` 都通过、管理器只留一个版本缓存，见 `test/manager-lifecycle-validation-private-source.json`。
-- 重启恢复夹具修到可用并如实界定窗口：`test/live-reboot-recovery.mjs` 现在（1）两个任务各用独立探针、各占一块且第二块依赖第一块，顺序由控制器保证，不再依赖模型自觉按序；（2）执行工作区改用 `temp/reboot-recovery-<id>/ws`，避开"改编排器自己"的自引用守卫（此前它会被直接判 inline，跑不起来）；（3）预置拆块缓存（含依赖）用本地复刻的 cache key 计算，离线测试不再需要真实 Codex CLI；（4）边界等待放宽到 10 分钟。实测能在 `boundary: T001 completed; T002 started and waiting` 停下。**窗口硬约束**：探针与控制器的等待上限都是 30 分钟，所以这条门槛只在"临重启前 30 分钟内武装"有效；收尾时保持未武装，并清掉了历史遗留的 RunOnce 条目与失败尝试目录。
-- 修复**全新工作区首次加锁失败**：注册表锁在 `STATE_DIR` 还不存在时用 `openSync(...,'wx')` 直接拿到 ENOENT，而建目录的 `mkdirSync` 在锁内，重试永远救不回来——结果是干净工作区里的规划静默退化成单串行块（单任务请求还会直接判 out-of-scope）。现在加锁前先补锁目录，并加了回归用例。
-- 进程身份枚举加入**有界重试**：Windows CIM 查询在机器繁忙或互斥锁争用时会把一次枚举超时变成"整块任务失败"。身份不一致仍然立即失败，但"枚举本身取不到"最多重试 3 次（300/600ms 退避）；同时没有 pid 文件时不再做枚举，省掉一次昂贵查询。目标是不因为环境抖动破坏"一轮跑完"。
-- 验收契约与账本绑定（修复 Codex Security 扫描的 `integrity.unbound-acceptance-contract`，CWE-345）：运行开始时把验收契约的规范化 SHA-256（键排序，忽略排版）写进 `manifest.json` 与 `summary.json`，`--verify-run` 和 `--resume-run` 重新读取契约后比对摘要，不一致直接拒绝且不触碰任何任务状态或窗口——此前执行窗（对工作区有写权限）可以在验收前改写 `<runDir>/acceptance.json` 给自己降低门槛，或让恢复把未完成的任务当成已验收。重绑定只写了一半账本（崩溃）时取最新记录继续，不锁死运行。确实要换契约（不确定结果后收紧检查等）必须显式 `--allow-acceptance-change`（放在 run ID 之后）或 `ORCH_ACCEPTANCE_OVERRIDE=1`，放行会打印告警、重新绑定并在账本 history 追加 `acceptanceRebound` 留痕；旧版本记录的运行没有摘要，仍按原方式可验收。审计残留：同目录哈希挡不住能同时改写两份账本并抹掉绑定的角色，进一步隔离需要把运行目录移出执行窗写路径。
-- 主动清扫"代码 1"残留窗：Windows Terminal 会在窗内进程非 0 退出后把面板留在屏幕上，于是屏幕上会堆出错窗。识别口径**与工作区无关**（命令行里出现 `…\temp\win-launch-*.ps1` 即认领，覆盖编排器在任意盘/任意工作区留下的窗——此前只认本仓库 temp，实测漏掉过 `<workspace>\temp\...` 的残留）；安全边界是"该窗 launcher 已死且没有任何活着的子进程"才强杀，活窗与普通终端一律不碰。清扫在**每个入口的收尾**都会跑：启动清理、每轮 `--run/--exec` 结束、`--spawn` 结束、`--selftest-close` 结束，保证编排器工作完成后不残留错误码终端窗。
-- 运行途中也清扫错误窗：长任务执行期间每 30 秒扫一次（不止收尾），屏幕中途也不会一直挂着"代码 1"死窗。
-- 自检窗收窗判据放宽：此前要求模型逐字输出 `__ORCH_DONE__ <token>`，模型偶尔漏写就只能等主控 20 秒兜底关窗（实测 20992ms，严格判据失败）。现在只要该 rollout 已被本窗 token 绑定，收到 `task_complete`（turn 为空或匹配）即收窗；任务是否真完成仍由主控按检查点/回执独立验收，关窗不作为成功证据。
-- 容量改为**运行时内存预算**（默认 `dynamic`）：规划期按全部块同时运行的预估成本与可用内存判断，超预算就把同一并行层里最贵的两块合并（块内串行）；执行期每开窗前复检，不够先 `deferred` 暂缓、等已运行块结束后重检，全部跑完仍不够就降级硬跑（`degraded=hard-run`）保证一轮跑完。每窗默认 256 MB 并按实测滚动修正（钳制 160-600），底线默认 512 MB（`ORCH_MIN_AVAILABLE_MB`）。单任务请求不再进入编排。`ORCH_CAPACITY_MODE=formula` 可回退旧公式。
-
-- 容量公式改为每块按 2 GB 预算、取机器检测到的物理内存：`floor(机器内存MB / 1000) / 2` 向下取整（等价 `floor(机器内存MB / 2000)`，16 GB 机器 → 容量 8）。容量不再随运行时空闲内存波动，单块预算固定 2 GB。
-- 修复从 WSL 发起时可见窗启动失败：WSL 启动的进程没有 `PATHEXT`，PowerShell 因此解析不到 `chcp`，窗口启动器在首行就中止。入口现在补齐 `PATHEXT`，启动器把 `chcp` 包在非致命兜底里；回归夹具改为与父进程类型无关（`Start-Process -Wait`、`cmd.exe /c` 包裹），WSL 与 Windows 原生两种方式都能跑绿。
-- 新增可选真机用例 `test/live-powerloss.mjs`：强杀控制器进程树（模拟断电）后用 `--resume-run` 续跑，校验不可重复的副作用恰好执行一次、`retrySafe` 任务安全重试、整轮最终 `verified`。
-- 规划器与执行窗默认继承发起方的 Codex provider（含 CODEX_HOME 中的第三方 provider 与其凭据）；只有 `ORCH_PROVIDER=openai-https` 或显式配置中继地址时才改走 orchestrator-openai-https，`inherit` 之外的未知取值一律 fail-closed。此前无论本机配置如何都会强制 OpenAI HTTPS provider，导致第三方 provider 无法用于实际任务。
-- `scripts/package.json` 与 `scripts/package-lock.json` 的版本字符串与 `.codex-plugin/plugin.json` 的 cachebuster 同步，消除版本漂移。
-- provider 的账户配额错误现在只接受结构化 `error`/`turn.failed` 或 `task_complete.error`，立即 fail-closed；窗口关闭后的有界重扫会保留迟到的 provider 诊断，任务文本和工具输出不能触发重试。
-- 弹窗/容量准入异常会释放自有协调器租约与预留；带 PID 文件的死亡窗口登记会在下一次预留时清理，避免后续窗口永久卡在 capacity waiting。
-- 发布器会根据 manifest 已声明的隐私政策和服务条款链接，拒绝缺少对应文档的阶段包；活动文档与容量实现统一使用 `floor(系统空闲内存MB / 1000) / 2`（每块 2 GB）后向下取整。
-- 控制台备用路径显式使用 conhost：隐藏初始化后仅显示自有窗口，避免默认终端转交；真实焦点探针增加窗口类型、启动期间采样和回执工作目录校验。
-- 连续输入探针先确认前台就绪，观察到失焦即停止后续按键；旧同步探针结果不再作为启动期间输入连续性的证明。
-- 新增个人 marketplace 名称大小写检查与受限修复命令；仅修复已确认指向当前插件的唯一条目，默认只读。
-- 低层 `--spawn` 只有捕获到本窗结果报告才返回成功；窗口自闭、结果缺失或写入竞态会明确返回未捕获并保留失败状态。
-- 补充当前 core 的真实流程证据与个人 marketplace 注册边界，避免把外部注册失败误判为仓库运行时成功。
-- 发现并修复 rollout 原始 token 搜索会误选父会话的问题；真实安装 selftest-close 已重新验证，结果以 RC 清单和回执为准。
-- GitHub 安装/更新示例显式拒绝脏副本，并在每条原生命令失败时停止，避免后续成功掩盖前面的失败。
-- 公共入口校验 `--workspace`、`--agent` 和 `--cli` 参数；专用入口默认 Codex，显式非 Codex 值会被拒绝。
-- 检查点核对运行、令牌与任务身份；普通验收要求 completed，只有 started 的任务须经显式 `--verify-run` 对账。
-- 监督器拒绝缺失或损坏的恢复状态，并识别失败终态事件，避免把失败会话当作完成。
-- 公开入口示例提供运行 ID、独立验收文件和结果回读，说明缺少验收不会返回任务成功。
-- 区分脚本副本与插件管理器注册、会话恢复与任务验收，并将旧快照的实测和缓存同步记录标为历史。
-- 默认使用无弹窗 `exec`，可显式选择可见 TUI。
-- 任务与执行块状态使用同一持久账本，并保留独立验收。
-- 发行核心通过 `release.json` 做路径和哈希完整性校验。
-- 当前版本仍是候选版，真实模型、插件管理器升级/回滚和跨机器兼容性不作稳定版保证。
+Earlier 0.9.29 release candidates established the current conservative execution model, Windows process and workspace protections, recovery checks, redaction, integrity sealing, and GitHub installation path. Historical validation records are intentionally excluded from the public source tree.

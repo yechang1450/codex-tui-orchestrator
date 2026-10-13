@@ -1,3 +1,0 @@
-interface:
-  display_name: "codex-TUI-orchestrator"
-  short_description: "Decompose a multi-part request into linked/independent blocks, run real work with default headless exec, and choose visible Codex TUI with --run-windows."

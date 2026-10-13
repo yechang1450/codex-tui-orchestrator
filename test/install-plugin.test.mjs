@@ -1,21 +1,31 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
+import childProcess, {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {syncBuiltinESMExports} from 'node:module';
 import {
   defaultMarketplacePath,
   defaultMarketplaceRoot,
+  canonicalDistMarketplaceBytes,
   ensureRegistration,
   inspectRegistration,
   isPersonalMarketplaceDir,
   relativeSourcePath,
   setRegistrationSource,
 } from '../scripts/repair-plugin-registration.mjs';
+import {coreInventory, runtimeInventory} from '../scripts/release-integrity.mjs';
 import {
   checkInstall,
   authenticateInstalledCache,
+  cacheDoctorEnvironmentForCodexHome,
+  ensureCodexHomeDirectory,
+  hostEnvironmentForCodexHome,
+  installPlugin,
   listInstalledCaches,
   marketplaceNameConflict,
   marketplaceIsConfigured,
@@ -30,9 +40,75 @@ import {
   verifySkillsVisible,
   validateInstalledPath,
 } from '../scripts/install-plugin.mjs';
+import {resolveRuntimeContext, physicallySameOrChild} from '../scripts/core/runtime-context.mjs';
+import {controllerStateDir} from '../scripts/core/controller-state.mjs';
+import {captureInitiatorContext} from '../scripts/core/initiator-context.mjs';
 
-const TEST_TEMP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'temp');
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const TEST_TEMP = testTempFamily('install-plugin');
 fs.mkdirSync(TEST_TEMP, {recursive: true});
+
+function sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
+
+function writeFixtureRelease(root) {
+  fs.writeFileSync(path.join(root, 'release.json'), JSON.stringify({
+    schema: 2,
+    coreVersion: 'test',
+    files: coreInventory(root),
+    runtimeFiles: runtimeInventory(root),
+  }, null, 2) + '\n');
+}
+
+function sealFixtureDistribution({checkout, dist, pluginName, category = 'Productivity'}) {
+  const lock = Buffer.from('{"lockfileVersion":3}\n');
+  fs.mkdirSync(path.join(checkout, '.agents', 'plugins'), {recursive: true});
+  fs.writeFileSync(path.join(checkout, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({
+    name: 'checkout',
+    plugins: [{name: pluginName, source: {source: 'local', path: './'}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category}],
+  }, null, 2) + '\n');
+  fs.writeFileSync(path.join(checkout, 'scripts', 'package-lock.json'), lock);
+  const dependency = Buffer.from(`${JSON.stringify({schema: 1, packageLockSha256: sha256(lock), files: {}}, null, 2)}\n`);
+  fs.writeFileSync(path.join(checkout, 'scripts', 'dependency-integrity.json'), dependency);
+  writeFixtureRelease(checkout);
+  const sourceRelease = fs.readFileSync(path.join(checkout, 'release.json'));
+  fs.cpSync(checkout, dist, {recursive: true});
+  fs.mkdirSync(path.join(dist, '.agents', 'plugins'), {recursive: true});
+  fs.writeFileSync(path.join(dist, '.agents', 'plugins', 'marketplace.json'), canonicalDistMarketplaceBytes({pluginName, category}));
+  fs.writeFileSync(path.join(dist, 'scripts', 'distribution-source-release.json'), sourceRelease);
+  fs.writeFileSync(path.join(dist, 'scripts', 'distribution-provenance.json'), JSON.stringify({
+    schema: 1,
+    sourceReleaseSha256: sha256(sourceRelease),
+    sourceDependencyManifestSha256: sha256(dependency),
+    packageLockSha256: sha256(lock),
+    dependencyFiles: 0,
+  }, null, 2) + '\n');
+  writeFixtureRelease(dist);
+}
+
+function withFakeSkillCliProbe(fakeCli, run) {
+  const original = childProcess.spawnSync;
+  const expected = path.resolve(fakeCli);
+  const calls = [];
+  childProcess.spawnSync = (command, args = [], options) => {
+    if (path.resolve(String(command)) === expected) {
+      calls.push({args: [...args], options});
+      const isVersionProbe = args.length === 1 && args[0] === '--version';
+      return {
+        status: 0,
+        stdout: isVersionProbe ? 'codex-cli fixture\n' : 'demo-plugin:demo-skill\n',
+        stderr: '',
+      };
+    }
+    return original(command, args, options);
+  };
+  syncBuiltinESMExports();
+  try {
+    return run(calls);
+  } finally {
+    childProcess.spawnSync = original;
+    syncBuiltinESMExports();
+  }
+}
 
 test('direct installer selects npm packaged native CLI beside a codex.cmd shim', t => {
   if (process.platform !== 'win32') return t.skip('Windows native CLI layout');
@@ -60,6 +136,137 @@ test('installer host resolution skips an untrusted discovered CLI and preserves 
   };
   assert.equal(resolveInstallCli({env: {ORCH_AGENT: 'codex'}, hostOptions}), signed);
   assert.throws(() => resolveInstallCli({candidate: unsigned, env: {ORCH_AGENT: 'codex'}, hostOptions}), /CLI_UNTRUSTED/);
+});
+
+test('direct Node installation exposes no Git pull primitive and rejects --pull before other setup', async () => {
+  const installer = await import('../scripts/install-plugin.mjs');
+  assert.equal(typeof installer.trustedGitPath, 'undefined');
+  assert.equal(typeof installer.pullTrustedGitCheckout, 'undefined');
+  assert.throws(
+    () => installer.installPlugin({pull: true, pluginPath: path.join(TEST_TEMP, 'missing-plugin-for-pull') }),
+    /PULL_REQUIRES_BOOTSTRAP/,
+  );
+});
+
+test('direct Node CLI rejects --pull before a requested read-only check can inspect caller state', () => {
+  const result = spawnSync(process.execPath, [path.join(repoRoot, 'scripts', 'install-plugin.mjs'), '--check', '--pull', '--plugin', path.join(TEST_TEMP, 'missing-plugin-for-cli-pull')], {
+    encoding: 'utf8',
+    env: {...process.env, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.hooksPath', GIT_CONFIG_VALUE_0: 'C:\\caller-controlled'},
+  });
+  assert.equal(result.status, 1);
+  const response = JSON.parse(result.stdout);
+  assert.match(response.reason, /PULL_REQUIRES_BOOTSTRAP/);
+});
+
+test('direct installer CLI rejects every obsolete --skip-dist spelling at argument parsing', () => {
+  for (const unsupported of ['--skip-dist', '--skip-dist=legacy']) {
+    const result = spawnSync(process.execPath, [
+      path.join(repoRoot, 'scripts', 'install-plugin.mjs'),
+      '--check',
+      unsupported,
+      '--plugin', path.join(TEST_TEMP, 'missing-plugin-for-cli-skip-dist'),
+    ], {encoding: 'utf8'});
+    assert.equal(result.status, 1, `${unsupported} must fail before a direct installer command can inspect its source`);
+    const response = JSON.parse(result.stdout);
+    assert.match(response.reason, /^SKIP_DIST_UNSUPPORTED:/, `${unsupported} must preserve the canonical public rejection code`);
+  }
+});
+
+test('installer creates a fresh explicit CODEX_HOME and refuses a file in its place', () => {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'fresh-codex-home-'));
+  const codexHome = path.join(root, 'state', 'codex');
+  const blocked = path.join(root, 'blocked-home');
+  try {
+    assert.equal(fs.existsSync(codexHome), false);
+    assert.equal(ensureCodexHomeDirectory(codexHome), path.resolve(codexHome));
+    assert.equal(fs.lstatSync(codexHome).isDirectory(), true);
+    fs.writeFileSync(blocked, 'not a directory');
+    assert.throws(() => ensureCodexHomeDirectory(blocked), /CODEX_HOME_CREATE_FAILED/);
+    assert.equal(fs.readFileSync(blocked, 'utf8'), 'not a directory');
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('host subprocesses receive exactly the requested CODEX_HOME', () => {
+  const bound = hostEnvironmentForCodexHome({CODEX_HOME: 'old', Codex_Home: 'older', KEEP: 'yes'}, 'D:\\isolated\\codex');
+  assert.equal(bound.CODEX_HOME, path.resolve('D:\\isolated\\codex'));
+  assert.equal(bound.KEEP, 'yes');
+  assert.equal(Object.keys(bound).filter(key => key.toUpperCase() === 'CODEX_HOME').length, 1);
+  assert.equal(Object.isFrozen(bound), true);
+});
+
+test('cache doctor receives an isolated diagnostic workspace instead of caller execution state', t => {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'cache-doctor-environment-'));
+  const codexHome = path.join(root, 'isolated-codex-home');
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  fs.mkdirSync(codexHome, {recursive: true});
+  const environment = cacheDoctorEnvironmentForCodexHome({
+    CODEX_HOME: 'caller-home',
+    Codex_Home: 'caller-home-duplicate',
+    WORKSPACE_DIR: path.join(root, 'caller-workspace'),
+    workspace_dir: path.join(root, 'caller-workspace-duplicate'),
+    ORCH_STATE_DIR: 'caller-state',
+    orch_controller_root: path.join(root, 'caller-controller'),
+    ORCH_COORDINATOR_DIR: path.join(root, 'caller-coordinator'),
+    ORCH_RUN_ID: 'caller-run',
+    ORCH_ACCEPTANCE_FILE: path.join(root, 'caller-acceptance.json'),
+    ORCH_ACCEPTANCE_OVERRIDE: '1',
+    ORCH_SESSION_DIR: path.join(root, 'caller-session'),
+    ORCH_ISOLATED_ACCEPTANCE: path.join(root, 'caller-isolated-acceptance.json'),
+    ORCH_ISOLATED_ABORT_TOKEN: 'caller-abort',
+    ORCH_AGENT: 'foreign-agent',
+    orCh_AgEnT: 'other',
+    CODEX_THREAD_ID: 'caller-thread',
+    codex_session_id: 'caller-session-id',
+    CODEX_PERMISSION_PROFILE: ':danger-full-access',
+    CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY: 'caller-workspace-identity',
+    CODEX_APP_TOOLS_PIPE_PATH: '\\\\.\\pipe\\caller-tools',
+    ORCH_CLI: 'C:\\verified\\codex.exe',
+    ORCH_NPM_TRUSTED: '1',
+    KEEP: 'yes',
+  }, codexHome);
+
+  assert.equal(environment.CODEX_HOME, path.resolve(codexHome));
+  assert.equal(environment.WORKSPACE_DIR, path.join(path.resolve(codexHome), '.tmp', 'install-doctor-workspace'));
+  assert.equal(environment.ORCH_CLI, 'C:\\verified\\codex.exe');
+  assert.equal(environment.ORCH_NPM_TRUSTED, '1');
+  assert.equal(environment.ORCH_AGENT, 'codex');
+  assert.equal(environment.KEEP, 'yes');
+  for (const key of ['ORCH_STATE_DIR', 'ORCH_CONTROLLER_ROOT', 'ORCH_COORDINATOR_DIR', 'ORCH_RUN_ID', 'ORCH_ACCEPTANCE_FILE', 'ORCH_ACCEPTANCE_OVERRIDE', 'ORCH_SESSION_DIR', 'ORCH_ISOLATED_ACCEPTANCE', 'ORCH_ISOLATED_ABORT_TOKEN', 'CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_PERMISSION_PROFILE', 'CODEX_TASK_WORKSPACE_VERIFYING_IDENTITY', 'CODEX_APP_TOOLS_PIPE_PATH']) {
+    assert.equal(Object.keys(environment).some(name => name.toUpperCase() === key), false, `${key} must not reach the cache doctor`);
+  }
+  assert.equal(Object.keys(environment).filter(name => name.toUpperCase() === 'CODEX_HOME').length, 1);
+  assert.equal(Object.keys(environment).filter(name => name.toUpperCase() === 'WORKSPACE_DIR').length, 1);
+  assert.equal(Object.keys(environment).filter(name => name.toUpperCase() === 'ORCH_AGENT').length, 1);
+  assert.equal(Object.isFrozen(environment), true);
+  assert.equal(captureInitiatorContext(environment).threadId, '', 'the diagnostic workspace must not inherit a desktop turn binding');
+  const context = resolveRuntimeContext(environment);
+  const controller = path.join(path.resolve(codexHome), 'state', 'plugins', 'codex-tui-orchestrator');
+  assert.equal(physicallySameOrChild(context.workspace, controller), false);
+  // The suite may run with TEMP redirected below the user profile, so the
+  // "inherited from a shared temporary volume" premise is established
+  // explicitly here before the refusal is proven.
+  const aclScript = [
+    "$ErrorActionPreference='Stop'",
+    '$target=[Console]::In.ReadToEnd().Trim()',
+    '$acl=[IO.Directory]::GetAccessControl($target)',
+    '$acl.SetAccessRuleProtection($true,$false)',
+    '$current=[Security.Principal.WindowsIdentity]::GetCurrent().User',
+    "$full=New-Object Security.AccessControl.FileSystemAccessRule($current,[Security.AccessControl.FileSystemRights]::FullControl,[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)",
+    '$acl.SetAccessRule($full)',
+    "$sharedSid=New-Object Security.Principal.SecurityIdentifier('S-1-5-11')",
+    "$shared=New-Object Security.AccessControl.FileSystemAccessRule($sharedSid,[Security.AccessControl.FileSystemRights]::Modify,[Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',[Security.AccessControl.PropagationFlags]::None,[Security.AccessControl.AccessControlType]::Allow)",
+    '$acl.AddAccessRule($shared)',
+    '[IO.Directory]::SetAccessControl($target,$acl)',
+  ].join(';');
+  const aclChanged = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', aclScript], {input: codexHome, encoding: 'utf8', windowsHide: true, timeout: 30000});
+  assert.equal(aclChanged.status, 0, aclChanged.stderr || aclChanged.stdout);
+  assert.throws(
+    () => controllerStateDir(context.workspace, environment),
+    /CONTROLLER_ROOT_UNSAFE_ACL/,
+    'a test root with an inherited or granted shared-writer ACL must not become controller authority',
+  );
 });
 
 function coreFixture(pluginDir) {
@@ -102,6 +309,26 @@ function completeFixture({codexHomeRelative = '.codex', cli = null} = {}) {
   fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@personal"]\nenabled = true\n');
   return {...f, codexHome, cache, options: {...f.options, codexHome, ...(cli ? {codexCli: cli} : {})}};
 }
+
+test('installPlugin rejects a managed cache before ordinary checkout installation handling', () => {
+  const f = completeFixture();
+  try {
+    const marketplaceBefore = fs.readFileSync(f.marketplacePath);
+    assert.throws(
+      () => installPlugin({
+        pluginPath: f.cache,
+        marketplacePath: f.marketplacePath,
+        marketplaceRoot: f.home,
+        codexHome: f.codexHome,
+        homeDir: f.home,
+      }),
+      /MANAGED_CACHE_INSTALL_FORBIDDEN/,
+    );
+    assert.deepEqual(fs.readFileSync(f.marketplacePath), marketplaceBefore, 'a rejected cache install must not rewrite the marketplace catalog');
+  } finally {
+    fs.rmSync(f.home, {recursive: true, force: true});
+  }
+});
 
 test('ensureRegistration creates the personal marketplace and points at the checkout root', () => {
   const f = personalFixture();
@@ -223,6 +450,152 @@ test('checkInstall does not execute a cache verifier before authentication', () 
   }
 });
 
+test('checkInstall does not execute a cache verifier when an implicitly discovered dist is unverified', () => {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'implicit-dist-cache-gate-'));
+  const checkout = path.join(root, 'checkout');
+  const distRoot = path.join(root, 'export');
+  const dist = path.join(distRoot, 'demo-plugin');
+  const codexHome = path.join(root, '.codex');
+  const marker = path.join(root, 'verifier-ran');
+  try {
+    fs.mkdirSync(path.join(checkout, '.codex-plugin'), {recursive: true});
+    fs.writeFileSync(path.join(checkout, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}) + '\n');
+    coreFixture(checkout);
+    sealFixtureDistribution({checkout, dist, pluginName: 'demo-plugin'});
+    // This is a non-core runtime change. The catalog still points at dist, so
+    // checkout-mode inspection must reject it before cache execution.
+    fs.writeFileSync(path.join(dist, 'scripts', 'release-integrity.mjs'), `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'ran');\n`);
+    const cache = path.join(codexHome, 'plugins', 'cache', 'codex-tui-orchestrator-dist', 'demo-plugin', 'local');
+    fs.cpSync(dist, cache, {recursive: true});
+    fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
+    fs.mkdirSync(codexHome, {recursive: true});
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@codex-tui-orchestrator-dist"]\nenabled = true\n');
+
+    const result = checkInstall({
+      pluginPath: checkout,
+      marketplacePath: path.join(dist, '.agents', 'plugins', 'marketplace.json'),
+      marketplaceRoot: dist,
+      distRoot,
+      codexHome,
+      homeDir: root,
+    });
+    assert.equal(result.registration.status, 'dist_unverified', JSON.stringify(result.problems));
+    assert.equal(result.problems.some((problem) => problem.step === 'registration' && problem.status === 'dist_unverified'), true);
+    assert.equal(fs.existsSync(marker), false, 'an unverified implicit dist must not get to execute its cache verifier');
+  } finally {
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('checkInstall never probes host skill visibility from an unverified distribution', () => {
+  for (const source of ['checkout', 'dist']) {
+    const root = fs.mkdtempSync(path.join(TEST_TEMP, `unverified-dist-skill-gate-${source}-`));
+    const checkout = path.join(root, 'checkout');
+    const distRoot = path.join(root, 'export');
+    const dist = path.join(distRoot, 'demo-plugin');
+    const codexHome = path.join(root, '.codex');
+    const fakeCli = path.join(root, 'injected-skill-probe.exe');
+    try {
+      fs.mkdirSync(path.join(checkout, '.codex-plugin'), {recursive: true});
+      fs.mkdirSync(path.join(checkout, 'skills', 'demo-skill'), {recursive: true});
+      fs.writeFileSync(path.join(checkout, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}) + '\n');
+      fs.writeFileSync(path.join(checkout, 'skills', 'demo-skill', 'SKILL.md'), '---\nname: demo-skill\n---\n');
+      coreFixture(checkout);
+      sealFixtureDistribution({checkout, dist, pluginName: 'demo-plugin'});
+      // Alter a non-core runtime file after sealing. Both explicit and
+      // catalog-discovered dist sources must be rejected before a host probe
+      // can load their enabled plugin context.
+      fs.writeFileSync(path.join(dist, 'scripts', 'release-integrity.mjs'), 'console.log("forged verifier");\n');
+      const cache = path.join(codexHome, 'plugins', 'cache', 'codex-tui-orchestrator-dist', 'demo-plugin', 'local');
+      fs.cpSync(dist, cache, {recursive: true});
+      fs.mkdirSync(path.join(cache, 'scripts', 'node_modules'), {recursive: true});
+      fs.mkdirSync(codexHome, {recursive: true});
+      fs.writeFileSync(path.join(codexHome, 'config.toml'), '[plugins."demo-plugin@codex-tui-orchestrator-dist"]\nenabled = true\n');
+      fs.writeFileSync(fakeCli, 'fixture');
+
+      const common = {
+        pluginPath: checkout,
+        distRoot,
+        codexHome,
+        homeDir: root,
+        verifySkills: true,
+        codexCli: fakeCli,
+        env: {...process.env, ORCH_ALLOW_UNVERIFIED_CLI: '1'},
+        ...(source === 'dist'
+          ? {source: 'dist'}
+          : {marketplacePath: path.join(dist, '.agents', 'plugins', 'marketplace.json'), marketplaceRoot: dist}),
+      };
+      withFakeSkillCliProbe(fakeCli, (calls) => {
+        const advisory = checkInstall(common);
+        assert.equal(advisory.registration.status, 'dist_unverified', JSON.stringify(advisory.problems));
+        assert.equal(advisory.skills?.status, 'skipped');
+        assert.equal(advisory.skills?.skipped, true);
+        assert.equal(advisory.warnings.some((warning) => warning.step === 'skills_visible' && warning.status === 'skipped'), true);
+        assert.equal(calls.length, 0, `${source} unverified dist must not resolve, probe, or spawn the injected host CLI`);
+
+        const strict = checkInstall({...common, strictSkills: true});
+        assert.equal(strict.status, 'incomplete');
+        assert.equal(strict.skills?.status, 'skipped');
+        assert.equal(strict.problems.some((problem) => problem.step === 'skills_visible' && problem.status === 'skipped'), true);
+        assert.equal(calls.length, 0, `${source} strict check must not resolve, probe, or spawn the injected host CLI`);
+      });
+    } finally {
+      fs.rmSync(root, {recursive: true, force: true});
+    }
+  }
+});
+
+test('checkInstall probes skill visibility after a matching registration authenticates its installed cache', () => {
+  const fixture = completeFixture();
+  const fakeCli = path.join(fixture.home, 'injected-skill-probe.exe');
+  try {
+    fs.writeFileSync(fakeCli, 'fixture');
+    withFakeSkillCliProbe(fakeCli, (calls) => {
+      const result = checkInstall({...fixture.options, verifySkills: true, codexCli: fakeCli, env: {...process.env, ORCH_ALLOW_UNVERIFIED_CLI: '1'}});
+      assert.equal(result.registration.status, 'matched', JSON.stringify(result.problems));
+      assert.equal(result.skills?.ok, true, JSON.stringify(result.skills));
+      assert.notEqual(result.skills?.status, 'skipped');
+      assert.equal(result.warnings.some((warning) => warning.step === 'skills_visible'), false);
+      assert.deepEqual(calls.map((call) => call.args), [
+        ['--version'],
+        ['debug', 'prompt-input', 'install-plugin-verification'],
+      ], 'a matched authenticated cache must resolve and run the host skill probe');
+    });
+  } finally {
+    fs.rmSync(fixture.home, {recursive: true, force: true});
+  }
+});
+
+test('checkInstall skips host skill visibility when a matching registration has an unauthenticated cache', () => {
+  const fixture = completeFixture();
+  const fakeCli = path.join(fixture.home, 'injected-skill-probe.exe');
+  try {
+    fs.writeFileSync(path.join(fixture.cache, 'scripts', 'release-integrity.mjs'), 'console.log("forged cache verifier");\n');
+    fs.writeFileSync(fakeCli, 'fixture');
+    const common = {
+      ...fixture.options,
+      verifySkills: true,
+      codexCli: fakeCli,
+      env: {...process.env, ORCH_ALLOW_UNVERIFIED_CLI: '1'},
+    };
+    withFakeSkillCliProbe(fakeCli, (calls) => {
+      const advisory = checkInstall(common);
+      assert.equal(advisory.registration.status, 'matched', JSON.stringify(advisory.problems));
+      assert.equal(advisory.problems.some((problem) => problem.step === 'cache_authentication'), true);
+      assert.equal(advisory.skills?.status, 'skipped');
+      assert.equal(advisory.warnings.some((warning) => warning.step === 'skills_visible' && warning.status === 'skipped'), true);
+      assert.equal(calls.length, 0, 'an unauthenticated cache must not reach the injected host CLI');
+
+      const strict = checkInstall({...common, strictSkills: true});
+      assert.equal(strict.status, 'incomplete');
+      assert.equal(strict.problems.some((problem) => problem.step === 'skills_visible' && problem.status === 'skipped'), true);
+      assert.equal(calls.length, 0, 'strict validation must also leave the injected host CLI untouched');
+    });
+  } finally {
+    fs.rmSync(fixture.home, {recursive: true, force: true});
+  }
+});
+
 test('ensureRegistration appends to an existing marketplace without touching other entries', () => {
   const other = {name: 'other-plugin', source: {source: 'local', path: './plugins/other-plugin'}, policy: {installation: 'AVAILABLE', authentication: 'ON_USE'}, category: 'Engineering'};
   const f = personalFixture({marketplace: {name: 'personal', interface: {displayName: 'Personal'}, plugins: [other]}});
@@ -261,7 +634,7 @@ test('ensureRegistration uses the checkout by default and still reports an expli
     assert.equal(result.sourceKind, 'checkout');
     const missingDist = ensureRegistration({...noDist.options, source: 'dist'});
     assert.equal(missingDist.status, 'source_missing');
-    assert.match(missingDist.reason, /publish-dist/);
+    assert.match(missingDist.reason, /rebuild a sealed distribution from the source checkout/i);
   } finally {
     fs.rmSync(noDist.home, {recursive: true, force: true});
   }
@@ -280,7 +653,7 @@ test('path helpers keep marketplace entries relative to the marketplace root', (
   assert.equal(relativeSourcePath('/home/me', '/home/me/plugins/dist/demo'), './plugins/dist/demo');
   if (process.platform === 'win32') {
     assert.throws(
-      () => relativeSourcePath('C:\\Users\\fixture', 'C:\\workspace\\codex-tui-orchestrator'),
+      () => relativeSourcePath('C:\\fixture-root', 'D:\\fixture-source\\codex-tui-orchestrator'),
       /MARKETPLACE_SOURCE_OUTSIDE_ROOT/,
       'a cross-volume local source must never become ./D:/... in marketplace.json',
     );
@@ -304,12 +677,7 @@ test('explicit dist source defaults bind installer and registration to the dist-
     fs.mkdirSync(path.join(checkout, '.codex-plugin'), {recursive: true});
     fs.writeFileSync(path.join(checkout, '.codex-plugin', 'plugin.json'), JSON.stringify({name: 'demo-plugin', version: '1.0.0'}) + '\n');
     coreFixture(checkout);
-    fs.cpSync(checkout, dist, {recursive: true});
-    fs.mkdirSync(path.join(dist, '.agents', 'plugins'), {recursive: true});
-    fs.writeFileSync(path.join(dist, '.agents', 'plugins', 'marketplace.json'), JSON.stringify({
-      name: 'codex-tui-orchestrator-dist',
-      plugins: [{name: 'demo-plugin', source: {source: 'local', path: './'}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Productivity'}],
-    }, null, 2) + '\n');
+    sealFixtureDistribution({checkout, dist, pluginName: 'demo-plugin'});
 
     const parsed = parseArgs(['--plugin', checkout, '--source', 'dist', '--dist-root', distRoot]);
     assert.equal(parsed.marketplaceRoot, dist);
@@ -406,9 +774,10 @@ test('CLI helpers parse host output, caches, enablement, and the Codex CLI path'
   assert.equal(parseArgs([]).source, 'checkout');
   assert.equal(shouldPublishDistribution({source: 'checkout'}), false);
   assert.equal(shouldPublishDistribution({source: 'dist'}), true);
-  assert.equal(shouldPublishDistribution({source: 'dist', skipDist: true}), false);
   assert.equal(parseArgs(['--check']).mode, 'check');
   assert.equal(parseArgs(['--source', 'checkout']).source, 'checkout');
+  assert.throws(() => parseArgs(['--source', 'dist', '--skip-dist']), /SKIP_DIST_UNSUPPORTED/);
+  assert.throws(() => installPlugin({source: 'dist', skipDist: true}), /SKIP_DIST_UNSUPPORTED/);
   assert.throws(() => parseArgs(['--source']), /requires a value/);
   assert.throws(() => parseArgs(['--nope']), /unknown option/);
   assert.deepEqual(parseCliJson('{"installedPath":"C:\\\\x","version":"1.0.0"}'), {installedPath: 'C:\\x', version: '1.0.0'});
@@ -479,17 +848,15 @@ test('setRegistrationSource re-points a single stale entry and preserves every o
   }
 });
 
-test('setRegistrationSource honors an explicit checkout target even when the old distribution still matches', () => {
+test('setRegistrationSource refuses an implicitly discovered unverified distribution before rewriting it', () => {
   const f = personalFixture();
   try {
     fs.mkdirSync(path.dirname(f.marketplacePath), {recursive: true});
     fs.writeFileSync(f.marketplacePath, JSON.stringify({name: 'personal', plugins: [{name: 'demo-plugin', source: {source: 'local', path: relativeSourcePath(f.home, f.dist)}}]}, null, 2) + '\n');
+    const before = fs.readFileSync(f.marketplacePath);
     const result = setRegistrationSource({...f.options, source: 'checkout'});
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.changed, true);
-    const after = JSON.parse(fs.readFileSync(f.marketplacePath, 'utf8'));
-    assert.equal(after.plugins[0].source.path, relativeSourcePath(f.home, f.plugin));
-    assert.equal(result.sourceKind, 'checkout');
+    assert.equal(result.status, 'dist_unverified', JSON.stringify(result));
+    assert.deepEqual(fs.readFileSync(f.marketplacePath), before, 'an unverified dist must not be rewritten through a checkout request');
   } finally {
     fs.rmSync(f.home, {recursive: true, force: true});
   }

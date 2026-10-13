@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {budgetSettings, admissionOk, observedCostMB, updateRollingCost, unconsumedReservationMB} from '../scripts/core/memory-budget.mjs';
-import {reserve, release} from '../scripts/core/leases.mjs';
+import {reserve, release, processIdentityBinding} from '../scripts/core/leases.mjs';
 
 test('1000 MB reserve is mandatory even with a stale lower override',()=>{
   for(const env of [{},{ORCH_MIN_AVAILABLE_MB:'512'},{ORCH_MIN_AVAILABLE_MB:'0'}])assert.equal(budgetSettings(env).floorMB,1000);
@@ -23,12 +23,14 @@ test('large observed peaks are not truncated to 800 MB',()=>{
 
 test('memory reservations only subtract future peak growth for an owned live process tree',()=>{
   const identity={ProcessId:11,Started:'one',Name:'node.exe',CommandLine:'worker'};
+  const binding=processIdentityBinding(identity);
   const snapshot=new Map([[11,{...identity,WorkingSet64:200*1024**2}],[12,{ProcessId:12,ParentProcessId:11,WorkingSet64:100*1024**2}]]);
-  const leases=[{memoryCostMB:500,launcher:identity},{memoryCostMB:400}];
+  const leases=[{memoryCostMB:500,launcher:binding},{memoryCostMB:400}];
   assert.equal(unconsumedReservationMB(leases,snapshot),600);
-  assert.equal(unconsumedReservationMB([{memoryCostMB:100,launcher:identity}],snapshot),0);
+  assert.equal(unconsumedReservationMB([{memoryCostMB:100,launcher:binding}],snapshot),0);
   assert.equal(unconsumedReservationMB(leases,new Map()),900,'unavailable process consumption stays fully reserved');
-  assert.equal(unconsumedReservationMB([{memoryCostMB:500,launcher:{...identity,Started:'reused'}}],snapshot),500,'PID reuse cannot reduce reservation');
+  assert.equal(unconsumedReservationMB([{memoryCostMB:500,launcher:{...binding,Started:'reused'}}],snapshot),500,'PID reuse cannot reduce reservation');
+  assert.equal(unconsumedReservationMB([{memoryCostMB:500,launcher:identity}],snapshot),500,'a raw legacy lease identity must not receive consumed-memory credit');
 });
 
 test('memory admission is checked atomically with the lease reservation',()=>{

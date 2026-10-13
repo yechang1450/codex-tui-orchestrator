@@ -6,6 +6,25 @@ const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const SHA256_HEX=/^[0-9a-f]{64}$/;
 const DISTRIBUTION_PROVENANCE='distribution-provenance.json';
 const DISTRIBUTION_SOURCE_RELEASE='distribution-source-release.json';
+// These files operate on a source checkout to build, version, or audit a
+// release.  They are deliberately excluded from the installable artifact so a
+// plugin installation contains only runtime code and user-facing material.
+const SOURCE_ONLY_RUNTIME_PATHS=new Set([
+ 'scripts/bump-version.mjs',
+ 'scripts/coverage.mjs',
+ 'scripts/publish-dist.mjs',
+ 'repair.mjs',
+ 'docs/clean-machine-validation.md',
+ 'docs/release-policy.md',
+ '.gitattributes',
+ '.gitignore',
+ 'CHANGELOG.md',
+ 'CODE_OF_CONDUCT.md',
+ 'CONTRIBUTING.md',
+ 'SECURITY.md',
+ 'docs/compatibility.md',
+]);
+export function isSourceOnlyRuntimePath(rel){return SOURCE_ONLY_RUNTIME_PATHS.has(rel.replaceAll('\\','/'));}
 export function coreInventory(pluginRoot){
  const core=path.join(pluginRoot,'scripts','core'),files={};
  function walk(dir){
@@ -20,6 +39,7 @@ export function coreInventory(pluginRoot){
 export function verifyRelease(pluginRoot=root){
  const manifest=JSON.parse(fs.readFileSync(path.join(pluginRoot,'release.json'),'utf8'));
  if(manifest.schema!==2)throw new Error('RELEASE_SCHEMA_UNSUPPORTED: current releases require schema 2');
+ assertReleaseMetadataReferences(pluginRoot);
  const current=coreInventory(pluginRoot);
  if(JSON.stringify(current)!==JSON.stringify(manifest.files))throw new Error('RELEASE_INTEGRITY_FAILED: core differs from the verified release; reinstall the release');
  if(JSON.stringify(runtimeInventory(pluginRoot))!==JSON.stringify(manifest.runtimeFiles))throw new Error('RELEASE_INTEGRITY_FAILED: runtime differs from the verified release');
@@ -28,6 +48,7 @@ export function verifyRelease(pluginRoot=root){
 export function runtimeInventory(pluginRoot){
  const files={};
  function walk(rel){
+  if(isSourceOnlyRuntimePath(rel))return;
   const file=path.join(pluginRoot,rel),stat=fs.lstatSync(file);
   if(stat.isSymbolicLink())throw new Error('RELEASE_LINK_FORBIDDEN: '+file);
   if(stat.isDirectory())for(const name of fs.readdirSync(file).sort()){
@@ -38,14 +59,52 @@ export function runtimeInventory(pluginRoot){
  }
  // The manifest itself is intentionally excluded to avoid a self-referential
  // hash. Every other shipped instruction and metadata file is covered.
-  for(const rel of ['.agents','.codex-plugin','repair.mjs','scripts','skills','hooks','docs','agents','assets','.gitattributes','.gitignore']){
+ for(const rel of ['.agents','.codex-plugin','repair.mjs','scripts','skills','hooks','docs','assets','.gitattributes','.gitignore']){
   if(fs.existsSync(path.join(pluginRoot,rel)))walk(rel);
  }
- for(const name of ['SKILL.md','README.md','README-zh.md','CHANGELOG.md','LICENSE','LICENSE-zh.md','SECURITY.md','CONTRIBUTING.md','CODE_OF_CONDUCT.md']){
+ for(const name of ['SKILL.md','README.md','README-zh.md','CHANGELOG.md','LICENSE','SECURITY.md','CONTRIBUTING.md','CODE_OF_CONDUCT.md']){
   const file=path.join(pluginRoot,name);
   if(fs.existsSync(file))walk(name);
  }
  return files;
+}
+function metadataFailure(message){throw new Error('RELEASE_METADATA_REFERENCE_INVALID: '+message);}
+function hasOwn(value,key){return Object.prototype.hasOwnProperty.call(value,key);}
+function assertDeclaredMetadataFile(pluginRoot,base,source,field,value){
+ if(typeof value!=='string'||!value.trim())metadataFailure(`${source} ${field} must be a nonempty relative file path`);
+ const reference=value.trim();
+ if(path.isAbsolute(reference))metadataFailure(`${source} ${field} must be relative`);
+ const file=path.resolve(base,reference),relative=path.relative(base,file);
+ if(!relative||relative==='..'||relative.startsWith(`..${path.sep}`)||path.isAbsolute(relative))metadataFailure(`${source} ${field} resolves outside its package root`);
+ let stat;try{stat=fs.lstatSync(file);}catch(error){
+  if(error?.code==='ENOENT')metadataFailure(`${source} ${field} does not resolve to a regular file`);
+  throw error;
+ }
+ if(stat.isSymbolicLink()||!stat.isFile())metadataFailure(`${source} ${field} does not resolve to a regular file`);
+}
+function yamlScalar(source,field){
+ const match=new RegExp(`^\\s*${field}\\s*:\\s*(.*?)\\s*$`,'m').exec(source);
+ if(!match)return undefined;
+ let value=match[1].trim();
+ const quoted=/^(["'])(.*)\1(?:\s+#.*)?$/.exec(value);
+ if(quoted)return quoted[2];
+ return value.replace(/\s+#.*$/,'').trim();
+}
+function assertReleaseMetadataReferences(pluginRoot){
+ for(const rel of ['.codex-plugin/plugin.json','plugin.json']){
+  const file=path.join(pluginRoot,rel);if(!fs.existsSync(file))continue;
+  let manifest;try{manifest=JSON.parse(fs.readFileSync(file,'utf8'));}catch{metadataFailure(`${rel} is not valid JSON`);}
+  const iface=manifest?.interface;if(!iface||typeof iface!=='object'||Array.isArray(iface))continue;
+  for(const field of ['composerIcon','logo','logoDark'])if(hasOwn(iface,field))assertDeclaredMetadataFile(pluginRoot,pluginRoot,rel,field,iface[field]);
+ }
+ const skills=path.join(pluginRoot,'skills');if(!fs.existsSync(skills))return;
+ const skillsStat=fs.lstatSync(skills);if(skillsStat.isSymbolicLink()||!skillsStat.isDirectory())metadataFailure('skills must be a real directory');
+ for(const entry of fs.readdirSync(skills,{withFileTypes:true}).sort((a,b)=>a.name.localeCompare(b.name))){
+  const skillRoot=path.join(skills,entry.name);if(entry.isSymbolicLink())metadataFailure(`skills/${entry.name} must not be a symbolic link`);if(!entry.isDirectory())continue;
+  const rel=path.join('skills',entry.name,'agents','openai.yaml').replaceAll('\\','/'),file=path.join(skillRoot,'agents','openai.yaml');if(!fs.existsSync(file))continue;
+  const stat=fs.lstatSync(file);if(stat.isSymbolicLink()||!stat.isFile())metadataFailure(`${rel} must be a regular file`);
+  const text=fs.readFileSync(file,'utf8');for(const field of ['icon_small','icon_large']){const value=yamlScalar(text,field);if(value!==undefined)assertDeclaredMetadataFile(pluginRoot,skillRoot,rel,field,value);}
+ }
 }
 async function assertSealedDependencies(pluginRoot){
  const {verifyDependencyTree}=await import('./dependency-integrity.mjs');
@@ -116,6 +175,7 @@ if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.ur
  const options=parseCliArgs(process.argv.slice(2));
  if(options.seal){
   assertCanonicalTextLineEndings(root);
+  assertReleaseMetadataReferences(root);
   if(options.distribution)await assertDistributionProvenance(root);else await assertSealedDependencies(root);
   const files=coreInventory(root),text=fs.readFileSync(path.join(root,'scripts','core','contracts.mjs'),'utf8');
   const coreVersion=/CORE_VERSION\s*=\s*'([^']+)'/.exec(text)?.[1];if(!coreVersion)throw new Error('Missing core version');

@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -21,10 +22,10 @@ const sessionHookOuterTimeoutMs=45000;
 // wall-clock bound also includes a fresh Windows PowerShell startup.
 const timeoutCaseCompletionBoundMs=30000;
 const timeoutCaseOwnedProcessDeadlineSeconds=1;
-const success="param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'called.json'),(@{Action=$Action;Json=[bool]$Json;TimeoutSeconds=$TimeoutSeconds}|ConvertTo-Json),[Text.Encoding]::UTF8)\n@{ok=$true;stage='ready';nodeVersion='22.0.0';sdkVersion='0.149.0';cliPath='fixture';agent='codex'}|ConvertTo-Json -Compress\n";
+const success="param([string]$Action,[switch]$Json,[int]$TimeoutSeconds)\n[Console]::OutputEncoding=[Text.Encoding]::UTF8\n[IO.File]::WriteAllText((Join-Path $PSScriptRoot 'called.json'),(@{Action=$Action;Json=[bool]$Json;TimeoutSeconds=$TimeoutSeconds}|ConvertTo-Json),[Text.Encoding]::UTF8)\n@{ok=$true;stage='ready';nodeVersion='22.0.0';sdkVersion='0.162.1';cliPath='fixture';agent='codex'}|ConvertTo-Json -Compress\n";
 function fixture(t,bootstrap=success,{observeOwnedPid=false}={}){
   assert.ok(fs.existsSync(path.join(root,'hooks','session-start.ps1')),'SessionStart preparation hook must exist');
-  const base=path.join(process.env.USERPROFILE||os.homedir(),'workspace','temp');fs.mkdirSync(base,{recursive:true});
+  const base=testTempFamily('session-hook');fs.mkdirSync(base,{recursive:true});
   const dir=fs.mkdtempSync(path.join(base,"orch-hook 中文 '& "));
   for(const folder of ['scripts','hooks'])fs.mkdirSync(path.join(dir,folder));
   for(const name of ['session-start.ps1','hooks.json'])fs.copyFileSync(path.join(root,'hooks',name),path.join(dir,'hooks',name));

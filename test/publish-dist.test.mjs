@@ -62,6 +62,46 @@ test('publish-dist builds a sealed distribution with its own local marketplace c
     assert.equal(fs.existsSync(path.join(dist, '.github')), false, '分发不带 CI 元数据');
     assert.equal(fs.existsSync(path.join(dist, '.git')), false, '分发不带 git 元数据');
     assert.equal(fs.existsSync(path.join(dist, 'scripts', 'node_modules')), false, '分发不带依赖目录');
+    assert.equal(fs.existsSync(path.join(dist, 'agents', 'openai.yaml')), false, 'distribution omits obsolete root agent metadata');
+    assert.equal(fs.existsSync(path.join(dist, 'skills', 'codex-tui-orchestrator', 'agents', 'openai.yaml')), true, 'distribution retains active skill metadata');
+    for (const sourceOnlyFile of [
+      'scripts/bump-version.mjs',
+      'scripts/coverage.mjs',
+      'scripts/publish-dist.mjs',
+      'repair.mjs',
+      'docs/clean-machine-validation.md',
+      'docs/release-policy.md',
+      '.gitattributes',
+      '.gitignore',
+      'CHANGELOG.md',
+      'CODE_OF_CONDUCT.md',
+      'CONTRIBUTING.md',
+      'SECURITY.md',
+      'docs/compatibility.md',
+    ]) {
+      assert.equal(
+        fs.existsSync(path.join(dist, sourceOnlyFile)),
+        false,
+        `distribution must omit source-only maintenance file ${sourceOnlyFile}`,
+      );
+    }
+    const shippedDocs = [
+      'docs/environment-setup.md',
+      'docs/execution-contract.md',
+      'docs/security-boundaries.md',
+      'docs/terms.md',
+    ].map(rel => fs.readFileSync(path.join(dist, rel), 'utf8')).join('\n');
+    assert.doesNotMatch(shippedDocs, /(?:rc-validation\.md|release-policy\.md|clean-machine-validation\.md|scripts\/coverage\.mjs)/i, 'shipped documents must not link to omitted source-only material');
+    for(const rel of ['README.md','README-zh.md','docs/security-boundaries.md']){
+      assert.equal(fs.existsSync(path.join(dist,rel)),true,`distribution retains linked user-facing document ${rel}`);
+    }
+    for (const legacyPiModule of ['pi-host.mjs', 'pi-runtime.mjs', 'pi-shutdown.mjs']) {
+      assert.equal(
+        fs.existsSync(path.join(dist, 'scripts', 'core', legacyPiModule)),
+        false,
+        `Codex-only distribution must not retain unreachable Pi adapter ${legacyPiModule}`,
+      );
+    }
     assert.ok(fs.existsSync(path.join(dist, 'scripts', 'distribution-provenance.json')), '分发必须显式携带已认证的源码依赖来源');
     assert.ok(fs.existsSync(path.join(dist, 'scripts', 'distribution-source-release.json')), '分发必须携带认证后的源码发行封印');
     const verify = JSON.parse(execFileSync(process.execPath, [path.join(dist, 'scripts', 'release-integrity.mjs')], {encoding: 'utf8', cwd: dist}));
@@ -81,6 +121,15 @@ test('publish-dist builds a sealed distribution with its own local marketplace c
     assert.equal(result.sourceKind, 'dist');
     assert.equal(result.marketplacePath, catalogPath);
     assert.equal(result.marketplaceRoot, dist);
+
+    // A user can run the default local-install flow from the exported artifact
+    // itself.  That flow must discover the artifact-owned catalog rather than
+    // assuming the checkout catalog name or a second dist export.
+    const selfRegistration = inspectRegistration({pluginPath: dist});
+    assert.equal(selfRegistration.status, 'matched', JSON.stringify(selfRegistration));
+    assert.equal(selfRegistration.marketplaceName, 'codex-tui-orchestrator-dist');
+    assert.equal(selfRegistration.marketplaceRoot, dist);
+    assert.equal(selfRegistration.sourceReal, selfRegistration.pluginReal);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
 

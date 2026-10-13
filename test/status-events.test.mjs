@@ -1,15 +1,23 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createStatusPublisher,readRunStatus,readEvents,watchRunStatus,renderRunStatus,latestRunId} from '../scripts/core/status-events.mjs';
-const family=fileURLToPath(new URL('../temp/',import.meta.url));
+import {isProcessIdentityBinding,processIdentityBinding} from '../scripts/core/leases.mjs';
+import {controllerStateDir} from '../scripts/core/controller-state.mjs';
+import {providerFixtureToken} from './fixture-provider-tokens.mjs';
+const family=testTempFamily('status-events');
 function fixture(){
   fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'status-'));
   const previousControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
   const controllerRoot=fs.mkdtempSync(path.join(family,'status-controller-'));
   process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
+  // Production validates controller storage before it creates a status publisher.
+  // Mirror that lifecycle so the watch budget measures event delivery, not the
+  // one-time Windows ACL probe for a fresh private root.
+  controllerStateDir(workspace);
   const dir=path.join(workspace,'temp','orchestrator','runs','live');fs.mkdirSync(dir,{recursive:true});
   const sum={runId:'live',workspace,generation:1,executionMode:'headless',tasks:[{id:'T001',prompt:'first'},{id:'T002',prompt:'second'}],blocks:[{key:'B1',title:'linked',taskIds:['T001','T002']}],results:{B1:{status:'running',attempts:[{number:1}],launcher:{ProcessId:123}}},taskResults:{T001:{status:'running'},T002:{status:'pending'}}};
   return {workspace,dir,sum,close:()=>{if(previousControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=previousControllerRoot;fs.rmSync(workspace,{recursive:true,force:true});fs.rmSync(controllerRoot,{recursive:true,force:true});}};
@@ -27,6 +35,80 @@ test('status snapshots distinguish the active task from the process and survive 
     assert.match(renderRunStatus(snap),/TodoList/);assert.match(renderRunStatus(snap),/Execution/);
     assert.match(renderRunStatus(snap),/T002.*pending/);
   }finally{f.close();}
+});
+
+test('status publication canonicalizes each runtime identity slot before it reaches public ledgers',()=>{
+  const f=fixture();try{
+    const owner={ProcessId:801,Started:'2026-10-10T00:00:00.000Z',Name:'node.exe',CommandLine:'node controller --private-owner'};
+    const launcher={ProcessId:802,Started:'2026-10-10T00:00:01.000Z',Name:'powershell.exe',CommandLine:'powershell -File private-launch.ps1'};
+    const observed={ProcessId:803,Started:'2026-10-10T00:00:02.000Z',Name:'powershell.exe',CommandLine:'powershell -File private-observed.ps1'};
+    f.sum.owner=owner;
+    f.sum.results.B1.launcher=launcher;
+    f.sum.results.B1.attempts=[{number:1,launcherObserved:observed}];
+    createStatusPublisher(f.dir).publish(f.sum,'block.running');
+    const saved=JSON.parse(fs.readFileSync(path.join(f.dir,'summary.json'),'utf8'));
+    const publicState=readRunStatus(f.workspace,'live');
+    for(const state of [saved,publicState]){
+      assert.deepEqual(state.owner,processIdentityBinding(owner));
+      assert.deepEqual(state.results.B1.launcher,processIdentityBinding(launcher));
+      assert.deepEqual(state.results.B1.attempts[0].launcherObserved,processIdentityBinding(observed));
+      assert.equal(isProcessIdentityBinding(state.owner),true);
+      assert.equal(isProcessIdentityBinding(state.results.B1.launcher),true);
+      assert.equal(isProcessIdentityBinding(state.results.B1.attempts[0].launcherObserved),true);
+      assert.doesNotMatch(JSON.stringify(state),/CommandLine/u);
+    }
+  }finally{f.close();}
+});
+
+test('status publication rejects malformed raw identities that carry a command line',()=>{
+  const slots=[
+    {label:'owner',assign:sum=>{sum.owner={ProcessId:801,CommandLine:'node leaked-owner'};}},
+    {label:'launcher',assign:sum=>{sum.results.B1.launcher={ProcessId:802,CommandLine:'powershell leaked-launcher'};}},
+    {label:'launcher observation',assign:sum=>{sum.results.B1.attempts=[{number:1,launcherObserved:{ProcessId:803,CommandLine:'powershell leaked-observation'}}];}},
+  ];
+  for(const {label,assign} of slots){
+    const f=fixture();try{
+      assign(f.sum);
+      assert.throws(()=>createStatusPublisher(f.dir).publish(f.sum,'block.running'),new RegExp('Invalid public process identity: '+label,'u'));
+      assert.equal(fs.existsSync(path.join(f.dir,'summary.json')),false);
+      assert.equal(fs.existsSync(path.join(f.dir,'events.jsonl')),false);
+    }finally{f.close();}
+  }
+});
+
+test('status event projection canonicalizes runtime identity slots without exposing a raw command line',()=>{
+  const f=fixture();try{
+    const owner={ProcessId:811,Started:'2026-10-10T00:00:00.000Z',Name:'node.exe',CommandLine:'node private-owner'};
+    const launcher={ProcessId:812,Started:'2026-10-10T00:00:01.000Z',Name:'powershell.exe',CommandLine:'powershell private-launcher'};
+    const observed={ProcessId:813,Started:'2026-10-10T00:00:02.000Z',Name:'powershell.exe',CommandLine:'powershell private-observed'};
+    fs.writeFileSync(path.join(f.dir,'events.jsonl'),JSON.stringify({schema:1,seq:1,runId:'live',type:'block.running',owner,results:{B1:{launcher,attempts:[{launcherObserved:observed}]}}})+'\n');
+    const [event]=readEvents(f.dir,{runId:'live'});
+    assert.deepEqual(event.owner,processIdentityBinding(owner));
+    assert.deepEqual(event.results.B1.launcher,processIdentityBinding(launcher));
+    assert.deepEqual(event.results.B1.attempts[0].launcherObserved,processIdentityBinding(observed));
+    assert.doesNotMatch(JSON.stringify(event),/CommandLine/u);
+  }finally{f.close();}
+});
+
+test('an explicit controller environment keeps an isolated status authority out of the observer default root',()=>{
+  const workspace=fs.mkdtempSync(path.join(family,'status-explicit-workspace-'));
+  const defaultRoot=fs.mkdtempSync(path.join(family,'status-default-controller-'));
+  const isolatedRoot=fs.mkdtempSync(path.join(family,'status-isolated-controller-'));
+  const previous=process.env.ORCH_CONTROLLER_ROOT;
+  try{
+    process.env.ORCH_CONTROLLER_ROOT=defaultRoot;
+    const env={ORCH_CONTROLLER_ROOT:isolatedRoot};
+    const dir=path.join(workspace,'temp','orchestrator','runs','isolated');fs.mkdirSync(dir,{recursive:true});
+    const sum={runId:'isolated',workspace,generation:1,executionMode:'headless',tasks:[{id:'T001',prompt:'isolated'}],blocks:[{key:'B1',title:'isolated',taskIds:['T001']}],results:{B1:{status:'running',attempts:[{number:1}]}},taskResults:{T001:{status:'running'}}};
+    createStatusPublisher(dir,{env}).publish(sum,'block.running');
+    assert.ok(fs.readdirSync(isolatedRoot).length>0,'the authority must be published in the explicit isolated root');
+    assert.equal(fs.readdirSync(defaultRoot).length,0,'the observer default root must remain untouched');
+    assert.equal(readRunStatus(workspace,'isolated',{env}).runId,'isolated');
+    assert.throws(()=>readRunStatus(workspace,'isolated'),/authority/i);
+  }finally{
+    if(previous===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=previous;
+    fs.rmSync(workspace,{recursive:true,force:true});fs.rmSync(defaultRoot,{recursive:true,force:true});fs.rmSync(isolatedRoot,{recursive:true,force:true});
+  }
 });
 test('event reader ignores an incomplete final write and publisher recovers it without losing later transitions',()=>{
   const f=fixture();try{
@@ -67,6 +149,87 @@ test('planning manifest cannot claim a completed or successful state without con
     assert.throws(()=>readRunStatus(f.workspace,'live'),/planning ledger|unauthenticated/i);
     fs.writeFileSync(file,JSON.stringify({runId:'live',workspace:f.workspace,tasks:f.sum.tasks,taskResults:{T001:{status:'verified'}}}));
     assert.throws(()=>readRunStatus(f.workspace,'live'),/planning ledger|unauthenticated/i);
+  }finally{f.close();}
+});
+
+test('legacy planning manifests return only a redacted public task view',()=>{
+  const f=fixture();try{
+    const secret=providerFixtureToken('openai-project','abcdefghijklmnopqrstuvwx');
+    fs.writeFileSync(path.join(f.dir,'manifest.json'),JSON.stringify({
+      runId:'live',workspace:f.workspace,executionMode:'headless',
+      request:`audit OPENAI_API_KEY=${secret}`,
+      tasks:[{id:'T001',prompt:`remove the leaked provider credential ${secret}`}],
+      blocks:[{key:'B1',title:`credential ${secret}`,taskIds:['T001']}],
+    }));
+    const snapshot=readRunStatus(f.workspace,'live'),serialized=JSON.stringify(snapshot),rendered=renderRunStatus(snapshot);
+    assert.doesNotMatch(serialized,new RegExp(secret,'u'));
+    assert.doesNotMatch(rendered,new RegExp(secret,'u'));
+    assert.match(serialized,/\[REDACTED\]/u);
+  }finally{f.close();}
+});
+
+test('status rendering projects sensitive fields supplied directly by a caller',()=>{
+  const secret=providerFixtureToken('openai-project','abcdefghijklmnopqrstuvwx');
+  const rendered=renderRunStatus({
+    runId:'live',workspace:'C:/fixture-workspace',
+    todoList:[{id:'T001',status:'pending',prompt:`OPENAI_API_KEY=${secret}`}],
+    executionStatus:[{block:'B1',mode:'headless',status:'pending',attempt:0,pid:null,taskIds:['T001'],reason:`provider secret ${secret}`}],
+  });
+  assert.doesNotMatch(rendered,new RegExp(secret,'u'));
+  assert.match(rendered,/\[REDACTED\]/u);
+});
+
+test('status event readers and watchers project legacy event and planning snapshots',async()=>{
+  const f=fixture();try{
+    const secret=providerFixtureToken('openai-project','abcdefghijklmnopqrstuvwx');
+    fs.writeFileSync(path.join(f.dir,'manifest.json'),JSON.stringify({
+      runId:'live',workspace:f.workspace,tasks:[{id:'T001',prompt:`OPENAI_API_KEY=${secret}`}],
+    }));
+    fs.writeFileSync(path.join(f.dir,'events.jsonl'),JSON.stringify({
+      schema:1,seq:1,runId:'live',type:'task.started',
+      todoList:[{id:'T001',prompt:`OPENAI_API_KEY=${secret}`}],
+      executionStatus:[{block:'B1',reason:`provider ${secret}`}],
+    })+'\n');
+    const direct=readEvents(f.dir,{runId:'live'});
+    assert.doesNotMatch(JSON.stringify(direct),new RegExp(secret,'u'));
+    const received=[],controller=new AbortController();
+    await watchRunStatus({workspace:f.workspace,runId:'live',intervalMs:10,timeoutMs:1000,signal:controller.signal,onEvent:event=>{
+      received.push(event);controller.abort();
+    }});
+    assert.equal(received[0]?.type,'snapshot');
+    assert.ok(received.length>=1);
+    assert.doesNotMatch(JSON.stringify(received),new RegExp(secret,'u'));
+  }finally{f.close();}
+});
+
+test('status errors redact credential-shaped paths and malformed ledger content',()=>{
+  const secret=providerFixtureToken('openai-project','abcdefghijklmnopqrstuvwx');
+  const workspace=fs.mkdtempSync(path.join(family,`status-OPENAI_API_KEY=${secret}-`));
+  const dir=path.join(workspace,'temp','orchestrator','runs','live');fs.mkdirSync(dir,{recursive:true});
+  try{
+    fs.writeFileSync(path.join(dir,'summary.json'),'{"request":"OPENAI_API_KEY='+secret+'"');
+    assert.throws(()=>readRunStatus(workspace,'live'),error=>{
+      assert.doesNotMatch(String(error?.message||''),new RegExp(secret,'u'));
+      return true;
+    });
+    fs.rmSync(path.join(dir,'summary.json'));
+    fs.writeFileSync(path.join(dir,'events.jsonl'),'{"detail":"OPENAI_API_KEY='+secret+'"\n');
+    assert.throws(()=>readEvents(dir,{runId:'live'}),error=>{
+      assert.doesNotMatch(String(error?.message||''),new RegExp(secret,'u'));
+      return true;
+    });
+  }finally{fs.rmSync(workspace,{recursive:true,force:true});}
+});
+
+test('status authority errors redact credential-shaped run identifiers',()=>{
+  const f=fixture();try{
+    const runId=providerFixtureToken('openai-project','abcdefghijklmnopqrstuvwx');
+    const dir=path.join(f.workspace,'temp','orchestrator','runs',runId);fs.mkdirSync(dir,{recursive:true});
+    fs.writeFileSync(path.join(dir,'summary.json'),JSON.stringify({runId,workspace:f.workspace,tasks:[],blocks:[],results:{},taskResults:{}}));
+    assert.throws(()=>readRunStatus(f.workspace,runId),error=>{
+      assert.doesNotMatch(String(error?.message||''),new RegExp(runId,'u'));
+      return true;
+    });
   }finally{f.close();}
 });
 

@@ -16,11 +16,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_TESTS = 'test/*.test.mjs';
 const DEFAULT_OUT = path.join('.plugin-eval', 'coverage', 'lcov.info');
+const HOST_CONTEXT_ISOLATION_PRELOAD = pathToFileURL(path.join(root, 'test', 'host-context-isolation.mjs')).href;
 
 function parseArgs(argv) {
   const out = {tests: [], out: DEFAULT_OUT, concurrency: 1, quiet: false, help: false};
@@ -108,6 +109,8 @@ function main(argv) {
   const childEnv = {...process.env};
   delete childEnv.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, [
+    '--import',
+    HOST_CONTEXT_ISOLATION_PRELOAD,
     '--test',
     '--test-concurrency=' + options.concurrency,
     '--experimental-test-coverage',

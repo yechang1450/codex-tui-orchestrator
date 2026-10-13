@@ -6,6 +6,7 @@ import {runDirectory} from './runner.mjs';
 import {processSnapshot,sameProcess} from './leases.mjs';
 import {TERMINAL,SUCCESS,summaryComplete} from './contracts.mjs';
 import {readRunStatus} from './status-events.mjs';
+import {readConfiguredAcceptanceAbort,readConfiguredAcceptanceFinalization} from './isolated-acceptance.mjs';
 export {TERMINAL,SUCCESS,summaryComplete};
 export const summaryTerminal=sum=>summaryComplete(sum,false);
 export const failures=sum=>Object.entries(sum?.taskResults||{}).filter(([,r])=>!SUCCESS.has(r.status)).map(([id,r])=>id+':'+r.status);
@@ -29,21 +30,58 @@ export async function main(argv=process.argv.slice(2),hooks={}) {
   const {workspace}=resolveRuntimeContext();runDirectory(workspace,runId);
   const now=hooks.now||(()=>performance.now()),sleep=hooks.sleep||(ms=>new Promise(r=>setTimeout(r,ms)));
   const snapshot=hooks.snapshot||processSnapshot,load=hooks.load||loadSummary,log=hooks.log||console.log,error=hooks.error||console.error;
+  const readAbort=hooks.abort||(()=>readConfiguredAcceptanceAbort({workspace,runId}));
+  const isolatedAcceptance=hooks.isolatedAcceptance??(String(process.env.ORCH_ISOLATED_ACCEPTANCE||'')==='1');
+  const readFinalization=hooks.finalization||(()=>readConfiguredAcceptanceFinalization({workspace,runId}));
+  const abortRequested=()=>{
+    let record;
+    try{
+      record=readAbort();
+      if(record===null||record===undefined)return false;
+      if(!record||typeof record!=='object'||record.kind!=='acceptance-abort'||record.runId!==runId)
+        throw new Error('invalid acceptance abort record');
+    }catch{
+      error('[poll-windows] isolated acceptance abort authority unavailable runId='+runId);process.exitCode=1;return true;
+    }
+    error('[poll-windows] isolated acceptance aborted runId='+runId);process.exitCode=1;return true;
+  };
+  const finalizationCommitted=()=>{
+    if(!isolatedAcceptance)return true;
+    try{
+      const record=readFinalization();
+      if(!record||typeof record!=='object'||record.kind!=='acceptance-finalization'||record.runId!==runId)
+        throw new Error('missing acceptance finalization');
+      return true;
+    }catch{
+      error('[poll-windows] isolated acceptance finalization unavailable runId='+runId);process.exitCode=1;return false;
+    }
+  };
+  if(abortRequested())return;
   const deadline=now()+timeoutMs;
   let stable=0;
   while(now()<deadline) {
+    if(abortRequested())return;
     const sum=load(workspace,runId);
     if(sum?.runId===runId&&sum.finishedAt&&summaryTerminal(sum)) {
       const remaining=deadline-now();if(remaining<=0)break;
       const processes=snapshot(Math.max(1,Math.ceil(remaining)));
       if(now()>=deadline)break;
       const alive=Object.values(sum.results).some(r=>r.launcher&&sameProcess(r.launcher,processes.get(r.launcher.ProcessId)));
-      if(!alive&&++stable>=2){const ok=summaryComplete(sum,requireAllSuccess);log(JSON.stringify({runId,success:ok,requireAllSuccess,failures:failures(sum)}));process.exitCode=ok?0:1;return;}
+      if(!alive&&++stable>=2){
+        if(abortRequested())return;
+        if(!finalizationCommitted())return;
+        // The isolated finalization marker and abort publisher share one
+        // controller lock. Re-read after observing the marker so a malformed
+        // or conflicting terminal state fails closed instead of printing 0.
+        if(abortRequested())return;
+        const ok=summaryComplete(sum,requireAllSuccess);log(JSON.stringify({runId,success:ok,requireAllSuccess,failures:failures(sum)}));process.exitCode=ok?0:1;return;
+      }
       if(alive)stable=0;
     }else stable=0;
     log('[poll-windows] runId='+runId+' waiting for finalized inventory and closed windows');
     await sleep(Math.min(interval,Math.max(0,deadline-now())));
   }
+  if(abortRequested())return;
   error('[poll-windows] timeout runId='+runId);process.exitCode=1;
 }
 if(process.argv[1]&&path.resolve(process.argv[1]).toLowerCase()===fileURLToPath(import.meta.url).toLowerCase())main().catch(e=>{console.error(e.message);process.exitCode=2;});

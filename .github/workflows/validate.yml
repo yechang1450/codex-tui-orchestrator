@@ -19,6 +19,11 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node-version }}
+      - name: Record Node runtime
+        shell: pwsh
+        run: |
+          node --version
+          node -p "process.execPath"
       - name: Install locked dependencies
         run: npm ci --prefix scripts --omit=optional --ignore-scripts --no-audit --no-fund
       - name: Install and pin the offline Codex CLI fixture
@@ -35,7 +40,7 @@ jobs:
           # production preparation path runs. The preparation path then
           # verifies the native binary and the complete platform tree, while
           # no unverified npm bypass is enabled in either step.
-          $installOutput = (& $nodeExe $npmCli install --global --prefix $cliRoot --ignore-scripts --no-audit --no-fund '@openai/codex@0.160.0' 2>&1 | Out-String).Trim()
+          $installOutput = (& $nodeExe $npmCli install --global --prefix $cliRoot --ignore-scripts --no-audit --no-fund --include=optional '@openai/codex@0.162.1' 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI fixture install failed: $installOutput" }
           $env:ORCH_AUTO_INSTALL_CLI = '0'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
@@ -45,7 +50,7 @@ jobs:
           if (-not $report.ok -or $report.stage -ne 'ready') { throw "Pinned Codex CLI verification returned an invalid report: $reportText" }
           $cli = [string]$report.cliPath
           $version = (& $cli --version 2>$null | Out-String).Trim()
-          if ($version -ne 'codex-cli 0.160.0') { throw "Unexpected Codex CLI version: $version" }
+          if ($version -ne 'codex-cli 0.162.1') { throw "Unexpected Codex CLI version: $version" }
           "PLUGIN_DATA=$pluginData" >> $env:GITHUB_ENV
           "PATH=$cliRoot;$env:PATH" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_CLI=0" >> $env:GITHUB_ENV
@@ -82,17 +87,17 @@ jobs:
           $report = $reportText | ConvertFrom-Json
           if (-not $report.ok -or $report.stage -ne 'ready') { throw "Trusted automatic CLI installation returned an invalid report: $reportText" }
           $version = (& $report.cliPath --version 2>$null | Out-String).Trim()
-          if ($version -ne 'codex-cli 0.160.0') { throw "Unexpected automatically installed CLI version: $version" }
+          if ($version -ne 'codex-cli 0.162.1') { throw "Unexpected automatically installed CLI version: $version" }
       - name: Configure offline test host
         shell: pwsh
         run: |
           "ORCH_AGENT=codex" >> $env:GITHUB_ENV
-          "ORCH_SANDBOX=danger-full-access" >> $env:GITHUB_ENV
+          "ORCH_SANDBOX=read-only" >> $env:GITHUB_ENV
           "ORCH_APPROVAL=never" >> $env:GITHUB_ENV
           "PATH=$env:GITHUB_WORKSPACE\scripts;$env:PATH" >> $env:GITHUB_ENV
       - name: Run offline regression suite
         shell: pwsh
-        run: '& $env:ORCH_NODE_EXE --test --test-concurrency=1 test/*.test.mjs'
+        run: '& $env:ORCH_NODE_EXE --import ./test/host-context-isolation.mjs --test --test-concurrency=1 test/*.test.mjs'
       - name: Verify release integrity
         shell: pwsh
         run: '& $env:ORCH_NODE_EXE scripts/release-integrity.mjs'

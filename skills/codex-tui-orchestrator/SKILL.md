@@ -9,21 +9,21 @@ description: Use when codex-tui-orchestrator (legacy codex-TUI-orchestrator) rec
 
 ## 硬性执行契约
 
-- 默认 `--exec`（headless）；只有用户需要观察或交互时才用 `--run-windows` / `--visible`。两种模式都继承发起窗口最近结构化 `turn_context` 的 model、thinking/reasoning level 和 service tier；缺字段时依次回退到原生 `CODEX_HOME/config.toml`、`ORCH_*`。不得递归编排、调用子代理或另开子窗口。
+- 默认使用 `--run`，由编排器按发起窗口的有效权限选择安全执行模式：只有只读且无需审批的任务可使用 `--exec`（headless）；需要写入或可能请求审批的任务转为可见 Codex TUI。`--run-windows` / `--visible` 明确选择可见模式。两种模式都继承发起窗口最近结构化 `turn_context` 的 model、thinking/reasoning level 和 service tier；缺字段时依次回退到原生 `CODEX_HOME/config.toml`、`ORCH_*`。不得递归编排、调用子代理或另开子窗口。
 - 保留所有原始任务 ID 和原文。把任务拆到原子项，按依赖、父子路径锁、资源冲突和未知作用域归并为串行块；块间必须无依赖、无冲突、无未知风险。单块直接回到发起对话执行，多块才编排并发。
 - 对没有项目编号的任务，只有在文件/目录提示逐项对应原始任务中明确写出的全部路径时，才把它们视为可分块资源；漏报、编造或作用域不明时整批串行。`--plan` 供主控核查，不能把模型推断当作绝对保证。
 - 启动每个块前按实时可用内存和该块预测峰值准入：可用内存 `<=1000 MB` 回退单窗；否则必须满足 `预测峰值 < 可用内存 - 1000 MB`。不满足就排队，窗口退出并释放租约后重试；不得合并独立块、突破底线硬跑或只按固定窗口数限流。默认块成本 400 MB，并用实测峰值滚动修正。
 - 每个任务经过 `started → 实际操作/自验 → completed`，父控按 FIFO 串行队列独立检查真实工作区并写 `verification-report.jsonl`。结束标记、子窗自报、关窗或进程退出都不能证明成功；最后清理并核对剩余错误窗口/线程。
-- 不确定副作用标为 `needs-reconciliation`，不可盲目重跑；仅显式 `retrySafe:true` 的任务可安全重试。成功条件是全部任务已独立 `verified` 且自有进程已退出。
+- 不确定副作用标为 `needs-reconciliation`，不可盲目重跑；仅显式 `retrySafe:true` 的任务可安全重试。成功条件是全部任务已独立 `verified`，并且自有启动器及 headless 子进程都已有经身份绑定的退出证据。`--verify-run` 不能越过未证实退出状态。
 
 ## 入口与恢复
 
 ```powershell
-# 从拥有任务的工作区运行；@(...) 保留每个参数的边界。
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--plan', '<请求>')
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--run-id', '<ID>', '--acceptance-file', '<JSON>', '--exec', '<请求>')
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--verify-run', '<ID>', '--acceptance-file', '<JSON>')
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run -Arguments @('--status', '--workspace', '<工作区>', '--run-id', '<ID>', '--watch')
+# 从拥有任务的工作区运行；把 runner 参数直接放在已知 bootstrap 参数之后。
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run --plan '<请求>'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run --run-id '<ID>' --acceptance-file '<JSON>' --exec '<请求>'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run --verify-run '<ID>' --acceptance-file '<JSON>'
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "<插件绝对路径>\scripts\bootstrap.ps1" -Action run --status --workspace '<工作区>' --run-id '<ID>' --watch
 ```
 
 `--resume-run` 复用原计划、模式和验收摘要；传输、超时、容量、服务端错误只做有上限退避，账户用量上限立即失败并保留证据。`--doctor`、`--plan`、`--status --readonly` 分别用于环境、规划和只读诊断；`--plan` 不改任务文件，但可能写拆分缓存。

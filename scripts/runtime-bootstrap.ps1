@@ -32,6 +32,111 @@ function Assert-OrchSafePath {
     return $full
 }
 
+function Get-OrchTrustedSystemEnvironment {
+    # Derive the Windows root from the operating system instead of inheriting
+    # SystemRoot, WINDIR, or ComSpec from the launching process.  Those
+    # variables are configuration, not an authority to select executables.
+    $system32 = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($system32)) { throw 'WINDOWS_SYSTEM_ROOT_UNAVAILABLE: Windows system directory is unavailable.' }
+    $system32 = Assert-OrchSafePath $system32
+    if (-not (Test-Path -LiteralPath $system32 -PathType Container)) { throw 'WINDOWS_SYSTEM_ROOT_UNAVAILABLE: Windows system directory is unavailable.' }
+    $systemRoot = Assert-OrchSafePath (Split-Path -Parent $system32)
+    $expectedSystem32 = [IO.Path]::GetFullPath((Join-Path $systemRoot 'System32'))
+    if (-not [string]::Equals([IO.Path]::GetFullPath($system32), $expectedSystem32, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'WINDOWS_SYSTEM_ROOT_UNAVAILABLE: Windows system directory does not match its parent root.'
+    }
+    $commandProcessor = Assert-OrchSafePath (Join-Path $system32 'cmd.exe')
+    if (-not (Test-Path -LiteralPath $commandProcessor -PathType Leaf)) { throw 'WINDOWS_SYSTEM_ROOT_UNAVAILABLE: Windows command processor is unavailable.' }
+    $commandItem = Get-Item -LiteralPath $commandProcessor -Force -ErrorAction Stop
+    if (($commandItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $commandItem.PSIsContainer) {
+        throw 'WINDOWS_SYSTEM_ROOT_UNAVAILABLE: Windows command processor is not a regular file.'
+    }
+    return [ordered]@{ SystemRoot = $systemRoot; WINDIR = $systemRoot; ComSpec = $commandProcessor; System32 = $system32 }
+}
+
+function Get-OrchTrustedExecutionEnvironment {
+    # Preserve the ordinary caller environment required by the user's Codex
+    # session, while pinning the three variables that decide which Windows
+    # executables a child can locate.
+    $environment = [ordered]@{}
+    foreach ($entry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) {
+        $environment[[string]$entry.Key] = [string]$entry.Value
+    }
+    # Node loader variables execute or resolve caller-selected code before a
+    # terminal child reaches the verified plugin entry point. Keep ordinary
+    # session settings, but never forward those loader selectors.
+    foreach ($name in @('SystemRoot','WINDIR','ComSpec','NODE_OPTIONS','NODE_PATH')) {
+        foreach ($key in @($environment.Keys)) {
+            if ([string]::Equals([string]$key, $name, [StringComparison]::OrdinalIgnoreCase)) { $environment.Remove($key) }
+        }
+    }
+    $trusted = Get-OrchTrustedSystemEnvironment
+    $environment['SystemRoot'] = $trusted.SystemRoot
+    $environment['WINDIR'] = $trusted.WINDIR
+    $environment['ComSpec'] = $trusted.ComSpec
+    return $environment
+}
+
+function Assert-OrchPrivateRuntimeHome {
+    param([Parameter(Mandatory)][string]$Path)
+    # Runtime archives, Node, npm state, and the private CLI are executable
+    # authority. Keep them on a local root that another Windows principal
+    # cannot create, replace, or re-ACL.
+    $full = Assert-OrchSafePath $Path
+    if ($full.StartsWith('\\', [StringComparison]::Ordinal)) { throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage must be a local owner-private directory.' }
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value.ToUpperInvariant()
+    $allowed = @($currentSid, 'S-1-5-18', 'S-1-5-32-544')
+    $dangerous = [int64]2 -bor [int64]4 -bor [int64]16 -bor [int64]64 -bor [int64]256 -bor [int64]65536 -bor [int64]262144 -bor [int64]524288 -bor [int64]33554432 -bor [int64]268435456 -bor [int64]1073741824
+    $replacement = [int64]64 -bor [int64]65536 -bor [int64]262144 -bor [int64]524288 -bor [int64]268435456 -bor [int64]1073741824
+    $anchor = $full
+    while (-not (Test-Path -LiteralPath $anchor)) {
+        $parent = [IO.Path]::GetDirectoryName($anchor)
+        if (-not $parent -or $parent -eq $anchor) { throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage has no existing local ancestor.' }
+        $anchor = $parent
+    }
+    $item = Get-Item -LiteralPath $anchor -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer) { throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage ancestor is not a directory.' }
+    $checkTarget = {
+        param([string]$Directory)
+        $acl = [IO.Directory]::GetAccessControl($Directory)
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value.ToUpperInvariant()
+        if ($allowed -notcontains $owner) { throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage owner is not trusted.' }
+        foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+            $sid = $rule.IdentityReference.Value.ToUpperInvariant()
+            $mask = ([int64][int]$rule.FileSystemRights) -band [int64]4294967295
+            if ($rule.AccessControlType.ToString() -eq 'Allow' -and $allowed -notcontains $sid -and (($mask -band $dangerous) -ne 0)) {
+                throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage grants write-like access outside its trusted owner set.'
+            }
+        }
+    }
+    $checkAncestor = {
+        param([string]$Directory)
+        $acl = [IO.Directory]::GetAccessControl($Directory)
+        foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+            $sid = $rule.IdentityReference.Value.ToUpperInvariant()
+            $inheritOnly = @([string]$rule.PropagationFlags -split ',' | ForEach-Object { $_.Trim() }) -contains 'InheritOnly'
+            $mask = ([int64][int]$rule.FileSystemRights) -band [int64]4294967295
+            if ($rule.AccessControlType.ToString() -eq 'Allow' -and -not $inheritOnly -and $allowed -notcontains $sid -and (($mask -band $replacement) -ne 0)) {
+                throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage has a replaceable ancestor.'
+            }
+        }
+    }
+    try {
+        & $checkTarget $anchor
+        $ancestor = [IO.Path]::GetDirectoryName($anchor)
+        while ($ancestor -and $ancestor -ne $anchor) {
+            & $checkAncestor $ancestor
+            $parent = [IO.Path]::GetDirectoryName($ancestor)
+            if (-not $parent -or $parent -eq $ancestor) { break }
+            $ancestor = $parent
+        }
+    } catch {
+        if ($_.Exception.Message -like 'RUNTIME_ROOT_UNSAFE_ACL:*') { throw }
+        throw 'RUNTIME_ROOT_UNSAFE_ACL: runtime storage permissions could not be verified.'
+    }
+    return $full
+}
+
 function Assert-OrchRuntimeIdentity {
     param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$RuntimeHome)
     $full = Assert-OrchSafePath $Path
@@ -122,7 +227,13 @@ function ConvertTo-OrchNativeArgument {
 }
 
 function Invoke-OrchProcess {
-    param([Parameter(Mandatory)][string]$FilePath, [AllowEmptyCollection()][string[]]$ArgumentList = @(), [ValidateRange(1,1800)][int]$TimeoutSeconds = 15)
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [AllowEmptyCollection()][string[]]$ArgumentList = @(),
+        [ValidateRange(1,1800)][int]$TimeoutSeconds = 15,
+        [System.Collections.IDictionary]$Environment = $null,
+        [AllowNull()][string]$WorkingDirectory = $null
+    )
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $FilePath
     $info.UseShellExecute = $false
@@ -131,6 +242,17 @@ function Invoke-OrchProcess {
     $info.RedirectStandardError = $true
     $info.StandardOutputEncoding = [Text.Encoding]::UTF8
     $info.StandardErrorEncoding = [Text.Encoding]::UTF8
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+        $info.WorkingDirectory = $WorkingDirectory
+    }
+    if ($null -ne $Environment) {
+        $info.EnvironmentVariables.Clear()
+        foreach ($entry in $Environment.GetEnumerator()) {
+            $name = [string]$entry.Key
+            if ([string]::IsNullOrWhiteSpace($name)) { throw 'PROCESS_ENVIRONMENT: environment variable name is empty.' }
+            if ($null -ne $entry.Value) { $info.EnvironmentVariables[$name] = [string]$entry.Value }
+        }
+    }
     if ($info.PSObject.Properties.Name -contains 'ArgumentList') {
         foreach ($arg in $ArgumentList) { $info.ArgumentList.Add($arg) }
     } else {
@@ -145,7 +267,12 @@ function Invoke-OrchProcess {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             # Only the process just created here and its descendants are owned.
             if ($PSVersionTable.PSVersion.Major -ge 7) { $process.Kill($true) }
-            else { & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F 2>$null | Out-Null }
+            else {
+                $system32 = [Environment]::SystemDirectory
+                $taskkill = if ($system32) { Join-Path $system32 'taskkill.exe' } else { $null }
+                if ($taskkill -and (Test-Path -LiteralPath $taskkill -PathType Leaf)) { & $taskkill /PID $process.Id /T /F 2>$null | Out-Null }
+                else { $process.Kill() }
+            }
             [void]$process.WaitForExit(5000)
             throw 'PROCESS_TIMEOUT: runtime preparation exceeded its bounded timeout.'
         }
@@ -153,14 +280,206 @@ function Invoke-OrchProcess {
     } finally { $process.Dispose() }
 }
 
+function Get-OrchTrustedNpmEnvironment {
+    param(
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][string]$NpmPath,
+        [Parameter(Mandatory)][string]$RuntimeHome,
+        [Parameter(Mandatory)][string]$NpmCache,
+        [Parameter(Mandatory)][string]$UserConfigPath,
+        [Parameter(Mandatory)][string]$GlobalConfigPath,
+        [Parameter(Mandatory)][bool]$NpmTrusted,
+        [switch]$AllowUnverifiedNpm,
+        [switch]$DependencyRepair
+    )
+    # Setup processes have no need for caller credentials, npm configuration,
+    # Node loaders, or proxy routing. Give them a deterministic baseline instead
+    # of filtering an ambient process environment incompletely.
+    $system32 = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($system32)) { throw 'NPM_REPAIR_ENVIRONMENT: Windows system directory is unavailable.' }
+    $system32 = Assert-OrchSafePath $system32
+    $systemRoot = Split-Path -Parent $system32
+    $commandProcessor = Assert-OrchSafePath (Join-Path $system32 'cmd.exe')
+    if (-not (Test-Path -LiteralPath $commandProcessor -PathType Leaf)) { throw 'NPM_REPAIR_ENVIRONMENT: Windows command processor is unavailable.' }
+    $node = Assert-OrchSafePath $NodePath
+    $npm = Assert-OrchSafePath $NpmPath
+    foreach ($file in @($node,$npm)) {
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw 'NPM_REPAIR_ENVIRONMENT: verified runtime file is unavailable.' }
+        $item = Get-Item -LiteralPath $file -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $item.PSIsContainer) { throw 'NPM_REPAIR_ENVIRONMENT: verified runtime file is not a regular file.' }
+    }
+    $cache = Assert-OrchRuntimeIdentity -Path $NpmCache -RuntimeHome $RuntimeHome
+    $userConfig = Assert-OrchRuntimeIdentity -Path $UserConfigPath -RuntimeHome $RuntimeHome
+    $globalConfig = Assert-OrchRuntimeIdentity -Path $GlobalConfigPath -RuntimeHome $RuntimeHome
+    if ([string]::Equals([IO.Path]::GetFullPath($userConfig), [IO.Path]::GetFullPath($globalConfig), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'NPM_REPAIR_ENVIRONMENT: user and global npm config paths must be distinct.'
+    }
+    $prefix = Assert-OrchRuntimeIdentity -Path (Join-Path $RuntimeHome 'cli') -RuntimeHome $RuntimeHome
+    $npmHash = (Get-FileHash -LiteralPath $npm -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+    $environment = [ordered]@{
+        SystemRoot = $systemRoot
+        windir = $systemRoot
+        ComSpec = $commandProcessor
+        Path = ((Split-Path -Parent $node) + ';' + $system32)
+        PATHEXT = '.COM;.EXE;.BAT;.CMD'
+        TEMP = $cache
+        TMP = $cache
+        npm_execpath = $npm
+        ORCH_NPM_TRUSTED = if ($NpmTrusted) { '1' } else { '0' }
+        ORCH_NPM_TRUSTED_PATH = $npm
+        ORCH_NPM_TRUSTED_SHA256 = $npmHash
+        NPM_CONFIG_USERCONFIG = $userConfig
+        NPM_CONFIG_GLOBALCONFIG = $globalConfig
+        NPM_CONFIG_PREFIX = $prefix
+        NPM_CONFIG_CACHE = $cache
+        NPM_CONFIG_REGISTRY = 'https://registry.npmjs.org/'
+        NPM_CONFIG_PROXY = 'false'
+        NPM_CONFIG_REPLACE_REGISTRY_HOST = 'never'
+        NPM_CONFIG_STRICT_SSL = 'true'
+        NPM_CONFIG_IGNORE_SCRIPTS = 'true'
+        NPM_CONFIG_AUDIT = 'false'
+        NPM_CONFIG_FUND = 'false'
+        NPM_CONFIG_UPDATE_NOTIFIER = 'false'
+    }
+    if ($DependencyRepair) {
+        $environment['ORCH_DEP_REPAIR_BOOTSTRAP'] = '1'
+        $environment['NPM_CONFIG_OMIT'] = 'optional'
+    }
+    # This is deliberately an explicit argument, never a copied ambient
+    # setting. Bootstrap permits it only with a caller-supplied Node path.
+    if ($AllowUnverifiedNpm) { $environment['ORCH_ALLOW_UNVERIFIED_NPM'] = '1' }
+    return $environment
+}
+
+function Get-OrchTrustedNpmRepairEnvironment {
+    param(
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][string]$NpmPath,
+        [Parameter(Mandatory)][string]$RuntimeHome,
+        [Parameter(Mandatory)][string]$NpmCache,
+        [Parameter(Mandatory)][string]$UserConfigPath,
+        [Parameter(Mandatory)][string]$GlobalConfigPath,
+        [Parameter(Mandatory)][bool]$NpmTrusted,
+        [switch]$AllowUnverifiedNpm
+    )
+    return Get-OrchTrustedNpmEnvironment -NodePath $NodePath -NpmPath $NpmPath -RuntimeHome $RuntimeHome -NpmCache $NpmCache -UserConfigPath $UserConfigPath -GlobalConfigPath $GlobalConfigPath -NpmTrusted $NpmTrusted -AllowUnverifiedNpm:$AllowUnverifiedNpm -DependencyRepair
+}
+
+function Get-OrchOfficialDesktopLocalAppData {
+    # GetFolderPath consults USERPROFILE. Setup deliberately strips that
+    # caller-controlled value, so read Explorer's expanded per-user location
+    # directly and refuse the desktop fallback if it is unavailable.
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders', $false)
+    if ($null -eq $key) { return $null }
+    try {
+        $value = $key.GetValue('Local AppData', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    } finally {
+        $key.Dispose()
+    }
+    if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value) -or $value.Contains('%')) { return $null }
+    try {
+        $fullPath = [IO.Path]::GetFullPath($value)
+        if (-not [IO.Path]::IsPathRooted($fullPath)) { return $null }
+        return $fullPath
+    } catch {
+        return $null
+    }
+}
+
+function Get-OrchTrustedNpmPreparationEnvironment {
+    param(
+        [Parameter(Mandatory)][string]$NodePath,
+        [Parameter(Mandatory)][string]$NpmPath,
+        [Parameter(Mandatory)][string]$RuntimeHome,
+        [Parameter(Mandatory)][string]$NpmCache,
+        [Parameter(Mandatory)][string]$UserConfigPath,
+        [Parameter(Mandatory)][string]$GlobalConfigPath,
+        [Parameter(Mandatory)][bool]$NpmTrusted,
+        [switch]$AllowUnverifiedNpm,
+        [AllowEmptyString()][string]$PluginData = '',
+        [AllowEmptyString()][string]$CodexHome = ''
+    )
+    $environment = Get-OrchTrustedNpmEnvironment -NodePath $NodePath -NpmPath $NpmPath -RuntimeHome $RuntimeHome -NpmCache $NpmCache -UserConfigPath $UserConfigPath -GlobalConfigPath $GlobalConfigPath -NpmTrusted $NpmTrusted -AllowUnverifiedNpm:$AllowUnverifiedNpm
+    if (-not [string]::IsNullOrWhiteSpace($PluginData)) { $environment['PLUGIN_DATA'] = $PluginData }
+    if (-not [string]::IsNullOrWhiteSpace($CodexHome)) { $environment['CODEX_HOME'] = $CodexHome }
+    # The host verifier needs this one OS-derived location to validate a
+    # rotated desktop CLI below the official Codex install root.
+    $localAppData = Get-OrchOfficialDesktopLocalAppData
+    if (-not [string]::IsNullOrWhiteSpace($localAppData)) { $environment['LOCALAPPDATA'] = $localAppData }
+    # These are documented setup controls. Everything else stays out of the
+    # child so npm and Node cannot consume ambient config, loaders, proxies, or
+    # credentials before integrity checks complete.
+    foreach ($name in @('ORCH_AUTO_INSTALL_DEPS','ORCH_AUTO_INSTALL_CLI','ORCH_CLI','CODEX_EXE','ORCH_ALLOW_UNVERIFIED_CLI','ORCH_CLI_INSTALL_SPEC','ORCH_CLI_INSTALL_TIMEOUT_MS')) {
+        $value = [Environment]::GetEnvironmentVariable($name, 'Process')
+        if (-not [string]::IsNullOrWhiteSpace($value)) { $environment[$name] = $value }
+    }
+    return $environment
+}
+
+function Get-OrchNodeProbeStartInfo {
+    param([Parameter(Mandatory)][string]$NodePath)
+    # Node/npm version probes are verification operations. They do not need the
+    # caller's loaders, package-manager credentials, proxy routing, or working
+    # directory, so use a fresh minimal process environment.
+    $system32 = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($system32)) { throw 'NODE_PROBE_ENVIRONMENT: Windows system directory is unavailable.' }
+    $system32 = Assert-OrchSafePath $system32
+    if (-not (Test-Path -LiteralPath $system32 -PathType Container)) { throw 'NODE_PROBE_ENVIRONMENT: Windows system directory is unavailable.' }
+    $systemRoot = Split-Path -Parent $system32
+    $commandProcessor = Assert-OrchSafePath (Join-Path $system32 'cmd.exe')
+    if (-not (Test-Path -LiteralPath $commandProcessor -PathType Leaf)) { throw 'NODE_PROBE_ENVIRONMENT: Windows command processor is unavailable.' }
+    $node = Assert-OrchSafePath $NodePath
+    if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'NODE_PROBE_ENVIRONMENT: Node runtime is unavailable.' }
+    $nodeItem = Get-Item -LiteralPath $node -Force -ErrorAction Stop
+    if (($nodeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $nodeItem.PSIsContainer) { throw 'NODE_PROBE_ENVIRONMENT: Node runtime is not a regular file.' }
+    # npm accepts nonexistent user/global config files as empty files. Keep
+    # them distinct: current npm rejects loading one path in both roles. Fresh
+    # names under System32 prevent user or project .npmrc files from
+    # contributing settings without leaving probe state on disk.
+    $userConfig = Assert-OrchSafePath (Join-Path $system32 ('.codex-tui-orchestrator-probe-user-' + [guid]::NewGuid().ToString('N') + '.npmrc'))
+    $globalConfig = Assert-OrchSafePath (Join-Path $system32 ('.codex-tui-orchestrator-probe-global-' + [guid]::NewGuid().ToString('N') + '.npmrc'))
+    return [pscustomobject]@{
+        Environment = [ordered]@{
+            SystemRoot = $systemRoot
+            windir = $systemRoot
+            ComSpec = $commandProcessor
+            Path = ((Split-Path -Parent $node) + ';' + $system32)
+            PATHEXT = '.COM;.EXE;.BAT;.CMD'
+            NPM_CONFIG_USERCONFIG = $userConfig
+            NPM_CONFIG_GLOBALCONFIG = $globalConfig
+            NPM_CONFIG_IGNORE_SCRIPTS = 'true'
+            NPM_CONFIG_OFFLINE = 'true'
+            NPM_CONFIG_AUDIT = 'false'
+            NPM_CONFIG_FUND = 'false'
+            NPM_CONFIG_UPDATE_NOTIFIER = 'false'
+            NPM_CONFIG_STRICT_SSL = 'true'
+            NPM_CONFIG_REGISTRY = 'https://registry.npmjs.org/'
+            NPM_CONFIG_PROXY = 'false'
+        }
+        WorkingDirectory = $system32
+    }
+}
+
 function Invoke-OrchAttachedProcess {
-    param([Parameter(Mandatory)][string]$FilePath, [AllowEmptyCollection()][string[]]$ArgumentList = @())
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [AllowEmptyCollection()][string[]]$ArgumentList = @(),
+        [System.Collections.IDictionary]$Environment = $null
+    )
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = $FilePath
     $info.UseShellExecute = $false
     $info.CreateNoWindow = $true
     $info.RedirectStandardOutput = $true
     $info.RedirectStandardError = $true
+    if ($null -ne $Environment) {
+        $info.EnvironmentVariables.Clear()
+        foreach ($entry in $Environment.GetEnumerator()) {
+            $name = [string]$entry.Key
+            if ([string]::IsNullOrWhiteSpace($name)) { throw 'PROCESS_ENVIRONMENT: environment variable name is empty.' }
+            if ($null -ne $entry.Value) { $info.EnvironmentVariables[$name] = [string]$entry.Value }
+        }
+    }
     if ($info.PSObject.Properties.Name -contains 'ArgumentList') {
         foreach ($arg in $ArgumentList) { $info.ArgumentList.Add($arg) }
     } else { $info.Arguments = (($ArgumentList | ForEach-Object { ConvertTo-OrchNativeArgument $_ }) -join ' ') }
@@ -192,6 +511,341 @@ function Test-OrchTrustedSignature {
         }
     } catch { return $false }
     return $false
+}
+
+# --pull may execute an external Git binary. Keep the Git for Windows
+# certificate rotation policy in one release-sealed JSON file and require the
+# registry-owned cmd\git.exe before the trusted bootstrap runs it.
+function Get-OrchGitForWindowsTrustPolicy {
+    param([Parameter(Mandatory)][string]$PolicyPath)
+    $full = Assert-OrchSafePath $PolicyPath
+    if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw 'GIT_TRUST_POLICY_INVALID: policy file is missing.' }
+    $item = Get-Item -LiteralPath $full -Force -ErrorAction Stop
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'GIT_TRUST_POLICY_INVALID: policy file must not be a reparse point.' }
+    try { $policy = (Get-Content -LiteralPath $full -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop) }
+    catch { throw 'GIT_TRUST_POLICY_INVALID: policy file is invalid JSON.' }
+    if ($null -eq $policy -or $policy.schema -ne 1) { throw 'GIT_TRUST_POLICY_INVALID: unsupported policy schema.' }
+    if ($policy.registryPath -ne 'HKLM:\SOFTWARE\GitForWindows' -or $policy.registryValue -ne 'InstallPath' -or $policy.executableRelativePath -ne 'cmd\git.exe') {
+        throw 'GIT_TRUST_POLICY_INVALID: registry or executable location differs from Git for Windows policy.'
+    }
+    $entries = @($policy.signers)
+    if ($entries.Count -ne 2) { throw 'GIT_TRUST_POLICY_INVALID: exactly two pinned signers are required.' }
+    $normalized = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $entries) {
+        if ($null -eq $entry) { throw 'GIT_TRUST_POLICY_INVALID: signer entry is missing.' }
+        $thumbprint = ([string]$entry.thumbprint).Replace(' ', '').ToUpperInvariant()
+        if ($thumbprint -notmatch '^[A-F0-9]{40}$') { throw 'GIT_TRUST_POLICY_INVALID: signer thumbprint must be a 40-character SHA-1 hex value.' }
+        $subject = if ($entry.PSObject.Properties['subject']) { [string]$entry.subject } else { $null }
+        $issuer = if ($entry.PSObject.Properties['issuer']) { [string]$entry.issuer } else { $null }
+        if (($null -ne $subject -and -not $subject) -or ($null -ne $issuer -and -not $issuer)) { throw 'GIT_TRUST_POLICY_INVALID: signer identity must be non-empty when provided.' }
+        $normalized.Add([pscustomobject]@{ Thumbprint = $thumbprint; Subject = $subject; Issuer = $issuer })
+    }
+    $legacy = @($normalized | Where-Object { $_.Thumbprint -eq '3E9627155B7A6F29856321EE56D7FC25CF808407' })
+    $rotated = @($normalized | Where-Object { $_.Thumbprint -eq '2A1E97CBF0DFCDA15B0DA0AC9745014F989D4AD0' })
+    if ($legacy.Count -ne 1 -or $rotated.Count -ne 1) { throw 'GIT_TRUST_POLICY_INVALID: policy must pin the exact legacy and rotated Git for Windows leaves.' }
+    if ($null -ne $legacy[0].Subject -or $null -ne $legacy[0].Issuer) { throw 'GIT_TRUST_POLICY_INVALID: legacy Git for Windows leaf must not broaden its publisher policy.' }
+    if ($rotated[0].Subject -ne 'CN=Johannes Schindelin, O=Johannes Schindelin, L=Bruehl, C=DE' -or $rotated[0].Issuer -ne 'CN=Microsoft ID Verified CS EOC CA 04, O=Microsoft Corporation, C=US') {
+        throw 'GIT_TRUST_POLICY_INVALID: rotated Git for Windows leaf requires its observed subject and issuer.'
+    }
+    return [pscustomobject]@{
+        Path = $full
+        RegistryPath = $policy.registryPath
+        RegistryValue = $policy.registryValue
+        ExecutableRelativePath = $policy.executableRelativePath
+        Signers = @($normalized)
+    }
+}
+
+function Get-OrchGitForWindowsInstallPath {
+    param([Parameter(Mandatory)][object]$Policy)
+    try { $registry = Get-ItemProperty -LiteralPath $Policy.RegistryPath -Name $Policy.RegistryValue -ErrorAction Stop }
+    catch { throw 'GIT_UNTRUSTED: Git for Windows InstallPath is unavailable from the machine registry.' }
+    $property = $registry.PSObject.Properties[$Policy.RegistryValue]
+    if ($null -eq $property -or [string]::IsNullOrWhiteSpace([string]$property.Value)) { throw 'GIT_UNTRUSTED: Git for Windows InstallPath is empty.' }
+    $value = [string]$property.Value
+    if (-not [IO.Path]::IsPathRooted($value)) { throw 'GIT_UNTRUSTED: Git for Windows InstallPath must be absolute.' }
+    return Assert-OrchSafePath $value
+}
+
+function Resolve-OrchTrustedGitForPull {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string]$PolicyPath = (Join-Path $PSScriptRoot 'git-for-windows-trust.json')
+    )
+    $policy = Get-OrchGitForWindowsTrustPolicy -PolicyPath $PolicyPath
+    $installRoot = Get-OrchGitForWindowsInstallPath -Policy $policy
+    $expected = Assert-OrchSafePath (Join-Path $installRoot $policy.ExecutableRelativePath)
+    $candidate = Assert-OrchSafePath $Path
+    if (-not [string]::Equals([IO.Path]::GetFullPath($candidate), [IO.Path]::GetFullPath($expected), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'GIT_UNTRUSTED: Git executable is not the registered Git for Windows cmd\git.exe.'
+    }
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw 'GIT_UNTRUSTED: registered Git for Windows executable is missing or is not a regular file.' }
+    $candidateItem = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+    if (($candidateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $candidateItem.PSIsContainer) { throw 'GIT_UNTRUSTED: registered Git for Windows executable is not a regular file.' }
+    try { $signature = Get-AuthenticodeSignature -LiteralPath $candidate -ErrorAction Stop }
+    catch { throw 'GIT_UNTRUSTED: Git for Windows Authenticode signature is not valid.' }
+    if ([string]$signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { throw 'GIT_UNTRUSTED: Git for Windows Authenticode signature is not valid.' }
+    $thumbprint = ([string]$signature.SignerCertificate.Thumbprint).Replace(' ', '').ToUpperInvariant()
+    $signer = @($policy.Signers | Where-Object { $_.Thumbprint -eq $thumbprint })
+    if ($signer.Count -ne 1) { throw 'GIT_UNTRUSTED: Git for Windows signer leaf is not allowed.' }
+    if ($null -ne $signer[0].Subject -and [string]$signature.SignerCertificate.Subject -ne $signer[0].Subject) { throw 'GIT_UNTRUSTED: Git for Windows signer subject does not match the pinned policy.' }
+    if ($null -ne $signer[0].Issuer -and [string]$signature.SignerCertificate.Issuer -ne $signer[0].Issuer) { throw 'GIT_UNTRUSTED: Git for Windows signer issuer does not match the pinned policy.' }
+    return [IO.Path]::GetFullPath($candidate)
+}
+
+function Get-OrchTrustedGitEnvironment {
+    param(
+        [Parameter(Mandatory)][string]$GitPath,
+        [switch]$ReadSystemConfig,
+        [switch]$ReadGlobalConfig
+    )
+    if ($ReadSystemConfig -and $ReadGlobalConfig) { throw 'GIT_UNTRUSTED: trusted Git child cannot read both global and system config.' }
+    # A privileged checkout update must not inherit user-process routing,
+    # startup, proxy, or configuration variables.  Derive the executable
+    # search path from the verified Git binary and Windows system directory,
+    # then provide Git only the small deterministic baseline it needs to run.
+    $system32 = [Environment]::SystemDirectory
+    if ([string]::IsNullOrWhiteSpace($system32)) { throw 'GIT_UNTRUSTED: Windows system directory is unavailable from the operating system.' }
+    $system32 = [IO.Path]::GetFullPath($system32)
+    $systemRoot = Split-Path -Parent $system32
+    $commandProcessor = Join-Path $system32 'cmd.exe'
+    if (-not (Test-Path -LiteralPath $commandProcessor -PathType Leaf)) { throw 'GIT_UNTRUSTED: Windows command processor is unavailable from the machine SystemRoot.' }
+    $gitCommandDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $GitPath))
+    $gitInstallRoot = Split-Path -Parent $gitCommandDirectory
+    $pathEntries = [Collections.Generic.List[string]]::new()
+    foreach ($candidate in @(
+        $system32,
+        $gitCommandDirectory,
+        (Join-Path $gitInstallRoot 'mingw64\bin'),
+        (Join-Path $gitInstallRoot 'usr\bin'),
+        (Join-Path $gitInstallRoot 'mingw64\libexec\git-core')
+    )) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+        $full = [IO.Path]::GetFullPath($candidate)
+        if (-not (@($pathEntries | Where-Object { [string]::Equals($_, $full, [StringComparison]::OrdinalIgnoreCase) }).Count)) { [void]$pathEntries.Add($full) }
+    }
+    if ($pathEntries.Count -eq 0) { throw 'GIT_UNTRUSTED: no trusted executable search path is available.' }
+    # Both the Windows OpenSSH client and Git for Windows consult a home
+    # directory for ordinary ~/.ssh configuration and keys. Derive it through
+    # the Windows known-folder API rather than forwarding HOME or USERPROFILE
+    # from the caller process.
+    $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if ([string]::IsNullOrWhiteSpace($userProfile) -or -not [IO.Path]::IsPathRooted($userProfile)) { throw 'GIT_UNTRUSTED: Windows user profile directory is unavailable from the operating system.' }
+    $userProfile = [IO.Path]::GetFullPath($userProfile)
+    if (-not (Test-Path -LiteralPath $userProfile -PathType Container)) { throw 'GIT_UNTRUSTED: Windows user profile directory is unavailable from the operating system.' }
+    $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localAppData)) { throw 'GIT_UNTRUSTED: local application-data path is unavailable for the current Windows user.' }
+    $temp = Join-Path $localAppData 'Temp'
+    [void][IO.Directory]::CreateDirectory($temp)
+    $environment = [ordered]@{
+        SystemRoot = $systemRoot
+        windir = $systemRoot
+        ComSpec = $commandProcessor
+        Path = ($pathEntries -join ';')
+        PATHEXT = '.COM;.EXE;.BAT;.CMD'
+        TEMP = $temp
+        TMP = $temp
+        HOME = $userProfile
+        USERPROFILE = $userProfile
+        # These fixed Git settings are not inherited caller input. They deny
+        # interactive credential prompts during a bootstrap-owned update.
+        GIT_TERMINAL_PROMPT = '0'
+        # Restrict fetch and pull to Git's built-in HTTPS and SSH transports.
+        # This wins over protocol.*.allow settings in checkout-local config.
+        GIT_ALLOW_PROTOCOL = 'https:ssh'
+    }
+    # The two read-only scalar queries below obtain only core.autocrlf so a
+    # clean checkout retains its line-ending normalization. Every status/pull
+    # child still omits global and system configuration completely.
+    if (-not $ReadGlobalConfig) { $environment['GIT_CONFIG_GLOBAL'] = 'NUL' }
+    if (-not $ReadSystemConfig) { $environment['GIT_CONFIG_NOSYSTEM'] = '1' }
+    return $environment
+}
+
+# Git inherits an unusually powerful set of process variables.  Do not let a
+# caller alter repository discovery, configuration injection, SSH, or askpass
+# while bootstrap performs its one privileged checkout update.
+function Invoke-OrchSanitizedGit {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [AllowEmptyCollection()][string[]]$ArgumentList = @(),
+        [ValidateRange(1,1800)][int]$TimeoutSeconds = 15,
+        [switch]$ReadSystemConfig,
+        [switch]$ReadGlobalConfig
+    )
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = $FilePath
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+    $info.StandardOutputEncoding = [Text.Encoding]::UTF8
+    $info.StandardErrorEncoding = [Text.Encoding]::UTF8
+    $info.EnvironmentVariables.Clear()
+    foreach ($entry in (Get-OrchTrustedGitEnvironment -GitPath $FilePath -ReadSystemConfig:$ReadSystemConfig -ReadGlobalConfig:$ReadGlobalConfig).GetEnumerator()) {
+        $info.EnvironmentVariables[[string]$entry.Key] = [string]$entry.Value
+    }
+    if ($info.PSObject.Properties.Name -contains 'ArgumentList') {
+        foreach ($arg in $ArgumentList) { $info.ArgumentList.Add($arg) }
+    } else {
+        $info.Arguments = (($ArgumentList | ForEach-Object { ConvertTo-OrchNativeArgument $_ }) -join ' ')
+    }
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $info
+    try {
+        [void]$process.Start()
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            # This process is created by this function and is therefore the
+            # only process tree bootstrap may terminate.
+            if ($PSVersionTable.PSVersion.Major -ge 7) { $process.Kill($true) }
+            else { & (Join-Path $info.EnvironmentVariables['SystemRoot'] 'System32\taskkill.exe') /PID $process.Id /T /F 2>$null | Out-Null }
+            [void]$process.WaitForExit(5000)
+            throw 'PROCESS_TIMEOUT: trusted Git pull exceeded its bounded timeout.'
+        }
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Stdout = $stdout.GetAwaiter().GetResult(); Stderr = $stderr.GetAwaiter().GetResult() }
+    } finally { $process.Dispose() }
+}
+
+function Get-OrchTrustedGitAutocrlf {
+    param(
+        [Parameter(Mandatory)][string]$GitPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$RepositoryArguments,
+        [ValidateSet('global','system')][string]$Scope,
+        [ValidateRange(1,1800)][int]$TimeoutSeconds = 15
+    )
+    # Do not admit global or system configuration into status/pull. This is a
+    # separate, no-includes read of one non-executable scalar that Git uses to
+    # decide whether CRLF worktree bytes match LF index bytes.
+    $readSystem = $Scope -eq 'system'
+    $readGlobal = $Scope -eq 'global'
+    $result = Invoke-OrchSanitizedGit -FilePath $GitPath -ArgumentList ($RepositoryArguments + @('config',('--' + $Scope),'--no-includes','--get','core.autocrlf')) -TimeoutSeconds $TimeoutSeconds -ReadSystemConfig:$readSystem -ReadGlobalConfig:$readGlobal
+    if ($result.ExitCode -eq 1) { return $null }
+    if ($result.ExitCode -ne 0) {
+        $detail = (($result.Stderr, $result.Stdout | Where-Object { $_ } | Select-Object -First 1) -join '').Trim()
+        throw ('GIT_REQUIRED_FOR_PULL: Git ' + $Scope + ' autocrlf inspection failed: ' + $detail.Substring(0, [Math]::Min(400, $detail.Length)))
+    }
+    $values = @($result.Stdout -split "`r?`n" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($values.Count -ne 1) { throw ('GIT_REQUIRED_FOR_PULL: Git ' + $Scope + ' autocrlf inspection returned an invalid value.') }
+    $value = ([string]$values[0]).Trim().ToLowerInvariant()
+    if (@('true','yes','on','1') -contains $value) { return 'true' }
+    if (@('false','no','off','0') -contains $value) { return 'false' }
+    if ($value -eq 'input') { return 'input' }
+    throw ('GIT_REQUIRED_FOR_PULL: Git ' + $Scope + ' autocrlf inspection returned an invalid value.')
+}
+
+function Get-OrchUnsafeCheckoutGitConfigReason {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [AllowEmptyString()][string]$Value = ''
+    )
+    $key = $Name.Trim().ToLowerInvariant()
+    if ([string]::IsNullOrWhiteSpace($key)) { return 'contains a malformed configuration key' }
+    if ($key -match '^include(?:if)?\.') { return 'loads another configuration file' }
+    if ($key -match '^core\.(hookspath|fsmonitor|sshcommand|askpass|gitproxy|alternaterefscommand)$') { return 'selects an executable helper' }
+    if ($key -match '^filter\..+\.(clean|smudge|process)$') { return 'selects a filter command' }
+    if ($key -match '^merge\..+\.driver$') { return 'selects a merge command' }
+    if ($key -match '^credential(?:\..*)?\.helper$') { return 'selects a credential helper' }
+    if ($key -match '^remote\..+\.(proxy|proxyauthmethod|vcs|uploadpack)$') { return 'changes the remote transport or helper' }
+    if ($key -match '^url\..+\.insteadof$') { return 'rewrites the remote URL' }
+    if ($key -eq 'protocol.ext.allow' -and $Value.Trim().ToLowerInvariant() -ne 'never') { return 'enables the ext transport' }
+    if ($key -match '^http(?:\..*)?\.sslverify$') {
+        $normalized = $Value.Trim().ToLowerInvariant()
+        if (@('true','yes','on','1') -notcontains $normalized) { return 'weakens HTTP TLS verification' }
+        return $null
+    }
+    if ($key -match '^http(?:\..*)?\.schannelcheckrevoke$') {
+        $normalized = $Value.Trim().ToLowerInvariant()
+        if (@('true','yes','on','1','best-effort') -notcontains $normalized) { return 'weakens HTTP TLS revocation checks' }
+        return $null
+    }
+    if ($key -match '^http(?:\..*)?\.(proxy.*|ssl.*|schannel.*|extraheader|cookiefile|savecookies|emptyauth|proactiveauth|allowntlmauth|delegation)$') {
+        return 'changes HTTP routing, credentials, or TLS handling'
+    }
+    return $null
+}
+
+function Assert-OrchTrustedCheckoutGitConfig {
+    param(
+        [Parameter(Mandatory)][string]$GitPath,
+        [Parameter(Mandatory)][string[]]$RepositoryArguments,
+        [ValidateRange(1,1800)][int]$TimeoutSeconds = 15
+    )
+    # `--no-includes` ensures this inspection never reads another caller-chosen
+    # file. `--show-scope` includes both .git/config and config.worktree. Do
+    # not pass the later command-scope overrides here: this output must expose
+    # only checkout-owned settings for validation.
+    $inspection = Invoke-OrchSanitizedGit -FilePath $GitPath -ArgumentList ($RepositoryArguments + @('config','--no-includes','--show-scope','--null','--list')) -TimeoutSeconds $TimeoutSeconds
+    if ($inspection.ExitCode -ne 0) {
+        $detail = (($inspection.Stderr, $inspection.Stdout | Where-Object { $_ } | Select-Object -First 1) -join '').Trim()
+        throw ('GIT_REQUIRED_FOR_PULL: Git configuration inspection failed: ' + $detail.Substring(0, [Math]::Min(400, $detail.Length)))
+    }
+    $records = @($inspection.Stdout -split [char]0)
+    if ((($records.Count % 2) -ne 1) -or -not [string]::IsNullOrEmpty([string]$records[$records.Count - 1])) {
+        throw 'GIT_PULL_CONFIG_UNSAFE: checkout configuration inspection returned malformed records.'
+    }
+    $hasAutocrlf = $false
+    for ($index = 0; $index -lt ($records.Count - 1); $index += 2) {
+        $scope = [string]$records[$index]
+        $entry = [string]$records[$index + 1]
+        if ([string]::IsNullOrWhiteSpace($scope)) { throw 'GIT_PULL_CONFIG_UNSAFE: checkout configuration inspection returned a malformed scope.' }
+        if ($scope -notin @('local','worktree')) { continue }
+        $newline = $entry.IndexOf("`n")
+        if ($newline -lt 1) { throw 'GIT_PULL_CONFIG_UNSAFE: checkout configuration contains a malformed entry.' }
+        $name = $entry.Substring(0, $newline)
+        $value = $entry.Substring($newline + 1)
+        if ([string]::Equals($name, 'core.autocrlf', [StringComparison]::OrdinalIgnoreCase)) { $hasAutocrlf = $true }
+        $reason = Get-OrchUnsafeCheckoutGitConfigReason -Name $name -Value $value
+        if ($null -ne $reason) { throw ('GIT_PULL_CONFIG_UNSAFE: checkout configuration ' + $reason + '.') }
+    }
+    return [pscustomobject]@{ HasAutocrlf = $hasAutocrlf }
+}
+
+function Invoke-OrchTrustedCheckoutPull {
+    param(
+        [Parameter(Mandatory)][string]$Checkout,
+        [ValidateRange(1,1800)][int]$TimeoutSeconds = 15
+    )
+    $policyPath = Join-Path $PSScriptRoot 'git-for-windows-trust.json'
+    $policy = Get-OrchGitForWindowsTrustPolicy -PolicyPath $policyPath
+    $installRoot = Get-OrchGitForWindowsInstallPath -Policy $policy
+    $expectedGit = Join-Path $installRoot $policy.ExecutableRelativePath
+    $git = Resolve-OrchTrustedGitForPull -Path $expectedGit -PolicyPath $policyPath
+    $checkoutPath = Assert-OrchSafePath $Checkout
+    # Worktree selection happens before config is applied, so it must be a
+    # command option rather than a core.worktree override. The remaining
+    # command-scope values keep normal HTTPS/SSH pulls deterministic after the
+    # checkout-local configuration preflight below.
+    $repositoryArguments = @(
+        ('--work-tree=' + $checkoutPath),
+        '--no-pager',
+        '-C',$checkoutPath
+    )
+    $common = @($repositoryArguments + @(
+        '-c','core.hooksPath=NUL',
+        '-c','submodule.recurse=false',
+        '-c','core.fsmonitor=false',
+        '-c','credential.helper=',
+        '-c','core.sshCommand=ssh',
+        '-c','ssh.variant=ssh',
+        '-c','core.askPass=',
+        '-c','http.proxy=',
+        '-c','http.sslVerify=true'
+    ))
+    $checkoutConfig = Assert-OrchTrustedCheckoutGitConfig -GitPath $git -RepositoryArguments $repositoryArguments -TimeoutSeconds $TimeoutSeconds
+    if ($null -ne $checkoutConfig -and -not $checkoutConfig.HasAutocrlf) {
+        $autocrlf = Get-OrchTrustedGitAutocrlf -GitPath $git -RepositoryArguments $repositoryArguments -Scope global -TimeoutSeconds $TimeoutSeconds
+        if ($null -eq $autocrlf) { $autocrlf = Get-OrchTrustedGitAutocrlf -GitPath $git -RepositoryArguments $repositoryArguments -Scope system -TimeoutSeconds $TimeoutSeconds }
+        if ($null -ne $autocrlf) { $common += @('-c', ('core.autocrlf=' + $autocrlf)) }
+    }
+    $status = Invoke-OrchSanitizedGit -FilePath $git -ArgumentList ($common + @('status','--porcelain=v1','--untracked-files=all','--ignore-submodules=all')) -TimeoutSeconds $TimeoutSeconds
+    if ($status.ExitCode -ne 0) { throw ('GIT_REQUIRED_FOR_PULL: Git status failed: ' + (($status.Stderr, $status.Stdout | Where-Object { $_ } | Select-Object -First 1) -join '').Trim().Substring(0, [Math]::Min(400, (($status.Stderr, $status.Stdout | Where-Object { $_ } | Select-Object -First 1) -join '').Trim().Length))) }
+    if ($status.Stdout.Trim()) { throw 'refusing to pull: the working tree has local changes' }
+    $finalGit = Resolve-OrchTrustedGitForPull -Path $git -PolicyPath $policyPath
+    if (-not [string]::Equals($git, $finalGit, [StringComparison]::OrdinalIgnoreCase)) { throw 'GIT_UNTRUSTED: Git path changed after the initial check.' }
+    $pull = Invoke-OrchSanitizedGit -FilePath $finalGit -ArgumentList ($common + @('pull','--ff-only','--no-rebase','--no-squash','--no-autostash','--no-verify','--no-recurse-submodules','--upload-pack=git-upload-pack')) -TimeoutSeconds $TimeoutSeconds
+    if ($pull.ExitCode -ne 0) { throw ('GIT_PULL_FAILED: ' + (($pull.Stderr, $pull.Stdout | Where-Object { $_ } | Select-Object -First 1) -join '').Trim().Substring(0, [Math]::Min(400, (($pull.Stderr, $pull.Stdout | Where-Object { $_ } | Select-Object -First 1) -join '').Trim().Length))) }
 }
 
 function Get-OrchTreeDigest {
@@ -241,7 +895,8 @@ function Test-OrchNode {
     if (-not $AllowUnverified -and -not (Test-OrchTrustedSignature -Path $NodePath)) { return $null }
     try {
         $timer = [Diagnostics.Stopwatch]::StartNew()
-        $probe = Invoke-OrchProcess -FilePath $NodePath -ArgumentList @('-p', 'JSON.stringify({version:process.versions.node,platform:process.platform})') -TimeoutSeconds ([Math]::Min(8,$TimeoutSeconds))
+        $probeStart = Get-OrchNodeProbeStartInfo -NodePath $NodePath
+        $probe = Invoke-OrchProcess -FilePath $NodePath -ArgumentList @('-p', 'JSON.stringify({version:process.versions.node,platform:process.platform})') -TimeoutSeconds ([Math]::Min(8,$TimeoutSeconds)) -Environment $probeStart.Environment -WorkingDirectory $probeStart.WorkingDirectory
         if ($probe.ExitCode -ne 0) { return $null }
         $version = $probe.Stdout.Trim() | ConvertFrom-Json
         if ($version.platform -ne 'win32' -or [int]($version.version.Split('.')[0]) -lt 22) { return $null }
@@ -257,7 +912,7 @@ function Test-OrchNode {
             if (-not $npmTrusted -and -not $AllowUnverifiedNpm) { continue }
             $left = $TimeoutSeconds - [int][Math]::Floor($timer.Elapsed.TotalSeconds)
             if ($left -lt 1) { return $null }
-            $npm = Invoke-OrchProcess -FilePath $NodePath -ArgumentList @($npmPath, '--version') -TimeoutSeconds ([Math]::Min(10,$left))
+            $npm = Invoke-OrchProcess -FilePath $NodePath -ArgumentList @($npmPath, '--version') -TimeoutSeconds ([Math]::Min(10,$left)) -Environment $probeStart.Environment -WorkingDirectory $probeStart.WorkingDirectory
             if ($npm.ExitCode -eq 0 -and $npm.Stdout.Trim() -match '^\d+\.\d+\.\d+') {
                 return [pscustomobject]@{ NodePath = [IO.Path]::GetFullPath($NodePath); NpmPath = [IO.Path]::GetFullPath($npmPath); Version = $version.version; NpmTrusted = $npmTrusted }
             }
@@ -291,6 +946,9 @@ function Enter-OrchRuntimeLock {
     param([Parameter(Mandatory)][string]$RuntimeHome, [ValidateRange(1,1800)][int]$TimeoutSeconds = 300)
     $full = Assert-OrchSafePath $RuntimeHome
     [void][IO.Directory]::CreateDirectory($full)
+    # A missing root was checked through its parent before creation. Confirm
+    # the actual inherited ACL before a lock, archive, or executable appears.
+    $full = Assert-OrchPrivateRuntimeHome $full
     $lockPath = Join-Path $full '.bootstrap.lock'
     $timer = [Diagnostics.Stopwatch]::StartNew()
     do {

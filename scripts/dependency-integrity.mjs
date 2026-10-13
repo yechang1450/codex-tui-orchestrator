@@ -150,8 +150,28 @@ export function sealDependencyTree({dir = scriptsDir, maxFiles = DEFAULT_MAX_FIL
   return {ok: true, path: manifestPath, files: Object.keys(manifest.files).length, packageLockSha256: manifest.packageLockSha256};
 }
 
+function parseCliArgs(argv) {
+  const known = new Set(['--seal', '--verify']);
+  const seen = new Set();
+  for (const arg of argv) {
+    if (!known.has(arg)) throw new Error(`unknown option: ${arg}`);
+    if (seen.has(arg)) throw new Error(`duplicate option: ${arg}`);
+    seen.add(arg);
+  }
+  if (seen.size === 0) throw new Error('expected exactly one of --seal or --verify');
+  if (seen.size > 1) throw new Error('--seal and --verify cannot be combined; choose exactly one action');
+  return {seal: seen.has('--seal'), verify: seen.has('--verify')};
+}
+
 const invokedPath = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href;
-if (invokedPath && import.meta.url === invokedPath && process.argv[2] === '--seal') {
-  const result = sealDependencyTree();
-  process.stdout.write(`${JSON.stringify(result)}\n`);
+if (invokedPath && import.meta.url === invokedPath) {
+  try {
+    const options = parseCliArgs(process.argv.slice(2));
+    const result = options.seal ? sealDependencyTree() : verifyDependencyTree();
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    if (!result.ok) process.exitCode = 1;
+  } catch (error) {
+    process.stderr.write(`${error.message}\n`);
+    process.exitCode = 1;
+  }
 }

@@ -25,13 +25,12 @@ function invoke(script, args, extra = {}) {
 
 const CASES = [
   ['orchestrate-sdk.mjs', ['--nope'], {}, 'unsupported mode'],
-  ['orchestrate-sdk.mjs', ['--agent'], {}, 'option without a value'],
+  ['orchestrate-sdk.mjs', ['--agent', 'codex'], {}, 'unsupported agent selector'],
   ['orchestrate-sdk.mjs', ['--workspace', 'a', '--workspace', 'b', '--doctor'], {}, 'duplicate option'],
   ['orchestrate-sdk.mjs', ['--run-id', 'bad id!', '--doctor'], {}, 'invalid run ID'],
-  ['orchestrate-sdk.mjs', ['--doctor'], {ORCH_AGENT: 'pi'}, 'foreign agent adapter'],
+  ['orchestrate-sdk.mjs', ['--doctor'], {ORCH_AGENT: 'foreign-agent'}, 'foreign agent adapter'],
   ['poll-windows.mjs', ['--nope'], {}, 'invalid polling argument'],
   ['status.mjs', ['--bogus'], {}, 'invalid status argument'],
-  ['supervise.mjs', ['--run-id'], {}, 'incomplete supervisor argument'],
 ];
 
 test('every public entry rejects with one FATAL line, no stack frames and no stdout', () => {

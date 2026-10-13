@@ -6,22 +6,26 @@
  * 条目；默认 checkout 和 dist catalog 都随相应源发布，只有显式 legacy personal 路径允许新建文件。
  *
  * 本地安装默认指向开发工作树，保持单目录布局；也可以显式指向由
- * `repair.mjs --target` 生成的干净分发。分发里没有 .git/temp/node_modules，
- * 安装缓存不会被本地证据和 git 历史撑大。指向分发时要求分发的 core 清单与工作树一致，
- * 否则报 stale_dist。
+ * 源码 checkout 导出的干净分发。分发里没有 .git/temp/node_modules，
+ * 安装缓存不会被本地证据和 git 历史撑大。无论分发是显式请求还是从
+ * catalog 隐式发现，都必须由源码封存逐字节认证；旧的只比较 core 的
+ * 分发不再是可接受的安装源。
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {coreInventory} from './release-integrity.mjs';
+import {runtimeInventory, verifyRelease} from './release-integrity.mjs';
 import {physicalPathIdentity} from './core/runtime-context.mjs';
 
 const DEFAULT_PLUGIN_PATH = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const CHECKOUT_MARKETPLACE_NAME = 'codex-tui-orchestrator-local';
+export const CHECKOUT_MARKETPLACE_NAME = 'yechang1450-codex-tui-orchestrator';
 export const DIST_MARKETPLACE_NAME = 'codex-tui-orchestrator-dist';
 const MARKETPLACE_CATALOG_RELATIVE_PATH = path.join('.agents', 'plugins', 'marketplace.json');
+const DISTRIBUTION_PROVENANCE_RELATIVE_PATH = path.join('scripts', 'distribution-provenance.json');
+const DISTRIBUTION_SOURCE_RELEASE_RELATIVE_PATH = path.join('scripts', 'distribution-source-release.json');
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 function assertSourceKind(source) {
   if (!['checkout', 'dist'].includes(source)) throw new Error(`source must be 'dist' or 'checkout', got: ${source}`);
@@ -102,6 +106,32 @@ function fail(status, reason, extra = {}) {
   return {...extra, ok: false, status, reason};
 }
 
+function sha256(bytes) {
+  return crypto.createHash('sha256').update(bytes).digest('hex');
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function sameHashInventory(actual, expected) {
+  if (!isPlainObject(actual) || !isPlainObject(expected)) return false;
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  return actualKeys.length === expectedKeys.length
+    && actualKeys.every((key, index) => key === expectedKeys[index] && actual[key] === expected[key]);
+}
+
+function distributionBindingFailure(message) {
+  const error = new Error(`DISTRIBUTION_SOURCE_BINDING_FAILED: ${message}`);
+  error.code = 'DISTRIBUTION_SOURCE_BINDING_FAILED';
+  return error;
+}
+
 // 插件名的唯一判据（install-plugin / publish-dist / 注册检查共用）：
 // 它会被拼进分发目录、缓存目录和 marketplace 条目，所以必须先证明它是单段、
 // 小写连字符名——否则 "..\\victim" 这类名字会在任何检查之前被 path.join 抬出目标根。
@@ -110,6 +140,173 @@ export function manifestNameProblem(pluginName) {
   if (typeof pluginName !== 'string' || !MANIFEST_NAME_PATTERN.test(pluginName)) return 'manifest.name must be lowercase hyphen-case';
   if (pluginName.length > 64) return 'manifest.name exceeds 64 characters';
   return null;
+}
+
+/** The only catalog bytes a verified distribution may register. */
+export function canonicalDistMarketplaceCatalog({pluginName, category = 'Productivity'} = {}) {
+  const problem = manifestNameProblem(pluginName);
+  if (problem) throw new Error(`invalid .codex-plugin/plugin.json name ${JSON.stringify(pluginName)}: ${problem}`);
+  return {
+    name: DIST_MARKETPLACE_NAME,
+    interface: {displayName: 'Codex TUI Orchestrator (Distribution)'},
+    plugins: [{
+      name: pluginName,
+      source: {source: 'local', path: './'},
+      policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'},
+      category: category || 'Productivity',
+    }],
+  };
+}
+
+export function canonicalDistMarketplaceBytes(options = {}) {
+  return Buffer.from(`${JSON.stringify(canonicalDistMarketplaceCatalog(options), null, 2)}\n`, 'utf8');
+}
+
+/**
+ * Authenticate an exported distribution using the checkout's implementation
+ * and release seal.  A distribution ships its own verifier so it can run
+ * standalone, but registration must never trust that copy to authenticate
+ * itself: a changed non-core runtime file could otherwise reseal its own
+ * release manifest.  This function always starts from the caller checkout,
+ * then proves the dist contains exactly that runtime inventory with only its
+ * canonical catalog and the two publication provenance files changed.
+ *
+ * This intentionally calls `verifyRelease`, not `verifySourceRelease`: a
+ * source checkout may omit node_modules after it created the export, while
+ * its release seal still remains sufficient to bind every shipped byte.
+ */
+export function verifyDistributionSourceBinding({pluginPath = process.cwd(), distRoot = null, manifest = null} = {}) {
+  const pluginRoot = path.resolve(pluginPath);
+  let sourceManifest;
+  let sourceReleaseBytes;
+  let sourceRelease;
+  let sourceDependencyBytes;
+  let sourceDependency;
+  let sourceLockBytes;
+  try {
+    sourceManifest = manifest || readJson(path.join(pluginRoot, '.codex-plugin', 'plugin.json'));
+    const nameProblem = manifestNameProblem(sourceManifest?.name);
+    if (nameProblem) throw distributionBindingFailure(nameProblem);
+
+    // This is the trusted source-code verification step.  It also rejects
+    // source symlinks and stale source runtime bytes before we read evidence
+    // that a malicious dist could try to mirror.
+    verifyRelease(pluginRoot);
+    sourceReleaseBytes = fs.readFileSync(path.join(pluginRoot, 'release.json'));
+    sourceRelease = JSON.parse(sourceReleaseBytes.toString('utf8'));
+    if (sourceRelease?.schema !== 2 || !isPlainObject(sourceRelease.files) || !isPlainObject(sourceRelease.runtimeFiles)) {
+      throw distributionBindingFailure('source release has an unsupported schema');
+    }
+    sourceDependencyBytes = fs.readFileSync(path.join(pluginRoot, 'scripts', 'dependency-integrity.json'));
+    sourceDependency = JSON.parse(sourceDependencyBytes.toString('utf8'));
+    sourceLockBytes = fs.readFileSync(path.join(pluginRoot, 'scripts', 'package-lock.json'));
+  } catch (error) {
+    if (error?.code === 'DISTRIBUTION_SOURCE_BINDING_FAILED') throw error;
+    throw distributionBindingFailure(`source checkout is not a verified release (${error.message})`);
+  }
+
+  const sourceDependencyHash = sha256(sourceDependencyBytes);
+  const sourceLockHash = sha256(sourceLockBytes);
+  if (!isPlainObject(sourceDependency)
+    || sourceDependency.schema !== 1
+    || !isPlainObject(sourceDependency.files)
+    || sourceDependency.packageLockSha256 !== sourceLockHash
+    || sourceRelease.runtimeFiles['scripts/dependency-integrity.json'] !== sourceDependencyHash
+    || sourceRelease.runtimeFiles['scripts/package-lock.json'] !== sourceLockHash) {
+    throw distributionBindingFailure('source dependency provenance is not bound by the source release');
+  }
+
+  const catalogRelative = MARKETPLACE_CATALOG_RELATIVE_PATH.replaceAll('\\', '/');
+  const provenanceRelative = DISTRIBUTION_PROVENANCE_RELATIVE_PATH.replaceAll('\\', '/');
+  const sourceReleaseRelative = DISTRIBUTION_SOURCE_RELEASE_RELATIVE_PATH.replaceAll('\\', '/');
+  if (!hasOwn(sourceRelease.runtimeFiles, catalogRelative)) {
+    throw distributionBindingFailure('source release does not contain its marketplace catalog');
+  }
+  if (hasOwn(sourceRelease.runtimeFiles, provenanceRelative) || hasOwn(sourceRelease.runtimeFiles, sourceReleaseRelative)) {
+    throw distributionBindingFailure('source release already contains distribution-only provenance files');
+  }
+
+  let dist;
+  let distReal;
+  let distSourceReleaseBytes;
+  let provenanceBytes;
+  let provenance;
+  let distRelease;
+  let actualCatalog;
+  try {
+    dist = defaultDistPluginPath(pluginRoot, distRoot);
+    distReal = realPath(dist);
+    distSourceReleaseBytes = fs.readFileSync(path.join(distReal, DISTRIBUTION_SOURCE_RELEASE_RELATIVE_PATH));
+    provenanceBytes = fs.readFileSync(path.join(distReal, DISTRIBUTION_PROVENANCE_RELATIVE_PATH));
+    provenance = JSON.parse(provenanceBytes.toString('utf8'));
+    distRelease = readJson(path.join(distReal, 'release.json'));
+    actualCatalog = fs.readFileSync(path.join(distReal, MARKETPLACE_CATALOG_RELATIVE_PATH));
+  } catch (error) {
+    throw distributionBindingFailure(`distribution evidence is missing or unreadable (${error.message})`);
+  }
+
+  if (!distSourceReleaseBytes.equals(sourceReleaseBytes)) {
+    throw distributionBindingFailure('distribution-source-release.json differs from the verified source release bytes');
+  }
+  if (!isPlainObject(provenance)
+    || provenance.schema !== 1
+    || !SHA256_HEX.test(provenance.sourceReleaseSha256 || '')
+    || !SHA256_HEX.test(provenance.sourceDependencyManifestSha256 || '')
+    || !SHA256_HEX.test(provenance.packageLockSha256 || '')
+    || !Number.isSafeInteger(provenance.dependencyFiles)
+    || provenance.dependencyFiles < 0
+    || provenance.sourceReleaseSha256 !== sha256(sourceReleaseBytes)
+    || provenance.sourceDependencyManifestSha256 !== sourceDependencyHash
+    || provenance.packageLockSha256 !== sourceLockHash
+    || provenance.dependencyFiles !== Object.keys(sourceDependency.files).length) {
+    throw distributionBindingFailure('distribution provenance is not bound to the verified source release');
+  }
+
+  const expectedCatalog = canonicalDistMarketplaceBytes({
+    pluginName: sourceManifest.name,
+    category: sourceManifest?.interface?.category,
+  });
+  if (!actualCatalog.equals(expectedCatalog)) {
+    throw distributionBindingFailure('distribution marketplace catalog is not the canonical distribution catalog');
+  }
+
+  const expectedRuntimeFiles = {
+    ...sourceRelease.runtimeFiles,
+    [catalogRelative]: sha256(expectedCatalog),
+    [sourceReleaseRelative]: sha256(sourceReleaseBytes),
+    [provenanceRelative]: sha256(provenanceBytes),
+  };
+  let actualRuntimeFiles;
+  try {
+    // Use the source verifier's inventory implementation, not the copy in the
+    // exported tree.  This catches injected non-core runtime modules.
+    actualRuntimeFiles = runtimeInventory(distReal);
+  } catch (error) {
+    throw distributionBindingFailure(`distribution runtime cannot be inventoried (${error.message})`);
+  }
+  if (!sameHashInventory(actualRuntimeFiles, expectedRuntimeFiles)) {
+    throw distributionBindingFailure('distribution runtime inventory differs from the verified source release');
+  }
+  if (distRelease?.schema !== sourceRelease.schema
+    || distRelease?.coreVersion !== sourceRelease.coreVersion
+    || !sameHashInventory(distRelease?.files, sourceRelease.files)
+    || !sameHashInventory(distRelease?.runtimeFiles, expectedRuntimeFiles)) {
+    throw distributionBindingFailure('distribution release seal is not the expected source-bound seal');
+  }
+  try {
+    // verifyRelease is imported from this checkout's source code.  Do not run
+    // the distribution's executable verifier to make this decision.
+    verifyRelease(distReal);
+  } catch (error) {
+    throw distributionBindingFailure(`distribution release seal does not verify (${error.message})`);
+  }
+
+  return {
+    pluginPath: pluginRoot,
+    distPath: distReal,
+    sourceReleaseSha256: sha256(sourceReleaseBytes),
+    runtimeFiles: Object.keys(expectedRuntimeFiles).length,
+  };
 }
 
 /** Inspect registration state without writing anything. */
@@ -135,6 +332,16 @@ export function inspectRegistration({pluginPath = process.cwd(), marketplacePath
     root = path.resolve(marketplaceRoot || defaultMarketplaceRoot(pluginRoot, {source, distRoot}));
   } catch (error) {
     return fail('invalid_source', error.message, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplacePath ? path.resolve(marketplacePath) : null});
+  }
+  // Explicit dist registration is a security boundary.  Authenticate it
+  // before reading the catalog so a forged catalog cannot steer later repair
+  // or installation actions.
+  if (source === 'dist') {
+    try {
+      verifyDistributionSourceBinding({pluginPath: pluginRoot, distRoot, manifest});
+    } catch (error) {
+      return fail('dist_unverified', error.message, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root});
+    }
   }
 
   let bytes;
@@ -179,17 +386,14 @@ export function inspectRegistration({pluginPath = process.cwd(), marketplacePath
     return fail('source_mismatch', 'entry source does not point at this plugin or its clean distribution', {...base, sourcePath, sourceReal, pluginReal, ...(distReal ? {distSource: distReal} : {})});
   }
   if (distMatch) {
-    // 分发的价值是"和工作树同一份核心"；不一致就是陈旧分发，必须先重新生成再安装。
-    let distCore;
-    let checkoutCore;
+    // A checkout-mode caller can discover a dist entry from an existing
+    // catalog.  That is execution-relevant (for example, checkInstall may
+    // later authenticate a cache against sourceReal), so it gets the same
+    // source-bound verification as an explicit --source dist request.
     try {
-      distCore = coreInventory(distSource);
-      checkoutCore = coreInventory(pluginRoot);
+      verifyDistributionSourceBinding({pluginPath: pluginRoot, distRoot, manifest});
     } catch (error) {
-      return fail('dist_unreadable', 'distribution core cannot be read: ' + error.message, {...base, sourcePath, sourceReal, pluginReal, distSource: distReal});
-    }
-    if (JSON.stringify(distCore) !== JSON.stringify(checkoutCore)) {
-      return fail('stale_dist', 'distribution core differs from the checkout; rebuild the distribution before reinstalling', {...base, sourcePath, sourceReal, pluginReal, distSource: distReal});
+      return fail('dist_unverified', error.message, {...base, sourcePath, sourceReal, pluginReal, distSource: distReal});
     }
   }
   const sourceKind = distMatch ? 'dist' : 'checkout';
@@ -302,11 +506,23 @@ export function ensureRegistration({pluginPath = process.cwd(), marketplacePath 
   try {
     sourceReal = realPath(sourcePath);
   } catch (error) {
-    return fail('source_missing', `install source does not exist yet (${sourcePath}); build it first (node scripts/publish-dist.mjs)`, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, sourcePath});
+    return fail('source_missing', `install source does not exist yet (${sourcePath}); rebuild a sealed distribution from the source checkout first`, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, sourcePath});
+  }
+
+  // Do this before inspect or any catalog write.  `inspectRegistration` also
+  // checks an explicit dist, but this guard covers a missing/malformed catalog
+  // that cannot reach the inspection branch.
+  if (source === 'dist') {
+    try {
+      verifyDistributionSourceBinding({pluginPath: pluginRoot, distRoot, manifest});
+    } catch (error) {
+      return fail('dist_unverified', error.message, {pluginName, pluginPath: pluginRoot, marketplacePath: marketplace, sourcePath: sourceReal});
+    }
   }
 
   const options = {pluginPath: pluginRoot, marketplacePath: marketplace, marketplaceRoot: root, distRoot, source, homeDir};
   const inspected = inspectRegistration(options);
+  if (inspected.status === 'dist_unverified') return inspected;
   if (inspected.status === 'matched') {
     const requestedKind = source === 'checkout' ? 'checkout' : 'dist';
     if (inspected.sourceKind === requestedKind) return {...inspected, status: 'matched', created: false};
@@ -379,6 +595,13 @@ export function setRegistrationSource({pluginPath = process.cwd(), marketplacePa
   } catch (error) {
     return fail('invalid_manifest', error.message, {pluginPath: resolvedPluginPath, marketplacePath: marketplacePath ? path.resolve(marketplacePath) : null});
   }
+  if (source === 'dist') {
+    try {
+      verifyDistributionSourceBinding({pluginPath: resolvedPluginPath, distRoot});
+    } catch (error) {
+      return fail('dist_unverified', error.message, {pluginPath: resolvedPluginPath, marketplacePath: resolvedMarketplacePath, marketplaceRoot: resolvedMarketplaceRoot});
+    }
+  }
   const options = {
     pluginPath: resolvedPluginPath,
     marketplacePath: resolvedMarketplacePath,
@@ -387,6 +610,7 @@ export function setRegistrationSource({pluginPath = process.cwd(), marketplacePa
     source,
   };
   const inspected = inspectRegistration(options);
+  if (inspected.status === 'dist_unverified') return inspected;
   if (inspected.status === 'matched') {
     const requestedKind = options.source === 'checkout' ? 'checkout' : 'dist';
     if (inspected.sourceKind === requestedKind) return {...inspected, status: 'matched', changed: false};
@@ -411,7 +635,7 @@ export function setRegistrationSource({pluginPath = process.cwd(), marketplacePa
   try {
     sourceReal = realPath(sourcePath);
   } catch (error) {
-    return fail('source_missing', `install source does not exist yet (${sourcePath}); build it first (node scripts/publish-dist.mjs)`, {pluginName, marketplacePath: options.marketplacePath, sourcePath});
+    return fail('source_missing', `install source does not exist yet (${sourcePath}); rebuild a sealed distribution from the source checkout first`, {pluginName, marketplacePath: options.marketplacePath, sourcePath});
   }
   let expected;
   let data;
@@ -448,9 +672,8 @@ function inspectFailure(inspected, base, status = inspected.status) {
     missing_entry: 'run with --ensure to append the canonical entry',
     duplicate_entry: 'remove the duplicate entries before installing',
     source_mismatch: 'the existing entry points at another source; re-point it with --set-source when it really is this plugin, or fix or remove it by hand',
-    stale_dist: 'rebuild the distribution (node scripts/publish-dist.mjs), then install again',
+    dist_unverified: 'rebuild the sealed distribution from the verified source checkout, then install again',
     invalid_marketplace_name: 'marketplace.name must match [A-Za-z0-9_-]+',
-    dist_unreadable: 'the distribution core cannot be read; rebuild it (node scripts/publish-dist.mjs)',
   };
   const hint = hints[inspected.status];
   return fail(status, hint ? `${inspected.reason} — ${hint}` : inspected.reason, {...base, inspected});

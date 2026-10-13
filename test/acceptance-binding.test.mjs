@@ -1,3 +1,4 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import {test,after} from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -10,7 +11,8 @@ import {recordCheckpoint} from '../scripts/core/checkpoint.mjs';
 import {createStatusPublisher} from '../scripts/core/status-events.mjs';
 
 const repo=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const family=path.join(repo,'temp','acceptance-binding');
+const testWorker=fileURLToPath(new URL('./headless-worker-fixture.mjs',import.meta.url));
+const family=testTempFamily('acceptance-binding');
 fs.mkdirSync(family,{recursive:true});
 const originalCodexHome=process.env.CODEX_HOME;
 const controllerHome=fs.mkdtempSync(path.join(family,'controller-home-'));
@@ -53,7 +55,7 @@ async function runOnce(runId,checks){
   fs.writeFileSync(worker,workerSource(path.join(workspace,'evidence.json')));
   const checksFile=path.join(workspace,'contract.json');
   fs.writeFileSync(checksFile,JSON.stringify(checks));
-  const hooks={...createHeadlessHooks({workspace,cli:process.execPath,args:[worker],timeoutMs:CONTROL_PLANE_TIMEOUT_MS}),
+  const hooks={...createHeadlessHooks({workspace,cli:process.execPath,args:[worker],timeoutMs:CONTROL_PLANE_TIMEOUT_MS,workerEntry:testWorker}),
     plan:async()=>[{title:'binding',tasks:[{prompt:'写证据'}]}],
     compact:value=>value,infer:()=>[],prompt:value=>value,register:()=>{},commit:()=>{},unregister:()=>{}};
   try{
@@ -207,7 +209,10 @@ test('unbound historical ledgers require explicit adoption and conflicting bindi
     recordCheckpoint(attemptFile,'T001','started');recordCheckpoint(attemptFile,'T001','completed');
     fs.writeFileSync(path.join(workspace,'evidence.json'),JSON.stringify({count:1}));
     const tasks=[{id:'T001',prompt:'first'}],blocks=[{key:'B1',taskIds:['T001']}];
-    const summary={protocol:2,runId:'legacy',workspace,request:'first',capacity:8,generation:1,history:[],finishedAt:1,
+    // This is intentionally a pre-protocol-2 historical ledger. Protocol 2
+    // launch attempts require a lease instance binding and must fail closed
+    // before acceptance adoption is considered.
+    const summary={protocol:1,runId:'legacy',workspace,request:'first',capacity:8,generation:1,history:[],finishedAt:1,
       tasks,plan:[{key:'B1',title:'both',keys:[],dependsOn:[],b:{tasks:[{sourceIds:['T001']}]}}],blocks,
       results:{B1:{status:'awaiting-verification',endedAt:1,attempts:[{...attempt,file:attemptFile}]}},
       taskResults:{T001:{status:'awaiting-verification'}},

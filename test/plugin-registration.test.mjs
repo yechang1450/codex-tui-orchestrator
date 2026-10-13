@@ -1,12 +1,15 @@
+import {testTempFamily} from './test-temp-root.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {inspectRegistration, repairRegistration, atomicReplace} from '../scripts/repair-plugin-registration.mjs';
+import {inspectRegistration, repairRegistration, ensureRegistration, setRegistrationSource, atomicReplace} from '../scripts/repair-plugin-registration.mjs';
+import {coreInventory, runtimeInventory} from '../scripts/release-integrity.mjs';
 
-const TEST_TEMP = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', 'temp');
+const TEST_TEMP = testTempFamily('plugin-registration');
 fs.mkdirSync(TEST_TEMP, {recursive: true});
 
 function fixture(entry, extra = []) {
@@ -27,6 +30,57 @@ function localEntry(name, sourcePath, source = 'local') {
 
 function opts(f) { return {pluginPath: f.plugin, marketplacePath: f.marketplace, marketplaceRoot: f.marketRoot}; }
 function cleanup(f) { fs.rmSync(f.root, {recursive: true, force: true}); }
+
+function sha256(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex'); }
+
+function writeRelease(root) {
+  fs.writeFileSync(path.join(root, 'release.json'), JSON.stringify({
+    schema: 2,
+    coreVersion: 'test',
+    files: coreInventory(root),
+    runtimeFiles: runtimeInventory(root),
+  }, null, 2) + '\n');
+}
+
+function sealedDistributionFixture() {
+  const root = fs.mkdtempSync(path.join(TEST_TEMP, 'sealed-distribution-'));
+  const source = path.join(root, 'source');
+  const distRoot = path.join(root, 'dist');
+  const dist = path.join(distRoot, 'demo-plugin');
+  const sourceManifest = {name: 'demo-plugin', version: '1.0.0', interface: {category: 'Test'}};
+  const sourceCatalog = {name: 'source', plugins: [{name: 'demo-plugin', source: {source: 'local', path: './'}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Test'}]};
+  fs.mkdirSync(path.join(source, '.codex-plugin'), {recursive: true});
+  fs.mkdirSync(path.join(source, '.agents', 'plugins'), {recursive: true});
+  fs.mkdirSync(path.join(source, 'scripts', 'core'), {recursive: true});
+  fs.writeFileSync(path.join(source, '.codex-plugin', 'plugin.json'), JSON.stringify(sourceManifest, null, 2) + '\n');
+  fs.writeFileSync(path.join(source, '.agents', 'plugins', 'marketplace.json'), JSON.stringify(sourceCatalog, null, 2) + '\n');
+  fs.writeFileSync(path.join(source, 'scripts', 'core', 'orchestrate-sdk.mjs'), 'export const marker = "source";\n');
+  fs.writeFileSync(path.join(source, 'scripts', 'core', 'contracts.mjs'), "export const CORE_VERSION = 'test';\n");
+  fs.writeFileSync(path.join(source, 'scripts', 'release-integrity.mjs'), 'export const verifier = "source";\n');
+  const lock = Buffer.from('{"lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(source, 'scripts', 'package-lock.json'), lock);
+  fs.writeFileSync(path.join(source, 'scripts', 'dependency-integrity.json'), JSON.stringify({schema: 1, packageLockSha256: sha256(lock), files: {}}, null, 2) + '\n');
+  writeRelease(source);
+  const sourceRelease = fs.readFileSync(path.join(source, 'release.json'));
+  const dependency = fs.readFileSync(path.join(source, 'scripts', 'dependency-integrity.json'));
+  fs.cpSync(source, dist, {recursive: true});
+  const distCatalog = {
+    name: 'codex-tui-orchestrator-dist',
+    interface: {displayName: 'Codex TUI Orchestrator (Distribution)'},
+    plugins: [{name: 'demo-plugin', source: {source: 'local', path: './'}, policy: {installation: 'AVAILABLE', authentication: 'ON_INSTALL'}, category: 'Test'}],
+  };
+  fs.writeFileSync(path.join(dist, '.agents', 'plugins', 'marketplace.json'), JSON.stringify(distCatalog, null, 2) + '\n');
+  fs.writeFileSync(path.join(dist, 'scripts', 'distribution-source-release.json'), sourceRelease);
+  fs.writeFileSync(path.join(dist, 'scripts', 'distribution-provenance.json'), JSON.stringify({
+    schema: 1,
+    sourceReleaseSha256: sha256(sourceRelease),
+    sourceDependencyManifestSha256: sha256(dependency),
+    packageLockSha256: sha256(lock),
+    dependencyFiles: 0,
+  }, null, 2) + '\n');
+  writeRelease(dist);
+  return {root, source, distRoot, dist, marketplace: path.join(dist, '.agents', 'plugins', 'marketplace.json')};
+}
 
 test('exactly matched registration passes check', () => {
   const f = fixture(localEntry('demo-plugin', './plugins/demo-plugin')); try {
@@ -68,7 +122,7 @@ test('wrong source path and non-local source are blocked', () => {
   } finally { cleanup(exactWrong); }
 });
 
-// 干净分发：coreInventory 需要 scripts/core 下的入口文件存在
+// Legacy fixture: the release inventory still requires the core entry files.
 function coreFixture(pluginDir, marker) {
   const core = path.join(pluginDir, 'scripts', 'core');
   fs.mkdirSync(core, {recursive: true});
@@ -76,21 +130,74 @@ function coreFixture(pluginDir, marker) {
   fs.writeFileSync(path.join(core, 'contracts.mjs'), 'export const CORE_VERSION = "test";\n');
 }
 
-test('a clean distribution is accepted as install source only while its core matches the checkout', () => {
+test('a legacy core-only distribution is rejected even when its core matches the checkout', () => {
   const f = fixture(localEntry('demo-plugin', './dist/demo-plugin')); try {
     coreFixture(f.plugin, 'checkout');
     const distRoot = path.join(f.marketRoot, 'dist');
     const dist = path.join(distRoot, 'demo-plugin');
     coreFixture(dist, 'checkout');
-    const matched = inspectRegistration({...opts(f), distRoot});
-    assert.equal(matched.status, 'matched');
-    assert.equal(matched.sourceKind, 'dist');
-    // 分发和 checkout 不同核心 → 陈旧分发，必须先重建再安装
+    const unsealed = inspectRegistration({...opts(f), distRoot});
+    assert.equal(unsealed.status, 'dist_unverified');
+    // Core equality cannot rehabilitate a distribution without a source-bound
+    // release and provenance proof.
     fs.writeFileSync(path.join(dist, 'scripts', 'core', 'orchestrate-sdk.mjs'), 'export const marker = "stale";\n');
     const stale = inspectRegistration({...opts(f), distRoot});
-    assert.equal(stale.status, 'stale_dist');
+    assert.equal(stale.status, 'dist_unverified');
     assert.equal(stale.ok, false);
   } finally { cleanup(f); }
+});
+
+test('a distribution registration binds every runtime file to the sealed checkout before it can write a catalog', () => {
+  const f = sealedDistributionFixture();
+  const options = {pluginPath: f.source, source: 'dist', distRoot: f.distRoot, marketplacePath: f.marketplace, marketplaceRoot: f.dist};
+  try {
+    assert.equal(inspectRegistration(options).status, 'matched');
+    fs.writeFileSync(path.join(f.dist, 'scripts', 'release-integrity.mjs'), 'process.stdout.write("altered non-core runtime");\n');
+    const originalCatalog = fs.readFileSync(f.marketplace);
+    assert.equal(inspectRegistration(options).status, 'dist_unverified');
+    assert.equal(ensureRegistration(options).status, 'dist_unverified');
+    assert.deepEqual(fs.readFileSync(f.marketplace), originalCatalog, 'ensure must not register a tampered distribution');
+    assert.equal(setRegistrationSource(options).status, 'dist_unverified');
+    assert.deepEqual(fs.readFileSync(f.marketplace), originalCatalog, 'set-source must not register a tampered distribution');
+  } finally { cleanup(f); }
+});
+
+test('implicit dist discovery is source-bound and cannot rewrite a catalog after tampering', () => {
+  const f = sealedDistributionFixture();
+  const options = {pluginPath: f.source, distRoot: f.distRoot, marketplacePath: f.marketplace, marketplaceRoot: f.dist};
+  try {
+    assert.equal(inspectRegistration(options).status, 'matched');
+    fs.writeFileSync(path.join(f.dist, 'scripts', 'release-integrity.mjs'), 'process.stdout.write("altered non-core runtime");\n');
+    const originalCatalog = fs.readFileSync(f.marketplace);
+    assert.equal(inspectRegistration(options).status, 'dist_unverified');
+    assert.equal(ensureRegistration(options).status, 'dist_unverified');
+    assert.deepEqual(fs.readFileSync(f.marketplace), originalCatalog, 'ensure must not rewrite an implicitly discovered tampered dist');
+    assert.equal(setRegistrationSource(options).status, 'dist_unverified');
+    assert.deepEqual(fs.readFileSync(f.marketplace), originalCatalog, 'set-source must not rewrite an implicitly discovered tampered dist');
+  } finally { cleanup(f); }
+});
+
+test('distribution registration rejects altered source proof, provenance, catalog, and runtime inventory', () => {
+  const cases = [
+    ['source-release bytes', (f) => fs.appendFileSync(path.join(f.dist, 'scripts', 'distribution-source-release.json'), '\n'), /distribution-source-release/i],
+    ['provenance hash', (f) => {
+      const file = path.join(f.dist, 'scripts', 'distribution-provenance.json');
+      const provenance = JSON.parse(fs.readFileSync(file, 'utf8'));
+      provenance.sourceReleaseSha256 = '0'.repeat(64);
+      fs.writeFileSync(file, JSON.stringify(provenance, null, 2) + '\n');
+    }, /provenance/i],
+    ['catalog bytes', (f) => fs.writeFileSync(f.marketplace, JSON.stringify({name: 'unexpected', plugins: []}, null, 2) + '\n'), /canonical distribution catalog/i],
+    ['unexpected runtime file', (f) => fs.writeFileSync(path.join(f.dist, 'scripts', 'unexpected-runtime.mjs'), 'export default true;\n'), /runtime inventory/i],
+  ];
+  for (const [label, tamper, reason] of cases) {
+    const f = sealedDistributionFixture();
+    try {
+      tamper(f);
+      const result = inspectRegistration({pluginPath: f.source, source: 'dist', distRoot: f.distRoot, marketplacePath: f.marketplace, marketplaceRoot: f.dist});
+      assert.equal(result.status, 'dist_unverified', label);
+      assert.match(result.reason, reason, label);
+    } finally { cleanup(f); }
+  }
 });
 
 test('a dist path outside the plugin family is still rejected', () => {
