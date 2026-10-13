@@ -22,7 +22,7 @@ fs.mkdirSync(family,{recursive:true});
 const controllerRoot=fs.mkdtempSync(path.join(family,'headless-controller-'));
 const oldControllerRoot=process.env.ORCH_CONTROLLER_ROOT;
 process.env.ORCH_CONTROLLER_ROOT=controllerRoot;
-after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true});});
+after(()=>{if(oldControllerRoot===undefined)delete process.env.ORCH_CONTROLLER_ROOT;else process.env.ORCH_CONTROLLER_ROOT=oldControllerRoot;fs.rmSync(controllerRoot,{recursive:true,force:true,maxRetries:20,retryDelay:150});});
 function fixture(source,options={}){
   fs.mkdirSync(family,{recursive:true});const workspace=fs.mkdtempSync(path.join(family,'headless-中文 '));
   const cli=path.join(workspace,'fixture.mjs');fs.writeFileSync(cli,source);
@@ -31,7 +31,7 @@ function fixture(source,options={}){
   const {prompt='真实 prompt with "quotes" and 中文',...hookOptions}=options;
   const hooks=createHeadlessHooks({cli:process.execPath,args:[cli],workspace,timeoutMs:10000,workerEntry:testWorker,...hookOptions});
   const files=hooks.launcher('B1',prompt,'r-a1',{attemptFile,runId:'r',token:'token',taskIds:['T001']});
-  return {workspace,hooks,files,close:()=>fs.rmSync(workspace,{recursive:true,force:true})};
+  return {workspace,hooks,files,close:()=>fs.rmSync(workspace,{recursive:true,force:true,maxRetries:20,retryDelay:150})};
 }
 
 function headlessCommandDigest(value){
@@ -331,7 +331,7 @@ test('a published isolated abort prevents headless CLI startup',async()=>{
       assert.equal(JSON.stringify(result).includes(abortToken),false,'durable result must not disclose the abort capability');
       assert.equal(await hooks.waitForExit({ProcessId:workerPid}),true);
     });
-  }finally{fs.rmSync(workspace,{recursive:true,force:true});fs.rmSync(isolatedRoot,{recursive:true,force:true});}
+  }finally{fs.rmSync(workspace,{recursive:true,force:true,maxRetries:20,retryDelay:150});fs.rmSync(isolatedRoot,{recursive:true,force:true,maxRetries:20,retryDelay:150});}
 });
 
 test('a published isolated abort terminates the authenticated running headless CLI',async()=>{
@@ -472,7 +472,13 @@ test('a busy controller checks the durable readiness PID before declaring elapse
   const f=fixture('console.log(JSON.stringify({type:"turn.completed"}));',{readinessTimeoutMs:100});
   try{
     const starting=f.hooks.spawn(f.files.lp,'test',f.files.pidf);
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,2000);
+    // Simulate a controller blocked past its readiness window while the
+    // worker still reaches durable readiness on its own schedule. Waiting for
+    // the durable PID instead of a fixed sleep keeps the property under test:
+    // after the block, the spawn loop must accept the observed PID rather
+    // than declaring an elapsed timeout.
+    const readyUntil=Date.now()+15000;
+    while(!fs.existsSync(f.files.pidf)&&Date.now()<readyUntil)Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,50);
     assert.equal(await starting,true);
     const pid=f.hooks.readPid(f.files.pidf);f.hooks.ready(f.files);
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);

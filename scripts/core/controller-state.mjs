@@ -25,7 +25,15 @@ export function assertPrivateControllerRoot(candidate){
     if(privateControllerRootCache.has(identity))return root;
   }
   try{assertPrivateWindowsRoot(root,{powershell:trustedWindowsHelper('powershell')});}
-  catch{throw new Error('CONTROLLER_ROOT_UNSAFE_ACL: controller storage must be a local directory writable only by the current Windows user, SYSTEM, and Administrators');}
+  catch(error){
+    // Keep fail-closed behavior identical, but do not report a verifier that
+    // could not run (PowerShell unavailable, probe timeout, invalid probe
+    // output) as a storage root that actually grants shared write access.
+    const code=String(error?.code||'');
+    if(/^PRIVATE_ROOT_(ACL_UNAVAILABLE|ACL_INVALID|HELPER_INVALID|WINDOWS_ONLY)$/.test(code))
+      throw new Error('CONTROLLER_ROOT_CHECK_FAILED: controller storage ACL could not be verified: '+(error?.message||error));
+    throw new Error('CONTROLLER_ROOT_UNSAFE_ACL: controller storage must be a local directory writable only by the current Windows user, SYSTEM, and Administrators');
+  }
   if(identity)cachePrivateControllerRoot(identity);
   return root;
 }

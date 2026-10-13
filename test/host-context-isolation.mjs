@@ -34,5 +34,5 @@ if (process.platform === 'win32' && !process.env.ORCH_TEST_TEMP_ROOT) {
   process.env.ORCH_TEST_TEMP_ROOT = root;
   process.env.TEMP = root;
   process.env.TMP = root;
-  process.once('exit', () => { try { fs.rmSync(root, {recursive: true, force: true, maxRetries: 3, retryDelay: 50}); } catch {} });
+  process.once('exit', () => { try { fs.rmSync(root, {recursive: true, force: true, maxRetries: 20, retryDelay: 200}); } catch {} });
 }
