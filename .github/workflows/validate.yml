@@ -29,7 +29,10 @@ jobs:
       - name: Install and pin the offline Codex CLI fixture
         shell: pwsh
         run: |
-          $pluginData = Join-Path $env:RUNNER_TEMP 'codex-plugin-data'
+          # Runtime storage must be a directory whose ACL grants write access
+          # only to the current user, SYSTEM, and Administrators; the runner's
+          # shared temp volume fails that check, so keep it under the profile.
+          $pluginData = Join-Path $env:USERPROFILE '.otui-ci-plugin-data'
           $cliRoot = Join-Path $pluginData 'runtime\cli'
           $env:PLUGIN_DATA = $pluginData
           $env:npm_config_prefix = $cliRoot
@@ -60,7 +63,7 @@ jobs:
         shell: pwsh
         run: |
           $nodeExe = $env:ORCH_NODE_EXE
-          $autoData = Join-Path $env:RUNNER_TEMP 'codex-plugin-data-auto'
+          $autoData = Join-Path $env:USERPROFILE '.otui-ci-plugin-data-auto'
           $autoRoot = Join-Path $autoData 'runtime\cli'
           $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
           foreach ($name in @('npm_execpath','NPM_EXEC_PATH','ORCH_NPM_TRUSTED','ORCH_NPM_TRUSTED_PATH','ORCH_NPM_TRUSTED_SHA256','ORCH_ALLOW_UNVERIFIED_NPM','npm_config_prefix','NPM_CONFIG_PREFIX')) {
