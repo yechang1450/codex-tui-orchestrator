@@ -71,25 +71,11 @@ jobs:
           $nodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
           $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
           if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) { throw "npm CLI entry was not found: $npmCli" }
-          # -- timing diagnostics (temporary) --
-          $ps51 = 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe'
-          $t0 = Get-Date
-          & $ps51 -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command 'exit 0'
-          Write-Host "TIMING_PS51_BARE_MS=$([int]((Get-Date)-$t0).TotalMilliseconds)"
-          $t1 = Get-Date
-          $probeOut = ($runtimeRoot | & $ps51 -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[IO.Directory]::GetAccessControl([Console]::In.ReadToEnd().Trim()) | Out-Null; 'PROBE_DONE'" 2>&1 | Out-String).Trim()
-          Write-Host "TIMING_PS51_PROBE_MS=$([int]((Get-Date)-$t1).TotalMilliseconds) OUT=$probeOut"
-          $t2 = Get-Date
-          $wsUri = 'file:///' + ($env:GITHUB_WORKSPACE -replace '\\', '/') + '/scripts/core/windows-system.mjs'
-          $nodeProbe = "import('$wsUri').then(ws=>{const cp=require('child_process');const r=cp.spawnSync(ws.trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command','exit 0'],{timeout:90000,encoding:'utf8'});console.log('NODE_SPAWN_STATUS',r.status,'ERR',(r.error&&r.error.message)||'none')})"
-          $nodeOut = (& $nodeExe -e $nodeProbe 2>&1 | Out-String).Trim()
-          Write-Host "TIMING_NODE_SPAWN_MS=$([int]((Get-Date)-$t2).TotalMilliseconds) OUT=$nodeOut"
-          # Warm the 5.1 host so the product probe no longer pays first-run cost.
-          for ($i = 0; $i -lt 2; $i++) {
-            $null = ($runtimeRoot | & $ps51 -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "[IO.Directory]::GetAccessControl([Console]::In.ReadToEnd().Trim()) | Out-Null; 'WARM_DONE'" 2>&1)
-          }
-          Write-Host 'WARMUP_DONE'
-          # -- end timing diagnostics --
+          # -- probe diagnostics (temporary) --
+          Write-Host 'PROBE_DIAGNOSTICS_BEGIN'
+          & $nodeExe "$env:GITHUB_WORKSPACE\.github\ci\probe-diagnostics.mjs" $runtimeRoot 2>&1 | ForEach-Object { Write-Host $_ }
+          Write-Host 'PROBE_DIAGNOSTICS_END'
+          # -- end probe diagnostics --
           # Seed the private fixture with the exact pinned package before the
           # production preparation path runs. The preparation path then
           # verifies the native binary and the complete platform tree, while
