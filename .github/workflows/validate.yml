@@ -87,6 +87,10 @@ jobs:
                 (Get-Acl -LiteralPath $probe).Access | ForEach-Object { Write-Host ("   {0} | {1} | {2} | inherited={3}" -f $_.IdentityReference, $_.FileSystemRights, $_.AccessControlType, $_.IsInherited) }
               }
             }
+            $coreUri = 'file:///' + ($env:GITHUB_WORKSPACE -replace '\\', '/') + '/scripts/core'
+            $diagTarget = ($runtimeRoot -replace '\\', '/')
+            $diagCode = "Promise.all([import('$coreUri/private-root.mjs'),import('$coreUri/windows-system.mjs')]).then(([m,ws])=>{try{m.assertPrivateWindowsRoot('$diagTarget',{powershell:ws.trustedWindowsHelper('powershell')});console.log('DIAG_OK')}catch(e){console.log('DIAG_FAIL '+(e&&e.message))}})"
+            Write-Host ((& $nodeExe -e $diagCode 2>&1 | Out-String).Trim())
             throw "Pinned Codex CLI verification failed: $reportText"
           }
           $report = $reportText | ConvertFrom-Json
