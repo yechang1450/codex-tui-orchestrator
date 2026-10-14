@@ -71,20 +71,12 @@ jobs:
           $nodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
           $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
           if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) { throw "npm CLI entry was not found: $npmCli" }
-          # -- probe diagnostics (temporary) --
-          Write-Host 'PROBE_DIAGNOSTICS_BEGIN'
-          & $nodeExe "$env:GITHUB_WORKSPACE\.github\ci\probe-diagnostics.mjs" $runtimeRoot phase1 2>&1 | ForEach-Object { Write-Host $_ }
-          Write-Host 'PROBE_DIAGNOSTICS_END'
-          # -- end probe diagnostics --
           # Seed the private fixture with the exact pinned package before the
           # production preparation path runs. The preparation path then
           # verifies the native binary and the complete platform tree, while
           # no unverified npm bypass is enabled in either step.
           $installOutput = (& $nodeExe $npmCli install --global --prefix $cliRoot --ignore-scripts --no-audit --no-fund --include=optional '@openai/codex@0.162.1' 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI fixture install failed: $installOutput" }
-          Write-Host 'PROBE_DIAGNOSTICS_PHASE2_BEGIN'
-          & $nodeExe "$env:GITHUB_WORKSPACE\.github\ci\probe-diagnostics.mjs" $runtimeRoot phase2 2>&1 | ForEach-Object { Write-Host $_ }
-          Write-Host 'PROBE_DIAGNOSTICS_PHASE2_END'
           $env:ORCH_AUTO_INSTALL_CLI = '0'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
           $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
@@ -95,10 +87,6 @@ jobs:
                 (Get-Acl -LiteralPath $probe).Access | ForEach-Object { Write-Host ("   {0} | {1} | {2} | inherited={3}" -f $_.IdentityReference, $_.FileSystemRights, $_.AccessControlType, $_.IsInherited) }
               }
             }
-            $coreUri = 'file:///' + ($env:GITHUB_WORKSPACE -replace '\\', '/') + '/scripts/core'
-            $diagTarget = ($runtimeRoot -replace '\\', '/')
-            $diagCode = "Promise.all([import('$coreUri/private-root.mjs'),import('$coreUri/windows-system.mjs')]).then(([m,ws])=>{const cp=require('child_process');const helper=ws.trustedWindowsHelper('powershell');console.log('PROBE_HELPER',helper);const spy=(cmd,args,opts)=>{const r=cp.spawnSync(cmd,args,opts);console.log('PROBE_STATUS',r.status,'ERROR',(r.error&&r.error.message)||'none');console.log('PROBE_STDERR',String(r.stderr||'').slice(0,2000));console.log('PROBE_STDOUT',String(r.stdout||'').slice(0,400));return r;};try{m.assertPrivateWindowsRoot('$diagTarget',{powershell:helper,spawn:spy});console.log('DIAG_OK')}catch(e){console.log('DIAG_FAIL '+(e&&e.message))}try{m.assertPrivateWindowsRoot('$diagTarget',{powershell:helper,spawn:cp.spawnSync,timeoutMs:60000});console.log('DIAG_RETRY_OK')}catch(e){console.log('DIAG_RETRY_FAIL '+(e&&e.message))}})"
-            Write-Host ((& $nodeExe -e $diagCode 2>&1 | Out-String).Trim())
             throw "Pinned Codex CLI verification failed: $reportText"
           }
           $report = $reportText | ConvertFrom-Json

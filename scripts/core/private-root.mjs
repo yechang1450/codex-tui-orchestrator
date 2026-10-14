@@ -33,6 +33,10 @@ const REPLACEMENT_RIGHTS=
 // standard input so an attacker-controlled path never becomes PowerShell code.
 const ACL_PROBE_SCRIPT=[
   "$ErrorActionPreference='Stop'",
+  // Load the JSON serializer's module explicitly: on hosted Windows images the
+  // implicit auto-loading inside a scrubbed environment can stall for minutes,
+  // while an explicit import resolves immediately.
+  "Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop",
   '$target=[Console]::In.ReadToEnd().Trim()',
   "if([string]::IsNullOrWhiteSpace($target)){throw 'missing root'}",
   '$acl=[IO.Directory]::GetAccessControl($target)',
