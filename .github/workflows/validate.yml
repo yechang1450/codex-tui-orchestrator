@@ -73,7 +73,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $npmCli -PathType Leaf)) { throw "npm CLI entry was not found: $npmCli" }
           # -- probe diagnostics (temporary) --
           Write-Host 'PROBE_DIAGNOSTICS_BEGIN'
-          & $nodeExe "$env:GITHUB_WORKSPACE\.github\ci\probe-diagnostics.mjs" $runtimeRoot 2>&1 | ForEach-Object { Write-Host $_ }
+          & $nodeExe "$env:GITHUB_WORKSPACE\.github\ci\probe-diagnostics.mjs" $runtimeRoot phase1 2>&1 | ForEach-Object { Write-Host $_ }
           Write-Host 'PROBE_DIAGNOSTICS_END'
           # -- end probe diagnostics --
           # Seed the private fixture with the exact pinned package before the
@@ -82,6 +82,9 @@ jobs:
           # no unverified npm bypass is enabled in either step.
           $installOutput = (& $nodeExe $npmCli install --global --prefix $cliRoot --ignore-scripts --no-audit --no-fund --include=optional '@openai/codex@0.162.1' 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI fixture install failed: $installOutput" }
+          Write-Host 'PROBE_DIAGNOSTICS_PHASE2_BEGIN'
+          & $nodeExe "$env:GITHUB_WORKSPACE\.github\ci\probe-diagnostics.mjs" $runtimeRoot phase2 2>&1 | ForEach-Object { Write-Host $_ }
+          Write-Host 'PROBE_DIAGNOSTICS_PHASE2_END'
           $env:ORCH_AUTO_INSTALL_CLI = '0'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
           $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()

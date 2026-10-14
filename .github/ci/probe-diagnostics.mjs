@@ -6,6 +6,8 @@ import {trustedWindowsHelper} from '../../scripts/core/windows-system.mjs';
 
 const ps = trustedWindowsHelper('powershell');
 const target = process.argv[2];
+const phase = process.argv[3] || 'phase1';
+console.log('DIAG_PHASE', phase);
 const probeScript = "$ErrorActionPreference='Stop';$target=[Console]::In.ReadToEnd().Trim();if([string]::IsNullOrWhiteSpace($target)){throw 'missing root'};$acl=[IO.Directory]::GetAccessControl($target);$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;'PROBE_DONE ' + $owner";
 const base = {encoding: 'utf8', windowsHide: true, shell: false, timeout: 30000, maxBuffer: 64 * 1024};
 const cases = [
@@ -20,4 +22,19 @@ for (const [name, opts, script, input] of cases) {
   const started = Date.now();
   const r = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script], input == null ? opts : {...opts, input});
   console.log(name, 'ms=' + (Date.now() - started), 'status=' + r.status, 'err=' + ((r.error && r.error.code) || 'none'), 'out=' + String(r.stdout || '').slice(0, 80).replace(/\n/g, ' '), 'stderr=' + String(r.stderr || '').slice(0, 120).replace(/\n/g, ' '));
+}
+
+// Importing the production prepare module mirrors the product process state
+// (its transitive module top-level effects) without running its entry point.
+try {
+  const started = Date.now();
+  await import('../../scripts/runtime-prepare.mjs');
+  console.log('PREPARE_IMPORT_MS', Date.now() - started);
+} catch (error) {
+  console.log('PREPARE_IMPORT_FAIL', String(error && error.message).slice(0, 200));
+}
+{
+  const started = Date.now();
+  const r = spawnSync(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', probeScript], {...base, cwd: path.dirname(ps), env: process.env, input: target});
+  console.log('V3_after_prepare_import ms=' + (Date.now() - started), 'status=' + r.status, 'err=' + ((r.error && r.error.code) || 'none'), 'out=' + String(r.stdout || '').slice(0, 80).replace(/\n/g, ' '));
 }
