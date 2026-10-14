@@ -51,6 +51,22 @@ jobs:
           $pluginData = Join-Path $env:USERPROFILE '.otui-ci-plugin-data'
           $cliRoot = Join-Path $pluginData 'runtime\cli'
           $env:PLUGIN_DATA = $pluginData
+          # Inheritance alone proved insufficient on the hosted image: create
+          # the runtime root up front and set both DACLs explicitly to the
+          # trusted owner set the private-root check enforces.
+          $runtimeRoot = Join-Path $pluginData 'runtime'
+          New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+          foreach ($dir in @($pluginData, $runtimeRoot)) {
+            $acl = Get-Acl -LiteralPath $dir
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
+            $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            foreach ($sid in @($current, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+              $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+              $acl.AddAccessRule($rule)
+            }
+            Set-Acl -LiteralPath $dir -AclObject $acl
+          }
           $env:npm_config_prefix = $cliRoot
           $nodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
           $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
@@ -64,7 +80,15 @@ jobs:
           $env:ORCH_AUTO_INSTALL_CLI = '0'
           $env:ORCH_AUTO_INSTALL_DEPS = '0'
           $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI verification failed: $reportText" }
+          if ($LASTEXITCODE -ne 0) {
+            foreach ($probe in @($pluginData, $runtimeRoot, $env:USERPROFILE, 'C:\Users', 'C:\')) {
+              if ($probe -and (Test-Path -LiteralPath $probe)) {
+                Write-Host "== ACL $probe"
+                (Get-Acl -LiteralPath $probe).Access | ForEach-Object { Write-Host ("   {0} | {1} | {2} | inherited={3}" -f $_.IdentityReference, $_.FileSystemRights, $_.AccessControlType, $_.IsInherited) }
+              }
+            }
+            throw "Pinned Codex CLI verification failed: $reportText"
+          }
           $report = $reportText | ConvertFrom-Json
           if (-not $report.ok -or $report.stage -ne 'ready') { throw "Pinned Codex CLI verification returned an invalid report: $reportText" }
           $cli = [string]$report.cliPath
@@ -86,6 +110,19 @@ jobs:
             Remove-Item -LiteralPath ("Env:" + $name) -ErrorAction SilentlyContinue
           }
           $env:PLUGIN_DATA = $autoData
+          $autoRuntimeRoot = Join-Path $autoData 'runtime'
+          New-Item -ItemType Directory -Path $autoRuntimeRoot -Force | Out-Null
+          foreach ($dir in @($autoData, $autoRuntimeRoot)) {
+            $acl = Get-Acl -LiteralPath $dir
+            $acl.SetAccessRuleProtection($true, $false)
+            foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
+            $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+            foreach ($sid in @($current, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+              $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+              $acl.AddAccessRule($rule)
+            }
+            Set-Acl -LiteralPath $dir -AclObject $acl
+          }
           $env:npm_config_prefix = $autoRoot
           $env:npm_execpath = $npmCli
           # Attest the exact npm entry consumed by the bootstrap guard.
@@ -102,7 +139,15 @@ jobs:
           $envProbe = (& $nodeExe -e "const fs=require('fs'),path=require('path');const e=process.env.npm_execpath;process.stdout.write(JSON.stringify({absolute:path.isAbsolute(e||''),regular:!!e&&fs.lstatSync(e).isFile(),trusted:process.env.ORCH_NPM_TRUSTED}))" | ConvertFrom-Json)
           if (-not $envProbe.absolute -or -not $envProbe.regular -or $envProbe.trusted -ne '1') { throw 'Trusted npm environment was not visible to Node.' }
           $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
-          if ($LASTEXITCODE -ne 0) { throw "Trusted automatic CLI installation failed: $reportText" }
+          if ($LASTEXITCODE -ne 0) {
+            foreach ($probe in @($autoData, $autoRuntimeRoot, $env:USERPROFILE, 'C:\Users', 'C:\')) {
+              if ($probe -and (Test-Path -LiteralPath $probe)) {
+                Write-Host "== ACL $probe"
+                (Get-Acl -LiteralPath $probe).Access | ForEach-Object { Write-Host ("   {0} | {1} | {2} | inherited={3}" -f $_.IdentityReference, $_.FileSystemRights, $_.AccessControlType, $_.IsInherited) }
+              }
+            }
+            throw "Trusted automatic CLI installation failed: $reportText"
+          }
           $report = $reportText | ConvertFrom-Json
           if (-not $report.ok -or $report.stage -ne 'ready') { throw "Trusted automatic CLI installation returned an invalid report: $reportText" }
           $version = (& $report.cliPath --version 2>$null | Out-String).Trim()
