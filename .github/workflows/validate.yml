@@ -4,6 +4,13 @@ on:
   push:
   pull_request:
 
+# A branch push and a tag push of the same release otherwise start two
+# identical long-running suites for one commit; keep a single active run per
+# revision and cancel the older duplicate.
+concurrency:
+  group: validate-${{ github.sha }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

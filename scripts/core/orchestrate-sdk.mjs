@@ -1155,7 +1155,7 @@ function launcherPidByScript(lp, context = {}) {
   try {
     const escaped = String(lp).replace(/'/g, "''");
     const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-Command",
-      "$ErrorActionPreference='SilentlyContinue'; $q = Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*" + escaped + "*' } | Sort-Object CreationDate | Select-Object -First 1; if ($q) { $q.ProcessId }"],
+      "$ErrorActionPreference='SilentlyContinue'; $q = Get-CimInstance Win32_Process -OperationTimeoutSec 10 | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*" + escaped + "*' } | Sort-Object CreationDate | Select-Object -First 1; if ($q) { $q.ProcessId }"],
       { windowsHide: true, encoding: "utf8", timeout: executionContextTimeout(8000, context), shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     const pid = readPidFileValue(String(r.stdout || "").trim());
     return pidAliveCheck(pid) ? pid : 0;
@@ -1200,7 +1200,7 @@ function agentDescendantAlive(pidf, context = {}) {
     const pid = readPidFile(pidf);
     if (!pid) return false;
     const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile", "-Command",
-      "$ErrorActionPreference='SilentlyContinue'; $a=@{}; $p=Get-CimInstance Win32_Process; foreach($pr in $p){ if($pr.ParentProcessId -eq 0){continue}; $a[$pr.ProcessId]=$pr.ParentProcessId }; $root=" + Number(pid) + "; $s=@($root); $i=0; while($i -lt $s.Count){ $cur=$s[$i]; $i++; foreach($pr in $p){ if($pr.ParentProcessId -eq $cur){ if(($pr.Name -match 'codex|node') -or ($pr.CommandLine -like '*codex*')){ Write-Output 1; exit 0 }; $s+=$pr.ProcessId } } }; Write-Output 0"],
+      "$ErrorActionPreference='SilentlyContinue'; $a=@{}; $p=Get-CimInstance Win32_Process -OperationTimeoutSec 10; foreach($pr in $p){ if($pr.ParentProcessId -eq 0){continue}; $a[$pr.ProcessId]=$pr.ParentProcessId }; $root=" + Number(pid) + "; $s=@($root); $i=0; while($i -lt $s.Count){ $cur=$s[$i]; $i++; foreach($pr in $p){ if($pr.ParentProcessId -eq $cur){ if(($pr.Name -match 'codex|node') -or ($pr.CommandLine -like '*codex*')){ Write-Output 1; exit 0 }; $s+=$pr.ProcessId } } }; Write-Output 0"],
       { windowsHide: true, encoding: "utf8", timeout: executionContextTimeout(8000, context), shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     return /^1/m.test(String(r.stdout || ""));
   } catch { return false; }
@@ -1339,7 +1339,7 @@ function psKillDescendantsLines() {
     // launcher can close, while retaining the same identity checks on every
     // retry.
     "for($pass=0;$pass -lt 1;$pass++) {",
-    "$all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue",
+    "$all = Get-CimInstance Win32_Process -OperationTimeoutSec 10 -ErrorAction SilentlyContinue",
     "if(-not $known.ContainsKey($root)){$known[$root]=$all|Where-Object ProcessId -eq $root}",
     "$victims = New-Object 'System.Collections.Generic.List[int]'",
     "$queue = New-Object 'System.Collections.Generic.Queue[int]'",
@@ -1358,7 +1358,7 @@ function psKillDescendantsLines() {
     "  }",
     "}",
     "$victims.Reverse()",
-    "foreach ($v in $victims) { $before=$all | Where-Object ProcessId -eq $v; $now=Get-CimInstance Win32_Process -Filter ('ProcessId='+$v); if($now -and $now.CreationDate -eq $before.CreationDate -and $now.CommandLine -eq $before.CommandLine -and $now.Name -eq $before.Name){$cutoff[[int]$v]=[DateTime]::UtcNow;& (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /PID $v /F /T 2>$null | Out-Null; try { Wait-Process -Id $v -Timeout 3 -ErrorAction SilentlyContinue } catch { } } }",
+    "foreach ($v in $victims) { $before=$all | Where-Object ProcessId -eq $v; $now=Get-CimInstance Win32_Process -OperationTimeoutSec 10 -Filter ('ProcessId='+$v); if($now -and $now.CreationDate -eq $before.CreationDate -and $now.CommandLine -eq $before.CommandLine -and $now.Name -eq $before.Name){$cutoff[[int]$v]=[DateTime]::UtcNow;& (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /PID $v /F /T 2>$null | Out-Null; try { Wait-Process -Id $v -Timeout 3 -ErrorAction SilentlyContinue } catch { } } }",
     "$total += $victims.Count",
     "}",
     "Write-Output $total",
@@ -2262,7 +2262,7 @@ async function closeWindowByPid(pid, expected,{tempDir=windowTemp(),deadlineAt}=
   const expectedName=buildPsArrayLit([expected.Name])+'[0]';
   const expectedCommandHash=buildPsArrayLit([expected.commandLineSha256])+'[0]';
   const identityGate =
-    '$all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue; ' +
+    '$all = Get-CimInstance Win32_Process -OperationTimeoutSec 10 -ErrorAction SilentlyContinue; ' +
     '$actual=$all | Where-Object ProcessId -eq '+p+'; ' +
     "$prefix=if($null -eq $actual.CommandLine){'null:'}else{'string:'+ [string]$actual.CommandLine}; " +
     '$sha=[System.Security.Cryptography.SHA256]::Create(); ' +
@@ -2271,7 +2271,7 @@ async function closeWindowByPid(pid, expected,{tempDir=windowTemp(),deadlineAt}=
   const killScript =
     "$ErrorActionPreference='SilentlyContinue';" + "\r\n" +
     "$root=" + p + ";" + "\r\n" +
-    psKillDescendantsLines().join("\r\n").replace('$all = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue',
+    psKillDescendantsLines().join("\r\n").replace('$all = Get-CimInstance Win32_Process -OperationTimeoutSec 10 -ErrorAction SilentlyContinue',
        identityGate);
   let killedCount = 0;
   try {
@@ -2320,7 +2320,7 @@ try{
   $wanted=[DateTimeOffset]::Parse(${buildPsArrayLit([expected.Started])}[0]).UtcDateTime.ToFileTimeUtc()
   # CIM timestamps have microsecond precision; GetProcessTimes adds a 100 ns digit.
   if(($created-($created%10)) -ne ($wanted-($wanted%10))){exit 4}
-  $actual=Get-CimInstance Win32_Process -Filter 'ProcessId=${expected.ProcessId}'
+  $actual=Get-CimInstance Win32_Process -OperationTimeoutSec 10 -Filter 'ProcessId=${expected.ProcessId}'
   function Get-OrchCommandLineSha256([object]$value){
     $prefix=if($null -eq $value){'null:'}else{'string:'+ [string]$value}
     $sha=[System.Security.Cryptography.SHA256]::Create()
@@ -2849,7 +2849,7 @@ async function cleanStaleWindows() {
       }
     }
     const r = spawnSync(trustedWindowsHelper("powershell"), ["-NoProfile","-ExecutionPolicy","Bypass","-Command",
-      "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*win-launch-*' } | ForEach-Object { $_.ProcessId }"], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
+      "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -OperationTimeoutSec 10 | Where-Object { $_.Name -eq 'powershell.exe' -and $_.CommandLine -like '*win-launch-*' } | ForEach-Object { $_.ProcessId }"], { encoding: "utf8", windowsHide: true, shell:false, cwd:trustedWindowsRoot(), env:controllerEnvironment() });
     const stale = String(r.stdout || "").split(/\r?\n/).map((s) => Number(String(s).trim())).filter((n) => Number.isFinite(n) && n > 0 && !protectedPids.has(n));
     const pidFiles = new Map();
     for (const dir of dirs) {

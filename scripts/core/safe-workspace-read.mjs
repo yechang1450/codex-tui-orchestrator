@@ -36,12 +36,17 @@ function parseResponse(result,label,{includeText,maxBytes}={}) {
 function invoke(request,label,{spawn=spawnSync,platform=process.platform}={}) {
   if(platform!=='win32')failure('SAFE_WORKSPACE_READ_UNSUPPORTED',label);
   const maxBytes=Number(request.maxBytes||0);
-  const result=spawn(trustedWindowsHelper('powershell'),[
+  const spawnOnce=()=>spawn(trustedWindowsHelper('powershell'),[
     '-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper,
   ],{
     cwd:trustedWindowsRoot(),env:controllerEnvironment(),windowsHide:true,shell:false,
     input:JSON.stringify(request),encoding:'utf8',timeout:15000,maxBuffer:Math.max(128*1024,Math.min(128*1024*1024,maxBytes*2+128*1024)),
   });
+  // The hosted image can stall the first PowerShell start (module warm-up and
+  // antivirus scanning); every request here is a bounded, idempotent read, so
+  // retry once on an execution-layer failure before failing closed.
+  let result=spawnOnce();
+  if(result?.error)result=spawnOnce();
   if(result.error||result.status!==0)failure('SAFE_WORKSPACE_READ_HELPER',label);
   return result;
 }

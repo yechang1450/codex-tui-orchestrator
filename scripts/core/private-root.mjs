@@ -33,17 +33,18 @@ const REPLACEMENT_RIGHTS=
 // standard input so an attacker-controlled path never becomes PowerShell code.
 const ACL_PROBE_SCRIPT=[
   "$ErrorActionPreference='Stop'",
-  // Load the JSON serializer's module explicitly: on hosted Windows images the
-  // implicit auto-loading inside a scrubbed environment can stall for minutes,
-  // while an explicit import resolves immediately.
-  "Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop",
   '$target=[Console]::In.ReadToEnd().Trim()',
   "if([string]::IsNullOrWhiteSpace($target)){throw 'missing root'}",
   '$acl=[IO.Directory]::GetAccessControl($target)',
   '$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
   '$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value',
   '$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object { [PSCustomObject]@{ sid=$_.IdentityReference.Value; type=$_.AccessControlType.ToString(); rights=[string](([int64][int]$_.FileSystemRights) -band [int64]4294967295); propagation=$_.PropagationFlags.ToString() } })',
-  '[PSCustomObject]@{currentUserSid=$current;ownerSid=$owner;rules=$rules}|ConvertTo-Json -Compress -Depth 4',
+  // Serialize by hand: ConvertTo-Json lives in Microsoft.PowerShell.Utility,
+  // whose module auto-loading can stall for minutes inside a scrubbed
+  // environment on hosted images. Every value below is from a fixed character
+  // set (SIDs, enum names, digits), so plain string concatenation is safe.
+  "$ruleJson=@($rules | ForEach-Object { '{\"sid\":\"'+$_.sid+'\",\"type\":\"'+$_.type+'\",\"rights\":\"'+$_.rights+'\",\"propagation\":\"'+$_.propagation+'\"}' })",
+  "'{\"currentUserSid\":\"'+$current+'\",\"ownerSid\":\"'+$owner+'\",\"rules\":['+($ruleJson -join ',')+']}'",
 ].join(';');
 
 function privateRootError(code,detail){
@@ -190,15 +191,25 @@ export function assertPrivateWindowsAncestorAcl(snapshot,{root='private controll
 function probeAcl(inspectedPath,{powershell,spawn=spawnSync,timeoutMs=5_000}={}){
   const helper=trustedAbsolutePowerShell(powershell);
   const bounded=Math.max(1_000,Math.min(15_000,Math.ceil(Number(timeoutMs)||0)));
-  let result;
-  try{
-    result=spawn(helper,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',ACL_PROBE_SCRIPT],{
-      input:inspectedPath,encoding:'utf8',windowsHide:true,shell:false,timeout:bounded,maxBuffer:64*1024,
-      cwd:path.dirname(helper),env:trustedPowerShellEnvironment(),
-    });
-  }catch(error){
-    throw privateRootError('PRIVATE_ROOT_ACL_UNAVAILABLE',`ACL probe could not start (${error?.code||'ERROR'})`);
+  const attempt=budget=>{
+    try{
+      return spawn(helper,['-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',ACL_PROBE_SCRIPT],{
+        input:inspectedPath,encoding:'utf8',windowsHide:true,shell:false,timeout:budget,maxBuffer:64*1024,
+        cwd:path.dirname(helper),env:trustedPowerShellEnvironment(),
+      });
+    }catch(error){
+      return {spawnFailure:String(error?.code||'ERROR')};
+    }
+  };
+  // A hosted image can stall the first PowerShell start (module warm-up and
+  // antivirus scanning); the read is idempotent, so retry once with a doubled
+  // budget before declaring the probe unavailable.
+  let result=attempt(bounded);
+  if(result?.spawnFailure||result?.error){
+    result=attempt(Math.min(15_000,Math.max(bounded,bounded*2)));
   }
+  if(result?.spawnFailure)
+    throw privateRootError('PRIVATE_ROOT_ACL_UNAVAILABLE',`ACL probe could not start (${result.spawnFailure})`);
   if(result?.error||result?.status!==0)
     throw privateRootError('PRIVATE_ROOT_ACL_UNAVAILABLE','ACL probe failed');
   const text=String(result.stdout??'').trim();
