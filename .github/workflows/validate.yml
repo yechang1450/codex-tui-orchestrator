@@ -14,22 +14,22 @@ jobs:
       matrix:
         node-version: [22.x]
     steps:
-        - name: Normalize runner storage ACLs
-          shell: pwsh
-          run: |
-            # The hosted image grants extra writers on the runner profile, and
-            # the plugin's private-root boundary correctly refuses storage
-            # below it. This is a disposable CI profile, so normalize it to
-            # the trusted owner set before any fixture or suite step runs.
-            $acl = [IO.Directory]::GetAccessControl($env:USERPROFILE)
-            $acl.SetAccessRuleProtection($true, $false)
-            $acl.Access | ForEach-Object { [void]$acl.RemoveAccessRule($_) }
-            $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
-            foreach ($sid in @($current, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
-              $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
-              $acl.AddAccessRule($rule)
-            }
-            [IO.Directory]::SetAccessControl($env:USERPROFILE, $acl)
+      - name: Normalize runner storage ACLs
+        shell: pwsh
+        run: |
+          # The hosted image grants extra writers on the runner profile, and
+          # the plugin's private-root boundary correctly refuses storage
+          # below it. This is a disposable CI profile, so normalize it to
+          # the trusted owner set before any fixture or suite step runs.
+          $acl = [IO.Directory]::GetAccessControl($env:USERPROFILE)
+          $acl.SetAccessRuleProtection($true, $false)
+          $acl.Access | ForEach-Object { [void]$acl.RemoveAccessRule($_) }
+          $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+          foreach ($sid in @($current, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            $acl.AddAccessRule($rule)
+          }
+          [IO.Directory]::SetAccessControl($env:USERPROFILE, $acl)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
