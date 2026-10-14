@@ -19,6 +19,10 @@ const stepAcl = prelude + "'STEP1_DONE'";
 const stepOwner = prelude + "$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;'STEP2_DONE '+$owner";
 const stepRules = prelude + "$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));'STEP3_DONE '+$rules.Count";
 const stepRuleIds = prelude + "$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | ForEach-Object { $_.IdentityReference.Value });'STEP4_DONE '+$rules.Count";
+const w1 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;'W1_DONE '+$current";
+const w2 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;'W2_DONE '+$owner";
+const w3 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));'W3_DONE '+$rules.Count";
+const w4 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));$objs=@($rules | ForEach-Object { [PSCustomObject]@{ sid=$_.IdentityReference.Value; type=$_.AccessControlType.ToString(); rights=[string](([int64][int]$_.FileSystemRights) -band [int64]4294967295); propagation=$_.PropagationFlags.ToString() } });'W4_DONE '+$objs.Count";
 const probeScript = "$ErrorActionPreference='Stop';$target=[Console]::In.ReadToEnd().Trim();if([string]::IsNullOrWhiteSpace($target)){throw 'missing root'};$acl=[IO.Directory]::GetAccessControl($target);$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;'PROBE_DONE ' + $owner";
 const base = {encoding: 'utf8', windowsHide: true, shell: false, timeout: 30000, maxBuffer: 64 * 1024};
 const cases = [
@@ -36,6 +40,11 @@ const cases = [
   ['V12_full_trustedenv', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, fullScript, target],
   ['V13_short_trustedenv', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, probeScript, target],
   ['V14_full_trustedenv_restored', {...base, cwd: path.dirname(ps), env: {...trustedPowerShellEnvironment(), USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERNAME: process.env.USERNAME, PROCESSOR_ARCHITECTURE: process.env.PROCESSOR_ARCHITECTURE}, timeout: 20000}, fullScript, target],
+  ['W1_getcurrent', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, w1, target],
+  ['W2_owner', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, w2, target],
+  ['W3_rules', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, w3, target],
+  ['W4_objects', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, w4, target],
+  ['V15_full_trustedenv_bigrestore', {...base, cwd: path.dirname(ps), env: {...trustedPowerShellEnvironment(), USERDOMAIN: process.env.USERDOMAIN, USERDNSDOMAIN: process.env.USERDNSDOMAIN, LOGONSERVER: process.env.LOGONSERVER, COMPUTERNAME: process.env.COMPUTERNAME, USERPROFILE: process.env.USERPROFILE, USERNAME: process.env.USERNAME, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, SystemDrive: process.env.SystemDrive, PUBLIC: process.env.PUBLIC, ALLUSERSPROFILE: process.env.ALLUSERSPROFILE, PROGRAMDATA: process.env.PROGRAMDATA, OS: process.env.OS, NUMBER_OF_PROCESSORS: process.env.NUMBER_OF_PROCESSORS}, timeout: 20000}, fullScript, target],
 ];
 for (const [name, opts, script, input] of cases) {
   const started = Date.now();
