@@ -23,6 +23,9 @@ const w1 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent(
 const w2 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;'W2_DONE '+$owner";
 const w3 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));'W3_DONE '+$rules.Count";
 const w4 = prelude + "$current=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;$rules=@($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]));$objs=@($rules | ForEach-Object { [PSCustomObject]@{ sid=$_.IdentityReference.Value; type=$_.AccessControlType.ToString(); rights=[string](([int64][int]$_.FileSystemRights) -band [int64]4294967295); propagation=$_.PropagationFlags.ToString() } });'W4_DONE '+$objs.Count";
+const jsonOnly = "'x' | ConvertTo-Json -Compress";
+const jsonImport = "Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop; 'x' | ConvertTo-Json -Compress";
+const psModules = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules';
 const probeScript = "$ErrorActionPreference='Stop';$target=[Console]::In.ReadToEnd().Trim();if([string]::IsNullOrWhiteSpace($target)){throw 'missing root'};$acl=[IO.Directory]::GetAccessControl($target);$owner=$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value;'PROBE_DONE ' + $owner";
 const base = {encoding: 'utf8', windowsHide: true, shell: false, timeout: 30000, maxBuffer: 64 * 1024};
 const cases = [
@@ -45,6 +48,10 @@ const cases = [
   ['W3_rules', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, w3, target],
   ['W4_objects', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, w4, target],
   ['V15_full_trustedenv_bigrestore', {...base, cwd: path.dirname(ps), env: {...trustedPowerShellEnvironment(), USERDOMAIN: process.env.USERDOMAIN, USERDNSDOMAIN: process.env.USERDNSDOMAIN, LOGONSERVER: process.env.LOGONSERVER, COMPUTERNAME: process.env.COMPUTERNAME, USERPROFILE: process.env.USERPROFILE, USERNAME: process.env.USERNAME, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, SystemDrive: process.env.SystemDrive, PUBLIC: process.env.PUBLIC, ALLUSERSPROFILE: process.env.ALLUSERSPROFILE, PROGRAMDATA: process.env.PROGRAMDATA, OS: process.env.OS, NUMBER_OF_PROCESSORS: process.env.NUMBER_OF_PROCESSORS}, timeout: 20000}, fullScript, target],
+  ['W5c_json_trustedenv', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, jsonOnly, null],
+  ['W5d_json_import', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, jsonImport, null],
+  ['W5e_json_psmodulepath', {...base, cwd: path.dirname(ps), env: {...trustedPowerShellEnvironment(), PSModulePath: psModules}, timeout: 20000}, jsonOnly, null],
+  ['W5g_full_psmodulepath', {...base, cwd: path.dirname(ps), env: {...trustedPowerShellEnvironment(), PSModulePath: psModules}, timeout: 20000}, fullScript, target],
 ];
 for (const [name, opts, script, input] of cases) {
   const started = Date.now();
