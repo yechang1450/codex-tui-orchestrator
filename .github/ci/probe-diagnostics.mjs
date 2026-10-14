@@ -4,6 +4,7 @@ import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {readFileSync} from 'node:fs';
 import {trustedWindowsHelper} from '../../scripts/core/windows-system.mjs';
+import {trustedPowerShellEnvironment} from '../../scripts/core/private-root.mjs';
 
 const ps = trustedWindowsHelper('powershell');
 const target = process.argv[2];
@@ -32,6 +33,9 @@ const cases = [
   ['V8b_rule_ids_plain', {...base, cwd: path.dirname(ps), env: process.env, timeout: 20000}, stepRules, target],
   ['V9_owner_only', {...base, cwd: path.dirname(ps), env: process.env, timeout: 20000}, stepOwner, target],
   ['V10_acl_only', {...base, cwd: path.dirname(ps), env: process.env, timeout: 20000}, stepAcl, target],
+  ['V12_full_trustedenv', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, fullScript, target],
+  ['V13_short_trustedenv', {...base, cwd: path.dirname(ps), env: trustedPowerShellEnvironment(), timeout: 20000}, probeScript, target],
+  ['V14_full_trustedenv_restored', {...base, cwd: path.dirname(ps), env: {...trustedPowerShellEnvironment(), USERPROFILE: process.env.USERPROFILE, HOMEDRIVE: process.env.HOMEDRIVE, HOMEPATH: process.env.HOMEPATH, APPDATA: process.env.APPDATA, LOCALAPPDATA: process.env.LOCALAPPDATA, USERNAME: process.env.USERNAME, PROCESSOR_ARCHITECTURE: process.env.PROCESSOR_ARCHITECTURE}, timeout: 20000}, fullScript, target],
 ];
 for (const [name, opts, script, input] of cases) {
   const started = Date.now();
