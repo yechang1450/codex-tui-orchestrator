@@ -27,7 +27,10 @@ function fixture(t){
   const base=testTempFamily('bootstrap-runtime');
   fs.mkdirSync(base,{recursive:true});
   const dir=fs.mkdtempSync(path.join(base,'orch-bootstrap-test-中文 '));
-  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  // A probe child can still hold the copied node.exe for a moment after the
+  // probe returns; keep teardown retrying instead of failing the test with
+  // Windows EBUSY on a loaded machine.
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true,maxRetries:30,retryDelay:200}));
   return dir;
 }
 function pairedNodeRuntime(dir){

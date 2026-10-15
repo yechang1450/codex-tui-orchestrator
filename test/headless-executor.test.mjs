@@ -198,7 +198,7 @@ test('headless wait stops on an acceptance abort without exposing controller det
 });
 
 test('headless wait gives an atomic durable result a bounded grace after its worker exits',async()=>{
-  const f=fixture("console.log(JSON.stringify({type:'turn.completed'}));");
+    const f=fixture("for await(const _part of process.stdin){};console.log(JSON.stringify({type:'turn.completed'}));");
   let committed;
   try{
     const exited=spawnSync(process.execPath,['-e','process.exit(0)'],{windowsHide:true});
@@ -472,7 +472,7 @@ test('headless execution forwards credential-free proxies to the real CLI and st
 });
 
 test('a busy controller checks the durable readiness PID before declaring elapsed timeout',async()=>{
-  const f=fixture('console.log(JSON.stringify({type:"turn.completed"}));',{readinessTimeoutMs:100});
+  const f=fixture('for await(const _part of process.stdin){};console.log(JSON.stringify({type:"turn.completed"}));',{readinessTimeoutMs:100});
   try{
     const starting=f.hooks.spawn(f.files.lp,'test',f.files.pidf);
     // Simulate a controller blocked past its readiness window while the
@@ -490,7 +490,7 @@ test('a busy controller checks the durable readiness PID before declaring elapse
 });
 
 test('unstructured stderr remains diagnostic and cannot authorize capacity replay',async()=>{
-  const f=fixture("console.error('Selected model is at capacity; retry after 1 seconds');process.exitCode=1;");
+  const f=fixture("for await(const _part of process.stdin){};console.error('Selected model is at capacity; retry after 1 seconds');process.exitCode=1;");
   try{
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
@@ -646,7 +646,7 @@ test('oversized unbroken JSONL event fails closed without retaining unbounded st
 });
 
 test('headless worker marks a typed provider capacity failure as retryable',async()=>{
-  const f=fixture("console.log(JSON.stringify({type:'turn.failed',error:{message:'Selected model is at capacity'}}));process.exitCode=1;");
+  const f=fixture("for await(const _part of process.stdin){};console.log(JSON.stringify({type:'turn.failed',error:{message:'Selected model is at capacity'}}));process.exitCode=1;");
   try{
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
@@ -919,7 +919,7 @@ test('worker revalidates the CLI after readiness and before spawning a child',as
 });
 
 test('headless worker marks an account usage limit as terminal quota',async()=>{
-  const f=fixture("console.log(JSON.stringify({type:'turn.failed',error:{codex_error_info:'usage_limit_exceeded',message:\"You've hit your usage limit\"}}));process.exitCode=1;");
+  const f=fixture("for await(const _part of process.stdin){};console.log(JSON.stringify({type:'turn.failed',error:{codex_error_info:'usage_limit_exceeded',message:\"You've hit your usage limit\"}}));process.exitCode=1;");
   try{
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
