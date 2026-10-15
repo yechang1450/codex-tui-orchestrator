@@ -101,8 +101,12 @@ jobs:
           $cli = [string]$report.cliPath
           $version = (& $cli --version 2>$null | Out-String).Trim()
           if ($version -ne 'codex-cli 0.162.1') { throw "Unexpected Codex CLI version: $version" }
+          # Expose the pinned native CLI on PATH: the suite's public entry and
+          # visible-launcher fixtures resolve `codex.exe` the same way a user
+          # machine does when the plugin's managed runtime is installed.
+          $cliDirectory = Split-Path -Parent $cli
           "PLUGIN_DATA=$pluginData" >> $env:GITHUB_ENV
-          "PATH=$cliRoot;$env:PATH" >> $env:GITHUB_ENV
+          "PATH=$cliDirectory;$cliRoot;$env:PATH" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_CLI=0" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_DEPS=0" >> $env:GITHUB_ENV
           "ORCH_NODE_EXE=$nodeExe" >> $env:GITHUB_ENV

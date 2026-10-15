@@ -1,0 +1,151 @@
+name: Diagnose hosted environment
+
+# Manual, dispatch-only workflow used to measure the GitHub-hosted Windows
+# image before a full regression run: stream-encoding round-trips for helper
+# scripts, the pinned CLI's PATH visibility, and targeted test files so a fix
+# can be validated in minutes instead of a multi-hour full-suite run.
+on:
+  workflow_dispatch:
+    inputs:
+      test_files:
+        description: Space-separated test files to run (empty = probes only)
+        required: false
+        default: 'test/bootstrap-entry.test.mjs test/inactive-window.test.mjs test/malformed-contract-fuzz.test.mjs test/private-ledger.test.mjs test/public-cli.test.mjs'
+      test_name_pattern:
+        description: Optional --test-name-pattern value
+        required: false
+        default: ''
+      probe_only:
+        description: Skip running tests
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    steps:
+      - name: Normalize runner storage ACLs
+        shell: pwsh
+        run: |
+          $acl = Get-Acl -LiteralPath $env:USERPROFILE
+          $acl.SetAccessRuleProtection($true, $false)
+          foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleAll($rule) }
+          $current = [Security.Principal.WindowsIdentity]::GetCurrent().User
+          foreach ($sid in @($current, [Security.Principal.SecurityIdentifier]::new('S-1-5-18'), [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))) {
+            $rule = New-Object Security.AccessControl.FileSystemAccessRule($sid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit', [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            $acl.AddAccessRule($rule)
+          }
+          Set-Acl -LiteralPath $env:USERPROFILE -AclObject $acl
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.x
+      - name: Install locked dependencies
+        run: npm ci --prefix scripts --omit=optional --ignore-scripts --no-audit --no-fund
+      - name: Install and pin the offline Codex CLI fixture
+        shell: pwsh
+        run: |
+          $pluginData = Join-Path $env:USERPROFILE '.otui-ci-plugin-data'
+          $cliRoot = Join-Path $pluginData 'runtime\cli'
+          $env:PLUGIN_DATA = $pluginData
+          $runtimeRoot = Join-Path $pluginData 'runtime'
+          New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
+          $env:npm_config_prefix = $cliRoot
+          $nodeExe = (Get-Command node.exe -CommandType Application | Select-Object -First 1).Source
+          $npmCli = Join-Path (Split-Path -Parent $nodeExe) 'node_modules\npm\bin\npm-cli.js'
+          $installOutput = (& $nodeExe $npmCli install --global --prefix $cliRoot --ignore-scripts --no-audit --no-fund --include=optional '@openai/codex@0.162.1' 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI fixture install failed: $installOutput" }
+          $reportText = (& $nodeExe scripts/runtime-prepare.mjs 2>&1 | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI verification failed: $reportText" }
+          $report = $reportText | ConvertFrom-Json
+          $cliDirectory = Split-Path -Parent ([string]$report.cliPath)
+          "PLUGIN_DATA=$pluginData" >> $env:GITHUB_ENV
+          "PATH=$cliDirectory;$cliRoot;$env:PATH" >> $env:GITHUB_ENV
+          "ORCH_NODE_EXE=$nodeExe" >> $env:GITHUB_ENV
+      - name: Write probe scripts
+        shell: pwsh
+        run: |
+          $probe2 = Join-Path $env:RUNNER_TEMP 'path-encoding-probe.mjs'
+          @'
+          import fs from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+          import {spawnSync} from 'node:child_process';
+
+          const repo=process.argv[2];
+          const base='file:///'+repo.replace(/\\/g,'/')+'/scripts/core/';
+          const {bindWorkspaceRoot}=await import(base+'safe-workspace-read.mjs');
+          const {controllerEnvironment,trustedWindowsHelper}=await import(base+'windows-system.mjs');
+
+          const asciiRoot=fs.mkdtempSync(path.join(os.tmpdir(),'probe-ascii-'));
+          const cjkRoot=fs.mkdtempSync(path.join(os.tmpdir(),'unit-cmd 中文 &'));
+          console.log('ascii-root: '+asciiRoot);
+          console.log('cjk-root: '+cjkRoot);
+
+          for (const [label,root] of [['ascii',asciiRoot],['cjk',cjkRoot]]) {
+            try { const binding=bindWorkspaceRoot(root); console.log(label+'-bind: OK finalPath='+binding.finalPath); }
+            catch (error) { console.log(label+'-bind: FAIL '+error.message); }
+          }
+
+          const request=JSON.stringify({version:1,operation:'bind-root',root:cjkRoot});
+          const helper=repo.replace(/\\/g,'/')+'/scripts/core/safe-workspace-read.ps1';
+          for (let i=1;i<=2;i++) {
+            const result=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper],{
+              input:request,encoding:'utf8',windowsHide:true,shell:false,timeout:20000,env:controllerEnvironment(),
+            });
+            console.log(`raw-${i}: status=${result.status} signal=${result.signal} err=${result.error?.code||''} stdout=${JSON.stringify(String(result.stdout||'').slice(0,120))} stderr=${JSON.stringify(String(result.stderr||'').slice(0,200))}`);
+          }
+          '@ | Set-Content -LiteralPath $probe2 -Encoding utf8
+          $probe3 = Join-Path $env:RUNNER_TEMP 'private-probe.mjs'
+          @'
+          const [,,target,moduleUrl]=process.argv;
+          try {
+            const m=await import(moduleUrl);
+            m.assertPrivateWindowsRoot(target,{powershell:'C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'});
+            console.log('PRIVATE_OK');
+          } catch (error) { console.log('PRIVATE_FAIL: '+(error.code||'')+' '+error.message); }
+          '@ | Set-Content -LiteralPath $probe3 -Encoding utf8
+      - name: Probe stream encodings and CLI visibility
+        shell: pwsh
+        run: |
+          whoami
+          "cores: $([Environment]::ProcessorCount)"
+          "psmoduleanalysiscachepath: $($env:PSModuleAnalysisCachePath)"
+          "== where codex.exe =="
+          & where.exe codex.exe
+          "where-status: $LASTEXITCODE"
+          "== codex.exe under plugin data =="
+          Get-ChildItem -LiteralPath $env:PLUGIN_DATA -Recurse -Filter 'codex.exe' -ErrorAction SilentlyContinue | Select-Object -First 5 -ExpandProperty FullName
+          "== encoding probe =="
+          & $env:ORCH_NODE_EXE (Join-Path $env:RUNNER_TEMP 'path-encoding-probe.mjs') (Get-Location).Path
+          "== private-root probe (CJK fixture) =="
+          $base = Join-Path $env:USERPROFILE '.codex\test-fixtures\bootstrap-entry'
+          New-Item -ItemType Directory -Path $base -Force | Out-Null
+          $fixture = Join-Path $base ('orch-bootstrap-entry-中文 ' + [Guid]::NewGuid().ToString('N').Substring(0,8))
+          $runtimeHome = Join-Path $fixture 'plugin-data\runtime'
+          New-Item -ItemType Directory -Path $runtimeHome -Force | Out-Null
+          $moduleUrl = 'file:///' + (($env:GITHUB_WORKSPACE -replace '\\','/')) + '/scripts/core/private-root.mjs'
+          & $env:ORCH_NODE_EXE (Join-Path $env:RUNNER_TEMP 'private-probe.mjs') $runtimeHome $moduleUrl
+      - name: Configure offline test host
+        shell: pwsh
+        run: |
+          "ORCH_AGENT=codex" >> $env:GITHUB_ENV
+          "ORCH_SANDBOX=read-only" >> $env:GITHUB_ENV
+          "ORCH_APPROVAL=never" >> $env:GITHUB_ENV
+          "PATH=$env:GITHUB_WORKSPACE\scripts;$env:PATH" >> $env:GITHUB_ENV
+      - name: Run selected tests
+        if: ${{ !inputs.probe_only && inputs.test_files != '' }}
+        shell: pwsh
+        run: |
+          $files = '${{ inputs.test_files }}'.Split(' ', [StringSplitOptions]::RemoveEmptyEntries)
+          $pattern = '${{ inputs.test_name_pattern }}'
+          $arguments = @('--import', './test/host-context-isolation.mjs', '--test', '--test-concurrency=1')
+          if ($pattern) { $arguments += @('--test-name-pattern', $pattern) }
+          $arguments += $files
+          & $env:ORCH_NODE_EXE @arguments
+          "test exit code: $LASTEXITCODE"

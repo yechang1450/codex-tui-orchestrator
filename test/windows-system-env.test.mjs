@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {controllerEnvironment} from '../scripts/core/windows-system.mjs';
+import {trustedPowerShellEnvironment} from '../scripts/core/private-root.mjs';
 
 const windows=process.platform==='win32';
 
@@ -42,5 +43,19 @@ test('ambient module search paths still never reach helper processes',{skip:!win
   withEnvironment('PSModulePath','C:\\untrusted\\PowerShell\\Modules',()=>{
     const env=controllerEnvironment();
     assert.equal(Object.keys(env).map(name=>name.toUpperCase()).includes('PSMODULEPATH'),false);
+  });
+});
+
+test('narrow PowerShell environment carries the same local module analysis cache path',{skip:!windows},()=>{
+  withEnvironment('PSModuleAnalysisCachePath','D:\\cache\\ModuleAnalysisCache',()=>{
+    assert.equal(trustedPowerShellEnvironment().PSModuleAnalysisCachePath,'D:\\cache\\ModuleAnalysisCache');
+  });
+  for(const value of ['relative\\cache','\\\\server\\share\\cache','/unix/style']){
+    withEnvironment('PSModuleAnalysisCachePath',value,()=>{
+      assert.equal(trustedPowerShellEnvironment().PSModuleAnalysisCachePath,undefined,`must refuse ${value}`);
+    });
+  }
+  withEnvironment('PSModuleAnalysisCachePath',undefined,()=>{
+    assert.equal(trustedPowerShellEnvironment().PSModuleAnalysisCachePath,undefined);
   });
 });

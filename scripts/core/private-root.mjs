@@ -33,6 +33,11 @@ const REPLACEMENT_RIGHTS=
 // standard input so an attacker-controlled path never becomes PowerShell code.
 const ACL_PROBE_SCRIPT=[
   "$ErrorActionPreference='Stop'",
+  // The inspected path arrives as UTF-8 JSON on standard input; force the
+  // stream encodings so a non-ASCII path survives hosts whose console code
+  // page differs from UTF-8.
+  '[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)',
+  '[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)',
   '$target=[Console]::In.ReadToEnd().Trim()',
   "if([string]::IsNullOrWhiteSpace($target)){throw 'missing root'}",
   '$acl=[IO.Directory]::GetAccessControl($target)',
@@ -123,6 +128,15 @@ export function trustedPowerShellEnvironment(){
     const value=process.env[name];
     if(typeof value==='string'&&value.length<=4096)env[name]=value;
   }
+  // PowerShell 5.1 module auto-loading (Add-Type, ConvertFrom-Json, DPAPI
+  // assembly loads) stalls for tens of seconds on some hosted images unless
+  // the caller's module analysis cache location is visible. Pass an absolute
+  // local cache path through; ordinary machines have none and keep the same
+  // minimal environment.
+  const moduleAnalysisCache=process.env.PSModuleAnalysisCachePath;
+  if(typeof moduleAnalysisCache==='string'&&moduleAnalysisCache.length>0&&moduleAnalysisCache.length<=4096&&
+    path.win32.isAbsolute(moduleAnalysisCache)&&/^[A-Za-z]:[\\/]/.test(moduleAnalysisCache))
+    env.PSModuleAnalysisCachePath=moduleAnalysisCache;
   return env;
 }
 

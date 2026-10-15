@@ -53,7 +53,20 @@ test('a public ledger preserves the non-secret authorization contract while a cr
     const dir=runDirectory(f.workspace,f.runId),summary=JSON.parse(fs.readFileSync(path.join(dir,'summary.json'),'utf8'));
     assert.deepEqual(summary.authorization,authorization,'the recovery authorization contract must survive the public projection');
     assert.equal(JSON.stringify(summary).includes(f.secret),false,'a provider credential must never enter the public summary');
-    const preflight=preflightResumeLedger(f.workspace,f.runId);
+    // The post-exit cleanup phase runs asynchronously after the block exits and
+    // can still be in flight on a slow machine; the ledger then correctly
+    // refuses resume until it settles. Wait for that bounded settlement instead
+    // of assuming the cleanup already finished.
+    let preflight,preflightDeadline=Date.now()+30000;
+    for(;;){
+      try{preflight=preflightResumeLedger(f.workspace,f.runId);break;}
+      catch(error){
+        const message=String(error?.message||'');
+        const settling=/reconciliation is required before resume|reconcile the retained cleanup|Launcher exit remains unproven/.test(message);
+        if(!settling||Date.now()>preflightDeadline)throw error;
+        await new Promise(resolve=>setTimeout(resolve,100));
+      }
+    }
     assert.equal(preflight.executionMode,'visible','a redacted ledger must hydrate its sealed private payload before preflight validation');
     assert.equal(JSON.stringify(preflight).includes(f.secret),false,'preflight metadata must not expose private task text');
     const resumed=await runWindows('',f.hooks,{workspace:f.workspace,capacity:1,executionMode:'visible',runId:f.runId,resume:true,coordinator:path.join(f.controller,'coordinator'),authorization,acceptanceFile:acceptance,maxAttempts:1,timeoutMs:15000});

@@ -38,6 +38,10 @@ function assertNarrowPowerShellEnvironment(options) {
  assert.ok(env,'the helper must receive an explicit environment');
  const keys=Object.keys(env).map(name=>name.toUpperCase());
  const allowed=new Set(['SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','TEMP','TMP','PATH']);
+ // The narrow helper environment carries the caller's module analysis cache
+ // location when one exists so PowerShell module auto-loading stays fast on
+ // hosted images; machines without it keep the exact previous key set.
+ if(process.env.PSModuleAnalysisCachePath)allowed.add('PSMODULEANALYSISCACHEPATH');
  assert.equal(keys.some(name=>!allowed.has(name)),false,`unexpected helper environment variables: ${keys.filter(name=>!allowed.has(name)).join(', ')}`);
  assert.equal(keys.includes('PSMODULEPATH'),false,'ambient PSModulePath must not reach the helper');
  assert.equal(keys.includes('ORCH_INACTIVE_WINDOW_AMBIENT'),false,'unrelated parent variables must not reach the helper');
@@ -531,7 +535,7 @@ test('live inactive-window probe resolves the Codex primary runtime without a po
  try{
   const result=spawnSync(trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-MTA','-ExecutionPolicy','Bypass','-File',script,'-ContinuousInput'],{
    cwd:root,encoding:'utf8',windowsHide:true,timeout:15000,
-   env:{SystemRoot:process.env.SystemRoot||process.env.WINDIR,WINDIR:process.env.SystemRoot||process.env.WINDIR,ComSpec:path.join(process.env.SystemRoot||process.env.WINDIR,'System32','cmd.exe'),PATHEXT:'.COM;.EXE;.BAT;.CMD',Path:poison,PATH:poison,LOCALAPPDATA:process.env.LOCALAPPDATA||''},
+   env:{SystemRoot:process.env.SystemRoot||process.env.WINDIR,WINDIR:process.env.SystemRoot||process.env.WINDIR,ComSpec:path.join(process.env.SystemRoot||process.env.WINDIR,'System32','cmd.exe'),PATHEXT:'.COM;.EXE;.BAT;.CMD',Path:poison,PATH:poison,LOCALAPPDATA:process.env.LOCALAPPDATA||'',...(process.env.PSModuleAnalysisCachePath?{PSModuleAnalysisCachePath:process.env.PSModuleAnalysisCachePath}:{})},
   });
   assert.equal(result.status,0,`the noninteractive MTA guard must exit before any TUI launch: ${result.stderr}`);
   const report=JSON.parse(String(result.stdout).trim());
@@ -545,7 +549,7 @@ test('live inactive-window probe resolves the Codex primary runtime without a po
 
   const rejected=spawnSync(trustedWindowsHelper('powershell'),['-NoProfile','-NonInteractive','-MTA','-ExecutionPolicy','Bypass','-File',script,'-NodePath','\\\\server\\share\\node.exe','-ContinuousInput'],{
    cwd:root,encoding:'utf8',windowsHide:true,timeout:15000,
-   env:{SystemRoot:process.env.SystemRoot||process.env.WINDIR,WINDIR:process.env.SystemRoot||process.env.WINDIR,ComSpec:path.join(process.env.SystemRoot||process.env.WINDIR,'System32','cmd.exe'),PATHEXT:'.COM;.EXE;.BAT;.CMD',Path:poison,PATH:poison,LOCALAPPDATA:process.env.LOCALAPPDATA||''},
+   env:{SystemRoot:process.env.SystemRoot||process.env.WINDIR,WINDIR:process.env.SystemRoot||process.env.WINDIR,ComSpec:path.join(process.env.SystemRoot||process.env.WINDIR,'System32','cmd.exe'),PATHEXT:'.COM;.EXE;.BAT;.CMD',Path:poison,PATH:poison,LOCALAPPDATA:process.env.LOCALAPPDATA||'',...(process.env.PSModuleAnalysisCachePath?{PSModuleAnalysisCachePath:process.env.PSModuleAnalysisCachePath}:{})},
   });
   assert.notEqual(rejected.status,0,'an unsafe NodePath must fail before the no-TUI MTA guard can complete');
   assert.match(String(rejected.stderr),/local drive-qualified path/i);

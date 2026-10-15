@@ -2,6 +2,11 @@
 param()
 
 $ErrorActionPreference='Stop'
+# The controller exchanges UTF-8 JSON over redirected standard streams. Force
+# both stream encodings so a non-ASCII workspace path is decoded and encoded
+# identically on hosts whose console code page differs from UTF-8.
+[Console]::InputEncoding=[Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
 
 function Write-Result($value) {
   [Console]::Out.Write(($value | ConvertTo-Json -Compress -Depth 8))
