@@ -147,16 +147,42 @@ jobs:
           const root=fs.mkdtempSync(path.join(os.tmpdir(),'diag-safe-read-'));
           const request=JSON.stringify({version:1,operation:'bind-root',root});
 
+          const systemProfile={
+            PSModulePath:'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules',
+            USERNAME:process.env.USERNAME,
+            USERDOMAIN:process.env.USERDOMAIN,
+            SystemDrive:process.env.SystemDrive||'C:',
+            ALLUSERSPROFILE:process.env.ALLUSERSPROFILE,
+            PUBLIC:process.env.PUBLIC,
+            CommonProgramFiles:process.env.CommonProgramFiles,
+            'CommonProgramFiles(x86)':process.env['CommonProgramFiles(x86)'],
+            CommonProgramW6432:process.env.CommonProgramW6432,
+            SESSIONNAME:process.env.SESSIONNAME,
+          };
+
           function run(label,env){
             const t0=Date.now();
             const r=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper],{input:request,encoding:'utf8',windowsHide:true,shell:false,timeout:60000,env});
             console.log(`${label} | ms=${Date.now()-t0} | status=${r.status} | signal=${r.signal} | err=${r.error?.code||''} | out=${String(r.stdout||'').trim().slice(0,48)}`);
           }
 
-          run('full-env', process.env);
-          run('controller-env', controllerEnvironment());
-          run('controller-env+psmodulepath', {...controllerEnvironment(),PSModulePath:'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules'});
-          run('controller-env-again', controllerEnvironment());
+          function runCommand(label,env,command){
+            const t0=Date.now();
+            const r=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',command],{encoding:'utf8',windowsHide:true,shell:false,timeout:60000,env});
+            console.log(`${label} | ms=${Date.now()-t0} | status=${r.status} | signal=${r.signal} | err=${r.error?.code||''} | out=${String(r.stdout||'').trim().slice(0,48)}`);
+          }
+
+          const ambientMinusPs={...process.env};
+          delete ambientMinusPs.PSModulePath;
+
+          run('A-ambient-bind', process.env);
+          runCommand('B-controller-bare-start', controllerEnvironment(), 'exit 42');
+          runCommand('C-controller-addtype', controllerEnvironment(), "Add-Type -TypeDefinition 'public class DiagX1{}'; 'ok'");
+          runCommand('C-ambient-addtype', process.env, "Add-Type -TypeDefinition 'public class DiagX2{}'; 'ok'");
+          run('D-controller-bind', controllerEnvironment());
+          run('E-controller+profile-bind', {...controllerEnvironment(),...systemProfile});
+          run('F-ambient-minus-psmodulepath-bind', ambientMinusPs);
+          run('G-controller-bind-again', controllerEnvironment());
           '@ | Set-Content -LiteralPath $probe -Encoding utf8
       - name: Helper timing matrix (production env)
         shell: pwsh
