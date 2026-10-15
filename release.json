@@ -43,7 +43,7 @@
     "status-events.mjs": "4ee0f0d121343fa284de4835bb8d90a7b0d8c68fb7c0fc4fe18280fcb4282a28",
     "verification-queue.mjs": "5cbecea87ddca0d06b371220f151e78211898d96218f787e8ed19bdb82c663d0",
     "visible-rule-guard.mjs": "d24d8fdda55738f4a72e37edd2b38f69eb71474668509e37e448823ba9f1e2ab",
-    "windows-system.mjs": "9103923525b2ccd50acf64097ef483b37f5bd31226d9bd4fe6dde2cbed887f31",
+    "windows-system.mjs": "3668402136322c05bff2c4c678bc45b872d86e6f35e19abd46bfbdca8f948f5e",
     "windows-terminal.mjs": "6e74f3aa80dcea4e1593f9a672b4375fc3294e7f92bc0d3f15ed2e32cf4e22e6",
     "worker-authorization.mjs": "728e8f5727aaa56e3253468b59e6a77a0632e10ae8d072d52fbe80f97ef92775"
   },
@@ -93,7 +93,7 @@
     "scripts/core/status-events.mjs": "4ee0f0d121343fa284de4835bb8d90a7b0d8c68fb7c0fc4fe18280fcb4282a28",
     "scripts/core/verification-queue.mjs": "5cbecea87ddca0d06b371220f151e78211898d96218f787e8ed19bdb82c663d0",
     "scripts/core/visible-rule-guard.mjs": "d24d8fdda55738f4a72e37edd2b38f69eb71474668509e37e448823ba9f1e2ab",
-    "scripts/core/windows-system.mjs": "9103923525b2ccd50acf64097ef483b37f5bd31226d9bd4fe6dde2cbed887f31",
+    "scripts/core/windows-system.mjs": "3668402136322c05bff2c4c678bc45b872d86e6f35e19abd46bfbdca8f948f5e",
     "scripts/core/windows-terminal.mjs": "6e74f3aa80dcea4e1593f9a672b4375fc3294e7f92bc0d3f15ed2e32cf4e22e6",
     "scripts/core/worker-authorization.mjs": "728e8f5727aaa56e3253468b59e6a77a0632e10ae8d072d52fbe80f97ef92775",
     "scripts/dependency-integrity.json": "be0613364aa2ee53c7b41252f79dba26dbd43ce2768881c07ad64f3588629254",

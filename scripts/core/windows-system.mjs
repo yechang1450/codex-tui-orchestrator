@@ -54,6 +54,16 @@ export function controllerEnvironment(extra={}) {
     if(reserved.has(key.toLowerCase())||!allow.has(key)||/(KEY|TOKEN|SECRET|PASSWORD|AUTH|CREDENTIAL)/i.test(key))continue;
     if(typeof value==='string'&&value.length<=4096)out[key]=value;
   }
+  // PowerShell 5.1 resolves built-in cmdlets through a module analysis cache.
+  // On some hosted images auto-loading (Add-Type, ConvertTo-Json, Set-Content)
+  // stalls for tens of seconds unless the caller's cache location is visible,
+  // while an ordinary machine never needs it. Pass the caller's cache path
+  // through only as a plain local absolute path so a helper cannot be pointed
+  // at a relative or network location.
+  const moduleAnalysisCache=process.env.PSModuleAnalysisCachePath;
+  if(typeof moduleAnalysisCache==='string'&&moduleAnalysisCache.length>0&&moduleAnalysisCache.length<=4096&&
+    path.win32.isAbsolute(moduleAnalysisCache)&&/^[A-Za-z]:[\\/]/.test(moduleAnalysisCache))
+    out.PSModuleAnalysisCachePath=moduleAnalysisCache;
   for(const [key,value] of Object.entries(extra))if(!reserved.has(key.toLowerCase()))out[key]=value;
   out.SystemRoot=root;
   out.WINDIR=root;
