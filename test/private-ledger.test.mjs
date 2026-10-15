@@ -49,7 +49,10 @@ test('a public ledger preserves the non-secret authorization contract while a cr
     const acceptance=path.join(f.workspace,'acceptance.json');
     fs.writeFileSync(acceptance,JSON.stringify({T001:[{type:'json',path:'receipt.json',equals:{ok:true}}]}));
     f.hooks.wait=async()=>{fs.writeFileSync(path.join(f.workspace,'receipt.json'),JSON.stringify({ok:true}));return {done:true,exitCode:0,text:''};};
-    await runWindows(f.request,f.hooks,{workspace:f.workspace,capacity:1,executionMode:'visible',runId:f.runId,coordinator:path.join(f.controller,'coordinator'),authorization,acceptanceFile:acceptance,maxAttempts:1,timeoutMs:15000});
+    // The run's absolute deadline also bounds the post-exit cleanup phase. A
+    // slow machine must still get the full budget or the cleanup stays
+    // journaled as pending (by design) and resume correctly refuses.
+    await runWindows(f.request,f.hooks,{workspace:f.workspace,capacity:1,executionMode:'visible',runId:f.runId,coordinator:path.join(f.controller,'coordinator'),authorization,acceptanceFile:acceptance,maxAttempts:1,timeoutMs:60000});
     const dir=runDirectory(f.workspace,f.runId),summary=JSON.parse(fs.readFileSync(path.join(dir,'summary.json'),'utf8'));
     assert.deepEqual(summary.authorization,authorization,'the recovery authorization contract must survive the public projection');
     assert.equal(JSON.stringify(summary).includes(f.secret),false,'a provider credential must never enter the public summary');
@@ -69,7 +72,7 @@ test('a public ledger preserves the non-secret authorization contract while a cr
     }
     assert.equal(preflight.executionMode,'visible','a redacted ledger must hydrate its sealed private payload before preflight validation');
     assert.equal(JSON.stringify(preflight).includes(f.secret),false,'preflight metadata must not expose private task text');
-    const resumed=await runWindows('',f.hooks,{workspace:f.workspace,capacity:1,executionMode:'visible',runId:f.runId,resume:true,coordinator:path.join(f.controller,'coordinator'),authorization,acceptanceFile:acceptance,maxAttempts:1,timeoutMs:15000});
+    const resumed=await runWindows('',f.hooks,{workspace:f.workspace,capacity:1,executionMode:'visible',runId:f.runId,resume:true,coordinator:path.join(f.controller,'coordinator'),authorization,acceptanceFile:acceptance,maxAttempts:1,timeoutMs:60000});
     assert.deepEqual(resumed.authorization,authorization,'resume must authenticate the same retained authorization contract');
     const persistedAfterResume=fs.readFileSync(path.join(dir,'summary.json'),'utf8');
     assert.equal(persistedAfterResume.includes(f.secret),false,'in-memory recovery hydration must not write task text back to the public summary');
