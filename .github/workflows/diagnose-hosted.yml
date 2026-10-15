@@ -189,12 +189,20 @@ jobs:
           classify(controlled,addtype,'B-addtype-controller');
           classify(process.env,cscScript,'C-csc-ambient');
           classify(controlled,cscScript,'D-csc-controller');
-          classify(envMinus(['PSModulePath']),addtype,'E-minus-PSModulePath');
-          classify(envMinus(['PSModulePath','PSModuleAnalysisCachePath']),addtype,'F-minus-PSModulePath-AnalysisCachePath');
-          classify(envMinus(['USERNAME','USERDOMAIN','LOGONSERVER','USERDOMAIN_ROAMINGPROFILE','COMPUTERNAME']),addtype,'G-minus-identity');
-          classify(envMinus(['PROCESSOR_LEVEL','PROCESSOR_REVISION']),addtype,'H-minus-processor');
-          classify(envMinus(['ProgramFiles','ProgramFiles(x86)','ProgramW6432','ProgramData','CommonProgramFiles','CommonProgramFiles(x86)','CommonProgramW6432','SystemDrive']),addtype,'I-minus-program-paths');
-          classify(envMinus(['POWERSHELL_UPDATECHECK','POWERSHELL_DISTRIBUTION_CHANNEL','ImageOS','ImageVersion']),addtype,'J-minus-image');
+          const trustedModules='C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules';
+          classify({...controlled,PSModulePath:trustedModules},addtype,'V1-controller+trusted-PSModulePath');
+          classify({...controlled,PSModulePath:trustedModules},cscScript,'V1b-controller+trusted-PSModulePath-csc');
+          if(process.env.PSModuleAnalysisCachePath)classify({...controlled,PSModuleAnalysisCachePath:process.env.PSModuleAnalysisCachePath},addtype,'V2-controller+AnalysisCachePath');
+          classify({...controlled,PSModulePath:trustedModules,PSModuleAnalysisCachePath:process.env.PSModuleAnalysisCachePath||''},addtype,'V3-controller+both');
+          const bindRequest=JSON.stringify({version:1,operation:'bind-root',root:process.cwd()});
+          function bindTime(label,env){
+            const t0=Date.now();
+            const r=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper],{input:bindRequest,encoding:'utf8',windowsHide:true,shell:false,timeout:20000,env});
+            const ms=Date.now()-t0;
+            console.log(`${label} | ms=${ms} | slow=${r.error?.code==='ETIMEDOUT'||ms>10000} | out=${String(r.stdout||'').trim().slice(0,32)}`);
+          }
+          bindTime('W1-bind-controller', controlled);
+          bindTime('W2-bind-controller+trusted-PSModulePath', {...controlled,PSModulePath:trustedModules});
           '@ | Set-Content -LiteralPath $probe -Encoding utf8
       - name: Helper timing matrix (production env)
         shell: pwsh
