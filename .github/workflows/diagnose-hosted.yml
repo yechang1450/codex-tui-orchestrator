@@ -119,6 +119,8 @@ jobs:
         shell: pwsh
         run: |
           whoami
+          "cores: $([Environment]::ProcessorCount)"
+          "memory-gb: $([Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1))"
           $mp = Get-MpPreference
           "defender-realtime-disabled: $($mp.DisableRealtimeMonitoring)"
           "defender-exclusions: $($mp.ExclusionPath -join '; ')"
@@ -128,6 +130,37 @@ jobs:
               (Get-Acl -LiteralPath $p).Access | ForEach-Object { "   {0} | {1} | {2} | inherited={3} | {4}" -f $_.IdentityReference, $_.FileSystemRights, $_.AccessControlType, $_.IsInherited, $_.PropagationFlags }
             }
           }
+      - name: Write helper timing probe
+        shell: pwsh
+        run: |
+          $probe = Join-Path $env:RUNNER_TEMP 'helper-timing-probe.mjs'
+          @'
+          import {spawnSync} from 'node:child_process';
+          import fs from 'node:fs';
+          import os from 'node:os';
+          import path from 'node:path';
+
+          const repo=process.argv[2];
+          const repoUrl='file:///'+repo.replace(/\\/g,'/')+'/scripts/core/windows-system.mjs';
+          const {controllerEnvironment,trustedWindowsHelper}=await import(repoUrl);
+          const helper=repo.replace(/\\/g,'/')+'/scripts/core/safe-workspace-read.ps1';
+          const root=fs.mkdtempSync(path.join(os.tmpdir(),'diag-safe-read-'));
+          const request=JSON.stringify({version:1,operation:'bind-root',root});
+
+          function run(label,env){
+            const t0=Date.now();
+            const r=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper],{input:request,encoding:'utf8',windowsHide:true,shell:false,timeout:60000,env});
+            console.log(`${label} | ms=${Date.now()-t0} | status=${r.status} | signal=${r.signal} | err=${r.error?.code||''} | out=${String(r.stdout||'').trim().slice(0,48)}`);
+          }
+
+          run('full-env', process.env);
+          run('controller-env', controllerEnvironment());
+          run('controller-env+psmodulepath', {...controllerEnvironment(),PSModulePath:'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules'});
+          run('controller-env-again', controllerEnvironment());
+          '@ | Set-Content -LiteralPath $probe -Encoding utf8
+      - name: Helper timing matrix (production env)
+        shell: pwsh
+        run: '& $env:ORCH_NODE_EXE (Join-Path $env:RUNNER_TEMP ''helper-timing-probe.mjs'') (Get-Location).Path'
       - name: Probe pass 1 (baseline)
         shell: pwsh
         run: '& (Join-Path $env:RUNNER_TEMP ''hosted-probes.ps1'') -Label baseline'
