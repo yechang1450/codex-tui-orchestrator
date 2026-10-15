@@ -147,19 +147,6 @@ jobs:
           const root=fs.mkdtempSync(path.join(os.tmpdir(),'diag-safe-read-'));
           const request=JSON.stringify({version:1,operation:'bind-root',root});
 
-          const systemProfile={
-            PSModulePath:'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules',
-            USERNAME:process.env.USERNAME,
-            USERDOMAIN:process.env.USERDOMAIN,
-            SystemDrive:process.env.SystemDrive||'C:',
-            ALLUSERSPROFILE:process.env.ALLUSERSPROFILE,
-            PUBLIC:process.env.PUBLIC,
-            CommonProgramFiles:process.env.CommonProgramFiles,
-            'CommonProgramFiles(x86)':process.env['CommonProgramFiles(x86)'],
-            CommonProgramW6432:process.env.CommonProgramW6432,
-            SESSIONNAME:process.env.SESSIONNAME,
-          };
-
           function run(label,env){
             const t0=Date.now();
             const r=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',helper],{input:request,encoding:'utf8',windowsHide:true,shell:false,timeout:60000,env});
@@ -172,17 +159,24 @@ jobs:
             console.log(`${label} | ms=${Date.now()-t0} | status=${r.status} | signal=${r.signal} | err=${r.error?.code||''} | out=${String(r.stdout||'').trim().slice(0,48)}`);
           }
 
-          const ambientMinusPs={...process.env};
-          delete ambientMinusPs.PSModulePath;
+          const controlled=controllerEnvironment();
+          const controlledKeys=new Set(Object.keys(controlled).map((k)=>k.toLowerCase()));
+          const dropped=Object.keys(process.env).filter((k)=>!controlledKeys.has(k.toLowerCase())).sort();
+          console.log('dropped-count='+dropped.length);
+          console.log('dropped='+dropped.join(','));
 
-          run('A-ambient-bind', process.env);
-          runCommand('B-controller-bare-start', controllerEnvironment(), 'exit 42');
-          runCommand('C-controller-addtype', controllerEnvironment(), "Add-Type -TypeDefinition 'public class DiagX1{}'; 'ok'");
-          runCommand('C-ambient-addtype', process.env, "Add-Type -TypeDefinition 'public class DiagX2{}'; 'ok'");
-          run('D-controller-bind', controllerEnvironment());
-          run('E-controller+profile-bind', {...controllerEnvironment(),...systemProfile});
-          run('F-ambient-minus-psmodulepath-bind', ambientMinusPs);
-          run('G-controller-bind-again', controllerEnvironment());
+          const midpoint=Math.ceil(dropped.length/2);
+          const halfA=dropped.slice(0,midpoint);
+          const halfB=dropped.slice(midpoint);
+          function envMinus(list){const e={...process.env};for(const k of list)delete e[k];return e;}
+
+          const addtype="Add-Type -TypeDefinition 'public class DiagX{}'; 'ok'";
+          runCommand('R0-ambient-addtype', process.env, addtype);
+          runCommand('R1-controller-addtype', controlled, addtype);
+          runCommand('R2-ambient-minus-halfA-addtype', envMinus(halfA), addtype);
+          runCommand('R3-ambient-minus-halfB-addtype', envMinus(halfB), addtype);
+          console.log('halfA='+halfA.join(','));
+          console.log('halfB='+halfB.join(','));
           '@ | Set-Content -LiteralPath $probe -Encoding utf8
       - name: Helper timing matrix (production env)
         shell: pwsh
