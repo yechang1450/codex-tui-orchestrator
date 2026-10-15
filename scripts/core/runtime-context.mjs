@@ -135,8 +135,11 @@ function canonicalWindowsPath(value) {
           match = entry.name;
           break;
         }
-      } catch (error) {
-        if (!['ENOENT', 'EACCES', 'EPERM'].includes(error?.code)) throw error;
+      } catch {
+        // An entry that cannot be inspected cannot be the requested alias.
+        // Skip it instead of failing the whole canonicalization: healthy
+        // hosts can hold special system files that reject `stat` (for
+        // example C:\DumpStack.log.tmp throws EINVAL on some images).
       }
     }
     if (!match) throw new Error(`Unable to canonicalize Windows path component: ${candidate}`);

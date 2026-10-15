@@ -215,7 +215,7 @@ test('headless wait gives an atomic durable result a bounded grace after its wor
 });
 
 test('a pre-receipt legacy headless control record remains executable after upgrade',async()=>{
-  const f=fixture("console.log(JSON.stringify({type:'turn.completed'}));");
+  const f=fixture("for await(const _part of process.stdin){};console.log(JSON.stringify({type:'turn.completed'}));");
   try{
     const config=JSON.parse(fs.readFileSync(f.files.lp,'utf8'));
     delete config.startupReceipt;
@@ -928,7 +928,7 @@ test('headless worker marks an account usage limit as terminal quota',async()=>{
 });
 
 test('recovered reconnect notifications do not invalidate a successful terminal event',async()=>{
-  const f=fixture("console.log(JSON.stringify({type:'error',message:'Reconnecting... waiting for network (Connection failed: error sending request)'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'recovered'}}));console.log(JSON.stringify({type:'turn.completed'}));");
+  const f=fixture("for await(const _part of process.stdin){};console.log(JSON.stringify({type:'error',message:'Reconnecting... waiting for network (Connection failed: error sending request)'}));console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'recovered'}}));console.log(JSON.stringify({type:'turn.completed'}));");
   try{
     await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
     const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
