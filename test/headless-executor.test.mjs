@@ -448,7 +448,10 @@ test('headless execution forwards credential-free proxies to the real CLI and st
   const run=async values=>{
     for(const key of keys)delete process.env[key];
     Object.assign(process.env,values);
-    const f=fixture(`import fs from 'node:fs';fs.writeFileSync('proxy.json',JSON.stringify({https:process.env.HTTPS_PROXY||null,http:process.env.HTTP_PROXY||null,all:process.env.ALL_PROXY||null,no:process.env.NO_PROXY||null}));console.log(JSON.stringify({type:'turn.completed'}));`);
+    // Drain stdin like the real CLI before finishing: a child that exits
+    // without consuming the prompt makes delivery race an EPIPE on slow
+    // machines, which the worker correctly refuses as unverified.
+    const f=fixture(`import fs from 'node:fs';for await(const _part of process.stdin){}fs.writeFileSync('proxy.json',JSON.stringify({https:process.env.HTTPS_PROXY||null,http:process.env.HTTP_PROXY||null,all:process.env.ALL_PROXY||null,no:process.env.NO_PROXY||null}));console.log(JSON.stringify({type:'turn.completed'}));`);
     try{
       await f.hooks.spawn(f.files.lp,'test',f.files.pidf,1,'token');f.hooks.ready(f.files);
       const result=await f.hooks.wait(f.files.rf,10000,f.files.rf,'token',f.files.pidf);
