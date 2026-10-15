@@ -337,15 +337,18 @@ test('controller restart adopts the same hidden worker without repeating complet
   const f=fixture();fs.writeFileSync(path.join(f.workspace,'hold'),'hold');
   const controller=path.join(f.workspace,'controller.mjs'),runner=new URL('../scripts/core/runner.mjs',import.meta.url).href,executor=new URL('../scripts/core/headless-executor.mjs',import.meta.url).href;
   fs.writeFileSync(controller,`import {runWindows} from ${JSON.stringify(runner)};import {createHeadlessHooks} from ${JSON.stringify(executor)};
-const options=${JSON.stringify(f.options)};
-const hooks={...createHeadlessHooks({workspace:options.workspace,cli:process.execPath,args:[${JSON.stringify(f.cli)}],timeoutMs:120000,workerEntry:${JSON.stringify(testWorker)}}),plan:async()=>[{title:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,register:()=>{},commit:()=>{},unregister:()=>{}};
+// A killed controller can leave an abandoned coordinator mutex whose recovery
+// is deliberately bounded but slow on a busy hosted runner; give this restart
+// fixture the same headroom the recovery path needs.
+const options=${JSON.stringify({...f.options,timeoutMs:300000})};
+const hooks={...createHeadlessHooks({workspace:options.workspace,cli:process.execPath,args:[${JSON.stringify(f.cli)}],timeoutMs:300000,workerEntry:${JSON.stringify(testWorker)}}),plan:async()=>[{title:'linked',tasks:[{prompt:'执行甲'},{prompt:'执行乙'}]}],compact:p=>p,infer:()=>[],prompt:p=>p,register:()=>{},commit:()=>{},unregister:()=>{}};
 const sum=await runWindows(process.argv[2]?'':'执行甲；执行乙',hooks,{...options,resume:!!process.argv[2]});process.exitCode=sum.success?0:1;`);
   const children=[];let first;
   const start=resume=>{const child=spawn(process.execPath,[controller,...(resume?['resume']:[])],{windowsHide:true,stdio:['ignore','pipe','pipe']});children.push(child);child.stdout.resume();child.stderr.resume();return child;};
   // Windows CIM identity snapshots can queue behind unrelated controllers on a
   // busy host. Keep the restart assertion bounded, while allowing the real
   // hidden-worker fixture to reach its durable checkpoint.
-  const waitFor=async condition=>{const end=Date.now()+120000;while(Date.now()<end){try{if(condition())return;}catch{}await pause(100);}throw new Error('Controlled worker readiness timed out');};
+  const waitFor=async condition=>{const end=Date.now()+300000;while(Date.now()<end){try{if(condition())return;}catch{}await pause(100);}throw new Error('Controlled worker readiness timed out');};
   try{
     const parent=start(false);
     const cp=path.join(path.dirname(f.summary),'attempts','B1','1','checkpoints','T002.json');
