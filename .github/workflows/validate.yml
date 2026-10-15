@@ -105,6 +105,12 @@ jobs:
           # visible-launcher fixtures resolve `codex.exe` the same way a user
           # machine does when the plugin's managed runtime is installed.
           $cliDirectory = Split-Path -Parent $cli
+          # The inactive-window helper resolves the Codex desktop runtime node
+          # from the profile cache. Mirror that layout with the pinned Node so
+          # the suite sees the same deterministic path a user machine provides.
+          $runtimeNodeDirectory = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin'
+          New-Item -ItemType Directory -Path $runtimeNodeDirectory -Force | Out-Null
+          Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $runtimeNodeDirectory 'node.exe') -Force
           "PLUGIN_DATA=$pluginData" >> $env:GITHUB_ENV
           "PATH=$cliDirectory;$cliRoot;$env:PATH" >> $env:GITHUB_ENV
           "ORCH_AUTO_INSTALL_CLI=0" >> $env:GITHUB_ENV

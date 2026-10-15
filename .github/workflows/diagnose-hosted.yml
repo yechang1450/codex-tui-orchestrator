@@ -64,6 +64,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Pinned Codex CLI verification failed: $reportText" }
           $report = $reportText | ConvertFrom-Json
           $cliDirectory = Split-Path -Parent ([string]$report.cliPath)
+          $runtimeNodeDirectory = Join-Path $env:USERPROFILE '.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin'
+          New-Item -ItemType Directory -Path $runtimeNodeDirectory -Force | Out-Null
+          Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $runtimeNodeDirectory 'node.exe') -Force
           "PLUGIN_DATA=$pluginData" >> $env:GITHUB_ENV
           "PATH=$cliDirectory;$cliRoot;$env:PATH" >> $env:GITHUB_ENV
           "ORCH_NODE_EXE=$nodeExe" >> $env:GITHUB_ENV
