@@ -163,20 +163,66 @@ jobs:
           const controlledKeys=new Set(Object.keys(controlled).map((k)=>k.toLowerCase()));
           const dropped=Object.keys(process.env).filter((k)=>!controlledKeys.has(k.toLowerCase())).sort();
           console.log('dropped-count='+dropped.length);
-          console.log('dropped='+dropped.join(','));
-
-          const midpoint=Math.ceil(dropped.length/2);
-          const halfA=dropped.slice(0,midpoint);
-          const halfB=dropped.slice(midpoint);
           function envMinus(list){const e={...process.env};for(const k of list)delete e[k];return e;}
 
           const addtype="Add-Type -TypeDefinition 'public class DiagX{}'; 'ok'";
-          runCommand('R0-ambient-addtype', process.env, addtype);
-          runCommand('R1-controller-addtype', controlled, addtype);
-          runCommand('R2-ambient-minus-halfA-addtype', envMinus(halfA), addtype);
-          runCommand('R3-ambient-minus-halfB-addtype', envMinus(halfB), addtype);
-          console.log('halfA='+halfA.join(','));
-          console.log('halfB='+halfB.join(','));
+          function classify(env){
+            const t0=Date.now();
+            const r=spawnSync(trustedWindowsHelper('powershell'),['-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-Command',addtype],{encoding:'utf8',windowsHide:true,shell:false,timeout:8000,env});
+            const ms=Date.now()-t0;
+            const slow=r.error?.code==='ETIMEDOUT'||ms>5000;
+            return {slow,ms};
+          }
+
+          const confirmed=[];
+          const measure=()=>classify(envMinus(confirmed));
+
+          // Bisect the dropped set: removing a set that contains a culprit
+          // makes Add-Type slow again; removing a culprit-free set stays fast.
+          let pool=dropped.slice();
+          let guard=0;
+          const baseline=classify(process.env);
+          console.log(`baseline-fast=${!baseline.slow} ms=${baseline.ms}`);
+          while(pool.length>0&&guard<80){
+            guard++;
+            const probeSet=[...confirmed,...pool];
+            const result=classify(envMinus(probeSet));
+            if(!result.slow){
+              console.log(`search-done remaining-fast ms=${result.ms}`);
+              break;
+            }
+            if(pool.length===1){
+              confirmed.push(pool[0]);
+              console.log(`culprit=${pool[0]}`);
+              pool=restartPool();
+              continue;
+            }
+            const mid=Math.ceil(pool.length/2);
+            const firstHalf=pool.slice(0,mid);
+            const firstResult=classify(envMinus([...confirmed,...firstHalf]));
+            if(firstResult.slow){
+              console.log(`slow-left n=${firstHalf.length} ms=${firstResult.ms}`);
+              pool=firstHalf;
+            }else{
+              console.log(`fast-left n=${firstHalf.length} ms=${firstResult.ms}`);
+              pool=pool.slice(mid);
+            }
+          }
+          function restartPool(){
+            return dropped.filter((k)=>!confirmed.includes(k));
+          }
+          const finalState=classify(envMinus(dropped.filter((k)=>!confirmed.includes(k))));
+          console.log(`residual-without-culprits-fast=${!finalState.slow} ms=${finalState.ms}`);
+          // Verify each confirmed culprit on its own.
+          for(const name of confirmed){
+            const single=classify(envMinus([name]));
+            console.log(`single:${name} slow=${single.slow} ms=${single.ms}`);
+          }
+          // Restore controller env with the culprits added back.
+          const patched={...controlled};
+          for(const name of confirmed)if(process.env[name]!==undefined)patched[name]=process.env[name];
+          const patchedResult=classify(patched);
+          console.log(`patched-controller-fast=${!patchedResult.slow} ms=${patchedResult.ms}`);
           '@ | Set-Content -LiteralPath $probe -Encoding utf8
       - name: Helper timing matrix (production env)
         shell: pwsh
