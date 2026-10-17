@@ -97,7 +97,7 @@ test('public documentation distinguishes checkout installation, the GitHub marke
   assert.match(readme, /Author's statement/i);
   assert.match(readmeZh, /作者声明/);
   assert.match(readme + readmeZh, /open-tui-orchestrator/i, 'the author statement records the related project without changing this plugin\'s Codex-only support boundary');
-  const readmeDistributionText=[readme,readmeZh].map(text=>text.slice(text.indexOf('# codex-tui-orchestrator'))).join('\n');
+  const readmeDistributionText=[readme,readmeZh].map(text=>text.slice(text.indexOf('# CTUI'))).join('\n');
   assert.doesNotMatch(readmeDistributionText, /\bnpm\s+publish\b|npmjs\.com/i, 'the plugin README must not advertise an npm publishing route');
   assert.match(policy, /--set-source[\s\S]*does not replace a host-global marketplace/i);
 

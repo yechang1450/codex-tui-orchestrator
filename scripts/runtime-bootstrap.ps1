@@ -21,7 +21,7 @@ function Assert-OrchSafePath {
     $cursor = $full
     while ($cursor) {
         try {
-            if ([IO.File]::GetAttributes($cursor) -band [IO.FileAttributes]::ReparsePoint) { throw 'RUNTIME_REPARSE_PATH: runtime paths must not contain junctions or symbolic links.' }
+            if ([IO.File]::GetAttributes((ConvertTo-OrchExtendedPath -Path $cursor)) -band [IO.FileAttributes]::ReparsePoint) { throw 'RUNTIME_REPARSE_PATH: runtime paths must not contain junctions or symbolic links.' }
         } catch [IO.FileNotFoundException] { # Missing ancestors will be created after validation.
         } catch [IO.DirectoryNotFoundException] {
         }
@@ -429,9 +429,9 @@ function Get-OrchNodeProbeStartInfo {
     $commandProcessor = Assert-OrchSafePath (Join-Path $system32 'cmd.exe')
     if (-not (Test-Path -LiteralPath $commandProcessor -PathType Leaf)) { throw 'NODE_PROBE_ENVIRONMENT: Windows command processor is unavailable.' }
     $node = Assert-OrchSafePath $NodePath
-    if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'NODE_PROBE_ENVIRONMENT: Node runtime is unavailable.' }
-    $nodeItem = Get-Item -LiteralPath $node -Force -ErrorAction Stop
-    if (($nodeItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $nodeItem.PSIsContainer) { throw 'NODE_PROBE_ENVIRONMENT: Node runtime is not a regular file.' }
+    if (-not [IO.File]::Exists((ConvertTo-OrchExtendedPath -Path $node))) { throw 'NODE_PROBE_ENVIRONMENT: Node runtime is unavailable.' }
+    $nodeAttributes = [IO.File]::GetAttributes((ConvertTo-OrchExtendedPath -Path $node))
+    if (($nodeAttributes -band [IO.FileAttributes]::ReparsePoint) -or ($nodeAttributes -band [IO.FileAttributes]::Directory)) { throw 'NODE_PROBE_ENVIRONMENT: Node runtime is not a regular file.' }
     # npm accepts nonexistent user/global config files as empty files. Keep
     # them distinct: current npm rejects loading one path in both roles. Fresh
     # names under System32 prevent user or project .npmrc files from
@@ -501,7 +501,7 @@ function Invoke-OrchAttachedProcess {
 function Test-OrchTrustedSignature {
     param([Parameter(Mandatory)][string]$Path,
           [string[]]$AllowedThumbprints = @('DB9831002B26D78F14E07806F595C6A429E9B6E9', '8EA1D142EA3F46023BACA38C23A7E7AE6AFCE30C', '5A2C440219B027EF812E24A1E15F671D7CD379DE'))
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
+    if (-not [IO.File]::Exists((ConvertTo-OrchExtendedPath -Path $Path))) { return $false }
     try {
         $signature = Get-AuthenticodeSignature -LiteralPath $Path -ErrorAction Stop
         if ([string]$signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate) { return $false }
@@ -852,10 +852,11 @@ function Get-OrchTreeDigest {
     param([Parameter(Mandatory)][string]$Root)
     try {
         $rootFull = (Assert-OrchSafePath $Root).TrimEnd('\')
-        if (-not (Test-Path -LiteralPath $rootFull -PathType Container)) { return $null }
+        $rootExtended = ConvertTo-OrchExtendedPath -Path $rootFull
+        if (-not [IO.Directory]::Exists($rootExtended)) { return $null }
         $rows = [Collections.Generic.List[string]]::new()
         $stack = [Collections.Generic.Stack[string]]::new()
-        $stack.Push($rootFull)
+        $stack.Push($rootExtended)
         $totalBytes = [long]0
         while ($stack.Count -gt 0) {
             $directory = $stack.Pop()
@@ -866,8 +867,21 @@ function Get-OrchTreeDigest {
                 $fileInfo = [IO.FileInfo]::new($entry)
                 $totalBytes += $fileInfo.Length
                 if ($rows.Count -ge 10000 -or $totalBytes -gt 200MB) { return $null }
-                $relative = $entry.Substring($rootFull.Length + 1).Replace('\', '/')
-                $hash = (Get-FileHash -LiteralPath $entry -Algorithm SHA256).Hash.ToLowerInvariant()
+                # Microsoft.PowerShell.Utility's Get-FileHash cannot open a file
+                # whose path reaches the classic 260-character limit when the
+                # bootstrap runs under Windows PowerShell 5.1; hash the
+                # extended-length path with .NET instead.
+                $relative = $entry.Substring($rootExtended.Length + 1).Replace('\', '/')
+                $stream = $null
+                $hasher = $null
+                try {
+                    $stream = [IO.File]::OpenRead($entry)
+                    $hasher = [Security.Cryptography.SHA256]::Create()
+                    $hash = ([BitConverter]::ToString($hasher.ComputeHash($stream)).Replace('-', '')).ToLowerInvariant()
+                } finally {
+                    if ($hasher) { $hasher.Dispose() }
+                    if ($stream) { $stream.Dispose() }
+                }
                 [void]$rows.Add("$relative`0$($fileInfo.Length)`0$hash`n")
             }
         }
@@ -891,7 +905,7 @@ function Test-OrchTrustedNpm {
 function Test-OrchNode {
     param([Parameter(Mandatory)][string]$NodePath, [ValidateRange(1,1800)][int]$TimeoutSeconds = 20,
           [switch]$AllowUnverified, [switch]$AllowUnverifiedNpm)
-    if (-not (Test-Path -LiteralPath $NodePath -PathType Leaf)) { return $null }
+    if (-not [IO.File]::Exists((ConvertTo-OrchExtendedPath -Path $NodePath))) { return $null }
     if (-not $AllowUnverified -and -not (Test-OrchTrustedSignature -Path $NodePath)) { return $null }
     try {
         $timer = [Diagnostics.Stopwatch]::StartNew()
@@ -903,7 +917,7 @@ function Test-OrchNode {
         $nodeDir = Split-Path -Parent $NodePath
         $npmCandidates = @((Join-Path $nodeDir 'node_modules\npm\bin\npm-cli.js'), (Join-Path (Split-Path -Parent $nodeDir) 'node_modules\npm\bin\npm-cli.js'))
         foreach ($npmPath in $npmCandidates) {
-            if (-not (Test-Path -LiteralPath $npmPath -PathType Leaf)) { continue }
+            if (-not [IO.File]::Exists((ConvertTo-OrchExtendedPath -Path $npmPath))) { continue }
             # An explicit development/test override authorizes an otherwise
             # untrusted npm tree. Do not still hash every file in that tree:
             # the digest is only evidence for the trusted path and can take a
@@ -976,7 +990,7 @@ function Install-OrchNodeArchive {
     $target = Join-Path $RuntimeHome $DirectoryName
     try {
         [void](Assert-OrchSafePath $target)
-        if (Test-Path -LiteralPath $target) {
+        if ([IO.Directory]::Exists((ConvertTo-OrchExtendedPath -Path $target))) {
             if (Test-OrchNode (Join-Path $target 'node.exe')) { return $target }
             throw 'NODE_RUNTIME_INVALID: existing private runtime failed its probe; repair the named runtime directory before retrying.'
         }

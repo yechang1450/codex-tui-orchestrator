@@ -48,8 +48,8 @@
     "worker-authorization.mjs": "728e8f5727aaa56e3253468b59e6a77a0632e10ae8d072d52fbe80f97ef92775"
   },
   "runtimeFiles": {
-    ".agents/plugins/marketplace.json": "7ad414b43cba98de4d6feb89395cb58fa2f7e76b7dac66974c75eaa207cd06cf",
-    ".codex-plugin/plugin.json": "3d90c94022c639b78e4ae76d5451ec9993e1e5aed340a78e21a05e8dc0f0ac2a",
+    ".agents/plugins/marketplace.json": "e09969cf69770fdfbbc0f99ffb5198da6da3f0d321de1d40cb56241d11bdba0a",
+    ".codex-plugin/plugin.json": "92392c4fc500e66fd83df6562e3f39b2cb511a0a8b2ba2f66ba01eb7ff73fe09",
     "scripts/bootstrap.ps1": "ec80109ef4f53317e7e34aa43717cb5cd355ee6f202545cbf3b396cc6e5cf954",
     "scripts/codex-entry.mjs": "176a84e8ee83f17a96cfb54bcfd53ed6e6571dfd6de50a17f5f0484fa8fc670d",
     "scripts/core/agent-auth-prompt.txt": "5a3f7201b8e46ad0ce7f4380a5b08abba47de1f7913c7634c2ad0452f10dc4c2",
@@ -96,7 +96,7 @@
     "scripts/core/windows-system.mjs": "3668402136322c05bff2c4c678bc45b872d86e6f35e19abd46bfbdca8f948f5e",
     "scripts/core/windows-terminal.mjs": "6e74f3aa80dcea4e1593f9a672b4375fc3294e7f92bc0d3f15ed2e32cf4e22e6",
     "scripts/core/worker-authorization.mjs": "728e8f5727aaa56e3253468b59e6a77a0632e10ae8d072d52fbe80f97ef92775",
-    "scripts/dependency-integrity.json": "be0613364aa2ee53c7b41252f79dba26dbd43ce2768881c07ad64f3588629254",
+    "scripts/dependency-integrity.json": "24b0a2c5365940d0e212e81600da29812f7f6b09428718a8dea0268ff87a6ad6",
     "scripts/dependency-integrity.mjs": "a7ab45154d9a87c89eeb2c8128f262e4330da5748eb706f686b49b134d169421",
     "scripts/entry-bootstrap.mjs": "de8ff01c6544d365de855a0a3475e1985aa5dac9ad48105f3ab63a801a598e6a",
     "scripts/entry-options.mjs": "1cadaed7f587e41c97ff61a38bac490048ff5861468b89f0966c53edede68c74",
@@ -104,12 +104,12 @@
     "scripts/install-plugin.mjs": "0d244a00ac741463c384e563d84e0579ccc2add59ab776be886f3ef47d33fc92",
     "scripts/npm-cli.mjs": "19b313c4912f8e853167933066ca20d614b9e2e5ecffcac1a2f8cd94d42f2629",
     "scripts/orchestrate-sdk.mjs": "40695a6bd10cba1f125db1edc09c284236761ee19fdd4db3efd3665f43809151",
-    "scripts/package-lock.json": "f61ce4ed70d646028687407e3286ec113c32ad4f69afc03865d4c02a4b6582f4",
-    "scripts/package.json": "a656537458cc2846fa9e5f6c549a4166851ba1702a7e980e212ece67291a98c4",
+    "scripts/package-lock.json": "e1bd6f504576eda57473b7c925bf7adce3c86a1d05a0b38b95a62e381118f863",
+    "scripts/package.json": "e36cbaf83d3061b10733b37a48118cd8b0c90d4616699edd2da27eff273913be",
     "scripts/poll-windows.mjs": "138fd821ee1e8b84ef64a364f1f3627c6808cf0f99b8c791dd80a5d3ead9cef9",
     "scripts/release-integrity.mjs": "2a14acb73d840d3910e01ccb30a98490aa0f21a3430f4b182f8afb496c09b539",
     "scripts/repair-plugin-registration.mjs": "b7ed0763995d3b920a5bba5641f6a35c0bece55fa68e7b8673fc45d1c3222c98",
-    "scripts/runtime-bootstrap.ps1": "a3eb89e23ebfecebe1413752127b4b4e3384ea56128c5b16e88c64e20b0a4add",
+    "scripts/runtime-bootstrap.ps1": "2225461d6b1f373abd8c90db4c9727065dff73f3ea0529cde1dd5b156909e0b0",
     "scripts/runtime-prepare.mjs": "e74f0ec84b063c90278cf842e6b49881b53cce1d0a015cce26ba5dd93c52e394",
     "scripts/sdk-dependency-check.mjs": "4045a64225a4e39e521eba02553be966b0d4bcec9b8253d95009bc2ed5fefe15",
     "scripts/sdk-dependency-verify.mjs": "77fab8580e2467814c3e3c9846a672ae9a1c3d3e1535d3195fe0e6587470a6d9",
@@ -127,8 +127,8 @@
     "docs/security-boundaries.md": "36e82c44ead8e494db6488461a12f998c6a279ab7c265f336eb3a4ed681ff787",
     "docs/terms.md": "23f1ba785c7587627ed38154a6cfb1e79badd7e501097d9cedeb22cb7bd5a1d0",
     "assets/icon.png": "48ef812ccedbf5c87b8a7fdac02e371e1b9d6517240380a354dc66c7630b96df",
-    "README.md": "0559210a6fef0fbc1c26f6ce48b7a0459b32030896577e6be9fb444e1495172c",
-    "README-zh.md": "e4d4609169692ea5e76f281f99ff3b1d54cb8d5f162d9c013d259ee0ade448db",
+    "README.md": "38dc3792bac6dd3667ae41e6913843246f7e41cada26e8c6053a52c6d2edf616",
+    "README-zh.md": "cb5ac7fc0f8816e59e6ba95b65d8842583c71cf496d40d2049c18658932d7c16",
     "LICENSE": "2b1ce4be7beaafba2323ec202031ba9ffe56e6db86915e10f1820ad77df7dc97"
   }
 }

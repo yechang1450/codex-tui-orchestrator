@@ -57,6 +57,23 @@ function Test-OrchTrustedNpm {
 }
 const winTest=(name,fn)=>test(name,{skip:!windows},fn);
 
+winTest('trusted tree digest follows extended-length paths under Windows PowerShell 5.1',t=>{
+  // Regression: a deep install path pushes npm-tree files past the classic
+  // 260-character limit. Get-FileHash / [IO.File]::GetAttributes without an
+  // extended prefix fail there and used to make first installs report
+  // NODE_RUNTIME_INVALID even though the downloaded runtime was healthy.
+  const base=fixture(t);
+  let deep=path.join(base,'segment-'+'x'.repeat(40));
+  while(deep.length<250)deep=path.join(deep,'deeper-'+'y'.repeat(40));
+  const leaf=path.join(deep,'node_modules');
+  fs.mkdirSync(leaf,{recursive:true});
+  const target=path.join(leaf,'payload-with-a-long-name.js');
+  fs.writeFileSync(target,'payload','utf8');
+  assert.ok(target.length>259,`fixture path must exceed MAX_PATH (got ${target.length})`);
+  const digest=run(`(Get-OrchTreeDigest -Root ${quote(leaf)})`,{timeout:longPathFixtureTimeoutMs});
+  assert.match(digest,/^[a-f0-9]{64}$/,'extended-length tree digest must return a hash instead of null');
+});
+
 winTest('runtime home stays with plugin data or plugin temp, never global installs',t=>{
   const dir=fixture(t);
   const data=path.join(dir,'plugin data');

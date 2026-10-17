@@ -1,7 +1,7 @@
 {
   "name": "yechang1450-codex-tui-orchestrator",
   "interface": {
-    "displayName": "Codex TUI Orchestrator"
+    "displayName": "CTUI"
   },
   "plugins": [
     {

@@ -55,7 +55,7 @@ codex plugin add codex-tui-orchestrator@yechang1450-codex-tui-orchestrator
 
 ## Candidate configuration
 
-Current candidate: core 1.4.4-rc.1, plugin 0.9.29-rc.10.
+Current candidate: core 1.4.4-rc.1, plugin 0.9.29-rc.11.
 
 The planner and both execution modes inherit the initiating Codex provider and credentials by default. The canonical values are `ORCH_PROVIDER=inherit` and `ORCH_PROVIDER=openai-https`, which selects the hardened OpenAI HTTPS provider. `native` and `relay` are legacy aliases for `inherit` and `openai-https` respectively. Other values fail closed.
 

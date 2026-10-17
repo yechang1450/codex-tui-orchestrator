@@ -10,27 +10,45 @@
 
 **Repository scope.** This repository contains only the Codex plugin. The multi-agent compatibility described in the statement above belongs to the separate `open-tui-orchestrator` project.
 
-# codex-tui-orchestrator
+# CTUI — Codex TUI Orchestrator
 
-A Windows-focused Codex plugin that concurrently runs task blocks only when they are confirmed independent and resources allow it.
+**CTUI** is the short name of **codex-tui-orchestrator**: a Windows-focused Codex plugin that splits one long task list into blocks and runs only confirmed-independent blocks concurrently. It is a Codex-only plugin, distributed from GitHub through [checkout install](#checkout-install) or the [GitHub marketplace catalog](#github-marketplace-catalog). It is not published to npm.
 
-This is a Codex-only plugin.
+## Quick start
 
-It is distributed from GitHub through checkout install or a GitHub marketplace
-catalog. It is not published to npm.
+Inside a Codex conversation (recommended):
+
+1. Install the plugin with one of the two routes below.
+2. Give Codex a task list that names two or more independent projects or blocks, for example `Project 1: update the documentation; Project 2: review the tests`.
+3. CTUI plans the split, opens one TUI window per confirmed-independent block, and keeps dependent, conflicting, or uncertain work serial. Each task stays unverified until it meets the parent-defined acceptance conditions.
+
+From a terminal (planning and inspection):
+
+```powershell
+$pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
+$workspace  = 'C:\path\to\workspace'
+$env:ORCH_SANDBOX  = 'read-only'   # workspace-write / danger-full-access also allowed
+$env:ORCH_APPROVAL = 'never'       # or on-request
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action doctor
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run --workspace $workspace --plan 'Project 1: update the documentation; Project 2: review the tests'
+```
+
+- `--plan` prints the plan as JSON on stdout; diagnostics go to stderr.
+- Requests that name two or more projects use a deterministic split (seconds, no model call). Other requests use the host CLI planner and fall back to one serial block when planning fails.
+- A single-block plan reports `"mode":"inline"`: run it in the current conversation instead of opening a window.
 
 ## How it works
 
-The orchestrator preserves task identity, groups dependent, conflicting, or
-uncertain work into serial blocks, and launches only confirmed-independent
-blocks in parallel. A task remains awaiting verification until it meets
-parent-defined acceptance conditions; a worker report or window closure alone
-does not prove success.
+- Preserves task identity and groups dependent, conflicting, or uncertain work into serial blocks.
+- Launches only confirmed-independent blocks in parallel, queued by the configured resource budget.
+- Keeps every task awaiting verification until its parent-defined acceptance conditions pass; a worker report or window closure alone never proves success.
+- Native TodoList/spawn cards belong to the host UI; the plugin emits status events for the host to consume.
 
-Native TodoList/spawn cards belong to the host UI; the plugin emits status events for the host to consume.
+## Run status and recovery
 
-Use `--plan` to inspect a proposed split without executing it. Use `--status`,
-`--resume-run`, or `--verify-run` for a saved run.
+- `--tasks` / `--status [--run-id <id>]` show the TodoList and each block's execution state.
+- `--verify-run <id>` re-checks a saved run; `--resume-run <id>` resumes it.
+- Run ledgers and checkpoints live under `<workspace>\temp\orchestrator`.
 
 ## Checkout install
 
@@ -62,21 +80,13 @@ A GitHub marketplace catalog is distinct from the official public plugin
 directory. This plugin uses lifecycle hooks, so install it through this
 repository route.
 
-## Plan a task
+## Troubleshooting
 
-From the workspace that owns the task, inspect a plan through the bootstrap
-entry point:
-
-```powershell
-$pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
-$workspace = 'C:\path\to\workspace'
-Set-Location -LiteralPath $workspace
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run --workspace $workspace --plan 'Project 1: update the documentation; Project 2: review the tests'
-```
-
-Read the [execution contract](docs/execution-contract.md) before executing a
-plan, and keep secrets out of task prompts. See the [privacy policy](docs/privacy.md)
-for the redaction and storage boundary.
+- `INITIATOR_POLICY_UNAVAILABLE`: terminal commands must either run inside the Codex conversation whose workspace you target, or set `ORCH_SANDBOX` and `ORCH_APPROVAL` explicitly. A Codex-bound shell refuses a different workspace by design.
+- The doctor report redacts paths and the CLI location by default; set `ORCH_DIAGNOSTIC_FULL_PATHS=1` to show them.
+- The first run prepares a pinned Node runtime and the locked Codex CLI/SDK, which needs network access. Deep install paths are supported since 0.9.29-rc.11.
+- Planning for requests that do not name distinct projects uses the host CLI and needs a signed-in Codex CLI; if planning fails, CTUI falls back to one serial block.
+- Keep secrets out of task prompts; see the [privacy policy](docs/privacy.md) for the redaction and storage boundary. Read the [execution contract](docs/execution-contract.md) before executing a plan.
 
 ## Privacy and legal
 

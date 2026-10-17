@@ -1,6 +1,6 @@
 {
   "name": "codex-tui-orchestrator",
-  "version": "0.9.29-rc.10",
+  "version": "0.9.29-rc.11",
   "description": "Windows Codex \u5e76\u53d1\u7f16\u6392\u63d2\u4ef6\uff1a\u4ec5\u5e76\u884c\u5df2\u786e\u8ba4\u72ec\u7acb\u7684\u4efb\u52a1\u5757\u3002",
   "author": {
     "name": "yechang1450"
@@ -18,9 +18,9 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "Codex TUI Orchestrator",
-    "shortDescription": "\u4fdd\u5b88\u7684\u5e76\u53d1\u7f16\u6392",
-    "longDescription": "\u4fdd\u5b88\u5730\u5e76\u884c\u786e\u8ba4\u72ec\u7acb\u7684\u4efb\u52a1\u5757\uff1b\u6709\u4f9d\u8d56\u3001\u51b2\u7a81\u6216\u4e0d\u786e\u5b9a\u6027\u7684\u5de5\u4f5c\u4fdd\u6301\u4e32\u884c\uff0c\u5e76\u7531\u4e3b\u63a7\u6838\u9a8c\u7ed3\u679c\u3002",
+    "displayName": "CTUI",
+    "shortDescription": "CTUI \u00b7 \u4fdd\u5b88\u7684\u5e76\u53d1\u7f16\u6392",
+    "longDescription": "CTUI\uff08Codex TUI Orchestrator\uff09\u4fdd\u5b88\u5730\u5e76\u884c\u786e\u8ba4\u72ec\u7acb\u7684\u4efb\u52a1\u5757\uff1b\u6709\u4f9d\u8d56\u3001\u51b2\u7a81\u6216\u4e0d\u786e\u5b9a\u6027\u7684\u5de5\u4f5c\u4fdd\u6301\u4e32\u884c\uff0c\u5e76\u7531\u4e3b\u63a7\u6838\u9a8c\u7ed3\u679c\u3002",
     "developerName": "yechang1450",
     "category": "Productivity",
     "capabilities": [

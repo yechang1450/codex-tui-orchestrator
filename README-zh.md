@@ -10,19 +10,45 @@
 
 **仓库范围。** 本仓库只包含 Codex 插件；上文所述的多 Agent 兼容能力属于独立的 `open-tui-orchestrator` 项目。
 
-# codex-tui-orchestrator
+# CTUI — Codex TUI Orchestrator
 
-这是一个运行于 Windows、仅面向 Codex 的插件：只在任务块已确认互不依赖且资源允许时并发执行。
+**CTUI** 是 **codex-tui-orchestrator** 的简称：一个面向 Windows 的 Codex 插件，把一长串任务拆成执行块，只并发其中已确认独立的部分。它是仅面向 Codex 的插件，通过 GitHub 的 [checkout 安装](#checkout-安装) 或 [GitHub marketplace catalog](#github-marketplace-catalog) 分发，不会发布到 npm。
 
-它通过 GitHub checkout install 或 GitHub marketplace catalog 分发，不会发布到 npm。
+## 快速开始
+
+在 Codex 对话中（推荐）：
+
+1. 用下面两种方式之一安装插件。
+2. 给 Codex 一个列出两个以上独立项目/任务块的清单，例如 `项目1：更新文档；项目2：检查测试`。
+3. CTUI 给出拆分计划，每个确认独立的块开一个 TUI 窗口；有依赖、冲突或不确定的工作保持串行。任务在满足父任务定义的验收条件前始终处于“待验证”。
+
+在终端中使用（计划与检查）：
+
+```powershell
+$pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
+$workspace  = 'C:\path\to\workspace'
+$env:ORCH_SANDBOX  = 'read-only'   # 也可用 workspace-write / danger-full-access
+$env:ORCH_APPROVAL = 'never'       # 或 on-request
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action doctor
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run --workspace $workspace --plan '项目1：更新文档；项目2：检查测试'
+```
+
+- `--plan` 把计划 JSON 打到 stdout，诊断走 stderr。
+- 请求里出现两个以上项目时走确定性拆分（秒级、不调用模型）；其余请求由宿主 CLI 规划，失败时回退为单个串行块。
+- 单块计划返回 `"mode":"inline"`：应在当前对话里直接执行，而不是开窗口。
 
 ## 工作方式
 
-编排器保留任务身份，把有依赖、有冲突或不确定的工作归入串行执行块，只并发确认独立的执行块。任务只有满足父任务定义的验收条件才会标记为已验证；子窗口自报或窗口关闭本身不能证明成功。
+- 保留任务身份，把有依赖、有冲突或不确定的工作归入串行执行块。
+- 只并发确认独立的执行块，按配置的资源预算排队。
+- 任务只有满足父任务定义的验收条件才会标记为已验证；子窗口自报或窗口关闭本身不能证明成功。
+- 原生 TodoList/spawn 卡片属于宿主 UI，插件输出状态事件供宿主消费。
 
-原生 TodoList/spawn 卡片属于宿主 UI，插件输出状态事件供宿主消费。
+## 运行状态与恢复
 
-使用 `--plan` 在不执行的情况下检查拆分建议；已保存的运行可使用 `--status`、`--resume-run` 或 `--verify-run`。
+- `--tasks` / `--status [--run-id <id>]` 查看任务清单与每个块的执行状态。
+- `--verify-run <id>` 复核已保存的运行；`--resume-run <id>` 恢复运行。
+- 运行记录与检查点位于 `<workspace>\temp\orchestrator`。
 
 ## Checkout 安装
 
@@ -50,21 +76,16 @@ codex plugin add codex-tui-orchestrator@yechang1450-codex-tui-orchestrator
 
 GitHub marketplace catalog 与官方公共插件目录不同。此插件使用 lifecycle hook，因此通过仓库 marketplace 路径安装。
 
-## 检查计划
+## 常见问题
 
-在拥有任务的工作区中，通过 bootstrap 入口检查计划：
-
-```powershell
-$pluginRoot = Join-Path $HOME 'plugins\codex-tui-orchestrator'
-$workspace = 'C:\path\to\workspace'
-Set-Location -LiteralPath $workspace
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$pluginRoot\scripts\bootstrap.ps1" -Action run --workspace $workspace --plan '任务 1：更新文档；任务 2：检查测试'
-```
-
-执行前请阅读[执行约定](docs/execution-contract.md)，并且不要把秘密写入任务提示。脱敏与存储边界见[隐私说明](docs/privacy.md)。
+- `INITIATOR_POLICY_UNAVAILABLE`：终端命令要么在目标工作区的 Codex 对话内运行，要么显式设置 `ORCH_SANDBOX` 与 `ORCH_APPROVAL`；与 Codex 绑定的 shell 按设计拒绝不同工作区。
+- doctor 默认对路径与 CLI 位置脱敏；设置 `ORCH_DIAGNOSTIC_FULL_PATHS=1` 可显示完整路径。
+- 首次运行会准备固定版本的 Node 运行时与锁定的 Codex CLI/SDK，需要网络；0.9.29-rc.11 起支持较深的安装路径。
+- 不含独立项目的请求由宿主 CLI 规划，需要已登录的 Codex CLI；规划失败会回退为单个串行块。
+- 不要在任务提示里放密钥；脱敏与存储边界见[隐私说明](docs/privacy.md)。执行计划前请阅读[执行约定](docs/execution-contract.md)。
 
 ## 隐私与法律
 
 - [隐私说明](docs/privacy.md)
-- [使用条款](docs/terms.md)
+- [条款](docs/terms.md)
 - [MIT License](LICENSE)
